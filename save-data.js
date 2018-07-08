@@ -28,11 +28,12 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
-	  // client.close();
-	  getPosts();
+		// client.close();
+		processVotedPosts();
 	  updateUserTokens();
+	  /* getPosts();
 	  setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);
+	  setInterval(updateUserTokens, 450 * 1000);*/
 	} else {
 		utils.log(err, 'import');
 		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
@@ -190,4 +191,94 @@ async function updateUserTokens() {
 	await db.collection('user_tokens').drop();
 	return await db.collection('user_tokens').insert(user_tokens);
 
+}
+
+async function processVotedPosts() {
+
+	let transactions = await getAccountVotes(config.account);
+	let postsData = [];
+
+	await utils.asyncForEach(transactions, async (txs) => {
+		await steem.api.getContentAsync(txs.author, txs.permlink)
+			.then(postObject => {
+							if	(utils.checkBeneficiary(postObject)) {
+									console.log('--- Post has correct beneficiaries -----');
+									postsData.push(postObject);
+							} else {
+									console.log('--- Post missing beneficiaries -----');
+									console.log(postObject.url);
+							}
+					})
+			.catch(error => {console.log(error)});
+	});
+
+	upsertPosts(postsData);
+	return postsData;
+
+}
+
+async function getAccountVotes(account) {
+	let voteByAccount = []
+	await steem.api.getAccountHistoryAsync(account, -1, 10000)
+			.filter( tx => tx[1].op[0] === 'vote' && tx[1].op[1].voter == account)
+			.each((transaction) => {
+					voteByAccount.push(transaction[1].op[1])
+					console.log(transaction[1].op[1])
+			})
+	console.log(voteByAccount.length);
+	return voteByAccount;
+}
+
+async function upsertPosts(posts) {
+	// Upsert posts      
+	var bulk = collection.initializeUnorderedBulkOp();
+	for(var i = 0; i < posts.length; i++) {
+		let post = posts[i]
+		try {
+			post.json_metadata = JSON.parse(post.json_metadata);
+			let step_count = post.json_metadata.step_count;
+			if (step_count < 5000)
+				continue;
+			else if (step_count < 6000)
+				post.token_rewards = 20;
+			else if(step_count < 7000)
+				post.token_rewards = 35;
+			else if(step_count < 8000)
+				post.token_rewards = 50;
+			else if(step_count < 9000)
+				post.token_rewards = 65;
+			else if(step_count < 10000)
+				post.token_rewards = 80;
+			else
+				post.token_rewards = 100;
+		} catch (err) {
+			utils.log('Error parsing json metadata');
+			console.log(err);
+			continue;
+		}
+		bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
+			 post
+		);
+	}
+	
+	return bulk.execute()
+		.then(async function (res) {
+			var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
+			utils.log(mes, 'import');
+			await processTransactions(posts);
+			return;
+		})
+		.catch(function (err) {
+			utils.log(err, 'import');
+			mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
+				.then(function(res, err) {
+					if (!err) {
+						console.log(res);
+						return;
+					} else {
+						console.log(err);
+						return;
+					}
+				});
+		})
 }

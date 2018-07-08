@@ -3,6 +3,7 @@ const steem = require('steem');
 var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
+var moment = require('moment');
 
 var account = null;
 var last_trans = 0;
@@ -51,7 +52,7 @@ if (fs.existsSync('members.json')) {
 
 startProcess();
 // Schedule to run every minute
-setInterval(startProcess, 10 * 1000);
+setInterval(startProcess, 60 * 1000);
 
 async function startProcess() {
   if(!botNames)
@@ -86,7 +87,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 10000) {
+    if (vp >= 9800) {
       skip = true;
       processVotes();      
     }
@@ -129,7 +130,7 @@ function processVotes() {
         }
 
         // Check if the bot already voted on this post
-        if(post.active_votes.find(v => v.voter == account.name)) {
+        if(post.active_votes.find(v => v.voter == 'actifit')) {
           utils.log('Bot already voted on: ' + post.url);
           continue;
         }
@@ -171,10 +172,6 @@ function processVotes() {
           }
         }
 
-        // If cero votes continue
-        if(post.active_votes.length == 0)
-          continue;
-
         // Check if account is beneficiary 
         var benefit = 0;
         for (var x = 0; x < post.beneficiaries.length; x++) {
@@ -215,14 +212,39 @@ function processVotes() {
           continue;
         }
         
-        console.log('Voting on: ' + post.url);
-        votePosts.push(post);
+        let last_index = _.findLastIndex(votePosts, ['author', post.author]);
+        if (last_index != -1) {
+          console.log('---- User already has vote ------');
+          let last_voted = votePosts[last_index];
+          var last_date = moment(last_voted.created).format('D');
+          var this_date = moment(post.created).format('D');
+          if (last_date != this_date) {
+            console.log('Voting on: ' + post.url);
+            votePosts.push(post);
+          } else {
+            console.log('---- Last voted -----');
+            console.log(new Date (last_voted.created));
+            console.log('---- This voted -----');
+            console.log(new Date (post.created));
+            console.log('---- Moment-----');
+            console.log(last_date);
+            console.log(this_date);
+          }          
+          
+        } else {
+          console.log('Voting on: ' + post.url);
+          votePosts.push(post);
+        }        
       }
       /*let testPost = {rate_multiplier: 0.8};
       votePosts.push(testPost);*/
       if (votePosts.length > 0) {
         utils.log(votePosts.length + ' posts to vote...');
         vote_data = utils.calculateVotes(votePosts, config.vote_weight);
+        votePosts.sort(function(post1, post2) {
+          // Ascending: first age less than the previous
+          return post2.json.step_count - post1.json.step_count;
+        });
         //utils.log(vote_data.total_votes + ' total votes to divide.');
         utils.log(vote_data.power_per_vote + ' power per full vote.');
         utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
@@ -264,7 +286,7 @@ function votingProcess(posts, power_per_vote) {
       is_voting = false;
       error_sent = false;
       saveState();
-      reportEmail(config.report_emails)
+      //reportEmail(config.report_emails)
     }, 5000);
   }
 }
@@ -282,23 +304,23 @@ function sendVote(post, retries, power_per_vote) {
       utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
       if(config.comment_location && config.comment)
-        sendComment(post.author, post.permlink, vote_weight);
+        setTimeout(function () { sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count); }, 10000);        
     } else {
-      utils.log(err, result);
+        utils.log(err, result);
 
-      // Try again one time on error
-      if (retries < 1)
-        sendVote(post, retries + 1);
-      else {
-        var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
-        utils.log(message);
-        errorEmail(message, config.report_emails);
-      }
+        // Try again one time on error
+        if (retries < 1)
+          sendVote(post, retries + 1);
+        else {
+          var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
+          utils.log(message);
+          //errorEmail(message, config.report_emails);
+        }
     }
   });
 }
 
-function sendComment(parentAuthor, parentPermlink, vote_weight) {
+function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier, post_step_count) {
   var content = null;
 
   content = fs.readFileSync(config.comment_location, "utf8");
@@ -309,8 +331,22 @@ function sendComment(parentAuthor, parentPermlink, vote_weight) {
     // Generate the comment permlink via steemit standard convention
     var permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
 
+	var token_count = parseFloat(rate_multiplier)*100;
+	var milestone_txt = "level 1 milestone";
+	if(token_count < 36)
+		milestone_txt = "level 2 milestone";
+	else if(token_count < 51)
+		milestone_txt = "level 3 milestone";
+	else if(token_count < 66)
+		milestone_txt = "level 4 milestone";
+	else if(token_count < 81)
+		milestone_txt = "level 5 milestone";
+	else
+		milestone_txt = "the top level milestone";
+
+	
     // Replace variables in the promotion content
-    content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{botname\}/g, config.account);
+    content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{milestone\}/g, milestone_txt).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 
     // Broadcast the comment
     steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, '{"app":"communitybot/' + version + '"}', function (err, result) {

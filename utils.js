@@ -200,21 +200,13 @@ function format(n, c, d, t) {
     }
     //check if account was voted
     let voted = _.findIndex(post.active_votes, ['voter', config.account]);
-    if (voted == -1)
+    if (voted == -1) {
+      console.log('Post was not voted. ' + post.url);
       continue;
-    console.log('Post voted');
-    // Check if account is beneficiary 
-    var benefit = 0;
-    for (var x = 0; x < post.beneficiaries.length; x++) {
-      for (var n = 0; n < config.beneficiaries.length; n++) {
-        if (post.beneficiaries[x].account === config.beneficiaries[n])
-          benefit ++;
-      }          
-      if (benefit === config.beneficiaries.length) {
-        benefit = true;
-        break;
-      }
     }
+    // Check if account is beneficiary 
+    var benefit = checkBeneficiary(post);
+    
     if(!benefit)
       continue;
 
@@ -222,6 +214,27 @@ function format(n, c, d, t) {
   }
   return results;
     
+ }
+
+ function checkBeneficiary(post) {
+  let config = getConfig();
+   // Check if account is beneficiary 
+   var benefit = 0;
+   for (var x = 0; x < post.beneficiaries.length; x++) {
+     for (var n = 0; n < config.beneficiaries.length; n++) {
+       if (post.beneficiaries[x].account === config.beneficiaries[n])
+         benefit ++;
+     }          
+     if (benefit === config.beneficiaries.length) {
+       benefit = true;
+       break;
+     }
+   }
+   if(!benefit)
+     return false;
+
+   return true;
+
  }
 
  function log(msg, name) { 
@@ -241,6 +254,12 @@ function format(n, c, d, t) {
   }
  }
 
+ async function asyncForEach(array, callback) {
+  for (let index = 0; index < array.length; index++) {
+    await callback(array[index], index, array)
+  }
+}
+
 
  module.exports = {
    getVotingPower: getVotingPower,
@@ -255,5 +274,7 @@ function format(n, c, d, t) {
    calculateVotes: calculateVotes,
    filterPosts: filterPosts,
    getConfig: getConfig,
-   loadBots: loadBots
+   loadBots: loadBots,
+   checkBeneficiary: checkBeneficiary,
+   asyncForEach: asyncForEach
  }
