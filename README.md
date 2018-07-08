@@ -1,2 +1,2 @@
-# actifitbot
-script bot handling upvotes and token calculation for actifit
+# actifit-bot
+This repo contains script that allows upvoting as well as the calculation of the relevant actifit tokens due to posting, upvoting, and resteeming
