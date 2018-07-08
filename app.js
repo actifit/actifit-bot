@@ -17,7 +17,7 @@ const url = config.mongo_uri;
 var db;
 var collection;
 // Database Name
-const db_name = 'actifit';
+const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
 // Use connect method to connect to the server

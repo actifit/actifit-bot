@@ -14,7 +14,7 @@ const url = config.mongo_uri;
 var db;
 var collection;
 // Database Name
-const db_name = 'heroku_ch0sdt2p';
+const db_name = config.db_name;
 const collection_name = 'posts';
 
 // Use connect method to connect to the server
