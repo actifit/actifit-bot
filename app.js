@@ -64,6 +64,11 @@ app.get('/user/:user', async function (req, res) {
     res.send(user);
 });
 
+app.get('/user/transactions/:user', async function (req, res) {
+	let transactions = await db.collection('token_transactions').find({user: req.params.user}).sort({date: -1}).limit(250).toArray();
+    res.send(transactions);
+});
+
 app.get('/transactions', async function (req, res) {
 	let transactions = await db.collection('token_transactions').find().sort({date: -1}).limit(250).toArray();
     res.send(transactions);
