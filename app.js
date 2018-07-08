@@ -54,7 +54,8 @@ app.get('/', function (req, res) {
 		}];
 	data.total_votes = 323;
 	data.total_money = "$0.63";
-    res.render('home', data);
+    // res.render('home', data);
+    res.send('Hello there!');
 });
 
 app.get('/user/:user', async function (req, res) {
