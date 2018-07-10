@@ -253,7 +253,7 @@ function processVotes() {
         utils.log(vote_data.power_per_vote * 0.35 + ' power per fith vote.');
         utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
         if(config.testing)
-          process.exit();
+          return;
         else
           votingProcess(votePosts, vote_data.power_per_vote);
 
