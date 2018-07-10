@@ -87,7 +87,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 9800) {
+    if (vp >= 10000) {
       skip = true;
       processVotes();      
     }
@@ -243,14 +243,14 @@ function processVotes() {
         vote_data = utils.calculateVotes(votePosts, config.vote_weight);
         votePosts.sort(function(post1, post2) {
           // Ascending: first age less than the previous
-          return post2.json.step_count - post1.json.step_count;
+          return post1.json.step_count - post2.json.step_count;
         });
         //utils.log(vote_data.total_votes + ' total votes to divide.');
         utils.log(vote_data.power_per_vote + ' power per full vote.');
         utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
         utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
         utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
-        utils.log(vote_data.power_per_vote * 0.35 + ' power per fith vote.');
+        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
         utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
         if(config.testing)
           return;

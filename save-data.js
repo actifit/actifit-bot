@@ -38,7 +38,7 @@ MongoClient.connect(url, function(err, client) {
 	  setInterval(updateUserTokens, 450 * 1000);
 	} else {
 		utils.log(err, 'import');
-		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
+		mail.sendPlainMail('Database Error', err, 'mcfarhat@gmail.com')
       .then(function(res, err) {
   			if (!err) {
   				console.log(res);
