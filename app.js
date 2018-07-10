@@ -31,15 +31,6 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	} else {
 		utils.log(err, 'api');
-		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
-      .then(function(res, err) {
-  			if (!err) {
-  				console.log(res);
-  			} else {
-  				utils.log(err, 'api');
-  			}
-  		});
-		process.exit();
 	}
   
 });
