@@ -224,7 +224,7 @@ async function updateUserTokens() {
 		 }
 	  	])
 	let user_tokens = await query.toArray();
-	await db.collection('user_tokens').drop();
+	await db.collection('user_tokens').remove({});
 	return await db.collection('user_tokens').insert(user_tokens);
 
 }
