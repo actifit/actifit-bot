@@ -1,6 +1,7 @@
 var utils = require('./utils');
 var mail = require('./mail');
 const steem = require('steem');
+const { forEach } = require('p-iteration');
 
 const MongoClient = require('mongodb').MongoClient;
 const assert = require('assert');
@@ -29,12 +30,12 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	  
 	  // client.close();
-	  processVotedPosts();
+	  //processVotedPosts();
 	  //getReblogs();
-	  //updateUserTokens();
-	  //getPosts();
-	  /* setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);*/
+	  updateUserTokens();
+	  getPosts();
+	  setInterval(getPosts, 300 * 1000);
+	  setInterval(updateUserTokens, 450 * 1000);
 	} else {
 		utils.log(err, 'import');
 		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
@@ -148,7 +149,7 @@ async function processTransactions(posts) {
 	let transactions = [];
 	let collection = db.collection('token_transactions');
 	var bulk = collection.initializeUnorderedBulkOp();
-	posts.forEach(async post => {
+	await forEach(posts, async (post) => {
 		let post_transaction = {
 			user: post.author,
 			reward_activity: 'Post',
@@ -206,6 +207,7 @@ async function processTransactions(posts) {
 			}				
 		});
 	});
+	console.log(transactions);
 	return bulk.execute();
 }
 
@@ -232,7 +234,7 @@ async function processVotedPosts() {
 	let transactions = await getAccountVotes(config.account);
 	let postsData = [];
 
-	await utils.asyncForEach(transactions, async (txs) => {
+	await forEach(transactions, async (txs) => {
 		await steem.api.getContentAsync(txs.author, txs.permlink)
 			.then(postObject => {
 							if	(utils.checkBeneficiary(postObject) || postObject.author == config.account) {

@@ -11,6 +11,7 @@
     "mongodb": "^3.0.10",
     "nodemailer": "^4.6.5",
     "nodemailer-express-handlebars": "^3.0.0",
+    "p-iteration": "^1.1.7",
     "request": "^2.83.0",
     "steem": "^0.6.7"
   },
