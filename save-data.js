@@ -10,7 +10,7 @@ var config = utils.getConfig();
 
 // Connection URL
 const url = config.mongo_uri;
-
+var postsProcessing = false;
 var db;
 var collection;
 // Database Name
@@ -28,12 +28,13 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
-		// client.close();
-		//processVotedPosts();
-	  updateUserTokens();
-	  getPosts();
-	  setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);
+	  // client.close();
+	  processVotedPosts();
+	  //getReblogs();
+	  //updateUserTokens();
+	  //getPosts();
+	  /* setInterval(getPosts, 300 * 1000);
+	  setInterval(updateUserTokens, 450 * 1000);*/
 	} else {
 		utils.log(err, 'import');
 		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
@@ -50,6 +51,9 @@ MongoClient.connect(url, function(err, client) {
 });
 
 function getPosts(index) {
+  if(postsProcessing)
+	return;
+  postsProcessing = true;
 	console.log('---- Getting Posts ----');
   var query = {tag: config.main_tag, limit: 100};
   if (index) {
@@ -106,7 +110,8 @@ function getPosts(index) {
 		    	console.log('Inserted transactions');
 		    	if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
 		    		return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
-		    	console.log('No more new posts');
+				console.log('No more new posts');
+				postsProcessing = false;
 			  	return;
 		  	})
 			  .catch(function (err) {
@@ -146,7 +151,7 @@ async function processTransactions(posts) {
 	posts.forEach(async post => {
 		let post_transaction = {
 			user: post.author,
-			reward_activty: 'Post',
+			reward_activity: 'Post',
 			token_count: post.token_rewards,
 			url: post.url,
 			date: post.created
@@ -154,7 +159,7 @@ async function processTransactions(posts) {
 		 bulk.find(
 			{ 
 				user: post_transaction.user,
-				reward_activty: post_transaction.reward_activty,
+				reward_activity: post_transaction.reward_activity,
 				url: post_transaction.url
 			})
 			.upsert().replaceOne(post_transaction); 
@@ -162,7 +167,7 @@ async function processTransactions(posts) {
 		post.active_votes.forEach(async vote => {
 			let vote_transaction = {
 				user: vote.voter,
-				reward_activty: 'Post Vote',
+				reward_activity: 'Post Vote',
 				token_count: 1,
 				url: post.url,
 				date: vote.time
@@ -170,23 +175,52 @@ async function processTransactions(posts) {
 			bulk.find(
 			{ 
 				user: vote_transaction.user,
-				reward_activty: vote_transaction.reward_activty,
+				reward_activity: vote_transaction.reward_activity,
 				url: vote_transaction.url
 			})
 			.upsert().replaceOne(vote_transaction);
 			transactions.push(vote_transaction);
-		});		
+		});
+		let reblogs = await steem.api.getRebloggedByAsync(post.author, post.permlink);
+		console.log('------------------ REBLOGS --------------------');
+		console.log(reblogs);
+		reblogs.forEach(async reblog => {
+			if(reblog != post.author){
+				let reblog_transaction = {
+					user: reblog,
+					reward_activity: 'Post Reblog',
+					token_count: 1,
+					url: post.url,
+					date: post.created
+				}
+				console.log('---Reblog transaction ----');
+				console.log(reblog_transaction);
+				bulk.find(
+				{ 
+					user: reblog_transaction.user,
+					reward_activity: reblog_transaction.reward_activity,
+					url: reblog_transaction.url
+				})
+				.upsert().replaceOne(reblog_transaction);
+				transactions.push(reblog_transaction);
+			}				
+		});
 	});
 	return bulk.execute();
 }
 
 async function updateUserTokens() {
 	console.log('---- Updating Users ----');
-	let query = await db.collection('token_transactions').aggregate(
-		[
-     { $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
-     { $sort: { tokens: -1 } }
-   	]);
+	let query = await db.collection('token_transactions').aggregate([
+		{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
+		{ $sort: { tokens: -1 } },
+		{ $project: { 
+			 _id: "$_id",
+			 user: "$_id",
+			 tokens: "$tokens",
+			 }
+		 }
+	  	])
 	let user_tokens = await query.toArray();
 	await db.collection('user_tokens').drop();
 	return await db.collection('user_tokens').insert(user_tokens);
@@ -201,8 +235,8 @@ async function processVotedPosts() {
 	await utils.asyncForEach(transactions, async (txs) => {
 		await steem.api.getContentAsync(txs.author, txs.permlink)
 			.then(postObject => {
-							if	(utils.checkBeneficiary(postObject)) {
-									console.log('--- Post has correct beneficiaries -----');
+							if	(utils.checkBeneficiary(postObject) || postObject.author == config.account) {
+									console.log('--- Post has correct beneficiaries or was posted by config account -----');
 									postsData.push(postObject);
 							} else {
 									console.log('--- Post missing beneficiaries -----');
@@ -227,6 +261,14 @@ async function getAccountVotes(account) {
 			})
 	console.log(voteByAccount.length);
 	return voteByAccount;
+}
+
+async function getReblogs(post) {
+	console.log('----- Getting reblogs ----');
+	let res;
+	res = await steem.api.getRebloggedByAsync(post.author, post.permlink);
+	console.log(res);
+	return res;
 }
 
 async function upsertPosts(posts) {
@@ -266,6 +308,7 @@ async function upsertPosts(posts) {
 			var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
 			utils.log(mes, 'import');
 			await processTransactions(posts);
+			console.log('----Super upsert ready ----');
 			return;
 		})
 		.catch(function (err) {
