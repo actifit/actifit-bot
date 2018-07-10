@@ -77,7 +77,7 @@ async function startProcess() {
   var oneMoreDay = new Date(new Date(vote_time).getTime() + (24 * 60 * 60 * 1000));
   var today = new Date();
   //deactivating condition of 24 hrs to pass
-  var passedOneDay = true;//today >= oneMoreDay;
+  var passedOneDay = today >= oneMoreDay;
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
@@ -298,7 +298,7 @@ function votingProcess(posts, power_per_vote) {
 }
 
 function sendVote(post, retries, power_per_vote) {
-  utils.log('Voting on: ' + post.url);
+  utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
   var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
   if (vote_weight > 10000)
     vote_weight = 10000;
@@ -310,8 +310,8 @@ function sendVote(post, retries, power_per_vote) {
         if (!err && result) {
             utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
-            if(!true)
-            //if(config.comment_location && config.comment)
+            //if(!true)
+            if(config.comment_location && config.comment)
                 setTimeout(function () { 
                     sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count)
                         .then( res => {
