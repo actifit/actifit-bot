@@ -59,18 +59,16 @@ app.get('/', function (req, res) {
 });
 
 app.get('/user/:user', async function (req, res) {
-	let user = await collection.findOne({_id: req.params.user});
+	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
     res.send(user);
 });
 
-app.get('/user/transactions/:user', async function (req, res) {
-	let transactions = await db.collection('token_transactions').find({user: req.params.user}).sort({date: -1}).limit(250).toArray();
-    res.send(transactions);
-});
-
-app.get('/transactions', async function (req, res) {
-	let transactions = await db.collection('token_transactions').find().sort({date: -1}).limit(250).toArray();
+app.get('/transactions/:user?', async function (req, res) {
+	let query = {};
+	if(req.params.user)
+		query = {user: req.params.user}
+	let transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
     res.send(transactions);
 });
 

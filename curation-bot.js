@@ -274,21 +274,26 @@ function processVotes() {
 
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
-  sendVote(posts.pop(), 2, power_per_vote);
-  // If there are more bids, vote on the next one after 10 seconds
-  if (posts.length > 0) {
-    setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
-  } else {
-    setTimeout(function () {
-      utils.log('=======================================================');
-      utils.log('Voting Complete!');
-      utils.log('=======================================================');
-      is_voting = false;
-      error_sent = false;
-      saveState();
-      //reportEmail(config.report_emails)
-    }, 5000);
-  }
+  sendVote(posts.pop(), 2, power_per_vote)
+  .then( res => {
+    // If there are more bids, vote on the next one after 10 seconds
+    if (posts.length > 0) {
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
+    } else {
+      setTimeout(function () {
+        utils.log('=======================================================');
+        utils.log('Voting Complete!');
+        utils.log('=======================================================');
+        is_voting = false;
+        error_sent = false;
+        saveState();
+        //reportEmail(config.report_emails)
+      }, 5000);
+    }
+  })
+  .catch(err => {
+      console.log(err);
+  })
 }
 
 function sendVote(post, retries, power_per_vote) {
@@ -299,30 +304,45 @@ function sendVote(post, retries, power_per_vote) {
   post.vote_weight = vote_weight;
   last_votes.push(post);
 
-  steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
-    if (!err && result) {
-      utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
+  return new Promise((resolve, reject) => {
+    steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
+        if (!err && result) {
+            utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
-      if(config.comment_location && config.comment)
-        setTimeout(function () { sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count); }, 10000);        
-    } else {
-        utils.log(err, result);
+            if(!true)
+            //if(config.comment_location && config.comment)
+                setTimeout(function () { 
+                    sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count)
+                        .then( res => {
+                            resolve(res)
+                        })
+                        .catch(err => {
+                            reject(err);
+                        })
+                }, 10000);
+            else 
+                resolve(result);   
+        } else {
+            utils.log(err, result);
 
-        // Try again one time on error
-        if (retries < 1)
-          sendVote(post, retries + 1);
-        else {
-          var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
-          utils.log(message);
-          //errorEmail(message, config.report_emails);
+            // Try again one time on error
+            if (retries < 1)
+            sendVote(post, retries + 1);
+            else {
+            var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
+            utils.log(message);
+            reject(err);
+            //errorEmail(message, config.report_emails);
+            }
         }
-    }
+    });
   });
 }
 
 function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier, post_step_count) {
   var content = null;
-
+  // Return promise
+  return new Promise((resolve, reject) => {
   content = fs.readFileSync(config.comment_location, "utf8");
 
   // If promotion content is specified in the config then use it to comment on the upvoted post
@@ -348,19 +368,23 @@ function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier,
     // Replace variables in the promotion content
     content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{milestone\}/g, milestone_txt).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 
-    // Broadcast the comment
-    steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, '{"app":"communitybot/' + version + '"}', function (err, result) {
-      if (!err && result) {
-        utils.log('Posted comment: ' + permlink);
-      } else {
-        utils.log('Error posting comment: ' + permlink);
-      }
-    });
-  }
-
+    
+      // Broadcast the comment
+      steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, '{"app":"communitybot/' + version + '"}', function (err, result) {
+          if (!err && result) {
+          utils.log('Posted comment: ' + permlink);
+          resolve(result);
+          } else {
+          utils.log('Error posting comment: ' + permlink);
+          reject(err);
+          }
+      });
+  } else
+    reject('Failed to load content');
+});
   // Check if the bot should resteem this post
-  if (config.resteem)
-    resteem(parentAuthor, parentPermlink);
+  /* if (config.resteem)
+    resteem(parentAuthor, parentPermlink); */
 }
 
 function reportEmail(to) {
