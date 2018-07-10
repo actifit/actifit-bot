@@ -309,8 +309,7 @@ function sendVote(post, retries, power_per_vote) {
         if (!err && result) {
             utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
-            if(!true)
-            //if(config.comment_location && config.comment)
+            if(config.comment_location && config.comment)
                 setTimeout(function () { 
                     sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count)
                         .then( res => {
