@@ -278,7 +278,7 @@ function votingProcess(posts, power_per_vote) {
   .then( res => {
     // If there are more bids, vote on the next one after 10 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 10000);
     } else {
       setTimeout(function () {
         utils.log('=======================================================');
