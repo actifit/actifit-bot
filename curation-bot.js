@@ -261,14 +261,14 @@ function processVotes() {
       } else {
         utils.log('No posts to vote...');
         if(!error_sent) {
-          errorEmail('No posts to vote...', config.report_emails);          
+          //errorEmail('No posts to vote...', config.report_emails);          
           error_sent = true;
         }
       }
       last_voted++;
     } else {
       console.log(err, result);
-      errorEmail(err, config.report_emails);
+      //errorEmail(err, config.report_emails);
     }
   });
 }
