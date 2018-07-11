@@ -88,7 +88,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 10000) {
+    if (vp >= 9800) {
       skip = true;
       processVotes();      
     }
@@ -300,7 +300,7 @@ function votingProcess(posts, power_per_vote) {
 function sendVote(post, retries, power_per_vote) {
   utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
   var vote_weight = Math.ceil(post.rate_multiplier * power_per_vote);
-  if (vote_weight > 9800)
+  if (vote_weight > 10000)
     vote_weight = 10000;
   post.vote_weight = vote_weight;
   last_votes.push(post);
