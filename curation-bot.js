@@ -77,7 +77,7 @@ async function startProcess() {
   var oneMoreDay = new Date(new Date(vote_time).getTime() + (24 * 60 * 60 * 1000));
   var today = new Date();
   //deactivating condition of 24 hrs to pass
-  var passedOneDay = today >= oneMoreDay;
+  var passedOneDay = true;//today >= oneMoreDay;
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
@@ -299,7 +299,7 @@ function votingProcess(posts, power_per_vote) {
 
 function sendVote(post, retries, power_per_vote) {
   utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
-  var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
+  var vote_weight = Math.ceil(post.rate_multiplier * power_per_vote);
   if (vote_weight > 10000)
     vote_weight = 10000;
   post.vote_weight = vote_weight;
