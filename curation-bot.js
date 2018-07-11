@@ -300,7 +300,7 @@ function votingProcess(posts, power_per_vote) {
 function sendVote(post, retries, power_per_vote) {
   utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
   var vote_weight = Math.ceil(post.rate_multiplier * power_per_vote);
-  if (vote_weight > 10000)
+  if (vote_weight > 9800)
     vote_weight = 10000;
   post.vote_weight = vote_weight;
   last_votes.push(post);
