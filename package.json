@@ -1,0 +1,34 @@
+{
+  "name": "actifit-curation-bot",
+  "version": "0.0.1",
+  "description": "actifit curation bot",
+  "main": "curation-bot.js",
+  "dependencies": {
+    "axios": "^0.18.0",
+    "express": "^4.16.2",
+    "lodash": "^4.17.10",
+    "moment": "^2.22.2",
+    "mongodb": "^3.0.10",
+    "nodemailer": "^4.6.5",
+    "nodemailer-express-handlebars": "^3.0.0",
+    "p-iteration": "^1.1.7",
+    "request": "^2.83.0",
+    "steem": "^0.6.7"
+  },
+  "devDependencies": {
+    "nodemon": "^1.17.5"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "curate": "node curation-bot.js",
+    "import": "node save-data.js",
+    "api": "node app.js",
+    "all": "node app.js | node save-data.js | node curation-bot.js",
+    "start": "node app.js | node save-data.js | node curation-bot.js"
+  },
+  "engines": {
+    "node": "10.3.0"
+  },
+  "author": "cryptouru",
+  "license": "MIT"
+}
