@@ -63,4 +63,27 @@ app.get('/transactions/:user?', async function (req, res) {
     res.send(transactions);
 });
 
+app.get('/user-tokens-info', async function(req, res) {
+
+	await db.collection(collection_name).aggregate([
+		{
+			$match: {}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   tokens_distributed: { $sum: "$tokens" },
+			   user_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		var output = 'rewarded users:'+results[0].user_count+',';
+		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
 app.listen(process.env.PORT || 3000);
