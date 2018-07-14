@@ -77,7 +77,7 @@ async function startProcess() {
   var oneMoreDay = new Date(new Date(vote_time).getTime() + (24 * 60 * 60 * 1000));
   var today = new Date();
   //deactivating condition of 24 hrs to pass
-  var passedOneDay = true;//today >= oneMoreDay;
+  var passedOneDay = today >= oneMoreDay;
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
