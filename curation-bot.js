@@ -272,7 +272,7 @@ function processVotes() {
     }
   });
 }
-
+var post_rank = 0;
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
   sendVote(posts.pop(), 2, power_per_vote)
@@ -281,6 +281,7 @@ function votingProcess(posts, power_per_vote) {
     if (posts.length > 0) {
       setTimeout(function () { votingProcess(posts, power_per_vote); }, 10000);
     } else {
+	post_rank = 0;
       setTimeout(function () {
         utils.log('=======================================================');
         utils.log('Voting Complete!');
@@ -299,7 +300,12 @@ function votingProcess(posts, power_per_vote) {
 
 function sendVote(post, retries, power_per_vote) {
   utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
+  var token_count = parseFloat(post.rate_multiplier)*100;
+  
   var vote_weight = Math.ceil(post.rate_multiplier * power_per_vote);
+  post_rank += 1;
+  utils.log('|'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post]('+post.url+')');
+  
   if (vote_weight > 10000)
     vote_weight = 10000;
   post.vote_weight = vote_weight;
