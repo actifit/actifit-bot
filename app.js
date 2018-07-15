@@ -52,6 +52,7 @@ app.get('/', function (req, res) {
 app.get('/user/:user', async function (req, res) {
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
+    res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
 
@@ -60,6 +61,7 @@ app.get('/transactions/:user?', async function (req, res) {
 	if(req.params.user)
 		query = {user: req.params.user}
 	let transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
 });
 
