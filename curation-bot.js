@@ -212,6 +212,11 @@ function processVotes() {
           console.log(err);
           continue;
         }
+		
+		//special one time condition
+		if (post.author == 'alan369' && step_count < 20100){
+			continue;
+		}
         
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);
         if (last_index != -1) {
