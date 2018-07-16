@@ -82,6 +82,7 @@ app.get('/user-tokens-info', async function(req, res) {
 	   ]).toArray(function(err, results) {
 		var output = 'rewarded users:'+results[0].user_count+',';
 		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
