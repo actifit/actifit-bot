@@ -88,7 +88,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 7900) {
+    if (vp >= 10000) {
       skip = true;
       processVotes();      
     }
@@ -307,8 +307,8 @@ function sendVote(post, retries, power_per_vote) {
   post_rank += 1;
   utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
-  if (vote_weight > 2000)
-    vote_weight = 2000;
+  if (vote_weight > 10000)
+    vote_weight = 10000;
   post.vote_weight = vote_weight;
   last_votes.push(post);
 
