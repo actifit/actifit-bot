@@ -96,7 +96,7 @@ async function startProcess() {
 	  
   //time to process votes, wake up the server
 	var http = require("http");
-	http.get("https://actifitbot.herokuapp.com");
+	http.get("http://actifitbot.herokuapp.com");
     
   } else if(skip)
     skip = false;
