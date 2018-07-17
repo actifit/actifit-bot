@@ -307,8 +307,8 @@ function sendVote(post, retries, power_per_vote) {
   post_rank += 1;
   utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
-  if (vote_weight > 10000)
-    vote_weight = 10000;
+  if (vote_weight > 2500)
+    vote_weight = 2500;
   post.vote_weight = vote_weight;
   last_votes.push(post);
 
