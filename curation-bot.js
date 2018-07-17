@@ -92,11 +92,6 @@ async function startProcess() {
       skip = true;
       processVotes();      
     }
-	
-	  
-  //time to process votes, wake up the server
-	var http = require("http");
-	http.get("http://actifitbot.herokuapp.com");
     
   } else if(skip)
     skip = false;
@@ -107,7 +102,10 @@ async function startProcess() {
 
 function processVotes() {
   
-  
+  	  
+  //time to process votes, wake up the server
+	var http = require("http");
+	http.get("http://actifitbot.herokuapp.com");
   
   var query = {tag: config.main_tag, limit: 100};
 
