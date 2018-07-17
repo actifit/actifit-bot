@@ -6,7 +6,7 @@ var config;
 
 steem.api.setOptions({ url: 'https://api.steemit.com' });
 
-var STEEMIT_100_PERCENT = 8600;
+var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
 var HOURS = 60 * 60;
 
