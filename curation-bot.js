@@ -88,7 +88,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 10000) {
+    if (vp >= 8600) {
       skip = true;
       processVotes();      
     }
