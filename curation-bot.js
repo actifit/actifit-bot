@@ -194,6 +194,15 @@ function processVotes() {
           utils.log('Post does not match account beneficiary. ' + post.url);
           continue;
         }
+		
+		//check if user is banned
+		
+		for (var n = 0; n < config.banned_users.length; n++) {
+            if (post.author === config.banned_users[n]){
+				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
+				continue;
+			}
+          }   
         
         try {
           post.json = JSON.parse(post.json_metadata);
