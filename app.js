@@ -92,11 +92,12 @@ app.get('/user-tokens-info', async function(req, res) {
 app.get('/rewarded-activity-count', async function(req, res) {
 
 	await db.collection("posts").aggregate( [
-		{ $count: "rewardCount" }
+		{ $count: "reward_count" }
 	]).toArray(function(err, results) {
 		console.log(results);
+		utils.log(results, 'rewarded-activity-count');
 		res.header('Access-Control-Allow-Origin', '*');	
-		res.send(results[0].rewardCount);
+		res.send(results[0].reward_count);
 	});
 });
 
