@@ -89,4 +89,15 @@ app.get('/user-tokens-info', async function(req, res) {
 
 });
 
+app.get('/rewarded-activity-count', async function(req, res) {
+
+	await db.collection("posts").aggregate( [
+		{ $count: "rewardCount" }
+	]).toArray(function(err, results) {
+		console.log(results);
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results[0].rewardCount);
+	});
+}
+
 app.listen(process.env.PORT || 3000);
