@@ -58,9 +58,14 @@ app.get('/user/:user', async function (req, res) {
 
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
-	if(req.params.user)
+	var transactions;
+	if(req.params.user){
 		query = {user: req.params.user}
-	let transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	}else{
+		//only limit returned transactions in case this is a general query
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+	}
 	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
 });
