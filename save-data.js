@@ -109,10 +109,10 @@ function getPosts(index) {
 		    	let last_post = posts[posts.length - 1];
 		    	await processTransactions(posts);
 		    	console.log('Inserted transactions');
+					postsProcessing = false;
 		    	if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
 		    		return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
 				console.log('No more new posts');
-				postsProcessing = false;
 			  	return;
 		  	})
 			  .catch(function (err) {
@@ -184,7 +184,7 @@ async function processTransactions(posts) {
 		});
 		let reblogs = await steem.api.getRebloggedByAsync(post.author, post.permlink);
 		console.log('------------------ REBLOGS --------------------');
-		console.log(reblogs);
+		// console.log(reblogs);
 		reblogs.forEach(async reblog => {
 			if(reblog != post.author){
 				let reblog_transaction = {
@@ -207,7 +207,7 @@ async function processTransactions(posts) {
 			}				
 		});
 	});
-	console.log(transactions);
+	// console.log(transactions);
 	return bulk.execute();
 }
 
