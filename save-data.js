@@ -30,12 +30,12 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	  
 	  // client.close();
-	  //processVotedPosts();
+	  processVotedPosts();
 	  //getReblogs();
-	  updateUserTokens();
+	  /*updateUserTokens();
 	  getPosts();
 	  setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);
+	  setInterval(updateUserTokens, 450 * 1000);*/
 	} else {
 		utils.log(err, 'import');
 		mail.sendPlainMail('Database Error', err, 'mcfarhat@gmail.com')
@@ -103,18 +103,18 @@ function getPosts(index) {
 	    }
 	    
 	    bulk.execute()
-		    .then(async function (res) {
-		    	var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
-		    	utils.log(mes, 'import');
-		    	let last_post = posts[posts.length - 1];
-		    	await processTransactions(posts);
-		    	console.log('Inserted transactions');
-		    	if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
-		    		return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
-				console.log('No more new posts');
+            .then(async function (res) {
+                var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
+                utils.log(mes, 'import');
+                let last_post = posts[posts.length - 1];
+                await processTransactions(posts);
+                console.log('Inserted transactions');
 				postsProcessing = false;
-			  	return;
-		  	})
+                if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
+                    return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
+                console.log('No more new posts');
+                  return;
+              })
 			  .catch(function (err) {
 			  	utils.log(err, 'import');
 			  	mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
