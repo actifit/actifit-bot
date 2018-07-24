@@ -54,6 +54,10 @@ startProcess();
 // Schedule to run every minute
 setInterval(startProcess, 60 * 1000);
 
+
+var votePosts;
+var lastIterationCount = 0;
+
 async function startProcess() {
   if(!botNames)
     botNames = await utils.loadBots();
@@ -88,9 +92,12 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 10000) {
+    if (vp >= 8500) {
       skip = true;
-      processVotes();      
+	  
+	  var query = {tag: config.main_tag, limit: 100};
+	  votePosts = Array();
+      processVotes(query, false);      
     }
     
   } else if(skip)
@@ -100,36 +107,39 @@ async function startProcess() {
   else console.log('Voting... or waiting for a day to pass');
 }
 
-function processVotes() {
+function processVotes(query, subsequent) {
   
-  	  
-  //time to process votes, wake up the server
-	var http = require("http");
-	http.get("http://actifitbot.herokuapp.com");
-  
-  var query = {tag: config.main_tag, limit: 100};
 
   steem.api.getDiscussionsByCreated(query, function (err, result) {
     if (result && !err) {
       is_voting = true;
-      if(result.length == 0 || !result[0]) {
-          utils.log('No posts found for this tag: ' + config.main_tag);
-          last_voted++;
-          return;
-      }
-      var votePosts = Array();
+      
       utils.log(result.length + ' posts to process...');      
 
       for(var i = 0; i < result.length; i++) {
         var post = result[i];
 
+			//if this is a subsequent call, we need to skip first post
+			if (subsequent && i==0){
+				// console.log('skip post:'+post.title);
+				//continue to next element
+				continue;
+			}
+	
+			//if this is the last post, save it to skip it in next iteration
+			if (i == result.length - 1){
+				utils.log('storing last post iteration: ' + post.url);
+				//update query element to include the most recent post for a starting point of the next iteration
+				query['start_permlink'] = post.permlink;
+				query['start_author'] = post.author;									
+			}
         // Make sure the post is less than 6.5 days
         if((new Date() - new Date(post.created + 'Z')) >= (6.5 * 24 * 60 * 60 * 1000)) {
           utils.log('This post is too old for a vote: ' + post.url);
           continue;
         }
 
-        // Make sure the post is older than 24hs
+        // Make sure the post is older than config time
         if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
           utils.log('This post is too new for a vote: ' + post.url);
           continue;
@@ -204,9 +214,17 @@ function processVotes() {
 			}
           }   
         
+		//special one time conditions
+		if (post.author === 'pelvis'){
+			continue;
+		}
+		
+		if((new Date() - new Date(post.created + 'Z')) >= (3 * 24 * 60 * 60 * 1000)) {
+			continue;
+		}
         try {
           post.json = JSON.parse(post.json_metadata);
-          step_count = post.json.step_count;
+          var step_count = post.json.step_count;
           if (step_count < 5000)
             continue;
           else if (step_count < 6000)
@@ -254,32 +272,47 @@ function processVotes() {
       }
       /*let testPost = {rate_multiplier: 0.8};
       votePosts.push(testPost);*/
-      if (votePosts.length > 0) {
-        utils.log(votePosts.length + ' posts to vote...');
-        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
-        votePosts.sort(function(post1, post2) {
-          // Ascending: first age less than the previous
-          return post1.json.step_count - post2.json.step_count;
-        });
-        //utils.log(vote_data.total_votes + ' total votes to divide.');
-        utils.log(vote_data.power_per_vote + ' power per full vote.');
-        utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
-        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
-        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
-        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
-        utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
-        if(config.testing)
-          return;
-        else
-          votingProcess(votePosts, vote_data.power_per_vote);
+		//if this is the first try, or the new count of posts is bigger than the one before, let's try adding again
+		if (!subsequent || votePosts.length>lastIterationCount){
+		
+			//update last count
+			lastIterationCount = votePosts.length;
+			//call again with subsequent enabled to avoid duplicate posts, disparse the calls by 1 sec to avoid API timeouts
+			console.log("query:"+query['tag']);
+			console.log("query:"+query['start_permlink']);
+			setTimeout(extra_post_looper, 1000, query, true);
+		
+		}else{
 
-      } else {
-        utils.log('No posts to vote...');
-        if(!error_sent) {
-          //errorEmail('No posts to vote...', config.report_emails);          
-          error_sent = true;
-        }
-      }
+
+	      if (votePosts.length > 0) {
+	        utils.log(votePosts.length + ' posts to vote...');
+	        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
+	        votePosts.sort(function(post1, post2) {
+	          // Ascending: first age less than the previous
+	          return post1.json.step_count - post2.json.step_count;
+	        });
+	
+	        //utils.log(vote_data.total_votes + ' total votes to divide.');
+	        utils.log(vote_data.power_per_vote + ' power per full vote.');
+	        utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
+	        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
+	        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
+	        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
+	        utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
+	        if(config.testing)
+	          return;
+	        else
+	          votingProcess(votePosts, vote_data.power_per_vote);
+	
+	      } else {
+	        utils.log('No posts to vote...');
+	        if(!error_sent) {
+	          //errorEmail('No posts to vote...', config.report_emails);          
+	          error_sent = true;
+	        }
+	      }
+		}
       last_voted++;
     } else {
       console.log(err, result);
