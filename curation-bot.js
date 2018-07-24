@@ -280,7 +280,7 @@ function processVotes(query, subsequent) {
 			//call again with subsequent enabled to avoid duplicate posts, disparse the calls by 1 sec to avoid API timeouts
 			console.log("query:"+query['tag']);
 			console.log("query:"+query['start_permlink']);
-			setTimeout(extra_post_looper, 1000, query, true);
+			setTimeout(processVotes, 1000, query, true);
 		
 		}else{
 
