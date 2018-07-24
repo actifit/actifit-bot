@@ -92,7 +92,7 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at 100% voting power - time to vote!
-    if (vp >= 8500) {
+    if (vp >= 10000) {
       skip = true;
 	  
 	  var query = {tag: config.main_tag, limit: 100};
