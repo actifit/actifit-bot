@@ -102,7 +102,7 @@ app.get('/rewarded-activity-count', async function(req, res) {
 		console.log(results);
 		utils.log(results, 'rewarded-activity-count');
 		res.header('Access-Control-Allow-Origin', '*');	
-		res.sendStatus(results[0].reward_count);
+		res.send(results);
 	});
 });
 
