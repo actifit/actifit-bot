@@ -215,13 +215,15 @@ function processVotes(query, subsequent) {
           }   
         
 		//special one time conditions
-		if (post.author === 'pelvis'){
+		/*if (post.author === 'pelvis'){
 			continue;
-		}
+		}*/
 		
+		//skip any posts that are 3 days old
 		if((new Date() - new Date(post.created + 'Z')) >= (3 * 24 * 60 * 60 * 1000)) {
 			continue;
 		}
+		
         try {
           post.json = JSON.parse(post.json_metadata);
           var step_count = post.json.step_count;

@@ -30,12 +30,12 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	  
 	  // client.close();
-	  processVotedPosts();
+	  //processVotedPosts();
 	  //getReblogs();
-	  /*updateUserTokens();
+	  updateUserTokens();
 	  getPosts();
 	  setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);*/
+	  setInterval(updateUserTokens, 450 * 1000);
 	} else {
 		utils.log(err, 'import');
 		mail.sendPlainMail('Database Error', err, 'mcfarhat@gmail.com')
