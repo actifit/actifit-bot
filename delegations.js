@@ -28,7 +28,9 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     // Get the documents collection
     collection = db.collection(collectionName)
     // startProcess()
-    processRewards()
+    // processTokenRewards()
+    processBenefactorRewards('2016-01-01')
+    // getBenefactorRewards('actifit.pay')
   } else {
     utils.log(err, 'delegations')
     mail.sendPlainMail('Database Error', err, config.report_emails)
@@ -78,8 +80,7 @@ async function getDelegations (account, start, end) {
       // Look for delegation operations
       if (op[0] === 'delegate_vesting_shares' && op[1].delegatee === account) {
         // Calculate in steem power
-        const delegatedVests = Number(op[1].vesting_shares.split(' ')[0])
-        const steemPower = totalSteem * (delegatedVests / totalVests)
+        const steemPower = vestsToSteemPower(op[1].vesting_shares)
         let data = op[1]
         data.steem_power = +steemPower.toFixed(3)
         data.tx_number = txs[0]
@@ -124,67 +125,115 @@ async function updateActiveDelegations () {
   return db.collection('active_delegations').insert(activeDelegations)
 }
 
-async function processRewards () {
-  let rewards = []
-  let date = new Date()
-  let note = 'Delegation Reward Until EOD ' + date
-  // Get delegators who did not change their amount on the week
-  let fullWeekers = await db.collection('active_delegations').find(
-    {'tx_date': {$lte: new Date('2018-07-09')}}).toArray()
-  rewards = _.map(fullWeekers, function (o) {
-    return {
-      user: o._id,
-      token_count: +(o.steem_power * 7).toFixed(3),
-      reward_activity: 'Delegation',
-      note: note
-    }
-  })
-
-  // console.log(fullWeekers)
+async function processTokenRewards () {
+  let start = new Date('2018-07-09')
+  let end = new Date('2018-07-16')
+  let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
+  // Get active delegations for the week
+  let activeDelegations = await getActiveDelegations(start)
   // Get transactions of the processed week
   let weekTxs = await db.collection('delegation_transactions').find(
     {'tx_date': {$gt: new Date('2018-07-09'), $lte: new Date('2018-07-16')}}).sort({tx_date: 1}).toArray()
-  
-  // console.log(weekTxs)
-  let groupedTxs = _.groupBy(weekTxs, 'delegator')
-  // console.log(groupedTxs)
+  let allTxs = activeDelegations.concat(weekTxs)
+  let groupedTxs = _.groupBy(allTxs, 'delegator')
   for (let index in groupedTxs) {
-    if (groupedTxs[index].length > 1) {
-      let totalPower = 0
-      let user = index
-      console.log('Multi week txs')
-      for (let i = 0; i < groupedTxs[index].length; i++) {
-        let txs = groupedTxs[index][i]
-        console.log(txs)
-
-        let start = moment(txs.tx_date)
-        let end
-        if (i !== groupedTxs[index].length - 1) end = moment(groupedTxs[index][i + 1].tx_date)
-        else end = moment('2018-07-16')
-        let activeHours = end.diff(start, 'hours')
-        console.log(activeHours)
-
-        let newPower = activeHours * (txs.steem_power / 24)
-        totalPower = totalPower + newPower
-        console.log(totalPower)
-      }
-      totalPower = +totalPower.toFixed(3)
-      rewards.push({user: user, token_count: totalPower, reward_activity: 'Delegation', date: date, note: note})
-    } else {
-      let txs = groupedTxs[index][0]
-      console.log('Just one weekly txs')
-      console.log(txs)
-      let start = moment(txs.tx_date)
-      let end = moment('2018-07-16')
-      let activeHours = end.diff(start, 'hours')
-      console.log(activeHours)
-      let totalPower = activeHours * (txs.steem_power / 24)
-      totalPower = +totalPower.toFixed(3)
-      console.log(totalPower)
-      rewards.push({user: txs.delegator, token_count: totalPower, reward_activity: 'Delegation', date: date, note: note})
+    let totalPower = 0
+    let user = index
+    if (index === 'nataboo') console.log(groupedTxs[index])
+    for (let i = 0; i < groupedTxs[index].length; i++) {
+      let txs = groupedTxs[index][i]
+      let endTxs
+      if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
+      else endTxs = end
+      var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
+      let newPower = activeHours * (txs.steem_power / 24)
+      totalPower = totalPower + newPower
     }
+    totalPower = +totalPower.toFixed(3)
+    let reward = {
+      user: user,
+      token_count: totalPower,
+      reward_activity: 'Delegation',
+      note: note,
+      date: end
+    }
+    upsertRewardTransaction(reward)
   }
-  console.log('--- REWARDS ---')
-  rewards = _.orderBy(rewards, ['user', 'token_count'], ['asc', 'desc'])
+}
+
+function upsertRewardTransaction (reward) {
+  return db.collection('token_transactions').update(
+    { user: reward.user, date: reward.date, reward_activity: reward.reward_activity },
+    reward,
+    { upsert: true }
+  )
+}
+
+async function processBenefactorRewards (start) {
+  // Get active delegations for the week
+  let activeDelegations = await getActiveDelegations(start)
+  let rewards = await getBenefactorRewards(start)
   console.log(rewards)
+}
+
+async function getBenefactorRewards (delDate) {
+  let totalSp = 0
+  let start = moment(delDate).subtract(14, 'days').calendar()
+  let end = moment(delDate).subtract(7, 'days').calendar()
+  // Query account history for delegations
+  properties = await client.database.getDynamicGlobalProperties()
+  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+  const transactions = await client.database.call('get_account_history', [config.account, -1, 3000])
+  transactions.reverse()
+  for (let txs of transactions) {
+    let date = new Date(txs[1].timestamp)
+    if (date >= start && date <= end) {
+      let op = txs[1].op
+      console.log(date)
+      // Look for delegation operations
+      if (op[0] === 'comment_benefactor_reward') {
+        console.log(op)
+        let newSp = vestsToSteemPower(op[1].reward)
+        console.log(newSp)
+        totalSp = totalSp + newSp
+      }
+    } else if (date < start) break
+  }
+  console.log('-- Processed rewards ---')
+  console.log(totalSp.toFixed(3))
+  return totalSp
+}
+
+async function getActiveDelegations (start) {
+  return collection.aggregate(
+    [
+      { $match: { 'tx_date': { '$lte': start } } },
+      { $sort: { delegator: 1, tx_date: 1 } },
+      {
+        $group:
+          {
+            _id: '$delegator',
+            steem_power: { $last: '$steem_power' },
+            vests: { $last: '$vesting_shares' },
+            tx_date: { $last: '$tx_date' }
+          }
+      },
+      { $project:
+        {
+          _id: '$_id',
+          delegator: '$_id',
+          steem_power: 1,
+          tx_date: start
+        }
+      },
+      { $match: { 'steem_power': { '$gt': 0 } } },
+      { $sort: { tx_date: 1 } }
+    ]
+  ).toArray()
+}
+
+function vestsToSteemPower (vests) {
+  vests = Number(vests.split(' ')[0])
+  return (totalSteem * (vests / totalVests))
 }
