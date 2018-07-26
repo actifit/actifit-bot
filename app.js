@@ -106,4 +106,10 @@ app.get('/rewarded-activity-count', async function(req, res) {
 	});
 });
 
+app.get('/charities', async function (req, res) {
+	var charities = await db.collection('available_charities').find({status:"enabled"}, {charity_name: 1}).sort({charity_name: 1}).toArray();
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(charities);
+});
+
 app.listen(process.env.PORT || 3000);
