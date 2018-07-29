@@ -27,9 +27,9 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     db = dbClient.db(dbName)
     // Get the documents collection
     collection = db.collection(collectionName)
-    // startProcess()
+    startProcess()
     // processTokenRewards()
-    processBenefactorRewards('2018-07-23')
+    // processSteemRewards('2018-07-23')
     // getBenefactorRewards('actifit.pay')
   } else {
     utils.log(err, 'delegations')
@@ -45,22 +45,79 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
   }
 })
 
-let delegationTransactions = []
-
 async function startProcess () {
   let end = 0
   // Find last saved delegation transaction
   let lastTx = await collection.find().sort({'tx_date': -1}).limit(1).next()
   console.log(lastTx)
   if (lastTx) end = lastTx.tx_number
-  // Set STEEM global properties
-  properties = await client.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
-  totalVests = Number(properties.total_vesting_shares.split(' ')[0])
-  getDelegations(config.account, -1, end)
+  await updateProperties()
+  processDelegations(config.account, -1, end)
+  processTokenRewards()
 }
 
-async function getDelegations (account, start, end) {
+async function processTokenRewards (start, end) {
+  if (!start) start = moment().utc().startOf('date').subtract(1, 'days').toDate()
+  if (!end) end = moment().utc().startOf('date').toDate()
+  let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
+  // Get active delegations for the week
+  let activeDelegations = await getActiveDelegations(start)
+  // Get transactions of the processed week
+  let weekTxs = await db.collection('delegation_transactions').find(
+    {'tx_date': {$gt: start, $lte: end},
+      'delegator': {$nin: config.exclude_rewards}})
+    .sort({tx_date: 1}).toArray()
+  let allTxs = activeDelegations.concat(weekTxs)
+  let groupedTxs = _.groupBy(allTxs, 'delegator')
+  for (let index in groupedTxs) {
+    let totalPower = 0
+    let user = index
+    for (let i = 0; i < groupedTxs[index].length; i++) {
+      let txs = groupedTxs[index][i]
+      let endTxs
+      // If not last transaction calculate up to next one
+      if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
+      else endTxs = end
+      var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
+      let newPower = activeHours * (txs.steem_power / 24)
+      totalPower = totalPower + newPower
+    }
+    totalPower = +totalPower.toFixed(3)
+    let reward = {
+      user: user,
+      token_count: totalPower,
+      reward_activity: 'Delegation',
+      note: note,
+      date: end
+    }
+    console.log(reward)
+    upsertRewardTransaction(reward)
+  }
+}
+
+async function processSteemRewards (start) {
+  if (!start) start = moment().utc().startOf('date').toDate()
+  // Get active delegations for the week
+  console.log(config.pay_account)
+  const delDate = moment(start).subtract(7, 'days').toDate()
+  Promise.all([getActiveDelegations(delDate), getBenefactorRewards(delDate, start, -1)]).then(values => {
+    const activeDelegations = values[0]
+    const steemRewards = values[1]
+    const totalDelegatedSteem = _.sumBy(activeDelegations, 'steem_power')
+    const rewardPerSteem = steemRewards / totalDelegatedSteem
+    const rewards = _.map(activeDelegations, function (o) {
+      return {
+        delegator: o.delegator,
+        reward: o.steem_power * rewardPerSteem
+      }
+    })
+    console.log(rewards)
+    console.log(steemRewards)
+  })
+}
+
+async function processDelegations (account, start, end) {
+  let delegationTransactions = []
   let lastTrans = start
   let ended = false
   let limit = (start < 0) ? 3000 : Math.min(start, 3000)
@@ -88,113 +145,27 @@ async function getDelegations (account, start, end) {
         delegationTransactions.push(data)
       }
     }
-    if (start !== limit && !ended) getDelegations(account, lastTrans, end)
-    else if (delegationTransactions.length > 0) {
-      // Insert new transactions and update active ones
-      console.log(delegationTransactions)
+    // Insert new transactions and update active ones
+    // console.log(delegationTransactions)
+    if (delegationTransactions.length > 0) {
       await collection.insert(delegationTransactions)
       updateActiveDelegations()
     } else console.log('--- No new delegations ---')
+    // If more pending delegations call process againg with new index
+    if (start !== limit && !ended) processDelegations(account, lastTrans, end)
     // console.log(transactions)
   } catch (err) {
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
-    if (err.type === 'request-timeout' || err.type === 'body-timeout') getDelegations(account, start, end)
+    if (err.type === 'request-timeout' || err.type === 'body-timeout') processDelegations(account, start, end)
   }
 }
 
-async function updateActiveDelegations () {
-  console.log('--- Updating active delegations ---')
-  let query = collection.aggregate(
-    [
-      { $sort: { delegator: 1, tx_date: 1 } },
-      {
-        $group:
-          {
-            _id: '$delegator',
-            steem_power: { $last: '$steem_power' },
-            vests: { $last: '$vesting_shares' },
-            tx_date: { $last: '$tx_date' }
-          }
-      },
-      { $match: { 'steem_power': { '$gt': 0 } } }
-    ]
-  )
-  let activeDelegations = await query.toArray()
-  await db.collection('active_delegations').drop()
-  return db.collection('active_delegations').insert(activeDelegations)
-}
-
-async function processTokenRewards () {
-  let start = new Date('2018-07-09')
-  let end = new Date('2018-07-16')
-  let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
-  // Get active delegations for the week
-  let activeDelegations = await getActiveDelegations(start)
-  // Get transactions of the processed week
-  let weekTxs = await db.collection('delegation_transactions').find(
-    {'tx_date': {$gt: new Date('2018-07-09'), $lte: new Date('2018-07-16')},
-      'delegator': {$nin: config.exclude_rewards}})
-    .sort({tx_date: 1}).toArray()
-  let allTxs = activeDelegations.concat(weekTxs)
-  let groupedTxs = _.groupBy(allTxs, 'delegator')
-  for (let index in groupedTxs) {
-    let totalPower = 0
-    let user = index
-    for (let i = 0; i < groupedTxs[index].length; i++) {
-      let txs = groupedTxs[index][i]
-      let endTxs
-      // If not last transaction calculate up to next one
-      if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
-      else endTxs = end
-      var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
-      let newPower = activeHours * (txs.steem_power / 24)
-      totalPower = totalPower + newPower
-    }
-    totalPower = +totalPower.toFixed(3)
-    let reward = {
-      user: user,
-      token_count: totalPower,
-      reward_activity: 'Delegation',
-      note: note,
-      date: end
-    }
-    upsertRewardTransaction(reward)
-  }
-}
-
-function upsertRewardTransaction (reward) {
-  return db.collection('token_transactions').update(
-    { user: reward.user, date: reward.date, reward_activity: reward.reward_activity },
-    reward,
-    { upsert: true }
-  )
-}
-
-async function processBenefactorRewards (start) {
-  // Get active delegations for the week
-  console.log(config.pay_account)
-  const delDate = moment(start).subtract(7, 'days').toDate()
-  const end = moment(start).add(7, 'days').format()
-  Promise.all([getActiveDelegations(delDate), getBenefactorRewards(delDate, end, -1)]).then(values => {
-    const activeDelegations = values[0]
-    const steemRewards = values[1]
-    const totalDelegatedSteem = _.sumBy(activeDelegations, 'steem_power')
-    const rewardPerSteem = steemRewards / totalDelegatedSteem
-    const rewards = _.map(activeDelegations, function (o) {
-      return {
-        delegator: o.delegator,
-        reward: o.steem_power * rewardPerSteem
-      }
-    })
-    console.log(rewards)
-  })
-}
-
-async function getBenefactorRewards (start, end,txStart, totalSp) {
+async function getBenefactorRewards (start, end, txStart, totalSp) {
   if (!totalSp) totalSp = 0
   let limit = (txStart < 0) ? 10000 : Math.min(txStart, 10000)
   start = moment(start).format()
+  end = moment(end).format()
   console.log(start)
   console.log(end)
   // Query account history for delegations
@@ -217,11 +188,11 @@ async function getBenefactorRewards (start, end,txStart, totalSp) {
   // Check last tx date to see if pagination is needed
   let lastTx = transactions[transactions.length - 1]
   let lastDate = moment(lastTx[1].timestamp).format()
-  console.log(lastDate)
+  // console.log(lastDate)
   if (lastDate >= start) return getBenefactorRewards(start, totalSp, lastTx[0])
 
   console.log('-- Processed rewards ---')
-  console.log(totalSp.toFixed(3))
+  // console.log(totalSp.toFixed(3))
   return +totalSp.toFixed(3)
 }
 
@@ -254,8 +225,45 @@ async function getActiveDelegations (start) {
   ).toArray()
 }
 
+async function updateActiveDelegations () {
+  console.log('--- Updating active delegations ---')
+  let query = collection.aggregate(
+    [
+      { $sort: { delegator: 1, tx_date: 1 } },
+      {
+        $group:
+          {
+            _id: '$delegator',
+            steem_power: { $last: '$steem_power' },
+            vests: { $last: '$vesting_shares' },
+            tx_date: { $last: '$tx_date' }
+          }
+      },
+      { $match: { 'steem_power': { '$gt': 0 } } }
+    ]
+  )
+  let activeDelegations = await query.toArray()
+  await db.collection('active_delegations').drop()
+  return db.collection('active_delegations').insert(activeDelegations)
+}
+
+function upsertRewardTransaction (reward) {
+  return db.collection('token_transactions').update(
+    { user: reward.user, date: reward.date, reward_activity: reward.reward_activity },
+    reward,
+    { upsert: true }
+  )
+}
+
 function vestsToSteemPower (vests) {
   vests = Number(vests.split(' ')[0])
   const steemPower = (totalSteem * (vests / totalVests))
   return steemPower
+}
+
+async function updateProperties () {
+  // Set STEEM global properties
+  properties = await client.database.getDynamicGlobalProperties()
+  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  totalVests = Number(properties.total_vesting_shares.split(' ')[0])
 }
