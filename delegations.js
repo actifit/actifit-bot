@@ -27,9 +27,11 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     db = dbClient.db(dbName)
     // Get the documents collection
     collection = db.collection(collectionName)
-    startProcess()
+    // startProcess()
     // processTokenRewards()
-    // processSteemRewards('2018-07-23')
+    processSteemRewards('2018-07-23')
+    // let rewards = await getAcumulatedRewards('2018-07-09', '2018-07-16')
+    // console.log(rewards)
     // getBenefactorRewards('actifit.pay')
   } else {
     utils.log(err, 'delegations')
@@ -70,7 +72,7 @@ async function processTokenRewards (start, end) {
   let allTxs = activeDelegations.concat(weekTxs)
   let groupedTxs = _.groupBy(allTxs, 'delegator')
   for (let index in groupedTxs) {
-    let totalPower = 0
+    let totalReward = 0
     let user = index
     for (let i = 0; i < groupedTxs[index].length; i++) {
       let txs = groupedTxs[index][i]
@@ -79,13 +81,13 @@ async function processTokenRewards (start, end) {
       if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
       else endTxs = end
       var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
-      let newPower = activeHours * (txs.steem_power / 24)
-      totalPower = totalPower + newPower
+      let newReward = activeHours * (txs.steem_power / 24)
+      totalReward = totalReward + newReward
     }
-    totalPower = +totalPower.toFixed(3)
+    totalReward = +totalReward.toFixed(3)
     let reward = {
       user: user,
-      token_count: totalPower,
+      token_count: totalReward,
       reward_activity: 'Delegation',
       note: note,
       date: end
@@ -99,20 +101,33 @@ async function processSteemRewards (start) {
   if (!start) start = moment().utc().startOf('date').toDate()
   // Get active delegations for the week
   console.log(config.pay_account)
-  const delDate = moment(start).subtract(7, 'days').toDate()
-  Promise.all([getActiveDelegations(delDate), getBenefactorRewards(delDate, start, -1)]).then(values => {
-    const activeDelegations = values[0]
+  const to = moment(start).subtract(7, 'days').toDate()
+  const from = moment(to).subtract(7, 'days').toDate()
+  Promise.all([getAcumulatedRewards(from, to), getBenefactorRewards(to, start, -1)]).then(values => {
+    const activeDelegations = values[0].users
     const steemRewards = values[1]
-    const totalDelegatedSteem = _.sumBy(activeDelegations, 'steem_power')
+    const totalDelegatedSteem = values[0].totalSteem
     const rewardPerSteem = steemRewards / totalDelegatedSteem
     const rewards = _.map(activeDelegations, function (o) {
-      return {
-        delegator: o.delegator,
-        reward: o.steem_power * rewardPerSteem
+      let reward = {
+        user: o.user,
+        steem: +(o.totalSteem * rewardPerSteem).toFixed(3)
       }
+      let url = 'https://v2.steemconnect.com/sign/transfer?from=[PAY_ACCOUNT]&to=[TO_ACCOUNT]&amount=[AMOUNT]%20STEEM&memo=Delegation%20Rewards'
+      url = url.replace('[PAY_ACCOUNT]', config.pay_account)
+      url = url.replace('[TO_ACCOUNT]', reward.user)
+      url = url.replace('[AMOUNT]', reward.steem)
+      reward.url = url
+      return reward
     })
     console.log(rewards)
     console.log(steemRewards)
+    const data = {
+      rewards: rewards,
+      total: steemRewards,
+      totalUsers: rewards.length
+    }
+    mail.sendWithTemplate('Rewards mail', data, 'cryptouru@gmail.com', 'rewards')
   })
 }
 
@@ -223,6 +238,45 @@ async function getActiveDelegations (start) {
       { $sort: { tx_date: 1 } }
     ]
   ).toArray()
+}
+
+async function getAcumulatedRewards (from, to) {
+  let result = {
+    users: []
+  }
+  let totalSteem = 0
+  from = moment(from).toDate()
+  to = moment(to).toDate()
+  // Get active delegations for the week
+  let activeDelegations = await getActiveDelegations(from)
+  // Get transactions of the processed week
+  let weekTxs = await db.collection('delegation_transactions').find(
+    {'tx_date': {$gt: from, $lte: to},
+      'delegator': {$nin: config.exclude_rewards}})
+    .sort({tx_date: 1}).toArray()
+  let allTxs = activeDelegations.concat(weekTxs)
+  let groupedTxs = _.groupBy(allTxs, 'delegator')
+  for (let index in groupedTxs) {
+    let totalReward = 0
+    for (let i = 0; i < groupedTxs[index].length; i++) {
+      let txs = groupedTxs[index][i]
+      let endTxs
+      // If not last transaction calculate up to next one
+      if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
+      else endTxs = to
+      var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
+      let newReward = activeHours * (txs.steem_power / 24)
+      totalReward = totalReward + newReward
+    }
+    totalSteem = totalSteem + totalReward
+    let user = {
+      user: index,
+      totalSteem: totalReward
+    }
+    result.users.push(user)
+  }
+  result.totalSteem = totalSteem
+  return result
 }
 
 async function updateActiveDelegations () {
