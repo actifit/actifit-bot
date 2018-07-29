@@ -45,7 +45,7 @@ function sendPlainMail(subject, message, to) {
 	
 }
 
-function sendWithTemplate(subject, data, to, template) {
+function sendWithTemplate(subject, data, to, template, attachment) {
 
 	if(Array.isArray(to))
 		to = to.join(',');
@@ -68,6 +68,9 @@ function sendWithTemplate(subject, data, to, template) {
 	mailOptions.to = to;
 	mailOptions.template = template;
 	mailOptions.context = data;
+	if (attachment) {
+		mailOptions.attachments = [attachment]
+	}
 
 	// send mail with defined transport object
 	return new Promise((resolve, reject) => {
