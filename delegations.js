@@ -27,9 +27,9 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     db = dbClient.db(dbName)
     // Get the documents collection
     collection = db.collection(collectionName)
-    // startProcess()
+    startProcess()
     // processTokenRewards()
-    processSteemRewards('2018-07-23')
+    // processSteemRewards('2018-07-23')
     // let rewards = await getAcumulatedRewards('2018-07-09', '2018-07-16')
     // console.log(rewards)
     // getBenefactorRewards('actifit.pay')
@@ -55,9 +55,10 @@ async function startProcess () {
   if (lastTx) end = lastTx.tx_number
   await updateProperties()
   processDelegations(config.account, -1, end)
-  let start = moment('2018-07-16').utc().toDate()
-  let txEnd = moment('2018-07-23').utc().toDate()
+  let start = moment().utc().startOf('date').subtract(7, 'days').toDate()
+  let txEnd = moment().utc().startOf('date').toDate()
   processTokenRewards(start, txEnd)
+  processSteemRewards(txEnd)
 }
 
 async function processTokenRewards (start, end) {
