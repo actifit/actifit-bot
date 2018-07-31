@@ -153,17 +153,20 @@ async function processTransactions(posts) {
 		//by default the reward owner is the author
 		var reward_user = post.author;
 		var activity_type = 'Post';
+		var note = '';
 		//if we find this is a charity run, let's switch it to the actual charity name
 		if (typeof post.json_metadata.charity != 'undefined' && post.json_metadata.charity != '' && post.json_metadata.charity != 'undefined'){
 			reward_user = post.json_metadata.charity;
 			activity_type = 'Charity Post';
+			note = 'Charity donation via activity by user '+post.author;
 		}		
 		let post_transaction = {
 			user: reward_user,
 			reward_activity: activity_type,
 			token_count: post.token_rewards,
 			url: post.url,
-			date: post.created
+			date: post.created,
+			note: note
 		}
 		 bulk.find(
 			{ 
