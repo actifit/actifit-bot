@@ -199,11 +199,11 @@ function format(n, c, d, t) {
       continue;
     }
     //check if account was voted
-    /*let voted = _.findIndex(post.active_votes, ['voter', config.account]);
+    let voted = _.findIndex(post.active_votes, ['voter', config.account]);
     if (voted == -1) {
       console.log('Post was not voted. ' + post.url);
       continue;
-    }*/
+    }
     // Check if account is beneficiary 
     var benefit = checkBeneficiary(post);
     
