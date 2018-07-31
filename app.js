@@ -51,6 +51,8 @@ app.get('/', function (req, res) {
 
 app.get('/user/:user', async function (req, res) {
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
+	//fixing token amount display
+	user.tokens = user.tokens.toFixed(3)
 	console.log(user);
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
