@@ -211,11 +211,11 @@ function format(n, c, d, t) {
       continue;
 	  
 	  for (var n = 0; n < config.banned_users.length; n++) {
-			if (post.author === config.banned_users[n]){
-				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
-				continue;
-			}
-		  }   
+		if (post.author === config.banned_users[n]){
+			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
+			continue;
+		}
+	  }   
 
     results.push(post);
   }
