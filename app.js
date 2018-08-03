@@ -53,7 +53,7 @@ app.get('/user/:user', async function (req, res) {
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
 	//fixing token amount display
-	if (typeof user.tokens!= "undefined"){
+	if (typeof user!= "undefined" && typeof user.tokens!= "undefined"){
 		user.tokens = user.tokens.toFixed(3)
 	}
     res.header('Access-Control-Allow-Origin', '*');	
