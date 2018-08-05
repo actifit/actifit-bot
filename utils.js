@@ -210,6 +210,13 @@ function format(n, c, d, t) {
     if(!benefit)
       continue;
 
+	  for (var n = 0; n < config.banned_users.length; n++) {
+		if (post.author === config.banned_users[n]){
+			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
+			continue;
+		}
+	  }   
+
     results.push(post);
   }
   return results;
