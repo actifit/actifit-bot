@@ -2,6 +2,7 @@ const dsteem = require('dsteem')
 const client = new dsteem.Client('https://api.steemit.com')
 const _ = require('lodash')
 const moment = require('moment')
+var schedule = require('node-schedule')
 const utils = require('./utils')
 const mail = require('./mail')
 
@@ -27,7 +28,9 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     db = dbClient.db(dbName)
     // Get the documents collection
     collection = db.collection(collectionName)
-    startProcess()
+    //startProcess()
+    // schedule to run every monday at 00:00
+    let jobd = schedule.scheduleJob('0 0 * * 1', startProcess)
     // processTokenRewards()
     // processSteemRewards('2018-07-23')
     // let rewards = await getAcumulatedRewards('2018-07-09', '2018-07-16')
@@ -51,10 +54,9 @@ async function startProcess () {
   let end = 0
   // Find last saved delegation transaction
   let lastTx = await collection.find().sort({'tx_date': -1}).limit(1).next()
-  console.log(lastTx)
   if (lastTx) end = lastTx.tx_number
   await updateProperties()
-  processDelegations(config.account, -1, end)
+  await processDelegations(config.account, -1, end)
   let start = moment().utc().startOf('date').subtract(7, 'days').toDate()
   let txEnd = moment().utc().startOf('date').toDate()
   processTokenRewards(start, txEnd)
@@ -62,15 +64,19 @@ async function startProcess () {
 }
 
 async function processTokenRewards (start, end) {
-  if (!start) start = moment().utc().startOf('date').subtract(1, 'days').toDate()
+  if (!start) start = moment().utc().startOf('date').subtract(7, 'days').toDate()
   if (!end) end = moment().utc().startOf('date').toDate()
-  let note = 'Delegation Reward Until EOD ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
+  let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
   let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
+  let multiplier = 1
   console.log(acumulatedSteemPower)
+  if (acumulatedSteemPower > config.weekly_rewards_limit) {
+    multiplier = acumulatedSteemPower / config.weekly_rewards_limit
+  }
   for (let user of acumulatedSteemPower.users) {
     let reward = {
       user: user.user,
-      token_count: user.totalSteem,
+      token_count: +(user.totalSteem * multiplier).toFixed(3),
       reward_activity: 'Delegation',
       note: note,
       date: end
@@ -152,14 +158,18 @@ async function processDelegations (account, start, end) {
     if (delegationTransactions.length > 0) {
       await collection.insert(delegationTransactions)
       updateActiveDelegations()
-    } else console.log('--- No new delegations ---')
+    } else {
+      console.log('--- No new delegations ---')
+      return
+    }
     // If more pending delegations call process againg with new index
-    if (start !== limit && !ended) processDelegations(account, lastTrans, end)
+    if (start !== limit && !ended) return processDelegations(account, lastTrans, end)
     // console.log(transactions)
+    return
   } catch (err) {
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
-    if (err.type === 'request-timeout' || err.type === 'body-timeout') processDelegations(account, start, end)
+    if (err.type === 'request-timeout' || err.type === 'body-timeout') return processDelegations(account, start, end)
   }
 }
 
