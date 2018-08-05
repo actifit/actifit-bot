@@ -16,6 +16,7 @@
   "resteem": false,
   "no_paid_bots": true,
   "exclude_rewards": ["mcfarhat"],
+  "weekly_rewards_limit": 700000,
   "beneficiaries": ["actifit", "actifit.pay"],
   "flag_signal_accounts": ["spaminator", "cheetah", "steemcleaners", "mack-bot"],
   "mongo_uri": "mongodb://localhost:27017",
