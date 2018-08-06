@@ -38,7 +38,7 @@ MongoClient.connect(url, function(err, client) {
 	  setInterval(updateUserTokens, 450 * 1000);
 	} else {
 		utils.log(err, 'import');
-		/*mail.sendPlainMail('Database Error', err, '')
+		//mail.sendPlainMail('Database Error', err, '')
       .then(function(res, err) {
   			if (!err) {
   				console.log(res);
@@ -46,7 +46,7 @@ MongoClient.connect(url, function(err, client) {
   				utils.log(err, 'import');
   			}
   		});
-		process.exit();*/
+		process.exit();
 	}
   
 });
