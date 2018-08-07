@@ -19,7 +19,7 @@ var skip = false;
 var version = '0.0.1';
 var error_sent = false;
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });
+steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
 
 utils.log("* START - Version: " + version + " *");
 
@@ -377,7 +377,7 @@ function sendVote(post, retries, power_per_vote) {
         } else {
             utils.log(err, result);
 
-            // Try again one time on error
+             // Try again one time on error
             if (retries < 1)
             sendVote(post, retries + 1);
             else {
