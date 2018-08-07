@@ -19,7 +19,7 @@ var skip = false;
 var version = '0.0.1';
 var error_sent = false;
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });
+steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
 
 utils.log("* START - Version: " + version + " *");
 
@@ -80,7 +80,8 @@ async function startProcess() {
 
   var oneMoreDay = new Date(new Date(vote_time).getTime() + (24 * 60 * 60 * 1000));
   var today = new Date();
-  var passedOneDay = today >= oneMoreDay;
+  //deactivating condition of 24 hrs to pass
+  var passedOneDay = true;//today >= oneMoreDay;
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
@@ -90,8 +91,8 @@ async function startProcess() {
       utils.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
-    // We are at 100% voting power - time to vote!
-    if (vp >= 10000) {
+    // We are at voting power kick start - time to vote!
+    if (vp >= config.vp_kickstart) {
       skip = true;
 	  
 	  var query = {tag: config.main_tag, limit: 100};
@@ -203,7 +204,7 @@ function processVotes(query, subsequent) {
           utils.log('Post does not match account beneficiary. ' + post.url);
           continue;
         }
-        
+		
 		//check if user is banned
 		
 		for (var n = 0; n < config.banned_users.length; n++) {
@@ -241,7 +242,7 @@ function processVotes(query, subsequent) {
           console.log(err);
           continue;
         }
-        
+		
 		
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);
         if (last_index != -1) {
@@ -282,45 +283,45 @@ function processVotes(query, subsequent) {
 		}else{
 
 
-      if (votePosts.length > 0) {
-        utils.log(votePosts.length + ' posts to vote...');
-        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
-        votePosts.sort(function(post1, post2) {
-          // Ascending: first age less than the previous
+	      if (votePosts.length > 0) {
+	        utils.log(votePosts.length + ' posts to vote...');
+	        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
+	        votePosts.sort(function(post1, post2) {
+	          // Ascending: first age less than the previous
 	          return post1.json.step_count - post2.json.step_count;
-        });
+	        });
 	
-        //utils.log(vote_data.total_votes + ' total votes to divide.');
-        utils.log(vote_data.power_per_vote + ' power per full vote.');
-        utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
-        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
-        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
+	        //utils.log(vote_data.total_votes + ' total votes to divide.');
+	        utils.log(vote_data.power_per_vote + ' power per full vote.');
+	        utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
+	        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
+	        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
 	        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
-        utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
-        if(config.testing)
-          return;
-        else
-          votingProcess(votePosts, vote_data.power_per_vote);
-
-      } else {
-        utils.log('No posts to vote...');
-        if(!error_sent) {
-          errorEmail('No posts to vote...', config.report_emails);          
-          error_sent = true;
-        }
-      }
+	        utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
+	        if(config.testing)
+	          return;
+	        else
+	          votingProcess(votePosts, vote_data.power_per_vote);
+	
+	      } else {
+	        utils.log('No posts to vote...');
+	        if(!error_sent) {
+	          //errorEmail('No posts to vote...', config.report_emails);          
+	          error_sent = true;
+	        }
+	      }
 		}
       last_voted++;
     } else {
       console.log(err, result);
-      errorEmail(err, config.report_emails);
+      //errorEmail(err, config.report_emails);
     }
   });
 }
 var post_rank = 0;
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
-  sendVote(posts.pop(), 2, power_per_vote)
+  sendVote(posts.pop(), 20, power_per_vote)
   .then( res => {
     // If there are more bids, vote on the next one after 10 seconds
     if (posts.length > 0) {
@@ -351,8 +352,9 @@ function sendVote(post, retries, power_per_vote) {
   post_rank += 1;
   utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
-  if (vote_weight > 10000)
-    vote_weight = 10000;
+  if (vote_weight > config.max_vote_per_post){
+		vote_weight = config.max_vote_per_post;
+	}
   post.vote_weight = vote_weight;
   last_votes.push(post);
 
@@ -376,11 +378,11 @@ function sendVote(post, retries, power_per_vote) {
         } else {
             utils.log(err, result);
 
-            // Try again one time on error
+             // Try again one time on error
             if (retries < 1)
             sendVote(post, retries + 1);
             else {
-            var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
+            var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
             utils.log(message);
             reject(err);
             //errorEmail(message, config.report_emails);
