@@ -91,8 +91,8 @@ async function startProcess() {
       utils.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
     console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
-    // We are at 100% voting power - time to vote!
-    if (vp >= 8800) {
+    // We are at voting power kick start - time to vote!
+    if (vp >= config.vp_kickstart) {
       skip = true;
 	  
 	  var query = {tag: config.main_tag, limit: 100};
@@ -352,8 +352,9 @@ function sendVote(post, retries, power_per_vote) {
   post_rank += 1;
   utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
-  if (vote_weight > 770)
-    vote_weight = 770;
+  if (vote_weight > config.max_vote_per_post){
+		vote_weight = config.max_vote_per_post;
+	}
   post.vote_weight = vote_weight;
   last_votes.push(post);
 
