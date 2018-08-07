@@ -9,6 +9,8 @@
   "active_key": "your_private_active_key",
   "auto_claim_rewards" : false,
   "vote_weight": 100000,
+  "vp_kickstart": 10000,
+  "max_vote_per_post": 3000,  
   "min_hours": 24,
   "comment_location": "comment.md",
   "comment": false,
