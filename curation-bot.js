@@ -321,7 +321,7 @@ function processVotes(query, subsequent) {
 var post_rank = 0;
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
-  sendVote(posts.pop(), 2, power_per_vote)
+  sendVote(posts.pop(), 20, power_per_vote)
   .then( res => {
     // If there are more bids, vote on the next one after 10 seconds
     if (posts.length > 0) {
@@ -381,7 +381,7 @@ function sendVote(post, retries, power_per_vote) {
             if (retries < 1)
             sendVote(post, retries + 1);
             else {
-            var message = '============= Vote transaction failed two times for: ' + post.url + ' ==============='
+            var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
             utils.log(message);
             reject(err);
             //errorEmail(message, config.report_emails);
