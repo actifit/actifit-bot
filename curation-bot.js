@@ -19,7 +19,7 @@ var skip = false;
 var version = '0.0.1';
 var error_sent = false;
 
-steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });//https://gtg.steem.house:8090
+steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
 
 utils.log("* START - Version: " + version + " *");
 
