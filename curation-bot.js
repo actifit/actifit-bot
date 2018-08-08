@@ -286,10 +286,10 @@ function processVotes(query, subsequent) {
 	      if (votePosts.length > 0) {
 	        utils.log(votePosts.length + ' posts to vote...');
 	        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
-	        /*votePosts.sort(function(post1, post2) {
+	        votePosts.sort(function(post1, post2) {
 	          // Ascending: first age less than the previous
 	          return post1.json.step_count - post2.json.step_count;
-	        });*/
+	        });
 	
 	        //utils.log(vote_data.total_votes + ' total votes to divide.');
 	        utils.log(vote_data.power_per_vote + ' power per full vote.');
