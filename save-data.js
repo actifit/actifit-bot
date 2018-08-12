@@ -18,51 +18,68 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'posts';
 
-// Use connect method to connect to the server
-MongoClient.connect(url, function(err, client) {
-	if(!err) {
-		assert.equal(null, err);
-	  console.log("Connected successfully to server");
 
-	  db = client.db(db_name);
+updateUserTokens();
+getPosts();
+//run every 5*60 mins
+setInterval(getPosts, 300 * 1000);
+//run every 8*60 mins
+setInterval(updateUserTokens, 480 * 1000);
 
-	  // Get the documents collection
-	  collection = db.collection(collection_name);
+// client.close();
+//processVotedPosts();
+//getReblogs();
+
+//mongodb connector function
+async function connectMongoDB(){
+	//connect again to mongodb
+	// Use connect method to connect to the server
+	await MongoClient.connect(url, function(err, client) {
+		if(!err) {
+			assert.equal(null, err);
+		  console.log("Connected successfully to server");
+
+		  db = client.db(db_name);
+
+		  // Get the documents collection
+		  collection = db.collection(collection_name);
+
+
+		} else {
+			utils.log(err, 'import');
+			/*mail.sendPlainMail('Database Error', err, '')
+		  .then(function(res, err) {
+				if (!err) {
+					console.log(res);
+				} else {
+					utils.log(err, 'import');
+				}
+			});
+			process.exit();*/
+		}
 	  
-	  // client.close();
-	  //processVotedPosts();
-	  //getReblogs();
-	  updateUserTokens();
-	  getPosts();
-	  setInterval(getPosts, 300 * 1000);
-	  setInterval(updateUserTokens, 450 * 1000);
-	} else {
-		utils.log(err, 'import');
-		/*mail.sendPlainMail('Database Error', err, '')
-      .then(function(res, err) {
-  			if (!err) {
-  				console.log(res);
-  			} else {
-  				utils.log(err, 'import');
-  			}
-  		});
-		process.exit();*/
-	}
-  
-});
+	});
+	
+}
 
-function getPosts(index) {
+async function getPosts(index) {
   if(postsProcessing)
 	return;
-  postsProcessing = true;
+	postsProcessing = true;
+	
+	if (db == null || !db.serverConfig.isConnected()){
+		console.log('getPosts get first connection');
+		await connectMongoDB();
+	}
+	
 	console.log('---- Getting Posts ----');
-  var query = {tag: config.main_tag, limit: 100};
-  if (index) {
-  	console.log('--> More posts <--');
-  	query.start_author = index.start_author;
-  	query.start_permlink = index.start_permlink;
-  }
-  steem.api.getDiscussionsByCreated(query, function (err, result) {
+	var query = {tag: config.main_tag, limit: 100};
+	if (index) {
+		console.log('--> More posts <--');
+		query.start_author = index.start_author;
+		query.start_permlink = index.start_permlink;
+	}
+	steem.api.getDiscussionsByCreated(query, function (err, result) {
   	if (result && !err) {
       if(result.length == 0 || !result[0]) {
           utils.log('No posts found for this tag: ' + config.main_tag, 'import');
@@ -225,6 +242,12 @@ async function processTransactions(posts) {
 
 async function updateUserTokens() {
 	console.log('---- Updating Users ----');
+	
+	if (db == null || !db.serverConfig.isConnected()){
+		console.log('getPosts get first connection');
+		await connectMongoDB();
+	}
+	
 	let query = await db.collection('token_transactions').aggregate([
 		{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
 		{ $sort: { tokens: -1 } },
@@ -238,9 +261,12 @@ async function updateUserTokens() {
 	try{
 		let user_tokens = await query.toArray();
 		await db.collection('user_tokens').remove({});
-		return await db.collection('user_tokens').insert(user_tokens);
+		await db.collection('user_tokens').insert(user_tokens);
+		
 	}catch(err){
 		console.log('>>save data error:'+err.message);
+	}finally {
+		db.close();
 	}
 }
 
