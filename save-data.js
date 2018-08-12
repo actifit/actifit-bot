@@ -135,7 +135,7 @@ async function getPosts(index) {
               })
 			  .catch(function (err) {
 			  	utils.log(err, 'import');
-			  	mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
+			  	/*mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
 			      .then(function(res, err) {
 			  			if (!err) {
 			  				console.log(res);
@@ -144,11 +144,11 @@ async function getPosts(index) {
 			  				console.log(err);
 			  				return;
 			  			}
-			  		});
+			  		});*/
 			  })
     } else {
       utils.log(err, 'import');
-      mail.sendPlainMail('0 posts...', err, config.report_emails)
+      /*mail.sendPlainMail('0 posts...', err, config.report_emails)
       .then(function(res, err) {
   			if (!err) {
   				console.log(res);
@@ -157,7 +157,7 @@ async function getPosts(index) {
   				console.log(err);
   				return;
   			}
-  		});
+  		});*/
     }
   });
 }
@@ -354,7 +354,7 @@ async function upsertPosts(posts) {
 		})
 		.catch(function (err) {
 			utils.log(err, 'import');
-			mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
+			/*mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
 				.then(function(res, err) {
 					if (!err) {
 						console.log(res);
@@ -363,6 +363,6 @@ async function upsertPosts(posts) {
 						console.log(err);
 						return;
 					}
-				});
+				});*/
 		})
 }
