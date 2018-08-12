@@ -265,8 +265,6 @@ async function updateUserTokens() {
 		
 	}catch(err){
 		console.log('>>save data error:'+err.message);
-	}finally {
-		db.close();
 	}
 }
 
