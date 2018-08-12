@@ -67,7 +67,7 @@ async function getPosts(index) {
 	return;
 	postsProcessing = true;
 	
-	if (db == null || !db.serverConfig.isConnected()){
+	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
 		console.log('getPosts get first connection');
 		await connectMongoDB();
 	}
@@ -243,7 +243,7 @@ async function processTransactions(posts) {
 async function updateUserTokens() {
 	console.log('---- Updating Users ----');
 	
-	if (typeof db == 'undefined' null || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
+	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
 		console.log('getPosts get first connection');
 		await connectMongoDB();
 	}
