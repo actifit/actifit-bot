@@ -63,8 +63,11 @@ async function connectMongoDB(){
 }
 
 async function getPosts(index) {
-  if(postsProcessing)
-	return;
+
+	console.log('>>>>>>>> attempt getPosts <<<<<<<<<<<');
+	if(postsProcessing){
+		return;
+	}
 	postsProcessing = true;
 	
 	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
@@ -80,86 +83,89 @@ async function getPosts(index) {
 		query.start_permlink = index.start_permlink;
 	}
 	steem.api.getDiscussionsByCreated(query, function (err, result) {
-  	if (result && !err) {
-      if(result.length == 0 || !result[0]) {
-          utils.log('No posts found for this tag: ' + config.main_tag, 'import');
-          return;
-      }
-	    console.log('Post count: ' + result.length);
-      let posts = utils.filterPosts(result, config.account, config.main_tag);
-      console.log('Filtered count: ' + posts.length);
-      // Upsert posts      
-			var bulk = collection.initializeUnorderedBulkOp();
-	    for(var i = 0; i < posts.length; i++) {
-	    	let post = posts[i]
-	    	try {
-          post.json_metadata = JSON.parse(post.json_metadata);
-          let step_count = post.json_metadata.step_count;
-          if (step_count < 5000)
-            continue;
-          else if (step_count < 6000)
-            post.token_rewards = 20;
-          else if(step_count < 7000)
-            post.token_rewards = 35;
-          else if(step_count < 8000)
-            post.token_rewards = 50;
-          else if(step_count < 9000)
-            post.token_rewards = 65;
-          else if(step_count < 10000)
-            post.token_rewards = 80;
-          else
-            post.token_rewards = 100;
-        } catch (err) {
-          utils.log('Error parsing json metadata');
-          console.log(err);
-          continue;
-        }
-	      bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
-				   post
-				);
-	    }
-	    
-	    bulk.execute()
-            .then(async function (res) {
-                var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
-                utils.log(mes, 'import');
-                let last_post = posts[posts.length - 1];
-                await processTransactions(posts);
-                console.log('Inserted transactions');
-				//appending fix for potential caught loop
-				postsProcessing = false;
-                if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
-                    return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
-                console.log('No more new posts');
-                  return;
-              })
-			  .catch(function (err) {
-			  	utils.log(err, 'import');
-			  	/*mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
-			      .then(function(res, err) {
-			  			if (!err) {
-			  				console.log(res);
-			  				return;
-			  			} else {
-			  				console.log(err);
-			  				return;
-			  			}
-			  		});*/
-			  })
-    } else {
-      utils.log(err, 'import');
-      /*mail.sendPlainMail('0 posts...', err, config.report_emails)
-      .then(function(res, err) {
-  			if (!err) {
-  				console.log(res);
-  				return;
-  			} else {
-  				console.log(err);
-  				return;
-  			}
-  		});*/
-    }
-  });
+		if (result && !err) {
+		  if(result.length == 0 || !result[0]) {
+			  utils.log('No posts found for this tag: ' + config.main_tag, 'import');
+			  return;
+		  }
+			console.log('Post count: ' + result.length);
+		  let posts = utils.filterPosts(result, config.account, config.main_tag);
+		  console.log('Filtered count: ' + posts.length);
+		  // Upsert posts      
+				var bulk = collection.initializeUnorderedBulkOp();
+			for(var i = 0; i < posts.length; i++) {
+				let post = posts[i]
+				try {
+			  post.json_metadata = JSON.parse(post.json_metadata);
+			  let step_count = post.json_metadata.step_count;
+			  if (step_count < 5000)
+				continue;
+			  else if (step_count < 6000)
+				post.token_rewards = 20;
+			  else if(step_count < 7000)
+				post.token_rewards = 35;
+			  else if(step_count < 8000)
+				post.token_rewards = 50;
+			  else if(step_count < 9000)
+				post.token_rewards = 65;
+			  else if(step_count < 10000)
+				post.token_rewards = 80;
+			  else
+				post.token_rewards = 100;
+			} catch (err) {
+			  utils.log('Error parsing json metadata');
+			  console.log(err);
+			  continue;
+			}
+			  bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
+					   post
+					);
+			}
+			
+			bulk.execute()
+				.then(async function (res) {
+					var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
+					utils.log(mes, 'import');
+					let last_post = posts[posts.length - 1];
+					await processTransactions(posts);
+					console.log('Inserted transactions');
+					//appending fix for potential caught loop
+					postsProcessing = false;
+					if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
+						return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
+					console.log('No more new posts');
+					  return;
+				  })
+				  .catch(function (err) {
+					utils.log(err, 'import');
+					/*mail.sendPlainMail('Error en mongo upsert', err, config.report_emails)
+					  .then(function(res, err) {
+							if (!err) {
+								console.log(res);
+								return;
+							} else {
+								console.log(err);
+								return;
+							}
+						});*/
+				  }).finally(function() {
+					   //making sure we don't get caught up in infinite loop after some error
+					   postsProcessing = false;
+				  });
+		} else {
+		  utils.log(err, 'import');
+		  /*mail.sendPlainMail('0 posts...', err, config.report_emails)
+		  .then(function(res, err) {
+				if (!err) {
+					console.log(res);
+					return;
+				} else {
+					console.log(err);
+					return;
+				}
+			});*/
+		}
+	});
 }
 
 async function processTransactions(posts) {
