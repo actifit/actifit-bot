@@ -253,18 +253,18 @@ async function updateUserTokens() {
 		console.log('getPosts get first connection');
 		await connectMongoDB();
 	}
-	
-	let query = await db.collection('token_transactions').aggregate([
-		{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
-		{ $sort: { tokens: -1 } },
-		{ $project: { 
-			 _id: "$_id",
-			 user: "$_id",
-			 tokens: "$tokens",
-			 }
-		 }
-	  	])
 	try{
+		let query = await db.collection('token_transactions').aggregate([
+			{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
+			{ $sort: { tokens: -1 } },
+			{ $project: { 
+				 _id: "$_id",
+				 user: "$_id",
+				 tokens: "$tokens",
+				 }
+			 }
+			])
+	
 		let user_tokens = await query.toArray();
 		await db.collection('user_tokens').remove({});
 		await db.collection('user_tokens').insert(user_tokens);
