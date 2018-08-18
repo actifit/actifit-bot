@@ -38,7 +38,7 @@ MongoClient.connect(url, function(err, client) {
 	  setInterval(updateUserTokens, 450 * 1000);
 	} else {
 		utils.log(err, 'import');
-		mail.sendPlainMail('Database Error', err, 'cryptouru@gmail.com')
+		//mail.sendPlainMail('Database Error', err, '')
       .then(function(res, err) {
   			if (!err) {
   				console.log(res);
@@ -109,7 +109,8 @@ function getPosts(index) {
 		    	let last_post = posts[posts.length - 1];
 		    	await processTransactions(posts);
 		    	console.log('Inserted transactions');
-					postsProcessing = false;
+				//appending fix for potential caught loop
+				postsProcessing = false;
 		    	if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
 		    		return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
 				console.log('No more new posts');
@@ -150,12 +151,23 @@ async function processTransactions(posts) {
 	let collection = db.collection('token_transactions');
 	var bulk = collection.initializeUnorderedBulkOp();
 	await forEach(posts, async (post) => {
+		//by default the reward owner is the author
+		var reward_user = post.author;
+		var activity_type = 'Post';
+		var note = '';
+		//if we find this is a charity run, let's switch it to the actual charity name
+		if (typeof post.json_metadata.charity != 'undefined' && post.json_metadata.charity != '' && post.json_metadata.charity != 'undefined'){
+			reward_user = post.json_metadata.charity;
+			activity_type = 'Charity Post';
+			note = 'Charity donation via activity by user '+post.author;
+		}		
 		let post_transaction = {
-			user: post.author,
-			reward_activity: 'Post',
+			user: reward_user,
+			reward_activity: activity_type,
 			token_count: post.token_rewards,
 			url: post.url,
-			date: post.created
+			date: post.created,
+			note: note
 		}
 		 bulk.find(
 			{ 
@@ -223,10 +235,13 @@ async function updateUserTokens() {
 			 }
 		 }
 	  	])
-	let user_tokens = await query.toArray();
-	await db.collection('user_tokens').remove({});
-	return await db.collection('user_tokens').insert(user_tokens);
-
+	try{
+		let user_tokens = await query.toArray();
+		await db.collection('user_tokens').remove({});
+		return await db.collection('user_tokens').insert(user_tokens);
+	}catch(err){
+		console.log('>>save data error:'+err.message);
+	}
 }
 
 async function processVotedPosts() {
