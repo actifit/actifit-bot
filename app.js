@@ -49,18 +49,79 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+/* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
+	//fixing token amount display for 3 digits
+	if (typeof user!= "undefined" && user!=null){
+		if (typeof user.tokens!= "undefined"){
+			user.tokens = user.tokens.toFixed(3)
+		}
+	}
+    res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
 
+
+/* end point for user transactions display (per user or general actifit token transactions, limited by 250 */
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
-	if(req.params.user)
+	var transactions;
+	if(req.params.user){
 		query = {user: req.params.user}
-	let transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	}else{
+		//only limit returned transactions in case this is a general query
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+	}
+	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
+});
+
+/* end point for returning number of awarded users and tokens distributed */
+app.get('/user-tokens-info', async function(req, res) {
+
+	await db.collection(collection_name).aggregate([
+		{
+			$match: {}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   tokens_distributed: { $sum: "$tokens" },
+			   user_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		var output = 'rewarded users:'+results[0].user_count+',';
+		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+/* end point for returning count of posts/activities rewarded */
+app.get('/rewarded-activity-count', async function(req, res) {
+
+	await db.collection("posts").aggregate( [
+		{ $count: "reward_count" }
+	]).toArray(function(err, results) {
+		console.log(results);
+		utils.log(results, 'rewarded-activity-count');
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+	});
+});
+
+/* end point for returning charity data supported by actifit */
+app.get('/charities', async function (req, res) {
+	var charities = await db.collection('available_charities').find({status:"enabled"}, {charity_name: 1}).sort({charity_name: 1}).toArray();
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(charities);
 });
 
 app.listen(process.env.PORT || 3000);

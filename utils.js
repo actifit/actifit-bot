@@ -170,9 +170,12 @@ function format(n, c, d, t) {
   return botNames;
  }
 
+ // the weight param is actually 100*1,000 at max to consume 20% VP
+ // with 100 being the max 100% per single vote, and 1,000 being the max potentially used votes
+ // so if we were to only consume 10 % of our VP, the weight would be set at 50,000 instead of default value of 100,000
  function calculateVotes(posts, weight) {
   if(typeof weight == 'undefined') {
-    weight = 10000;
+    weight = 100000;
   }
   var data = {};
   var x = 0;
@@ -209,6 +212,13 @@ function format(n, c, d, t) {
     
     if(!benefit)
       continue;
+	  
+	  for (var n = 0; n < config.banned_users.length; n++) {
+		if (post.author === config.banned_users[n]){
+			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
+			continue;
+		}
+	  }   
 
     results.push(post);
   }
