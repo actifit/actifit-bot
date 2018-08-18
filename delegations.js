@@ -23,7 +23,7 @@ console.log('--- Reward script initialized ---');
 
 var schedule = require('node-schedule')
 //console.log('pre-schedule');
-var j = schedule.scheduleJob({hour: 08, minute: 22}, function(){
+var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   console.log('--- Start delegators reward ---');
   runRewards();
 });
