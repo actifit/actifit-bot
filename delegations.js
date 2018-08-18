@@ -28,6 +28,8 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   runRewards();
 });
 
+//runRewards();
+
 function runRewards(){
 	// Use connect method to connect to the server
 	MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
@@ -82,9 +84,9 @@ async function processTokenRewards (start, end, days) {
   let note = 'Delegation Reward For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
   let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
   let multiplier = 1
-  console.log(acumulatedSteemPower)
-  if (acumulatedSteemPower > config.weekly_rewards_limit) {
-    multiplier = config.weekly_rewards_limit / acumulatedSteemPower;
+  console.log("acumulatedSteemPower:"+acumulatedSteemPower.totalSteem);
+  if (acumulatedSteemPower.totalSteem > config.weekly_rewards_limit) {
+    multiplier = config.weekly_rewards_limit / acumulatedSteemPower.totalSteem;
     console.log(">>>>went beyond rewards limit. Apply multiplier");
   }
   console.log(">>multiplier:"+multiplier);
