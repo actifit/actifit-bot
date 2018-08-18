@@ -196,7 +196,7 @@ async function processTransactions(posts) {
 		});
 		let reblogs = await steem.api.getRebloggedByAsync(post.author, post.permlink);
 		console.log('------------------ REBLOGS --------------------');
-		console.log(reblogs);
+		// console.log(reblogs);
 		reblogs.forEach(async reblog => {
 			if(reblog != post.author){
 				let reblog_transaction = {
@@ -219,7 +219,7 @@ async function processTransactions(posts) {
 			}				
 		});
 	});
-	console.log(transactions);
+	// console.log(transactions);
 	return bulk.execute();
 }
 
