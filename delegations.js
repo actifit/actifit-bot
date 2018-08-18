@@ -43,6 +43,7 @@ function runRewards(){
 		//run for one day
 		var days = 1;
 		startProcess(days);
+		
 
 	  } else {
 		utils.log(err, 'delegations')
@@ -69,38 +70,46 @@ async function startProcess (days) {
 	await processDelegations(config.account, -1, end)
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
-	processTokenRewards(start, txEnd, days)
+	await processTokenRewards(start, txEnd, days)
 	var d = new Date();
 	var dayId = d.getDay();
-	//check if today is Monday, to calculate steem rewards
+	// Check if today is Monday, to calculate steem rewards
 	if (dayId == 1){
 		processSteemRewards(txEnd)
 	}
 }
 
 async function processTokenRewards (start, end, days) {
-  if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
-  if (!end) end = moment().utc().startOf('date').toDate()
-  let note = 'Delegation Reward For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
-  let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
-  let multiplier = 1
-  console.log("acumulatedSteemPower:"+acumulatedSteemPower.totalSteem);
-  if (acumulatedSteemPower.totalSteem > config.weekly_rewards_limit) {
-    multiplier = config.weekly_rewards_limit / acumulatedSteemPower.totalSteem;
-    console.log(">>>>went beyond rewards limit. Apply multiplier");
-  }
-  console.log(">>multiplier:"+multiplier);
-  for (let user of acumulatedSteemPower.users) {
-    let reward = {
-      user: user.user,
-      token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
-      reward_activity: 'Delegation',
-      note: note,
-      date: end
-    }
-    console.log(reward)
-    upsertRewardTransaction(reward)
-  }
+	if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
+	if (!end) end = moment().utc().startOf('date').toDate()
+	let note = 'Delegation Reward For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
+
+	let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
+	
+	//handles maintaining max CAP for payments
+	let multiplier = 1
+
+	let currentSteemPower = await getCurrentTotalSP(end);
+	console.log("currentSteemPower:"+currentSteemPower);
+		
+	//check if max CAP is reached, and apply multplier accordingly
+	if (currentSteemPower > config.weekly_rewards_limit) {
+		multiplier = config.weekly_rewards_limit / currentSteemPower;
+		console.log(">>>>went beyond rewards limit. Apply multiplier");
+	}
+	console.log(">>>>multiplier:"+multiplier);
+	//go through all delegators, and send out AFIT rewards
+	for (let user of acumulatedSteemPower.users) {
+		let reward = {
+			user: user.user,
+			token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
+			reward_activity: 'Delegation',
+			note: note,
+			date: end
+		}
+		console.log(reward)
+		upsertRewardTransaction(reward)
+	}
 }
 
 async function processSteemRewards (start) {
@@ -184,7 +193,7 @@ async function processDelegations (account, start, end) {
     // console.log(delegationTransactions)
     if (delegationTransactions.length > 0) {
       await collection.insert(delegationTransactions)
-      updateActiveDelegations()
+      await updateActiveDelegations()
     } else {
       console.log('--- No new delegations ---')
 		return;
@@ -266,6 +275,40 @@ async function getActiveDelegations (start) {
       { $sort: { tx_date: 1 } }
     ]
   ).toArray()
+}
+
+/* 
+ * function handles grabbing the total current SP value before a specific date 
+ * params: toDate - date before which all current SP is calculated
+ * returns: total value of current SP count up to passed date
+ */
+async function getCurrentTotalSP(toDate){
+	toDate = moment(toDate).toDate()
+	
+	var actDelgCol = 'active_delegations';
+	//perform an aggregation based on max date, exluded delegators, and return back sum of SP and delegator count (we only need for now totalSP)
+	var results = await db.collection(actDelgCol).aggregate([
+		{
+			$match: 
+			{
+				'tx_date': {$lt: toDate},
+				'delegator': {$nin: config.exclude_rewards}
+			}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   totalSP: { $sum: "$steem_power" },
+			   totalDelegators: { $sum: 1 }
+			}
+		}
+		]).toArray();
+	//function(err, results) {
+			//var output = 'tokens distributed:'+results[0].totalSP;
+	console.log(results);
+	return results[0].totalSP;
+		//});	
 }
 
 async function getAcumulatedSteemPower (from, to) {
