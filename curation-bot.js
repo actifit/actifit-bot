@@ -206,14 +206,15 @@ function processVotes(query, subsequent) {
         }
 		
 		//check if user is banned
-		
+		var user_banned = false;
 		for (var n = 0; n < config.banned_users.length; n++) {
-            if (post.author === config.banned_users[n]){
+            if (post.author == config.banned_users[n]){
 				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
-				continue;
+				user_banned = true;
+				break;
 			}
           }   
-        
+        if (user_banned) continue;
 		
 		//skip any posts that are more than 1.5 days old
 		if((new Date() - new Date(post.created + 'Z')) >= (1.5 * 24 * 60 * 60 * 1000)) {
