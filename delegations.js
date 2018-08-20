@@ -31,74 +31,85 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 runRewards();
 
 function runRewards(){
-// Use connect method to connect to the server
-MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
-  if (!err) {
-    console.log('Connected successfully to server: ' + config.mongo_uri)
+	// Use connect method to connect to the server
+	MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ' + config.mongo_uri)
 
-    db = dbClient.db(dbName)
-    // Get the documents collection
-    collection = db.collection(collectionName)
+		db = dbClient.db(dbName)
+		// Get the documents collection
+		collection = db.collection(collectionName)
 		
 		//run for one day
 		var days = 1;
 		startProcess(days);
 		
-  } else {
-    utils.log(err, 'delegations')
-    mail.sendPlainMail('Database Error', err, config.report_emails)
-      .then(function (res, err) {
-        if (!err) {
-          console.log(res)
-        } else {
-          utils.log(err, 'import')
-        }
-      })
-    process.exit()
-  }
-})
+
+	  } else {
+		utils.log(err, 'delegations')
+		mail.sendPlainMail('Database Error', err, config.report_emails)
+		  .then(function (res, err) {
+			if (!err) {
+			  console.log(res)
+			} else {
+			  utils.log(err, 'import')
+			}
+		  })
+		process.exit()
+	  }
+	})
 }
 
 async function startProcess (days) {
-  let end = 0
-  // Find last saved delegation transaction
+	let end = 0
+	// Find last saved delegation transaction
 	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
 	console.log(lastTx)
-  if (lastTx) end = lastTx.tx_number
-  await updateProperties()
-  await processDelegations(config.account, -1, end)
+	if (lastTx) end = lastTx.tx_number
+	await updateProperties()
+	await processDelegations(config.account, -1, end)
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
-  let txEnd = moment().utc().startOf('date').toDate()
+	let txEnd = moment().utc().startOf('date').toDate()
 	//await processTokenRewards(start, txEnd, days)
 	var d = new Date();
 	var dayId = d.getDay();
 	// Check if today is Monday, to calculate steem rewards
 	if (dayId == 1){
-  processSteemRewards(txEnd)
-}
+		processSteemRewards(txEnd)
+	}
 }
 
 async function processTokenRewards (start, end, days) {
-  if (!start) start = moment().utc().startOf('date').subtract(7, 'days').toDate()
-  if (!end) end = moment().utc().startOf('date').toDate()
-  let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
-  let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
-  let multiplier = 1
-  console.log(acumulatedSteemPower)
-  if (acumulatedSteemPower > config.weekly_rewards_limit) {
-    multiplier = acumulatedSteemPower / config.weekly_rewards_limit
-  }
-  for (let user of acumulatedSteemPower.users) {
-    let reward = {
-      user: user.user,
-      token_count: +(user.totalSteem * multiplier).toFixed(3),
-      reward_activity: 'Delegation',
-      note: note,
-      date: end
-    }
-    console.log(reward)
-    upsertRewardTransaction(reward)
-  }
+	if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
+	if (!end) end = moment().utc().startOf('date').toDate()
+	let note = 'Delegation Reward For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
+
+	let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
+	
+	//handles maintaining max CAP for payments
+	let multiplier = 1
+
+	let currentSteemPower = await getCurrentTotalSP(end);
+	console.log("currentSteemPower:"+currentSteemPower);
+		
+	//check if max CAP is reached, and apply multplier accordingly
+	if (currentSteemPower > config.weekly_rewards_limit) {
+		multiplier = config.weekly_rewards_limit / currentSteemPower;
+		console.log(">>>>went beyond rewards limit. Apply multiplier");
+	}
+	console.log(">>>>multiplier:"+multiplier);
+	//go through all delegators, and send out AFIT rewards
+	for (let user of acumulatedSteemPower.users) {
+		let reward = {
+			user: user.user,
+			token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
+			reward_activity: 'Delegation',
+			note: note,
+			date: end
+		}
+		console.log(reward)
+		upsertRewardTransaction(reward)
+	}
 }
 
 async function processSteemRewards (start) {
@@ -117,25 +128,35 @@ async function processSteemRewards (start) {
         user: o.user,
         steem: +(o.totalSteem * rewardPerSteem).toFixed(3)
       }
-      let url = 'https://v2.steemconnect.com/sign/transfer?from=[PAY_ACCOUNT]&to=[TO_ACCOUNT]&amount=[AMOUNT]%20STEEM&memo=Delegation%20Rewards'
+      /*let url = 'https://v2.steemconnect.com/sign/transfer?from=[PAY_ACCOUNT]&to=[TO_ACCOUNT]&amount=[AMOUNT]%20STEEM&memo=Delegation%20Rewards'
       url = url.replace('[PAY_ACCOUNT]', config.pay_account)
       url = url.replace('[TO_ACCOUNT]', reward.user)
       url = url.replace('[AMOUNT]', reward.steem)
-      reward.url = url
+      reward.url = url*/
       return reward
     })
     console.log(rewards)
-    console.log(steemRewards)
+    console.log("steem total beneficiary reward:"+steemRewards)
     const data = {
       rewards: rewards,
       total: steemRewards,
       totalUsers: rewards.length
     }
+	
+	var fs = require('fs');
+	fs.writeFile("steemrewards.json", JSON.stringify(rewards), function(err) {
+		if(err) {
+			return console.log(err);
+		}
+
+		console.log("The file was saved!");
+	}); 
+	/*
     const attachment = {
       filename: 'rewards.json',
       content: JSON.stringify(rewards)
     }
-    mail.sendWithTemplate('Rewards mail', data, config.report_emails, 'rewards', attachment)
+    mail.sendWithTemplate('Rewards mail', data, config.report_emails, 'rewards', attachment)*/
   })
 }
 
@@ -172,19 +193,23 @@ async function processDelegations (account, start, end) {
     // console.log(delegationTransactions)
     if (delegationTransactions.length > 0) {
       await collection.insert(delegationTransactions)
-      updateActiveDelegations()
+      await updateActiveDelegations()
     } else {
       console.log('--- No new delegations ---')
-      return
+		return;
     }
     // If more pending delegations call process againg with new index
-    if (start !== limit && !ended) return processDelegations(account, lastTrans, end)
+    if (start !== limit && !ended){ 
+		return processDelegations(account, lastTrans, end)
+	}
     // console.log(transactions)
-    return
+	return;
   } catch (err) {
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
-    if (err.type === 'request-timeout' || err.type === 'body-timeout') return processDelegations(account, start, end)
+    if (err.type === 'request-timeout' || err.type === 'body-timeout'){ 
+		return processDelegations(account, start, end);
+	}
   }
 }
 
@@ -252,6 +277,40 @@ async function getActiveDelegations (start) {
   ).toArray()
 }
 
+/* 
+ * function handles grabbing the total current SP value before a specific date 
+ * params: toDate - date before which all current SP is calculated
+ * returns: total value of current SP count up to passed date
+ */
+async function getCurrentTotalSP(toDate){
+	toDate = moment(toDate).toDate()
+	
+	var actDelgCol = 'active_delegations';
+	//perform an aggregation based on max date, exluded delegators, and return back sum of SP and delegator count (we only need for now totalSP)
+	var results = await db.collection(actDelgCol).aggregate([
+		{
+			$match: 
+			{
+				'tx_date': {$lt: toDate},
+				'delegator': {$nin: config.exclude_rewards}
+			}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   totalSP: { $sum: "$steem_power" },
+			   totalDelegators: { $sum: 1 }
+			}
+		}
+		]).toArray();
+	//function(err, results) {
+			//var output = 'tokens distributed:'+results[0].totalSP;
+	console.log(results);
+	return results[0].totalSP;
+		//});	
+}
+
 async function getAcumulatedSteemPower (from, to) {
   let result = {
     users: []
@@ -310,7 +369,9 @@ async function updateActiveDelegations () {
   )
   let activeDelegations = await query.toArray()
   await db.collection('active_delegations').drop()
-  return db.collection('active_delegations').insert(activeDelegations)
+  await db.collection('active_delegations').insert(activeDelegations)
+  console.log('done updating delegations');
+  return ;
 }
 
 function upsertRewardTransaction (reward) {
