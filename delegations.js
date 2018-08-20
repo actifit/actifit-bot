@@ -2,7 +2,6 @@ const dsteem = require('dsteem')
 const client = new dsteem.Client('https://api.steemit.com')
 const _ = require('lodash')
 const moment = require('moment')
-var schedule = require('node-schedule')
 const utils = require('./utils')
 const mail = require('./mail')
 
@@ -20,6 +19,18 @@ let properties
 let totalVests
 let totalSteem
 
+console.log('--- Reward script initialized ---');
+
+var schedule = require('node-schedule')
+//console.log('pre-schedule');
+var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
+  console.log('--- Start delegators reward ---');
+  runRewards();
+});
+
+runRewards();
+
+function runRewards(){
 // Use connect method to connect to the server
 MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
   if (!err) {
@@ -28,14 +39,11 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     db = dbClient.db(dbName)
     // Get the documents collection
     collection = db.collection(collectionName)
-    //startProcess()
-    // schedule to run every monday at 00:00
-    let jobd = schedule.scheduleJob('0 0 * * 1', startProcess)
-    // processTokenRewards()
-    // processSteemRewards('2018-07-23')
-    // let rewards = await getAcumulatedRewards('2018-07-09', '2018-07-16')
-    // console.log(rewards)
-    // getBenefactorRewards('actifit.pay')
+		
+		//run for one day
+		var days = 1;
+		startProcess(days);
+		
   } else {
     utils.log(err, 'delegations')
     mail.sendPlainMail('Database Error', err, config.report_emails)
@@ -49,21 +57,28 @@ MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
     process.exit()
   }
 })
+}
 
-async function startProcess () {
+async function startProcess (days) {
   let end = 0
   // Find last saved delegation transaction
-  let lastTx = await collection.find().sort({'tx_date': -1}).limit(1).next()
+	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
+	console.log(lastTx)
   if (lastTx) end = lastTx.tx_number
   await updateProperties()
   await processDelegations(config.account, -1, end)
-  let start = moment().utc().startOf('date').subtract(7, 'days').toDate()
+	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
   let txEnd = moment().utc().startOf('date').toDate()
-  processTokenRewards(start, txEnd)
+	//await processTokenRewards(start, txEnd, days)
+	var d = new Date();
+	var dayId = d.getDay();
+	// Check if today is Monday, to calculate steem rewards
+	if (dayId == 1){
   processSteemRewards(txEnd)
 }
+}
 
-async function processTokenRewards (start, end) {
+async function processTokenRewards (start, end, days) {
   if (!start) start = moment().utc().startOf('date').subtract(7, 'days').toDate()
   if (!end) end = moment().utc().startOf('date').toDate()
   let note = 'Delegation Reward Until EOD ' + moment(end).format('MMMM Do YYYY')
