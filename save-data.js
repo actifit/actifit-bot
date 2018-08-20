@@ -127,8 +127,11 @@ function getPosts(index) {
 			  				console.log(err);
 			  				return;
 			  			}
+						});*/
+				  }).finally(function() {
+					   //making sure we don't get caught up in infinite loop after some error
+					   postsProcessing = false;
 			  		});
-			  })
     } else {
       utils.log(err, 'import');
       mail.sendPlainMail('0 posts...', err, config.report_emails)
