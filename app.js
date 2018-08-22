@@ -124,4 +124,17 @@ app.get('/charities', async function (req, res) {
     res.send(charities);
 });
 
+/* end point for returning daily total delegation payments data supported by actifit */
+app.get('/topdelegators', async function (req, res) {
+	
+	var delegatorList; 
+	if (isNaN(req.params.count)){
+		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).toArray();
+	}else{
+		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(req.params.count).toArray();
+	}
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(delegatorList);
+});
+
 app.listen(process.env.PORT || 3000);

@@ -217,7 +217,7 @@ function processVotes(query, subsequent) {
         if (user_banned) continue;
 		
 		//skip any posts that are more than 1.5 days old
-		if((new Date() - new Date(post.created + 'Z')) >= (3.5 * 24 * 60 * 60 * 1000)) {
+		if((new Date() - new Date(post.created + 'Z')) >= (1.5 * 24 * 60 * 60 * 1000)) {
 			continue;
 		}
 		
