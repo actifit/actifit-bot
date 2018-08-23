@@ -19,6 +19,8 @@ var skip = false;
 var version = '0.0.1';
 var error_sent = false;
 
+var crypto = require('crypto');
+
 steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
 
 utils.log("* START - Version: " + version + " *");
@@ -187,7 +189,7 @@ function processVotes(query, subsequent) {
             continue;
           }
         }
-
+		
         // Check if account is beneficiary 
         var benefit = 0;
         for (var x = 0; x < post.beneficiaries.length; x++) {
@@ -243,6 +245,26 @@ function processVotes(query, subsequent) {
           console.log(err);
           continue;
         }
+		
+		
+		//check if the post has an encryption key val, and ensure it is the proper one
+		if (post.json.actiCrVal){
+			var txt_to_encr = post.author + post.permlink + step_count ;
+			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+			encr_txt += cipher.final('hex');
+			//test the result to the post's relevant data
+			if (post.json.actiCrVal != encr_txt){
+				//wrong, skip post
+				console.log('post has incorrect actiCrVal');
+				continue;
+			}
+			console.log('post is valid');
+		}else{
+			console.log('post does not contain actiCrVal');
+			continue;
+		}
+
 		
 		
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);

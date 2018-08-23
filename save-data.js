@@ -117,6 +117,26 @@ async function getPosts(index) {
 			  console.log(err);
 			  continue;
 			}
+			
+			//check if the post has an encryption key val, and ensure it is the proper one
+			if (post.json_metadata.actiCrVal){
+				var txt_to_encr = post.author + post.permlink + step_count ;
+				var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+				let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+				encr_txt += cipher.final('hex');
+				//test the result to the post's relevant data
+				if (post.json_metadata.actiCrVal != encr_txt){
+					//wrong, skip post
+					console.log('post has incorrect actiCrVal');
+					continue;
+				}
+				console.log('post is valid');
+			}else{
+				console.log('post does not contain actiCrVal');
+				continue;
+			}
+			
+			
 			  bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 					   post
 					);
