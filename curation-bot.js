@@ -259,7 +259,7 @@ function processVotes(query, subsequent) {
 				console.log('post has incorrect actiCrVal');
 				continue;
 			}
-			console.log('post is valid');
+			//console.log('post is valid');
 		}else{
 			console.log('post does not contain actiCrVal');
 			continue;
