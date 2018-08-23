@@ -126,7 +126,6 @@ app.get('/charities', async function (req, res) {
 
 /* end point for returning daily total delegation payments data supported by actifit */
 app.get('/topdelegators', async function (req, res) {
-	
 	var delegatorList; 
 	if (isNaN(req.params.count)){
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).toArray();
@@ -135,6 +134,24 @@ app.get('/topdelegators', async function (req, res) {
 	}
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(delegatorList);
+});
+
+app.get('/reblogCount', async function (req, res) {
+
+ let query = await db.collection('token_transactions').find({
+				"reward_activity": "Post Reblog",
+				"date":  /^2018-08-05/
+		})
+		try{
+			console.log('counting');
+			let user_tokens = await query.count();
+			console.log(user_tokens);
+			// await db.collection('user_tokens').remove({});
+			// return await db.collection('user_tokens').insert(user_tokens);
+		}catch(err){
+			console.log(err.message);
+		}
+	  
 });
 
 app.listen(process.env.PORT || 3000);
