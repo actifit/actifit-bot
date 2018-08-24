@@ -222,10 +222,10 @@ function processVotes(query, subsequent) {
 		if((new Date() - new Date(post.created + 'Z')) >= (1.5 * 24 * 60 * 60 * 1000)) {
 			continue;
 		}
-		
+		var step_count = -1;
         try {
           post.json = JSON.parse(post.json_metadata);
-          var step_count = post.json.step_count;
+          step_count = post.json.step_count;
           if (step_count < 5000)
             continue;
           else if (step_count < 6000)

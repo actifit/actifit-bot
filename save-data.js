@@ -93,11 +93,12 @@ async function getPosts(index) {
 		  console.log('Filtered count: ' + posts.length);
 		  // Upsert posts      
 				var bulk = collection.initializeUnorderedBulkOp();
+			var step_count = -1;
 			for(var i = 0; i < posts.length; i++) {
 				let post = posts[i]
 				try {
 			  post.json_metadata = JSON.parse(post.json_metadata);
-			  let step_count = post.json_metadata.step_count;
+			  step_count = post.json_metadata.step_count;
 			  if (step_count < 5000)
 				continue;
 			  else if (step_count < 6000)
@@ -343,9 +344,10 @@ async function upsertPosts(posts) {
 	var bulk = collection.initializeUnorderedBulkOp();
 	for(var i = 0; i < posts.length; i++) {
 		let post = posts[i]
+		var step_count = -1;
 		try {
 			post.json_metadata = JSON.parse(post.json_metadata);
-			let step_count = post.json_metadata.step_count;
+			step_count = post.json_metadata.step_count;
 			if (step_count < 5000)
 				continue;
 			else if (step_count < 6000)
@@ -365,6 +367,25 @@ async function upsertPosts(posts) {
 			console.log(err);
 			continue;
 		}
+		
+		//check if the post has an encryption key val, and ensure it is the proper one
+		if (post.json_metadata.actiCrVal){
+			var txt_to_encr = post.author + post.permlink + step_count ;
+			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+			encr_txt += cipher.final('hex');
+			//test the result to the post's relevant data
+			if (post.json_metadata.actiCrVal != encr_txt){
+				//wrong, skip post
+				console.log('post has incorrect actiCrVal');
+				continue;
+			}
+			console.log('post is valid');
+		}else{
+			console.log('post does not contain actiCrVal');
+			continue;
+		}
+		
 		bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 			 post
 		);
