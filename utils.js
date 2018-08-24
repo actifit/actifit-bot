@@ -227,7 +227,7 @@ function format(n, c, d, t) {
 	if (user_banned) continue;
 	
 	//go back only to 3.5 days in history
-	if((new Date() - new Date(post.created + 'Z')) >= (3.5 * 24 * 60 * 60 * 1000)) {
+	if((new Date() - new Date(post.created + 'Z')) >= (6.5 * 24 * 60 * 60 * 1000)) {
 			dateSurpassed += 1;
 			continue;
 		}
