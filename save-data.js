@@ -9,6 +9,8 @@ const assert = require('assert');
 
 var config = utils.getConfig();
 
+//var crypto = require('crypto');
+
 // Connection URL
 const url = config.mongo_uri;
 var postsProcessing = false;
@@ -20,9 +22,9 @@ const collection_name = 'posts';
 
 
 updateUserTokens();
-getPosts();
+runPostsProcess();
 //run every 5*60 mins
-setInterval(getPosts, 300 * 1000);
+setInterval(runPostsProcess, 300 * 1000);
 //run every 8*60 mins
 setInterval(updateUserTokens, 480 * 1000);
 
@@ -62,13 +64,18 @@ async function connectMongoDB(){
 	
 }
 
-async function getPosts(index) {
-
-	console.log('>>>>>>>> attempt getPosts <<<<<<<<<<<');
+function runPostsProcess(){
 	if(postsProcessing){
 		return;
 	}
 	postsProcessing = true;
+	getPosts();
+}
+
+async function getPosts(index) {
+
+	console.log('>>>>>>>> attempt getPosts <<<<<<<<<<<');
+	
 	
 	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
 		console.log('getPosts get first connection');
@@ -86,72 +93,89 @@ async function getPosts(index) {
 		if (result && !err) {
 		  if(result.length == 0 || !result[0]) {
 			  utils.log('No posts found for this tag: ' + config.main_tag, 'import');
+			  postsProcessing = false;
 			  return;
 		  }
 			console.log('Post count: ' + result.length);
 		  let posts = utils.filterPosts(result, config.account, config.main_tag);
+		  
+		  //if the result was not an array, bail out
+		  if (posts == -1){
+			console.log('done looking for posts');
+			
+			postsProcessing = false;
+			return;
+		  }
+		  
 		  console.log('Filtered count: ' + posts.length);
 		  // Upsert posts      
 				var bulk = collection.initializeUnorderedBulkOp();
+				console.log('check post');
 			var step_count = -1;
 			for(var i = 0; i < posts.length; i++) {
-				let post = posts[i]
-				try {
-			  post.json_metadata = JSON.parse(post.json_metadata);
-			  step_count = post.json_metadata.step_count;
-			  if (step_count < 5000)
-				continue;
-			  else if (step_count < 6000)
-				post.token_rewards = 20;
-			  else if(step_count < 7000)
-				post.token_rewards = 35;
-			  else if(step_count < 8000)
-				post.token_rewards = 50;
-			  else if(step_count < 9000)
-				post.token_rewards = 65;
-			  else if(step_count < 10000)
-				post.token_rewards = 80;
-			  else
-				post.token_rewards = 100;
-			} catch (err) {
-			  utils.log('Error parsing json metadata');
-			  console.log(err);
-			  continue;
+						let post = posts[i]
+						try {
+					  post.json_metadata = JSON.parse(post.json_metadata);
+					  step_count = post.json_metadata.step_count;
+					  if (step_count < 5000)
+						continue;
+					  else if (step_count < 6000)
+						post.token_rewards = 20;
+					  else if(step_count < 7000)
+						post.token_rewards = 35;
+					  else if(step_count < 8000)
+						post.token_rewards = 50;
+					  else if(step_count < 9000)
+						post.token_rewards = 65;
+					  else if(step_count < 10000)
+						post.token_rewards = 80;
+					  else
+						post.token_rewards = 100;
+					} catch (err) {
+					  utils.log('Error parsing json metadata');
+					  console.log(err);
+					  continue;
+					}
+					
+					//check if the post has an encryption key val, and ensure it is the proper one
+					/*if (post.json_metadata.actiCrVal){
+						var txt_to_encr = post.author + post.permlink + step_count ;
+						var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+						let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+						encr_txt += cipher.final('hex');
+						//test the result to the post's relevant data
+						if (post.json_metadata.actiCrVal != encr_txt){
+							//wrong, skip post
+							console.log('post has incorrect actiCrVal');
+							continue;
+						}
+						//console.log('post is valid');
+					}*/
+					
+					/*else{
+						console.log('post does not contain actiCrVal');
+						continue;
+					}*/
+					
+					
+					  bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
+							   post
+							);
 			}
-			
-			//check if the post has an encryption key val, and ensure it is the proper one
-			if (post.json_metadata.actiCrVal){
-				var txt_to_encr = post.author + post.permlink + step_count ;
-				var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
-				let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
-				encr_txt += cipher.final('hex');
-				//test the result to the post's relevant data
-				if (post.json_metadata.actiCrVal != encr_txt){
-					//wrong, skip post
-					console.log('post has incorrect actiCrVal');
-					continue;
-				}
-				console.log('post is valid');
+			//do not attempt insertion if no results found on this round
+			if (posts.length == 0){
+				let last_post = result[result.length - 1];
+				if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100)){
+						return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
+					}
 			}else{
-				console.log('post does not contain actiCrVal');
-				continue;
-			}
-			
-			
-			  bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
-					   post
-					);
-			}
-			
-			bulk.execute()
+				bulk.execute()
 				.then(async function (res) {
 					var mes = res.nInserted + ' posts inserted - ' + res.nUpserted + ' posts upserted - ' + res.nModified + ' posts updated';
 					utils.log(mes, 'import');
 					let last_post = posts[posts.length - 1];
 					await processTransactions(posts);
 					console.log('Inserted transactions');
-					//appending fix for potential caught loop
-					postsProcessing = false;
 					if (!index || (index.start_permlink != last_post.permlink && index.start_author != last_post.author && result.length >= 100))
 						return getPosts({start_author: last_post.author, start_permlink: last_post.permlink});
 					console.log('No more new posts');
@@ -173,6 +197,8 @@ async function getPosts(index) {
 					   //making sure we don't get caught up in infinite loop after some error
 					   postsProcessing = false;
 				  });
+				  
+			}
 		} else {
 		  utils.log(err, 'import');
 		  /*mail.sendPlainMail('0 posts...', err, config.report_emails)
@@ -369,7 +395,7 @@ async function upsertPosts(posts) {
 		}
 		
 		//check if the post has an encryption key val, and ensure it is the proper one
-		if (post.json_metadata.actiCrVal){
+		/*if (post.json_metadata.actiCrVal){
 			var txt_to_encr = post.author + post.permlink + step_count ;
 			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
 			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
@@ -384,7 +410,7 @@ async function upsertPosts(posts) {
 		}else{
 			console.log('post does not contain actiCrVal');
 			continue;
-		}
+		}*/
 		
 		bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 			 post

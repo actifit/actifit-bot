@@ -18,6 +18,7 @@ var HOURS = 60 * 60;
  var totalVestingFund;
  var totalVestingShares;
  var botNames;
+ 
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
@@ -119,7 +120,7 @@ function timeTilFullPower(cur_power){
         if(callback)
           callback(data.replace(/[\r]/g, '').split('\n'));
       } catch (err) {
-        utils.log('Error loading blacklist from: ' + location + ', Error: ' + err);
+        console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
 
         if(callback)
           callback(null);
@@ -193,6 +194,8 @@ function format(n, c, d, t) {
  function filterPosts(posts) {
   var results = Array();
   let config = getConfig();
+  //takes care of making sure if we reached too far back in history
+   var dateSurpassed = 0;
   for(var i = 0; i < posts.length; i++) {
     var post = posts[i];
 
@@ -216,14 +219,24 @@ function format(n, c, d, t) {
 	var user_banned = false;
 	for (var n = 0; n < config.banned_users.length; n++) {
 		if (post.author == config.banned_users[n]){
-			utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
+			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
 			user_banned = true;
 			break;
 		}
 	  }   
 	if (user_banned) continue;
+	
+	//go back only to 3.5 days in history
+	if((new Date() - new Date(post.created + 'Z')) >= (3.5 * 24 * 60 * 60 * 1000)) {
+			dateSurpassed += 1;
+			continue;
+		}
 	 
     results.push(post);
+  }
+  //if we got to old posts and received at least 10 posts, inform calling function that no need to move forward further
+  if (results.length == 0 && dateSurpassed>10){
+	return -1;
   }
   return results;
     
