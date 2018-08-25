@@ -23,10 +23,10 @@ const collection_name = 'posts';
 
 updateUserTokens();
 runPostsProcess();
-//run every 5*60 mins
-setInterval(runPostsProcess, 300 * 1000);
-//run every 8*60 mins
-setInterval(updateUserTokens, 480 * 1000);
+//run every 31 mins
+setInterval(runPostsProcess, 31 * 60 * 1000);
+//run every 40 mins
+setInterval(updateUserTokens, 41 * 60 * 1000);
 
 // client.close();
 //processVotedPosts();
