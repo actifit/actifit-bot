@@ -2,6 +2,7 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+const moment = require('moment')
 
 
 var app = express();
@@ -144,22 +145,73 @@ app.get('/banned_users', async function (req, res) {
     res.send(banned_users);
 });
 
+/* end point for counting number of reblogs on a certain date param (default current date) */
 app.get('/reblogCount', async function (req, res) {
-
- let query = await db.collection('token_transactions').find({
+		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		//fileName = "steemrewards"+fileName+".json";
+		var dateRegex = new RegExp ('^'+todayDate); // /^2018-08-05/
+		if (req.query.targetDate){
+			dateRegex = new RegExp ('^'+req.query.targetDate);
+		}
+		let query = await db.collection('token_transactions').find({
 				"reward_activity": "Post Reblog",
-				"date":  /^2018-08-05/
+				"date":  dateRegex
 		})
 		try{
 			console.log('counting');
-			let user_tokens = await query.count();
-			console.log(user_tokens);
-			// await db.collection('user_tokens').remove({});
-			// return await db.collection('user_tokens').insert(user_tokens);
+			let reblog_count = await query.count();
+			console.log(reblog_count);
+			res.header('Access-Control-Allow-Origin', '*');	
+			res.send(JSON.stringify({reblog_count:reblog_count}));
 		}catch(err){
 			console.log(err.message);
 		}
-	  
+});
+
+/* end point for counting number of upvotes on a certain date param (default current date) */
+app.get('/upvoteCount', async function (req, res) {
+		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		//fileName = "steemrewards"+fileName+".json";
+		var dateRegex = new RegExp ('^'+todayDate); // /^2018-08-05/
+		if (req.query.targetDate){
+			dateRegex = new RegExp ('^'+req.query.targetDate);
+		}
+		let query = await db.collection('token_transactions').find({
+				"reward_activity": "Post Vote",
+				"date":  dateRegex
+		})
+		try{
+			console.log('counting');
+			let upvote_count = await query.count();
+			console.log(upvote_count);
+			res.header('Access-Control-Allow-Origin', '*');	
+			res.send(JSON.stringify({upvote_count:upvote_count}));
+		}catch(err){
+			console.log(err.message);
+		}
+});
+
+/* end point for counting number of rewarded posts on a certain date param (default current date) */
+app.get('/rewardedPostCount', async function (req, res) {
+		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		//fileName = "steemrewards"+fileName+".json";
+		var dateRegex = new RegExp ('^'+todayDate); // /^2018-08-05/
+		if (req.query.targetDate){
+			dateRegex = new RegExp ('^'+req.query.targetDate);
+		}
+		let query = await db.collection('token_transactions').find({
+				"reward_activity": "Post",
+				"date":  dateRegex
+		})
+		try{
+			console.log('counting');
+			let rewarded_post_count = await query.count();
+			console.log(rewarded_post_count);
+			res.header('Access-Control-Allow-Origin', '*');	
+			res.send(JSON.stringify({rewarded_post_count:rewarded_post_count}));
+		}catch(err){
+			console.log(err.message);
+		}
 });
 
 app.listen(process.env.PORT || 3000);
