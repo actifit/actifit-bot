@@ -136,6 +136,14 @@ app.get('/topdelegators', async function (req, res) {
     res.send(delegatorList);
 });
 
+
+/* end point for returning accounts banned by actifit*/
+app.get('/banned_users', async function (req, res) {
+	var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(banned_users);
+});
+
 app.get('/reblogCount', async function (req, res) {
 
  let query = await db.collection('token_transactions').find({

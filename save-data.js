@@ -248,21 +248,24 @@ async function processTransactions(posts) {
 			.upsert().replaceOne(post_transaction); 
 		transactions.push(post_transaction);
 		post.active_votes.forEach(async vote => {
-			let vote_transaction = {
-				user: vote.voter,
-				reward_activity: 'Post Vote',
-				token_count: 1,
-				url: post.url,
-				date: vote.time
+			//skip self vote from rewards
+			if (post.author != vote.voter){
+				let vote_transaction = {
+					user: vote.voter,
+					reward_activity: 'Post Vote',
+					token_count: 1,
+					url: post.url,
+					date: vote.time
+				}
+				bulk.find(
+				{ 
+					user: vote_transaction.user,
+					reward_activity: vote_transaction.reward_activity,
+					url: vote_transaction.url
+				})
+				.upsert().replaceOne(vote_transaction);
+				transactions.push(vote_transaction);
 			}
-			bulk.find(
-			{ 
-				user: vote_transaction.user,
-				reward_activity: vote_transaction.reward_activity,
-				url: vote_transaction.url
-			})
-			.upsert().replaceOne(vote_transaction);
-			transactions.push(vote_transaction);
 		});
 		let reblogs = await steem.api.getRebloggedByAsync(post.author, post.permlink);
 		console.log('------------------ REBLOGS --------------------');
