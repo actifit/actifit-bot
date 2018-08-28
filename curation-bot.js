@@ -4,6 +4,7 @@ var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
 var moment = require('moment');
+const MongoClient = require('mongodb').MongoClient;
 
 var account = null;
 var last_trans = 0;
@@ -28,6 +29,32 @@ utils.log("* START - Version: " + version + " *");
 // Load the settings from the config file
 loadConfig();
 var botNames;
+
+
+// Connection URL
+const url = config.mongo_uri;
+var db;
+var collection;
+// Database Name
+const db_name = config.db_name;
+const collection_name = 'banned_accounts';
+
+var banned_users;
+
+// Use connect method to connect to the server
+MongoClient.connect(url, function(err, client) {
+	if(!err) {
+	  console.log("Connected successfully to server");
+
+	  db = client.db(db_name);
+
+	  // Get the documents collection
+	  collection = db.collection(collection_name);
+	} else {
+		utils.log(err, 'api');
+	}
+  
+});
 
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
@@ -84,6 +111,22 @@ async function startProcess() {
   var today = new Date();
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
+  
+  //grab banned user list before rewarding
+  
+  banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+  console.log('found banned users');
+  //console.log(banned_users);
+  
+  /*for (var n = 0; n < banned_users.length; n++) {
+  console.log(banned_users[n].user);
+            //if (post.author == banned_users[n].user){
+				//utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
+				//user_banned = true;
+				//break;
+			//}
+          }
+  return;*/
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
@@ -209,8 +252,8 @@ function processVotes(query, subsequent) {
 		
 		//check if user is banned
 		var user_banned = false;
-		for (var n = 0; n < config.banned_users.length; n++) {
-            if (post.author == config.banned_users[n]){
+		for (var n = 0; n < banned_users.length; n++) {
+            if (post.author == banned_users[n].user){
 				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
 				user_banned = true;
 				break;
