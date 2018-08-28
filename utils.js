@@ -196,6 +196,11 @@ function format(n, c, d, t) {
   let config = getConfig();
   //takes care of making sure if we reached too far back in history
    var dateSurpassed = 0;
+   
+   //grab banned user list before rewarding
+   var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+   console.log('found banned users');
+  
   for(var i = 0; i < posts.length; i++) {
     var post = posts[i];
 
@@ -215,10 +220,12 @@ function format(n, c, d, t) {
     
     if(!benefit)
       continue;
-	  
+
+	
+	//check if user is banned
 	var user_banned = false;
-	for (var n = 0; n < config.banned_users.length; n++) {
-		if (post.author == config.banned_users[n]){
+	for (var n = 0; n < banned_users.length; n++) {
+		if (post.author == banned_users[n].user){
 			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
 			user_banned = true;
 			break;
