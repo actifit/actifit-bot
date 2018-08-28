@@ -198,7 +198,7 @@ function format(n, c, d, t) {
    var dateSurpassed = 0;
    
    //grab banned user list before rewarding
-   var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+   var banned_users = db.collection('banned_accounts').find({ban_status:"active"}).toArray();
    console.log('found banned users');
   
   for(var i = 0; i < posts.length; i++) {
