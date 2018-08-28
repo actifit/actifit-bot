@@ -191,15 +191,12 @@ function format(n, c, d, t) {
   return data
  }
 
- function filterPosts(posts) {
+ function filterPosts(posts, banned_users) {
   var results = Array();
   let config = getConfig();
   //takes care of making sure if we reached too far back in history
    var dateSurpassed = 0;
-   
-   //grab banned user list before rewarding
-   var banned_users = db.collection('banned_accounts').find({ban_status:"active"}).toArray();
-   console.log('found banned users');
+
   
   for(var i = 0; i < posts.length; i++) {
     var post = posts[i];

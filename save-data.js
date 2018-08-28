@@ -89,6 +89,11 @@ async function getPosts(index) {
 		query.start_author = index.start_author;
 		query.start_permlink = index.start_permlink;
 	}
+	
+	 //grab banned user list before rewarding
+	var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+	console.log('found banned users');
+   
 	steem.api.getDiscussionsByCreated(query, function (err, result) {
 		if (result && !err) {
 		  if(result.length == 0 || !result[0]) {
@@ -97,7 +102,9 @@ async function getPosts(index) {
 			  return;
 		  }
 			console.log('Post count: ' + result.length);
-		  let posts = utils.filterPosts(result, config.account, config.main_tag);
+			   
+		  
+		  let posts = utils.filterPosts(result, banned_users, config.account, config.main_tag);
 		  
 		  //if the result was not an array, bail out
 		  if (posts == -1){
