@@ -176,7 +176,7 @@ function format(n, c, d, t) {
  // so if we were to only consume 10 % of our VP, the weight would be set at 50,000 instead of default value of 100,000
  function calculateVotes(posts, weight) {
   if(typeof weight == 'undefined') {
-    weight = 100000;
+    weight = 90000;
   }
   var data = {};
   var x = 0;
