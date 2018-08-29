@@ -125,13 +125,25 @@ app.get('/charities', async function (req, res) {
     res.send(charities);
 });
 
-/* end point for returning daily total delegation payments data supported by actifit */
-app.get('/topdelegators', async function (req, res) {
+/* end point for returning current active delegator data by actifit */
+app.get('/topDelegators', async function (req, res) {
 	var delegatorList; 
-	if (isNaN(req.params.count)){
+	if (isNaN(req.query.count)){
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).toArray();
 	}else{
-		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(req.params.count).toArray();
+		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
+	}
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(delegatorList);
+});
+
+/* end point for returning current top AFIT token holders */
+app.get('/topTokenHolders', async function (req, res) {
+	var delegatorList; 
+	if (isNaN(req.query.count)){
+		delegatorList = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
+	}else{
+		delegatorList = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
 	}
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(delegatorList);
@@ -144,6 +156,7 @@ app.get('/banned_users', async function (req, res) {
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(banned_users);
 });
+
 
 /* end point for counting number of reblogs on a certain date param (default current date) */
 app.get('/reblogCount', async function (req, res) {
