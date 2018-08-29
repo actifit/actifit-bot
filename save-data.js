@@ -21,48 +21,42 @@ const db_name = config.db_name;
 const collection_name = 'posts';
 
 
-updateUserTokens();
-runPostsProcess();
-//run every 31 mins
-setInterval(runPostsProcess, 31 * 60 * 1000);
-//run every 40 mins
-setInterval(updateUserTokens, 41 * 60 * 1000);
-
 // client.close();
 //processVotedPosts();
 //getReblogs();
 
-//mongodb connector function
-async function connectMongoDB(){
-	//connect again to mongodb
-	// Use connect method to connect to the server
-	await MongoClient.connect(url, function(err, client) {
-		if(!err) {
-			assert.equal(null, err);
-		  console.log("Connected successfully to server");
+MongoClient.connect(url, function(err, client) {
+	if(!err) {
+		assert.equal(null, err);
+	  console.log("Connected successfully to server");
 
-		  db = client.db(db_name);
+	  db = client.db(db_name);
 
-		  // Get the documents collection
-		  collection = db.collection(collection_name);
+	  // Get the documents collection
+	  collection = db.collection(collection_name);
 
+		updateUserTokens();
+		runPostsProcess();
+		//run every 31 mins
+		setInterval(runPostsProcess, 31 * 60 * 1000);
+		//run every 40 mins
+		setInterval(updateUserTokens, 41 * 60 * 1000);
 
-		} else {
-			utils.log(err, 'import');
-			/*mail.sendPlainMail('Database Error', err, '')
-		  .then(function(res, err) {
-				if (!err) {
-					console.log(res);
-				} else {
-					utils.log(err, 'import');
-				}
-			});
-			process.exit();*/
-		}
-	  
-	});
-	
-}
+	} else {
+		utils.log(err, 'import');
+		/*mail.sendPlainMail('Database Error', err, '')
+	  .then(function(res, err) {
+			if (!err) {
+				console.log(res);
+			} else {
+				utils.log(err, 'import');
+			}
+		});
+		process.exit();*/
+	}
+  
+});
+
 
 function runPostsProcess(){
 	if(postsProcessing){
@@ -75,13 +69,7 @@ function runPostsProcess(){
 async function getPosts(index) {
 
 	console.log('>>>>>>>> attempt getPosts <<<<<<<<<<<');
-	
-	
-	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
-		console.log('getPosts get first connection');
-		await connectMongoDB();
-	}
-	
+
 	console.log('---- Getting Posts ----');
 	var query = {tag: config.main_tag, limit: 100};
 	if (index) {
@@ -305,11 +293,7 @@ async function processTransactions(posts) {
 
 async function updateUserTokens() {
 	console.log('---- Updating Users ----');
-	
-	if (typeof db == 'undefined' || db == 'undefined' || db == null || !db.serverConfig.isConnected()){
-		console.log('getPosts get first connection');
-		await connectMongoDB();
-	}
+
 	try{
 		let query = await db.collection('token_transactions').aggregate([
 			{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
