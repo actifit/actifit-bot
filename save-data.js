@@ -124,6 +124,8 @@ async function getPosts(index) {
 						post.token_rewards = 65;
 					  else if(step_count < 10000)
 						post.token_rewards = 80;
+					  else if(step_count > 150000)
+						continue;
 					  else
 						post.token_rewards = 100;
 					} catch (err) {
