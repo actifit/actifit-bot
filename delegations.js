@@ -33,7 +33,7 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 
 
 //param steemOnlyReward
-//runRewards(false);
+runRewards(true);
 
 function runRewards(steemOnlyReward){
 	// Use connect method to connect to the server
@@ -87,7 +87,7 @@ async function startProcess (days, steemOnlyReward) {
 	// Check if today is Monday, to calculate steem rewards
 	if (dayId == 1){
 		//console.log('processSteemRewards');
-		//processSteemRewards(txEnd)
+		processSteemRewards(txEnd)
 	}
 }
 

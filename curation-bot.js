@@ -281,6 +281,8 @@ function processVotes(query, subsequent) {
             post.rate_multiplier = 0.65;
           else if(step_count < 10000)
             post.rate_multiplier = 0.8;
+		  else if(step_count > 150000)
+			continue;
           else
             post.rate_multiplier = 1;
         } catch (err) {
