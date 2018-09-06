@@ -105,6 +105,42 @@ app.get('/user-tokens-info', async function(req, res) {
 
 });
 
+
+/* end point for returning total delegation payments (number of delegators and amount paid) on a specific date */
+app.get('/delegationPayments', async function(req, res) {
+	var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	var dateRegex = todayDate; // /^2018-08-05/
+	if (req.query.targetDate){
+		dateRegex = req.query.targetDate;
+	}
+	
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: 
+			{
+				"reward_activity": "Delegation",
+				"date": {
+					'$eq' : new Date(dateRegex)
+					}
+			}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   tokens_distributed: { $sum: "$token_count" },
+			   user_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
 /* end point for returning count of posts/activities rewarded */
 app.get('/rewarded-activity-count', async function(req, res) {
 
