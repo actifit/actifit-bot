@@ -309,11 +309,14 @@ async function updateUserTokens() {
 			])
 	
 		let user_tokens = await query.toArray();
+		console.log('trying remove');
 		await db.collection('user_tokens').remove({});
+		console.log('trying insert');
 		await db.collection('user_tokens').insert(user_tokens);
 		
 	}catch(err){
-		console.log('>>save data error:'+err.message);
+		console.log('>>save data error:');
+		console.log(err.writeErrors)
 	}
 }
 
