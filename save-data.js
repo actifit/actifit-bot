@@ -315,8 +315,7 @@ async function updateUserTokens() {
 		await db.collection('user_tokens').insert(user_tokens);
 		
 	}catch(err){
-		console.log('>>save data error:');
-		console.log(err.writeErrors)
+		console.log('>>save data error:'+err.message);
 	}
 }
 
