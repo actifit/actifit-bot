@@ -22,7 +22,8 @@ var error_sent = false;
 
 var crypto = require('crypto');
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
+//steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
+steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
 
 utils.log("* START - Version: " + version + " *");
 
