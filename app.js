@@ -173,6 +173,22 @@ app.get('/topDelegators', async function (req, res) {
     res.send(delegatorList);
 });
 
+/* end point for returning current active moderators data by actifit */
+app.get('/moderators', async function (req, res) {
+	var moderatorList; 
+	moderatorList = await db.collection('team').find({title:'moderator'}).sort({name: 1}).toArray();
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(moderatorList);
+});
+
+/* end point for returning current active ambassadors data by actifit */
+app.get('/ambassadors', async function (req, res) {
+	var ambassadorList; 
+	ambassadorList = await db.collection('team').find({title:'ambassador'}).sort({name: 1}).toArray();
+    res.header('Access-Control-Allow-Origin', '*');	
+    res.send(ambassadorList);
+});
+
 /* end point for returning current top AFIT token holders */
 app.get('/topTokenHolders', async function (req, res) {
 	var delegatorList; 
