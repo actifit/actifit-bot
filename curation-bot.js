@@ -17,7 +17,7 @@ var last_voted = 0;
 var vote_time;
 var last_votes = Array();
 var skip = false;
-var version = '0.0.1';
+var version = '0.3.4';
 var error_sent = false;
 
 var crypto = require('crypto');
@@ -490,9 +490,11 @@ function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier,
     // Replace variables in the promotion content
     content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{milestone\}/g, milestone_txt).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 
-    
-      // Broadcast the comment
-      steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, '{"app":"communitybot/' + version + '"}', function (err, result) {
+		//adding proper meta content for later relevant reward via afit_tokens data
+		var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, afit_tokens: token_count };
+		
+		// Broadcast the comment
+		steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
           if (!err && result) {
           utils.log('Posted comment: ' + permlink);
           resolve(result);
