@@ -342,6 +342,7 @@ function format(n, c, d, t) {
    format: format,
    toTimer: toTimer,
    log: log,
+   calcScore: calcScore,
    calculateVotes: calculateVotes,
    filterPosts: filterPosts,
    getConfig: getConfig,
