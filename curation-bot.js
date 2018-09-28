@@ -392,9 +392,9 @@ function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
   sendVote(posts.pop(), 20, power_per_vote)
   .then( res => {
-    // If there are more bids, vote on the next one after 10 seconds
+    // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 10000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -441,7 +441,7 @@ function sendVote(post, retries, power_per_vote) {
                         .catch(err => {
                             reject(err);
                         })
-                }, 10000);
+                }, 5000);
             else 
                 resolve(result);   
         } else {
