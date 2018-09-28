@@ -134,9 +134,9 @@ async function startProcess() {
     var vp = utils.getVotingPower(account);
 
     if (config.detailed_logging)
-      utils.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+      utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
-    console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+    console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at voting power kick start - time to vote!
     if (vp >= config.vp_kickstart) {
       skip = true;
