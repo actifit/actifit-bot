@@ -420,7 +420,7 @@ app.get('/getRank/:user', async function (req, res) {
 		var userDelegations = await activeDelegationFunc(req, res);
 		//console.log(userDelegations.steem_power);
 		
-		var delegation_score = calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
+		var delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
 		
 		user_rank += delegation_score;
 		
@@ -428,7 +428,7 @@ app.get('/getRank/:user', async function (req, res) {
 		var userTokens = await grabUserTokensFunc(req,res);
 		//console.log(userTokens.tokens);
 		
-		var afit_tokens_score = calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+		var afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
 		
 		user_rank += afit_tokens_score;
 		
@@ -436,7 +436,7 @@ app.get('/getRank/:user', async function (req, res) {
 		var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
 		//console.log(tot_rewarded_post_count);
 		
-		var tot_posts_score = calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
+		var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
 		
 		user_rank += tot_posts_score;
 		
@@ -446,7 +446,7 @@ app.get('/getRank/:user', async function (req, res) {
 		var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
 		//console.log(recent_rewarded_post_count);
 		
-		var recent_posts_score = calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
+		var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
 		
 		user_rank += recent_posts_score;
 		
