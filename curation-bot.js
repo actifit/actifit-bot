@@ -42,20 +42,6 @@ const collection_name = 'banned_accounts';
 
 var banned_users;
 
-// Use connect method to connect to the server
-MongoClient.connect(url, function(err, client) {
-	if(!err) {
-	  console.log("Connected successfully to server");
-
-	  db = client.db(db_name);
-
-	  // Get the documents collection
-	  collection = db.collection(collection_name);
-	} else {
-		utils.log(err, 'api');
-	}
-  
-});
 
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
@@ -80,7 +66,25 @@ if (fs.existsSync('members.json')) {
   utils.log('Loaded ' + members.length + ' members.');
 }
 
-startProcess();
+
+// Use connect method to connect to the server
+MongoClient.connect(url, function(err, client) {
+	if(!err) {
+	  console.log("Connected successfully to server");
+
+	  db = client.db(db_name);
+
+	  // Get the documents collection
+	  collection = db.collection(collection_name);
+	  //only start the process once we connected to the DB
+	  startProcess();
+	} else {
+		utils.log(err, 'api');
+	}
+  
+});
+
+
 // Schedule to run every minute
 setInterval(startProcess, 60 * 1000);
 
@@ -112,10 +116,7 @@ async function startProcess() {
   var today = new Date();
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
-  
-  //grab banned user list before rewarding
-  
-  banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+
   console.log('found banned users');
   //console.log(banned_users);
   
@@ -142,6 +143,9 @@ async function startProcess() {
     if (vp >= parseFloat(config.vp_kickstart)/100) {
 		console.log('lets vote');
 		skip = true;
+		  
+		//grab banned user list before rewarding
+		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	  
 		var query = {tag: config.main_tag, limit: 100};
 		votePosts = Array();
