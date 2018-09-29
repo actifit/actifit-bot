@@ -26,8 +26,8 @@
     "import": "node save-data.js",
     "delegate": "node delegations.js",
     "api": "node app.js",
-    "all": "node app.js | node save-data.js | node delegations.js",
-    "start": "node app.js | node save-data.js | node delegations.js"
+    "all": "node app.js | node save-data.js | node delegations.js | node curation-bot.js",
+    "start": "node app.js | node save-data.js | node delegations.js | node curation-bot.js"
   },
   "engines": {
     "node": "10.3.0"
