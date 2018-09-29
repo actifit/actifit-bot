@@ -138,12 +138,14 @@ async function startProcess() {
 
     console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at voting power kick start - time to vote!
-    if (vp >= config.vp_kickstart) {
-      skip = true;
+	//console.log(vp >= parseFloat(config.vp_kickstart)/100);
+    if (vp >= parseFloat(config.vp_kickstart)/100) {
+		console.log('lets vote');
+		skip = true;
 	  
-	  var query = {tag: config.main_tag, limit: 100};
-	  votePosts = Array();
-      processVotes(query, false);      
+		var query = {tag: config.main_tag, limit: 100};
+		votePosts = Array();
+		processVotes(query, false);      
     }
     
   } else if(skip)
