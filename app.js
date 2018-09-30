@@ -2,6 +2,7 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+const moment = require('moment')
 
 
 var app = express();
@@ -49,8 +50,8 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
-/* end point for user total token count display */
-app.get('/user/:user', async function (req, res) {
+/* function handles calculating and returning user token count */
+grabUserTokensFunc = async function (req, res){
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
 	//fixing token amount display for 3 digits
@@ -59,6 +60,12 @@ app.get('/user/:user', async function (req, res) {
 			user.tokens = user.tokens.toFixed(3)
 		}
 	}
+	return user;
+}
+
+/* end point for user total token count display */
+app.get('/user/:user', async function (req, res) {
+	let user = await grabUserTokensFunc(req,res);
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
@@ -172,10 +179,15 @@ app.get('/topDelegators', async function (req, res) {
     res.send(delegatorList);
 });
 
-/* end point for returning a single user last recorded delegation amount */
-app.get('/delegation/:user', async function (req, res) {
+activeDelegationFunc = async function (req, res){
 	let user = await db.collection('active_delegations').findOne({_id: req.params.user}, {fields : { _id:0} });
 	console.log(user);
+	return user;
+}
+
+/* end point for returning a single user last recorded active delegation amount */
+app.get('/delegation/:user', async function (req, res) {
+	var user = await activeDelegationFunc(req, res);
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
@@ -284,6 +296,174 @@ app.get('/rewardedPostCount', async function (req, res) {
 		}catch(err){
 			console.log(err.message);
 		}
+});
+
+/* refactored function to grab rewarded post count per user for use across get calls */
+userRewardedPostCountFunc = async function(req, res){
+	var user = req.params.user;
+	//default query
+	var query_json = {
+			"reward_activity": "Post",
+			"user": user
+	};
+	//if this is a sum for specific period v/s a total sum
+	if (typeof req.query.period != "undefined" && !isNaN(req.query.period)){
+		var days = req.query.period;
+		//console.log("days:"+days);
+		var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		var endDate = moment(moment().utc().startOf('date').subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+		var startDateRegex = new RegExp ('^'+startDate); // /^2018-08-05/
+		var endDateRegex = new RegExp ('^'+endDate); // /^2018-08-05/
+		//console.log("startDate:"+startDate+" endDate:"+endDate);
+		//adjust query to include dates
+		query_json = {
+				"reward_activity": "Post",
+				"user": user,
+				"date": {
+						"$gte": endDate,
+						"$lt": startDate
+					}
+		};
+	}
+
+	//build up query accordingly
+	let query = await db.collection('token_transactions').find(query_json);
+	try{
+		//grab total number of matching records
+		let rewarded_post_count = await query.count();
+		//console.log("rewarded_post_count:"+rewarded_post_count);
+		
+		return rewarded_post_count;
+	}catch(err){
+		console.log(err.message);
+		return "";
+	}
+}
+
+/* end point for counting number of rewarded posts on a certain date param (default current date) */
+app.get('/userRewardedPostCount/:user', async function (req, res) {
+
+	//grab user account
+	if (typeof req.params.user!= "undefined" && req.params.user!=null){
+		
+		var rewarded_post_count = await userRewardedPostCountFunc(req, res);
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(JSON.stringify({rewarded_post_count:rewarded_post_count}));
+	}else{
+		res.send("");
+	}
+});
+
+/* end point for getting current user's Actifit rank */
+app.get('/getRank/:user', async function (req, res) {
+	
+	if (typeof req.params.user!= "undefined" && req.params.user!=null){
+	
+		//delegation calculation matrix
+		var delegation_rules = [
+			[9,0],
+			[499,0.05],
+			[999,0.10],
+			[4999,0.20],
+			[9999,0.30],
+			[19999,0.40],
+			[49999,0.55],
+			[99999,0.65],
+			[499999,0.75],
+			[999999,0.90],
+			[1000000,1]
+		]
+		
+		//AFIT token calculation matrix
+		var afit_token_rules = [
+			[9,0],
+			[999,0.10],
+			[4999,0.20],
+			[9999,0.30],
+			[19999,0.40],
+			[49999,0.50],
+			[99999,0.60],
+			[499999,0.70],
+			[999999,0.80],
+			[4999999,0.90],
+			[5000000,1]
+		]
+		
+		//Rewarded Posts calculation matrix
+		var rewarded_posts_rules = [
+			[9,0],
+			[29,0.10],
+			[59,0.20],
+			[89,0.30],
+			[119,0.40],
+			[179,0.50],
+			[359,0.60],
+			[539,0.70],
+			[719,0.80],
+			[1079,0.90],
+			[1080,1]
+		]
+		
+		//Rewarded Posts calculation matrix
+		var recent_reward_posts_rules = [
+			[0,0],
+			[2,0.20],
+			[4,0.40],
+			[6,0.60],
+			[8,0.80],
+			[10,1]
+		]
+		
+		var user_rank = 0;
+		
+		//grab delegation amount
+		var userDelegations = await activeDelegationFunc(req, res);
+		//console.log(userDelegations.steem_power);
+		
+		var delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
+		
+		user_rank += delegation_score;
+		
+		//grab user token count
+		var userTokens = await grabUserTokensFunc(req,res);
+		//console.log(userTokens.tokens);
+		
+		var afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+		
+		user_rank += afit_tokens_score;
+		
+		//grab total rewarded posts count
+		var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+		//console.log(tot_rewarded_post_count);
+		
+		var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
+		
+		user_rank += tot_posts_score;
+		
+		//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
+		req.query.period = config.recent_posts_period;
+		
+		var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+		//console.log(recent_rewarded_post_count);
+		
+		var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
+		
+		user_rank += recent_posts_score;
+		
+		var score_components = JSON.stringify({
+			user_rank: user_rank,
+			delegation_score: delegation_score,
+			afit_tokens_score: afit_tokens_score,
+			tot_posts_score: tot_posts_score,
+			recent_posts_score:recent_posts_score
+		});
+		console.log(score_components)
+		
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(score_components);
+	}else{
+		res.send("");
+	}
 });
 
 app.listen(process.env.PORT || 3000);
