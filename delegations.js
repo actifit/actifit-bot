@@ -9,6 +9,8 @@ const config = utils.getConfig()
 
 const MongoClient = require('mongodb').MongoClient
 
+const testRun = false;
+
 let db
 let collection
 // Database Name
@@ -25,12 +27,15 @@ var schedule = require('node-schedule')
 //console.log('pre-schedule');
 var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   console.log('--- Start delegators reward ---');
-  runRewards();
+  runRewards(false);//param steemOnlyReward
 });
 
-runRewards();
 
-function runRewards(){
+
+//param steemOnlyReward
+runRewards(true);
+
+function runRewards(steemOnlyReward){
 	// Use connect method to connect to the server
 	MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
 	  if (!err) {
@@ -42,7 +47,7 @@ function runRewards(){
 		
 		//run for one day
 		var days = 1;
-		startProcess(days);
+		startProcess(days, steemOnlyReward);
 		
 
 	  } else {
@@ -60,21 +65,28 @@ function runRewards(){
 	})
 }
 
-async function startProcess (days) {
+
+async function startProcess (days, steemOnlyReward) {
 	let end = 0
 	// Find last saved delegation transaction
 	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
 	console.log(lastTx)
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
+	if (!steemOnlyReward){
 	await processDelegations(config.account, -1, end)
+	}
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
-	//await processTokenRewards(start, txEnd, days)
+	if (!steemOnlyReward){
+		console.log('processTokenRewards');
+		await processTokenRewards(start, txEnd, days)
+	}
 	var d = new Date();
 	var dayId = d.getDay();
 	// Check if today is Monday, to calculate steem rewards
 	if (dayId == 1){
+		//console.log('processSteemRewards');
 		processSteemRewards(txEnd)
 	}
 }
@@ -84,7 +96,7 @@ async function processTokenRewards (start, end, days) {
 	if (!end) end = moment().utc().startOf('date').toDate()
 	let note = 'Delegation Reward For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
 
-	let acumulatedSteemPower = await getAcumulatedSteemPower(start, end)
+	let acumulatedSteemPower = await getAcumulatedSteemPower(start, end, true);
 	
 	//handles maintaining max CAP for payments
 	let multiplier = 1
@@ -100,6 +112,18 @@ async function processTokenRewards (start, end, days) {
 	console.log(">>>>multiplier:"+multiplier);
 	//go through all delegators, and send out AFIT rewards
 	for (let user of acumulatedSteemPower.users) {
+		//skip opt out users from reward
+		var user_opted_out = false;
+		for (var n = 0; n < config.exclude_rewards.length; n++) {
+            if (user.user == config.exclude_rewards[n]){
+				console.log('User '+user.user+' opted out from rewards');
+				user_opted_out = true;
+				break;
+			}
+          } 
+		if (user_opted_out){
+			continue;
+		}
 		let reward = {
 			user: user.user,
 			token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
@@ -108,8 +132,11 @@ async function processTokenRewards (start, end, days) {
 			date: end
 		}
 		console.log(reward)
+		//only send out funds if not a test run
+		if (!testRun){
 		upsertRewardTransaction(reward)
 	}
+}
 }
 
 async function processSteemRewards (start) {
@@ -118,16 +145,32 @@ async function processSteemRewards (start) {
   console.log(config.pay_account)
   const to = moment(start).subtract(7, 'days').toDate()
   const from = moment(to).subtract(7, 'days').toDate()
-  Promise.all([getAcumulatedSteemPower(from, to), getBenefactorRewards(to, start, -1)]).then(values => {
+  Promise.all([getAcumulatedSteemPower(from, to, true), getBenefactorRewards(to, start, -1)]).then(values => {
     const activeDelegations = values[0].users
     const steemRewards = values[1]
     const totalDelegatedSteem = values[0].totalSteem
     const rewardPerSteem = steemRewards / totalDelegatedSteem
     const rewards = _.map(activeDelegations, function (o) {
-      let reward = {
+	 //skip opt out users from reward
+		var user_opted_out = false;
+		for (var n = 0; n < config.exclude_rewards.length; n++) {
+            if (o.user == config.exclude_rewards[n]){
+				console.log('User '+o.user+' opted out from Steem rewards');
+				user_opted_out = true;
+				break;
+			}
+          }
+		
+		let reward = {};
+		if (!user_opted_out){
+			reward = {
         user: o.user,
         steem: +(o.totalSteem * rewardPerSteem).toFixed(3)
       }
+		}
+	
+	
+     
       /*let url = 'https://v2.steemconnect.com/sign/transfer?from=[PAY_ACCOUNT]&to=[TO_ACCOUNT]&amount=[AMOUNT]%20STEEM&memo=Delegation%20Rewards'
       url = url.replace('[PAY_ACCOUNT]', config.pay_account)
       url = url.replace('[TO_ACCOUNT]', reward.user)
@@ -144,7 +187,11 @@ async function processSteemRewards (start) {
     }
 	
 	var fs = require('fs');
-	fs.writeFile("steemrewards.json", JSON.stringify(rewards), function(err) {
+	
+	var fileName = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	fileName = "steemrewards"+fileName+".json";
+	console.log("fileName:"+fileName);
+	fs.writeFile(fileName, JSON.stringify(rewards), function(err) {
 		if(err) {
 			return console.log(err);
 		}
@@ -248,8 +295,9 @@ async function getBenefactorRewards (start, end, txStart, totalSp) {
   return +totalSp.toFixed(3)
 }
 
-async function getActiveDelegations (start) {
+async function getActiveDelegations (start, excludeOn) {
   start = new Date(start)
+  if (excludeOn){
   return collection.aggregate(
     [
       { $match: { 'tx_date': { '$lte': start } } },
@@ -275,6 +323,33 @@ async function getActiveDelegations (start) {
       { $sort: { tx_date: 1 } }
     ]
   ).toArray()
+  }else{
+	  return collection.aggregate(
+		[
+		  { $match: { 'tx_date': { '$lte': start } } },
+		  { $sort: { delegator: 1, tx_date: 1 } },
+		  {
+			$group:
+			  {
+				_id: '$delegator',
+				steem_power: { $last: '$steem_power' },
+				vests: { $last: '$vesting_shares' },
+				tx_date: { $last: '$tx_date' }
+			  }
+		  },
+		  { $project:
+			{
+			  _id: '$_id',
+			  delegator: '$_id',
+			  steem_power: 1,
+			  tx_date: start
+			}
+		  },
+		  { $match: { 'steem_power': { '$gt': 0 } } },
+		  { $sort: { tx_date: 1 } }
+		]
+	  ).toArray()
+  }
 }
 
 /* 
@@ -311,7 +386,7 @@ async function getCurrentTotalSP(toDate){
 		//});	
 }
 
-async function getAcumulatedSteemPower (from, to) {
+async function getAcumulatedSteemPower (from, to, excludeOn) {
   let result = {
     users: []
   }
@@ -319,12 +394,21 @@ async function getAcumulatedSteemPower (from, to) {
   from = moment(from).toDate()
   to = moment(to).toDate()
   // Get active delegations for the week
-  let activeDelegations = await getActiveDelegations(from)
+  let activeDelegations = await getActiveDelegations(from, excludeOn)
   // Get transactions of the processed week
-  let weekTxs = await db.collection('delegation_transactions').find(
+  let weekTxs 
+  if (excludeOn){
+	console.log('excluding users');
+	weekTxs = await db.collection('delegation_transactions').find(
     {'tx_date': {$gt: from, $lt: to},
       'delegator': {$nin: config.exclude_rewards}})
     .sort({tx_date: 1}).toArray()
+  }else{
+    console.log('no exclude');
+	weekTxs = await db.collection('delegation_transactions').find(
+		{'tx_date': {$gt: from, $lt: to}})
+		.sort({tx_date: 1}).toArray()
+  }
   let allTxs = activeDelegations.concat(weekTxs)
   let groupedTxs = _.groupBy(allTxs, 'delegator')
   for (let index in groupedTxs) {
