@@ -246,6 +246,28 @@ function format(n, c, d, t) {
    return true;
 
  }
+ 
+  /**
+  * function handles mapping and calculating relevant score
+  * params: 
+  * * 2D array providing couplets of rules
+  * * factor multipier for data
+  * * current value to compare
+  */
+ function calcScore(rules_array, factor, value){
+	var result;
+	for (var i=0; i<rules_array.length; i++){
+		var rule = rules_array[i];
+		if (value<=rule[0]){
+			result = factor * rule[1];
+			break;
+		}else{
+			//default until we find a larger range that fits better
+			result = factor * rule[1];
+		}
+	}
+	return result;
+}
 
  function log(msg, name) { 
   if (!name)
@@ -281,6 +303,7 @@ function format(n, c, d, t) {
    format: format,
    toTimer: toTimer,
    log: log,
+   calcScore: calcScore,
    calculateVotes: calculateVotes,
    filterPosts: filterPosts,
    getConfig: getConfig,
