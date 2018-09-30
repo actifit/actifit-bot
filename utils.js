@@ -37,13 +37,32 @@ var HOURS = 60 * 60;
  }
  // updateSteemVariables();
 
- function getVotingPower(account) {
+ /*function getVotingPower(account) {
      var voting_power = account.voting_power;
      var last_vote_time = new Date((account.last_vote_time) + 'Z');
      var elapsed_seconds = (new Date() - last_vote_time) / 1000;
      var regenerated_power = Math.round((STEEMIT_100_PERCENT * elapsed_seconds) / STEEMIT_VOTE_REGENERATION_SECONDS);
      var current_power = Math.min(voting_power + regenerated_power, STEEMIT_100_PERCENT);
      return current_power;
+ }*/
+ 
+	//fixed implementation of proper voting power calculation
+	function getVotingPower(account) {
+		const totalShares = parseFloat(account.vesting_shares) + parseFloat(account.received_vesting_shares) - parseFloat(account.delegated_vesting_shares) - parseFloat(account.vesting_withdraw_rate);
+
+            const elapsed = Math.floor(Date.now() / 1000) - account.voting_manabar.last_update_time;
+            const maxMana = totalShares * 1000000;
+            // 432000 sec = 5 days
+            let currentMana = parseFloat(account.voting_manabar.current_mana) + elapsed * maxMana / 432000;
+
+            if (currentMana > maxMana) {
+                currentMana = maxMana;
+            }
+
+            const currentManaPerc = currentMana * 100 / maxMana;
+			
+			console.log(currentManaPerc);
+		return currentManaPerc;
  }
 
  function getVoteRShares(voteWeight, account, power) {
@@ -119,7 +138,7 @@ function timeTilFullPower(cur_power){
         if(callback)
           callback(data.replace(/[\r]/g, '').split('\n'));
       } catch (err) {
-        utils.log('Error loading blacklist from: ' + location + ', Error: ' + err);
+        console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
 
         if(callback)
           callback(null);
