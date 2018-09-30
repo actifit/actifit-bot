@@ -18,6 +18,7 @@ var HOURS = 60 * 60;
  var totalVestingFund;
  var totalVestingShares;
  var botNames;
+ 
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
@@ -209,9 +210,13 @@ function format(n, c, d, t) {
   return data
  }
 
- function filterPosts(posts) {
+ function filterPosts(posts, banned_users) {
   var results = Array();
   let config = getConfig();
+  //takes care of making sure if we reached too far back in history
+   var dateSurpassed = 0;
+
+  
   for(var i = 0; i < posts.length; i++) {
     var post = posts[i];
 
@@ -232,14 +237,29 @@ function format(n, c, d, t) {
     if(!benefit)
       continue;
 	  
-	  for (var n = 0; n < config.banned_users.length; n++) {
-		if (post.author === config.banned_users[n]){
+	
+	//check if user is banned
+	var user_banned = false;
+	for (var n = 0; n < banned_users.length; n++) {
+		if (post.author == banned_users[n].user){
 			console.log('User '+post.author+' is banned, skipping his post:' + post.url);
-			continue;
+			user_banned = true;
+			break;
 		}
 	  }   
+	if (user_banned) continue;
+	
+	//go back only to predefined days in history
+	if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
+			dateSurpassed += 1;
+			continue;
+		}
 
     results.push(post);
+  }
+  //if we got to old posts and received at least 10 posts, inform calling function that no need to move forward further
+  if (results.length == 0 && dateSurpassed>10){
+	return -1;
   }
   return results;
     

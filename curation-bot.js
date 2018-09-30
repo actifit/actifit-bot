@@ -4,6 +4,7 @@ var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
 var moment = require('moment');
+const MongoClient = require('mongodb').MongoClient;
 
 var account = null;
 var last_trans = 0;
@@ -16,16 +17,31 @@ var last_voted = 0;
 var vote_time;
 var last_votes = Array();
 var skip = false;
-var version = '0.0.1';
+var version = '0.3.4';
 var error_sent = false;
 
+var crypto = require('crypto');
+
 steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
+//steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
 
 utils.log("* START - Version: " + version + " *");
 
 // Load the settings from the config file
 loadConfig();
 var botNames;
+
+
+// Connection URL
+const url = config.mongo_uri;
+var db;
+var collection;
+// Database Name
+const db_name = config.db_name;
+const collection_name = 'banned_accounts';
+
+var banned_users;
+
 
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
@@ -50,7 +66,25 @@ if (fs.existsSync('members.json')) {
   utils.log('Loaded ' + members.length + ' members.');
 }
 
+
+// Use connect method to connect to the server
+MongoClient.connect(url, function(err, client) {
+	if(!err) {
+	  console.log("Connected successfully to server");
+
+	  db = client.db(db_name);
+
+	  // Get the documents collection
+	  collection = db.collection(collection_name);
+	  //only start the process once we connected to the DB
 startProcess();
+	} else {
+		utils.log(err, 'api');
+	}
+  
+});
+
+
 // Schedule to run every minute
 setInterval(startProcess, 60 * 1000);
 
@@ -83,17 +117,35 @@ async function startProcess() {
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
 
+  console.log('found banned users');
+  //console.log(banned_users);
+  
+  /*for (var n = 0; n < banned_users.length; n++) {
+  console.log(banned_users[n].user);
+            //if (post.author == banned_users[n].user){
+				//utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
+				//user_banned = true;
+				//break;
+			//}
+          }
+  return;*/
+
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
     var vp = utils.getVotingPower(account);
 
     if (config.detailed_logging)
-      utils.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+      utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
-    console.log('Voting Power: ' + utils.format(vp / 100) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+    console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
     // We are at voting power kick start - time to vote!
-    if (vp >= config.vp_kickstart) {
+	//console.log(vp >= parseFloat(config.vp_kickstart)/100);
+    if (vp >= parseFloat(config.vp_kickstart)/100) {
+		console.log('lets vote');
       skip = true;
+	  
+		//grab banned user list before rewarding
+		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	  
 	  var query = {tag: config.main_tag, limit: 100};
 	  votePosts = Array();
@@ -207,8 +259,8 @@ function processVotes(query, subsequent) {
 		
 		//check if user is banned
 		var user_banned = false;
-		for (var n = 0; n < config.banned_users.length; n++) {
-            if (post.author == config.banned_users[n]){
+		for (var n = 0; n < banned_users.length; n++) {
+            if (post.author == banned_users[n].user){
 				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
 				user_banned = true;
 				break;
@@ -217,13 +269,13 @@ function processVotes(query, subsequent) {
         if (user_banned) continue;
 		
 		//skip any posts that are more than 1.5 days old
-		if((new Date() - new Date(post.created + 'Z')) >= (1.5 * 24 * 60 * 60 * 1000)) {
+		if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
 			continue;
 		}
-		
+		var step_count = -1;
         try {
           post.json = JSON.parse(post.json_metadata);
-          var step_count = post.json.step_count;
+          step_count = post.json.step_count;
           if (step_count < 5000)
             continue;
           else if (step_count < 6000)
@@ -236,6 +288,8 @@ function processVotes(query, subsequent) {
             post.rate_multiplier = 0.65;
           else if(step_count < 10000)
             post.rate_multiplier = 0.8;
+		  else if(step_count > 150000)
+			continue;
           else
             post.rate_multiplier = 1;
         } catch (err) {
@@ -243,6 +297,26 @@ function processVotes(query, subsequent) {
           console.log(err);
           continue;
         }
+		
+		
+		//check if the post has an encryption key val, and ensure it is the proper one
+		if (post.json.actiCrVal){
+			var txt_to_encr = post.author + post.permlink + step_count ;
+			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+			encr_txt += cipher.final('hex');
+			//test the result to the post's relevant data
+			if (post.json.actiCrVal != encr_txt){
+				//wrong, skip post
+				console.log('post has incorrect actiCrVal');
+				continue;
+			}
+			//console.log('post is valid');
+		}else{
+			console.log('post does not contain actiCrVal');
+			continue;
+		}
+
 		
 		
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);
@@ -324,9 +398,9 @@ function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
   sendVote(posts.pop(), 20, power_per_vote)
   .then( res => {
-    // If there are more bids, vote on the next one after 10 seconds
+    // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 10000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 3000);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -373,7 +447,7 @@ function sendVote(post, retries, power_per_vote) {
                         .catch(err => {
                             reject(err);
                         })
-                }, 10000);
+                }, 3000);
             else 
                 resolve(result);   
         } else {
@@ -422,9 +496,11 @@ function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier,
     // Replace variables in the promotion content
     content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{milestone\}/g, milestone_txt).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 
+		//adding proper meta content for later relevant reward via afit_tokens data
+		var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, afit_tokens: token_count };
     
       // Broadcast the comment
-      steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, '{"app":"communitybot/' + version + '"}', function (err, result) {
+		steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
           if (!err && result) {
           utils.log('Posted comment: ' + permlink);
           resolve(result);
