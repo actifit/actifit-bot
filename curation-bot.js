@@ -107,8 +107,6 @@ async function startProcess() {
     else {
       account = result[0];
 
-      // Check if there are any rewards to claim.
-      claimRewards();
     }
   });
 
@@ -117,7 +115,7 @@ async function startProcess() {
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
 
-  console.log('found banned users');
+  //console.log('found banned users');
   //console.log(banned_users);
   
   /*for (var n = 0; n < banned_users.length; n++) {
@@ -138,19 +136,33 @@ async function startProcess() {
       utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
     console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+	
     // We are at voting power kick start - time to vote!
 	//console.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100) {
+		
+		// Check if there are any rewards to claim before voting
+		claimRewards();
+	
 		console.log('lets vote');
 		skip = true;
 		  
+		console.log('fetched banned users list');  
 		//grab banned user list before rewarding
 		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	  
 		var query = {tag: config.main_tag, limit: 100};
 		votePosts = Array();
 		processVotes(query, false);      
-    }
+    }else{
+		//if we're not voting, let's check to claim some more discounted account spots
+		/*utils.getRC(config.account).then(function(results){
+			console.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + results.fullin);
+		}, function(err) {
+			console.log("Error fetching RC");
+			console.log(err);
+		});*/
+	}
     
   } else if(skip)
     skip = false;

@@ -279,7 +279,8 @@ async function getBenefactorRewards (start, end, txStart, totalSp) {
       let op = txs[1].op
       // Look for delegation operations
       if (op[0] === 'comment_benefactor_reward') {
-        let newSp = vestsToSteemPower(op[1].reward)
+		//console.log(op[1]);
+        let newSp = vestsToSteemPower(op[1].vesting_payout)
         totalSp = totalSp + newSp
       }
     } else if (date < start) break

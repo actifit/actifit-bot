@@ -2,7 +2,6 @@ var fs = require("fs");
 const steem = require('steem');
 var _ = require('lodash');
 const axios = require('axios');
-
 var config;
 
 steem.api.setOptions({ url: 'https://api.steemit.com' });
@@ -65,92 +64,6 @@ var HOURS = 60 * 60;
 			
 			console.log(currentManaPerc);
 		return currentManaPerc;
-	}
-	
-	//implement a get current Resource Credits function for normal operations consumption
-	function getRC(account_name){
-		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
-		return new Promise(function(fulfill,reject){
-			var request = require("request");
-			let location = "https://api.steemit.com";
-			
-			/*var query = axios.post(location, {"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":[name]}}).then(function(result){
-				console.log(result);
-			}, function(error){
-				console.log(error);
-			});*/
-			/*var jq = require('jquery');
-			
-			//var deferred = $.Deferred();
-			let param={"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":name}};
-			
-			jq.ajax({
-			  url: "https://api.steemit.com/",
-			  type: "POST",
-			  data: JSON.stringify(param),
-			  success: function(res){
-				//deferred.resolve(res);
-				console.log(res);
-				fulfill(res);
-			  },
-			  error:function(e){
-				console.log(e);
-				//deferred.reject(err);
-			  }
-			});
-		  //return deferred.promise();
-		  return;*/
-			
-			var options = {
-				url: "https://api.steemit.com/",
-				data: JSON.stringify('{"jsonrpc":"2.0", "method":"condenser_api.get_account_bandwidth", "params":["steemit","forum"], "id":1}'),
-				type: 'POST',
-			};
-
-			function callback(error, response, body) {
-				if (!error && response.statusCode == 200) {
-					console.log(response);
-					console.log(body);
-				}else{
-					console.log(error);
-				}
-			}
-
-			request(options, callback);
-			/*request.post({
-				//headers: {'content-type' : 'application/json'},
-				url: location,
-				data: data,
-				//json: true,
-			}, function (err, response, body) {
-				try {
-					console.log(body);
-					if(err){
-						console.log(err);
-						return;
-					}
-					console.log(body);
-					const STEEM_RC_MANA_REGENERATION_SECONDS =432000;
-					const estimated_max = parseFloat(response.result.rc_accounts["0"].max_rc);
-					const current_mana = parseFloat(response.result.rc_accounts["0"].rc_manabar.current_mana);
-					const last_update_time = parseFloat(response.result.rc_accounts["0"].rc_manabar.last_update_time);
-					const diff_in_seconds = Math.round(Date.now()/1000-last_update_time);
-					let estimated_mana = (current_mana + diff_in_seconds * estimated_max / STEEM_RC_MANA_REGENERATION_SECONDS);
-					if (estimated_mana > estimated_max)
-						estimated_mana = estimated_max;
-					const estimated_pct = estimated_mana / estimated_max * 100;
-					const res= {"current_mana": current_mana, "last_update_time": last_update_time,
-						  "estimated_mana": estimated_mana, "estimated_max": estimated_max, "estimated_pct": estimated_pct.toFixed(2),"fullin":timeTilFullPower(estimated_pct*100)};
-					console.log(res);
-					fulfill(res);
-					
-				} catch (err) {
-					console.log('Error ' + err);
-
-				}
-			});*/
-			
-		});
 	}
 
  function getVoteRShares(voteWeight, account, power) {
@@ -336,7 +249,7 @@ function format(n, c, d, t) {
 	  }   
 	if (user_banned) continue;
 	
-	//go back only to predefined days in history
+	//go back only to 3.5 days in history
 	if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
 			dateSurpassed += 1;
 			continue;
@@ -421,7 +334,6 @@ function format(n, c, d, t) {
 
  module.exports = {
    getVotingPower: getVotingPower,
-   getRC: getRC,
    getVoteValue: getVoteValue,
    timeTilFullPower: timeTilFullPower,
    getVestingShares: getVestingShares,
