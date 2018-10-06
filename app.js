@@ -472,4 +472,4 @@ app.get('/getRank/:user', async function (req, res) {
 	}
 });
 
-app.listen(process.env.PORT || 3900);
+app.listen(process.env.PORT || 3000);
