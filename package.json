@@ -5,7 +5,8 @@
   "main": "curation-bot.js",
   "dependencies": {
     "axios": "^0.18.0",
-    "dsteem": "^0.9.0",
+    "cheerio": "^1.0.0-rc.2",
+    "dsteem": "^0.10.1",
     "express": "^4.16.2",
     "jquery": "^3.3.1",
     "lodash": "^4.17.10",
@@ -24,11 +25,10 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "curate": "node curation-bot.js",
-    "import": "node save-data.js",
     "delegate": "node delegations.js",
     "api": "node app.js",
-    "all": "node app.js | node save-data.js | node delegations.js | node curation-bot.js",
-    "start": "node app.js | node save-data.js | node delegations.js | node curation-bot.js"
+    "all": "node app.js | node delegations.js | node curation-bot.js",
+    "start": "node app.js | node delegations.js | node curation-bot.js"
   },
   "engines": {
     "node": "10.3.0"

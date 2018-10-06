@@ -35,13 +35,13 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 
-		updateUserTokens();
+		/*updateUserTokens();
 		runPostsProcess();
 		//run every 31 mins
 		setInterval(runPostsProcess, 31 * 60 * 1000);
 		//run every 40 mins
 		setInterval(updateUserTokens, 41 * 60 * 1000);
-
+		*/
 	} else {
 		utils.log(err, 'import');
 		/*mail.sendPlainMail('Database Error', err, '')
