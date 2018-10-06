@@ -422,7 +422,7 @@ app.get('/getRank/:user', async function (req, res) {
 		
 		var delegation_score = 0;
 		if (userDelegations != null){
-			utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
+			delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
 		}
 		
 		user_rank += delegation_score;
@@ -433,7 +433,7 @@ app.get('/getRank/:user', async function (req, res) {
 		
 		var afit_tokens_score = 0;
 		if (userTokens != null){
-			utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+			afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
 		}
 		
 		user_rank += afit_tokens_score;
