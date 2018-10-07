@@ -6,6 +6,9 @@ var _ = require('lodash');
 var moment = require('moment');
 const MongoClient = require('mongodb').MongoClient;
 
+const cheerio = require('cheerio')
+const axios = require('axios');
+
 var account = null;
 var last_trans = 0;
 var members = [];
@@ -18,9 +21,89 @@ var vote_time;
 var last_votes = Array();
 var skip = false;
 var version = '0.3.4';
+
+//version of the reward system
+var reward_sys_version = 'v0.2';
+
 var error_sent = false;
 
 var crypto = require('crypto');
+
+const activity_rules = [
+	[4999,0],
+	[5999,0.20],
+	[6999,0.35],
+	[7999,0.50],
+	[8999,0.65],
+	[9999,0.80],
+	[10000,1.00]
+]
+
+const content_rules = [
+	[99,0],
+	[399,0.20],
+	[799,0.35],
+	[1199,0.50],
+	[1599,0.65],
+	[1999,0.80],
+	[2000,1.00]
+]
+
+const img_rules = [
+	[0,0],
+	[1,0.2],
+	[2,0.4],
+	[3,0.6],
+	[4,0.8],
+	[5,1]
+]
+
+const vid_rules = [
+	[0,0],
+	[1,1]
+]
+
+const upv_rules = [
+	[0,0],
+	[10,0.2],
+	[20,0.4],
+	[30,0.6],
+	[50,0.8],
+	[100,1]
+]
+
+const cmts_rules = [
+	[0,0],
+	[2,0.2],
+	[4,0.4],
+	[6,0.6],
+	[8,0.8],
+	[10,1]
+]
+
+//our pre-defined image pool
+const actifit_img_urls =  [
+	"https://cdn.steemitimages.com/DQmXv9QWiAYiLCSr3sKxVzUJVrgin3ZZWM2CExEo3fd5GUS/sep3.png",
+	"https://cdn.steemitimages.com/DQmRgAoqi4vUVymaro8hXdRraNX6LHkXhMRBZxEo5vVWXDN/ACTIVITYCOUNT.png",
+	"https://cdn.steemitimages.com/DQmZ6ZT8VaEpaDzB16qZzK8omffbWUpEpe4BkJkMXmN3xrF/ACTIVITYTYPE.png",
+	"https://cdn.steemitimages.com/DQmdnh1nApZieHZ3s1fEhCALDjnzytFwo78zbAY5CLUMpoG/TRACKM.png",
+	"https://cdn.steemitimages.com/DQmfSsFiXem7AxWG1NCiYYPAjtT4Y7LR8FsXpfsZQe7XqPC/h1.png",
+	"https://cdn.steemitimages.com/DQmVqJVEWUwicFRtkEz2WYq2mDH61mQLDsrzN1yBrKLrpyZ/w1a.png",
+	"https://cdn.steemitimages.com/DQmPJ2Vvi3mBQXKHoy5CTG7fyLFWMG8JaAZ8y1XZFeDkRUC/bd1.png",
+	"https://cdn.steemitimages.com/DQmZ2Lfwg77FLaf3YpU1VPLsJvnBt1F8DG8y6t6xUAKnsYq/w1.png",
+	"https://cdn.steemitimages.com/DQmbbAAFy6hwwBWqtSmcSwosTyNZi9rcd6GNeugQRY9MF1h/t1.png",
+	"https://cdn.steemitimages.com/DQmbaoNBT5Unnjqh8JgP6TPj4mFKFnyKkLgP6eDYnnkiLkB/c1.png",
+	
+	"https://cdn.steemitimages.com/DQmQqfpSmcQtfrHAtzfBtVccXwUL9vKNgZJ2j93m8WNjizw/l5.png",
+	"https://cdn.steemitimages.com/DQmbWy8KzKT1UvCvznUTaFPw6wBUcyLtBT5XL9wdbB7Hfmn/l6.png",
+	
+	"https://cdn.steemitimages.com/DQmNp6YwAm2qwquALZw8PdcovDorwaBSFuxQ38TrYziGT6b/A-20.png", 
+	"https://cdn.steemitimages.com/DQmY5UUP99u5ob3D8MA9JJW23zXLjHXHSRofSH3jLGEG1Yr/A-10.png", 
+	"https://cdn.steemitimages.com/DQmRDW8jdYmE37tXvM6xPxuNnzNQnUJWSDnxVYyRJEHyc9H/A-14.png", 
+	"https://cdn.steemitimages.com/DQmPscjCVBggXvJT2GaUp66vbtyxzdzyHuhnzc38WDp4Smg/A-3.png", "https://cdn.steemitimages.com/DQmVoLkmU47N4fM75HVY7se7JiMzdXhQKQUZ5fyCDwh1BrE/A-13.png",
+	"https://cdn.steemitimages.com/DQmcngR7AdBJio52C5stkD5C7vgsQ1yDH57Lb4J96Pys4a9/A-6.png","https://cdn.steemitimages.com/DQmdL69SXfqqKKoaEC55u3wsiMyAhcSErdK1fYjckAUyMCz/A-2.png", "https://cdn.steemitimages.com/DQmRgZTP4R6q9DfAWf9dNuqXWgvxkduxuH5QJfeyUVEqsk9/A-8.png", "https://cdn.steemitimages.com/DQmWzwdS5u4G1GheceM1bmBC3HL6zWubUGYbPkCmEcEDXrD/A-4.png", "https://cdn.steemitimages.com/DQmUVjgmJHvtbYB2APdxqNxxkZeJ2KvPeXEE7v3BpxGJkbR/A-18.png", "https://cdn.steemitimages.com/DQmdMW7LzuiKLi9vaEWsXnWGcU1oMHbF4983L16CE63dvwz/A-17.png",
+	"https://cdn.steemitimages.com/DQmVD3pXR4EHzYeCapMNSanTeK9wGJeJ24XYJhZSUmjJReR/A-11.png", "https://cdn.steemitimages.com/DQmY67NW9SgDEsLo2nsAw4nYcddrTjp4aHNLyogKvGuVMMH/A-9.png", "https://cdn.steemitimages.com/DQmcrdacUAEHoeiX9gNVAiiL5iydmJoPve2nXpzszNtJZPb/A-12.png", "https://cdn.steemitimages.com/DQmbP8GuFvcHUyh7bKDheDN5iz8ERPCYzMaSVoRT2R5ZYPE/A-15.png","https://cdn.steemitimages.com/DQmW1VsUNbEjTUKawau4KJQ6agf41p69teEvdGAj1TMXmuc/A-5.png",
+	"https://cdn.steemitimages.com/DQmeBn1PLf6a3QaXjM23EbQcaKtfDckgtGPHE4DApoUeBEJ/A-1.png", "https://cdn.steemitimages.com/DQmV7NRosGCmNLsyHGzmh4Vr1pQJuBPEy2rk3WvnEUDxDFA/A-21.png", "https://cdn.steemitimages.com/DQmdNAWWwv6MAJjiNUWRahmAqbFBPxrX8WLQvoKyVHHqih1/A-19.png","https://cdn.steemitimages.com/DQmVNqM8wQj2TnfwqSPYtfAuPHYjeBXSFekCHGZw9K3B9Gi/A-16.png", "https://cdn.steemitimages.com/DQma7nn1yV2w9iY6qXDBJUoTWkELTYxot7R9eoG1M3Tbtqn/A-7.png"];
 
 steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
 //steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
@@ -33,15 +116,22 @@ var botNames;
 
 
 // Connection URL
-const url = config.mongo_uri;
+var url = config.mongo_uri;
+
+//check if this is a test scenario to use local DB url
+if (config.testing){
+	url = config.mongo_local;
+}
+console.log('db url:'+url);
 var db;
 var collection;
-// Database Name
-const db_name = config.db_name;
+
+var db_name = config.db_name;
 const collection_name = 'banned_accounts';
 
 var banned_users;
 
+var moderator_list;
 
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
@@ -86,7 +176,11 @@ startProcess();
 
 
 // Schedule to run every minute
+if (!config.testing){
 setInterval(startProcess, 60 * 1000);
+}else{
+	setTimeout(startProcess, 20 * 1000);
+}
 
 
 var votePosts;
@@ -107,8 +201,6 @@ async function startProcess() {
     else {
       account = result[0];
 
-      // Check if there are any rewards to claim.
-      claimRewards();
     }
   });
 
@@ -117,7 +209,7 @@ async function startProcess() {
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
 
-  console.log('found banned users');
+  //console.log('found banned users');
   //console.log(banned_users);
   
   /*for (var n = 0; n < banned_users.length; n++) {
@@ -138,18 +230,49 @@ async function startProcess() {
       utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
     console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+	
     // We are at voting power kick start - time to vote!
 	//console.log(vp >= parseFloat(config.vp_kickstart)/100);
-    if (vp >= parseFloat(config.vp_kickstart)/100) {
+    if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
+		// Check if there are any rewards to claim before voting
+		if (!config.testing){
+			claimRewards();
+		}
+	
 		console.log('lets vote');
       skip = true;
 	  
+		console.log('fetch banned users list');  
 		//grab banned user list before rewarding
 		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+	  
+		//grab list of moderators
+		var moderator_api_url = config.api_url+'moderators';
+		var moderator_info = await axios.get(moderator_api_url);
+		console.log(moderator_info.data);
+		var moderator_array = moderator_info.data;
+		moderator_list = [];
+		for (var mod_it=0;mod_it<moderator_array.length;mod_it++){
+			moderator_list.push(moderator_array[mod_it].name);
+		}
+		console.log(moderator_list);
 	  
 	  var query = {tag: config.main_tag, limit: 100};
 	  votePosts = Array();
       processVotes(query, false);      
+    }else{
+		//if we're not voting, let's check to claim some more discounted account spots
+		utils.getRC(config.account).then(function(results){
+			console.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
+			if (results.estimated_pct>config.account_claim_rc_min){
+				//if we reached min threshold, claim more spots for discounted accounts
+				utils.claimDiscountedAccount();
+			}
+			
+		}, function(err) {
+			console.log("Error fetching RC");
+			console.log(err);
+		});
     }
     
   } else if(skip)
@@ -158,16 +281,23 @@ async function startProcess() {
     console.log('Loading account data...');
   else console.log('Voting... or waiting for a day to pass');
 }
-
+//var post_scores = [];
 function processVotes(query, subsequent) {
   
 
-  steem.api.getDiscussionsByCreated(query, function (err, result) {
+  steem.api.getDiscussionsByCreated(query, async function (err, result) {
     if (result && !err) {
       is_voting = true;
       
       utils.log(result.length + ' posts to process...');      
 
+		//initialize inserting posts to db
+		
+		var bulk = db.collection('posts').initializeUnorderedBulkOp();
+		
+		//connect to the token_transactions table to start rewarding
+		var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
+		
       for(var i = 0; i < result.length; i++) {
         var post = result[i];
 
@@ -185,11 +315,6 @@ function processVotes(query, subsequent) {
 				query['start_permlink'] = post.permlink;
 				query['start_author'] = post.author;									
 			}
-        // Make sure the post is less than 6.5 days
-        /*if((new Date() - new Date(post.created + 'Z')) >= (6.5 * 24 * 60 * 60 * 1000)) {
-          utils.log('This post is too old for a vote: ' + post.url);
-          continue;
-        }*/
 
         // Make sure the post is older than config time
         if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
@@ -272,36 +397,15 @@ function processVotes(query, subsequent) {
 		if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
 			continue;
 		}
-		var step_count = -1;
+			
         try {
+			
           post.json = JSON.parse(post.json_metadata);
-          step_count = post.json.step_count;
-          if (step_count < 5000)
-            continue;
-          else if (step_count < 6000)
-            post.rate_multiplier = 0.2;
-          else if(step_count < 7000)
-            post.rate_multiplier = 0.35;
-          else if(step_count < 8000)
-            post.rate_multiplier = 0.5;
-          else if(step_count < 9000)
-            post.rate_multiplier = 0.65;
-          else if(step_count < 10000)
-            post.rate_multiplier = 0.8;
-		  else if(step_count > 150000)
-			continue;
-          else
-            post.rate_multiplier = 1;
-        } catch (err) {
-          utils.log('Error parsing json metadata');
-          console.log(err);
-          continue;
-        }
 		
 		
 		//check if the post has an encryption key val, and ensure it is the proper one
 		if (post.json.actiCrVal){
-			var txt_to_encr = post.author + post.permlink + step_count ;
+					var txt_to_encr = post.author + post.permlink + post.json.step_count ;
 			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
 			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
 			encr_txt += cipher.final('hex');
@@ -317,11 +421,155 @@ function processVotes(query, subsequent) {
 			continue;
 		}
 
+				/**************** Post Score calculation section *******************/
+				
+				/******************* activity count criteria *********************/
+				
+				//calculate activity count score
+				post.activity_score = utils.calcScore(activity_rules, config.activity_factor, post.json.step_count);
+				
+				//skip post if it has less than min activity recorded
+				if (post.activity_score == 0){
+					continue;
+				}
+				
+				/******************* content criteria *********************/
+				const $ = cheerio.load('<div class="actifit_container">'+post.body+'</div>');
+				
+				//grab text without HTML, and remove extra spacing
+				var pure_text = $('.actifit_container').text().replace(/\s+/g,' ');
+				
+				//calculate content score
+				post.content_score = utils.calcScore(content_rules, config.content_factor, pure_text.length);
+				
+				/******************* media criteria *********************/
+				
+				
+				//grab proper images, skipping our default images
+				
+				var new_imgs = 0;
+				
+				var recorded_imgs = [];
+				//go through each image from the content and check if it matches one of our existing images
+				$('img').each(function(i, elem) {
+					//if this image is not part of ours, add it
+					if (!actifit_img_urls.includes($(this).attr('src'))){
+						new_imgs += 1;
+						recorded_imgs.push($(this).attr('src'));
+						//console.log($(this).attr('src'));
+					}
+				});
+
+				//grab listing of recorded images as part of json
+				var json_img_list = post.json.image;
+				
+				//console.log(json_img_list);
+				
+				//try to see if some images were not captured by our approach for HTML content, and grab them from json meta
+				if (json_img_list.length>0){
+					for (let img_entry of json_img_list) {
+						//if this image is not part of ours, add it
+						if (!actifit_img_urls.includes(img_entry) && !recorded_imgs.includes(img_entry)){
+							new_imgs += 1;
+							recorded_imgs.push(img_entry);
+						}
+					};
+				}
+				
+				//console.log('2>>>new_imgs:'+new_imgs);
+				
+				//console.log('>>>> unique images:'+new_imgs);
+				//calculate img score
+				post.media_score = utils.calcScore(img_rules, config.media_factor, new_imgs);
+				
+				/******************* upvote criteria *********************/
+				
+				//calculate upvote score relying on positive votes only
+				post.upvote_score = utils.calcScore(upv_rules, config.upvotes_factor, post.net_votes);
+				//console.log('upvotes:'+post.net_votes);
+				
+				/***************** moderator upvote factor ******************/
+				
+				//check if a moderator upvoted the post to give it better reward
+				post.moderator_score = 0;
+				post.active_votes.some(function(vote){
+					if (moderator_list.includes(vote.voter)){
+						post.moderator_score = parseInt(config.moderator_upvote_factor);
+						//console.log('found moderator upvote'+vote.voter);
+						return true;
+					}
+				});
+				
+				//console.log(post.moderator_score);
+				
+				/******************* comments criteria *********************/
+				
+				
+				let comments = await steem.api.getContentRepliesAsync(post.author, post.permlink);
+				var matching_comment_count = 0;
+				for(var cmt_it = 0; cmt_it < comments.length; cmt_it++) {
+					//console.log('>>>>>>'+comments[cmt_it].body);
+					const $ = cheerio.load('<div class="comment_container">'+comments[cmt_it].body+'</div>');
+					var comment_pure = $('.comment_container').text().replace(/\s+/g,' ');
+					//console.log(comment_pure);
+					if (comment_pure.length > 50){
+						matching_comment_count += 1;
+					}
+					
+					//check if the comment is made by a moderator, if it is we need to reward the moderator
+					if (moderator_list.includes(comments[cmt_it].author)){
+						let comment_transaction = {
+							user: comments[cmt_it].author,
+							reward_activity: 'Moderator Comment',
+							token_count: parseInt(config.moderator_comment_reward),
+							url: post.url,
+							comment_url: comments[cmt_it].url,
+							date: comments[cmt_it].created
+						}
+						bulk_transactions.find(
+						{ 
+							user: comment_transaction.user,
+							reward_activity: comment_transaction.reward_activity,
+							url: comment_transaction.url,
+							comment_url: comment_transaction.comment_url
+						}).upsert().replaceOne(comment_transaction);
+						console.log('found comment>>>>');
+						console.log(comment_transaction);
+					}
+				}
+				//console.log("comments:"+matching_comment_count);
+				//calculate comment score
+				post.comment_score = utils.calcScore(cmts_rules, config.comments_factor, matching_comment_count);
+				
+				/******************* user rank criteria *********************/
+				//var request = require('request');
+				var rank_api_url = config.api_url+'getRank/'+post.author;
+				var user_rank_info = await axios.get(rank_api_url);
+				//console.log(user_rank_info.user_rank);
+				post.user_rank = user_rank_info.data.user_rank;
+				//calculate user rank score relying on positive votes only
+				post.user_rank_score = parseFloat(user_rank_info.data.user_rank)*parseInt(config.rank_factor)/100;
+				//console.log('rank'+post.user_rank_score);
+				
+				
+				//calculate total post score
+				post.post_score = post.activity_score + post.content_score + post.media_score + post.upvote_score + post.comment_score + post.moderator_score + post.user_rank_score;
+				
+				//rate multiplier to allow assigning proper steem upvote value per each post according to its post_score/afit payout
+				post.rate_multiplier = post.post_score / 100;
+				//post_scores.push([post.url,post.post_score]);
+				//console.log(post);
+			
+			} catch (err) {
+			  console.log('Error parsing json metadata');
+			  console.log(err);
+			  continue;
+			}
 		
 		
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);
         if (last_index != -1) {
-          console.log('---- User already has vote ------');
+				console.log('---- User already has post same date ------');
           let last_voted = votePosts[last_index];
           var last_date = moment(last_voted.created).format('D');
           var this_date = moment(post.created).format('D');
@@ -336,15 +584,104 @@ function processVotes(query, subsequent) {
             console.log('---- Moment-----');
             console.log(last_date);
             console.log(this_date);
+					continue;
           }          
-          
         } else {
-          console.log('Voting on: ' + post.url);
+			  //console.log('Voting on: ' + post.url);
           votePosts.push(post);
         }        
+			try{
+				console.log('going through '+post.url);
+				//insert post if not inserted before
+				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
+							   post
+							);
+				
+				//post token rewards DB transaction
+				
+				//by default the reward owner is the author
+				var reward_user = post.author;
+				var activity_type = 'Post';
+				var note = '';
+				var result;
+				//if we find this is a charity run, let's switch it to the actual charity name
+				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+					reward_user = post.json.charity;
+					activity_type = 'Charity Post';
+					note = 'Charity donation via activity by user '+post.author;
+				}		
+				let post_transaction = {
+					user: reward_user,
+					reward_activity: activity_type,
+					token_count: post.post_score,
+					url: post.url,
+					date: post.created,
+					note: note,
+					reward_system: reward_sys_version
+				}
+			  
+				bulk_transactions.find(
+				{ 
+					user: post_transaction.user,
+					reward_activity: post_transaction.reward_activity,
+					url: post_transaction.url
+				}).upsert().replaceOne(post_transaction); 
+				
+				//reward upvoters
+				//make sure we already have a positive rshares
+				var total_post_upv_shares = parseInt(post.vote_rshares);
+				if (total_post_upv_shares>0){
+					
+					//calculate max token payment based upon post pending payout
+					var max_afits = Math.min(parseFloat(post.pending_payout_value) * parseFloat(config.per_post_alloc_afits), parseFloat(config.per_post_alloc_afits));
+					//console.log('max afits '+max_afits);
+					post.active_votes.forEach(async vote => {
+
+						//grab user's contribution to the upvote pool
+						var upv_tokens = parseInt(vote.rshares);
+					
+						//skip self vote from rewards and make sure this is a positive upvote
+						if (post.author != vote.voter && upv_tokens>0){
+							//calculate the percentage of the user's contribution, and allocate him his AFIT tokens share
+							var voter_tokens = upv_tokens / total_post_upv_shares * max_afits;
+							voter_tokens = parseFloat(voter_tokens.toFixed(3));
+							let vote_transaction = {
+								user: vote.voter,
+								reward_activity: 'Post Vote',
+								token_count: voter_tokens,
+								url: post.url,
+								date: vote.time
       }
-      /*let testPost = {rate_multiplier: 0.8};
-      votePosts.push(testPost);*/
+							bulk_transactions.find(
+							{ 
+								user: vote_transaction.user,
+								reward_activity: vote_transaction.reward_activity,
+								url: vote_transaction.url
+							}).upsert().replaceOne(vote_transaction);
+							//transactions.push(vote_transaction);
+							
+							//console.log(vote_transaction);
+						}
+					});
+				}
+				//result = posts_collection.insert(post);
+			}catch(err){
+				console.log(err);
+			}
+		}//end of loop going through posts
+		
+		if (votePosts.length>0){
+			try{
+				//store posts
+				await bulk.execute();
+				//award transaction tokens
+				bulk_transactions.execute();
+			}catch(bulkerr){
+				console.log(bulkerr);
+			}
+		}
+	  
+	  
 		//if this is the first try, or the new count of posts is bigger than the one before, let's try adding again
 		if (!subsequent || votePosts.length>lastIterationCount){
 		
@@ -360,22 +697,28 @@ function processVotes(query, subsequent) {
 
 	      if (votePosts.length > 0) {
 	        utils.log(votePosts.length + ' posts to vote...');
-	        vote_data = utils.calculateVotes(votePosts, config.vote_weight);
+				var vote_data = utils.calculateVotes(votePosts, config.vote_weight);
 	        votePosts.sort(function(post1, post2) {
-	          // Ascending: first age less than the previous
-	          return post1.json.step_count - post2.json.step_count;
+				  //Sort posts by reverse score, so as when popping them we get sorted by highest
+				  return post1.post_score - post2.post_score;
 	        });
 	
-	        //utils.log(vote_data.total_votes + ' total votes to divide.');
+				
 	        utils.log(vote_data.power_per_vote + ' power per full vote.');
-	        utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
+				/*utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
 	        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
 	        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
 	        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
-	        utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');
-	        if(config.testing)
-	          return;
-	        else
+				utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');*/
+				
+				var tot_weight = 0;
+				for (var xx=0;xx<votePosts.length;xx++){
+					var vote_weight = Math.floor(votePosts[xx].rate_multiplier * vote_data.power_per_vote);
+					console.log('url:'+votePosts[xx].url+' VP:'+vote_weight)
+					tot_weight += vote_weight;
+				}
+				console.log('total weight consumed'+tot_weight);
+				
 	          votingProcess(votePosts, vote_data.power_per_vote);
 	
 	      } else {
@@ -410,6 +753,9 @@ function votingProcess(posts, power_per_vote) {
         is_voting = false;
         error_sent = false;
         saveState();
+		
+		//since we're done voting, we need to update all user tokens to reflect new rewards
+		updateUserTokens();
         //reportEmail(config.report_emails)
       }, 5000);
     }
@@ -421,9 +767,9 @@ function votingProcess(posts, power_per_vote) {
 
 function sendVote(post, retries, power_per_vote) {
   utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
-  var token_count = parseFloat(post.rate_multiplier)*100;
+	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
   
-  var vote_weight = Math.ceil(post.rate_multiplier * power_per_vote);
+	var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
   post_rank += 1;
   utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
@@ -434,13 +780,29 @@ function sendVote(post, retries, power_per_vote) {
   last_votes.push(post);
 
   return new Promise((resolve, reject) => {
+		if(config.testing){
+			//resolve('');
+			if(config.comment_location && config.comment){
+				setTimeout(function () { 	
+					sendComment(post, vote_weight)
+						.then( res => {
+							resolve('')
+						})
+						.catch(err => {
+							reject(err);
+						})
+				}, 3000);
+			}else{
+				resolve('');   
+			}
+		}else{
     steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
         if (!err && result) {
             utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
-            if(config.comment_location && config.comment)
+					if(config.comment_location && config.comment){
                 setTimeout(function () { 
-                    sendComment(post.author, post.permlink, vote_weight, post.rate_multiplier, post.json.step_count)
+							sendComment(post, vote_weight)
                         .then( res => {
                             resolve(res)
                         })
@@ -448,8 +810,9 @@ function sendVote(post, retries, power_per_vote) {
                             reject(err);
                         })
                 }, 3000);
-            else 
+					}else{
                 resolve(result);   
+					}
         } else {
             utils.log(err, result);
 
@@ -464,10 +827,45 @@ function sendVote(post, retries, power_per_vote) {
             }
         }
     });
+		}
   });
 }
 
-function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier, post_step_count) {
+
+//function handles updating current user token count
+async function updateUserTokens() {
+	console.log('---- Updating Users ----');
+
+	try{
+		//group all token transactions per user, and sum them to generate new total count
+		let query = await db.collection('token_transactions').aggregate([
+			{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
+			{ $sort: { tokens: -1 } },
+			{ $project: { 
+				 _id: "$_id",
+				 user: "$_id",
+				 tokens: "$tokens",
+				 }
+			 }
+			])
+	
+		let user_tokens = await query.toArray();
+		//remove old token count per user
+		await db.collection('user_tokens').remove({});
+		//insert new count per user
+		await db.collection('user_tokens').insert(user_tokens);
+	}catch(err){
+		console.log('>>save data error:'+err.message);
+	}
+}
+
+
+function sendComment(post, vote_weight) {
+	var parentAuthor = post.author;
+	var parentPermlink = post.permlink;
+	var rate_multiplier = post.rate_multiplier;
+	var post_step_count = post.json.step_count;
+	
   var content = null;
   // Return promise
   return new Promise((resolve, reject) => {
@@ -479,26 +877,16 @@ function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier,
     // Generate the comment permlink via steemit standard convention
     var permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
 
-	var token_count = parseFloat(rate_multiplier)*100;
-	var milestone_txt = "level 1 milestone";
-	if(token_count < 36)
-		milestone_txt = "level 2 milestone";
-	else if(token_count < 51)
-		milestone_txt = "level 3 milestone";
-	else if(token_count < 66)
-		milestone_txt = "level 4 milestone";
-	else if(token_count < 81)
-		milestone_txt = "level 5 milestone";
-	else
-		milestone_txt = "the top level milestone";
-
+			var token_count = post.post_score;//parseFloat(rate_multiplier)*100;
 	
     // Replace variables in the promotion content
-    content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{milestone\}/g, milestone_txt).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
+			content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 
-		//adding proper meta content for later relevant reward via afit_tokens data
-		var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, afit_tokens: token_count };
+			//replace(/\{milestone\}/g, milestone_txt).
     
+			//adding proper meta content for later relevant reward via afit_tokens data
+			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, afit_tokens: token_count, moderator_score: post.moderator_score, post_score: post.activity_score };
+			if (!config.testing){
       // Broadcast the comment
 		steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
           if (!err && result) {
@@ -509,8 +897,15 @@ function sendComment(parentAuthor, parentPermlink, vote_weight, rate_multiplier,
           reject(err);
           }
       });
-  } else
+			}else{
+				console.log('comment');
+				console.log(content);
+				console.log(jsonMetadata);
+				resolve('');
+			}
+		}else{
     reject('Failed to load content');
+		}
 });
   // Check if the bot should resteem this post
   /* if (config.resteem)
@@ -634,9 +1029,9 @@ function claimRewards() {
 
           // Send liquid post rewards to the specified account
           steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, account.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
-            if (err)
+						if (err){
               utils.log(err, response);
-            else {
+						}else{
               utils.log('$$$ Auto withdrawal - liquid post rewards: ' + account.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
             }
           });
