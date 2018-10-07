@@ -393,6 +393,8 @@ function format(n, c, d, t) {
 
  module.exports = {
    getVotingPower: getVotingPower,
+   getRC: getRC,
+   claimDiscountedAccount: claimDiscountedAccount,
    getVoteValue: getVoteValue,
    timeTilFullPower: timeTilFullPower,
    getVestingShares: getVestingShares,
