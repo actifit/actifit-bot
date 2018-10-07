@@ -2,6 +2,10 @@ var fs = require("fs");
 const steem = require('steem');
 var _ = require('lodash');
 const axios = require('axios');
+const dsteem = require('dsteem');
+
+const client = new dsteem.Client('https://api.steemit.com');
+		
 var config;
 
 steem.api.setOptions({ url: 'https://api.steemit.com' });
@@ -65,6 +69,60 @@ var HOURS = 60 * 60;
 			console.log(currentManaPerc);
 		return currentManaPerc;
  }
+
+	//implement a get current Resource Credits function for normal operations consumption
+	async function getRC(account_name){
+		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
+		//return new Promise(function(fulfill,reject){
+			//var request = require("request");
+			let location = "https://api.steemit.com";
+			var response = await axios.post(location, {"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":[account_name]}});
+			
+			console.log(response.data.result.rc_accounts);
+			
+			
+			
+			const STEEM_RC_MANA_REGENERATION_SECONDS =432000;
+			const estimated_max = parseFloat(response.data.result.rc_accounts["0"].max_rc);
+			const current_mana = parseFloat(response.data.result.rc_accounts["0"].rc_manabar.current_mana);
+			const last_update_time = parseFloat(response.data.result.rc_accounts["0"].rc_manabar.last_update_time);
+			const diff_in_seconds = Math.round(Date.now()/1000-last_update_time);
+			let estimated_mana = (current_mana + diff_in_seconds * estimated_max / STEEM_RC_MANA_REGENERATION_SECONDS);
+			if (estimated_mana > estimated_max)
+				estimated_mana = estimated_max;
+			const estimated_pct = estimated_mana / estimated_max * 100;
+			const res= {"current_mana": current_mana, "last_update_time": last_update_time,
+				  "estimated_mana": estimated_mana, "estimated_max": estimated_max, "estimated_pct": estimated_pct.toFixed(2),"fullin":timeTilFullPower(estimated_pct*100)};
+			console.log(res);
+			return res;
+			
+		//});
+	}
+	
+	//function handles claiming spots for accounts
+	async function claimDiscountedAccount(){
+		const claim_op = [
+			'claim_account',
+			{
+				creator: config.account,
+				fee: '0.000 STEEM',
+				extensions: [],
+			}
+		];
+		const ops = [claim_op];
+		const privateKey = dsteem.PrivateKey.fromString(
+							config.active_key
+						);
+		await client.broadcast.sendOperations(ops, privateKey).then(
+			function(result) {
+				console.log(result);
+				console.log('>>claimed discounted account spot');
+			},
+			function(error){
+				console.log(error);
+			}
+		);
+	}
 
  function getVoteRShares(voteWeight, account, power) {
      if (!account) {
@@ -194,6 +252,7 @@ function format(n, c, d, t) {
  // with 100 being the max 100% per single vote, and 1,000 being the max potentially used votes
  // so if we were to only consume 10 % of our VP, the weight would be set at 50,000 instead of default value of 100,000
  function calculateVotes(posts, weight) {
+	console.log('calculateVotes');
   if(typeof weight == 'undefined') {
     weight = 100000;
   }
