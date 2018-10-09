@@ -354,8 +354,10 @@ function format(n, c, d, t) {
   */
  function calcScore(rules_array, factor, value){
 	var result;
+	//console.log("rules_array.length:"+rules_array.length);
 	for (var i=0; i<rules_array.length; i++){
 		var rule = rules_array[i];
+		//console.log(value<=rule[0]);
 		if (value<=rule[0]){
 			result = factor * rule[1];
 			break;
@@ -364,6 +366,7 @@ function format(n, c, d, t) {
 			result = factor * rule[1];
 		}
 	}
+	//console.log('result:'+result);
 	return result;
 }
 
