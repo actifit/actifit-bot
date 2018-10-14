@@ -472,4 +472,38 @@ app.get('/getRank/:user', async function (req, res) {
 	}
 });
 
-app.listen(process.env.PORT || 3000);
+
+/* end point for getting a post's reward */
+app.get('/getPostReward', async function (req, res) {
+	
+	if (typeof req.query.user!= "undefined" && req.query.user!=null
+		&& typeof req.query.url!= "undefined" && req.query.url!=null){
+		var user = req.query.user;
+		var url = req.query.url;
+		console.log('url:'+url);
+		//default query
+		var query_json = {
+				"reward_activity": "Post",
+				"user": user,
+				"url":url
+		};
+		
+		let post_details = await db.collection('token_transactions').findOne(query_json, {fields : { _id:0} });
+		console.log(post_details);
+		//fixing token amount display for 3 digits
+		if (typeof post_details!= "undefined" && post_details!=null){
+			if (typeof post_details.token_count!= "undefined"){
+				res.header('Access-Control-Allow-Origin', '*');	
+				res.send({token_count: post_details.token_count});
+			}
+		}else{
+			res.header('Access-Control-Allow-Origin', '*');	
+			res.send({token_count: 0});
+		}
+	}else{
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send({token_count: 0});
+	}
+});
+
+app.listen(process.env.PORT || 3900);
