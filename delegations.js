@@ -1,5 +1,5 @@
 const dsteem = require('dsteem')
-const client = new dsteem.Client('https://steemd.privex.io')
+const client = new dsteem.Client('https://api.steemit.com')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
@@ -45,6 +45,9 @@ function runRewards(steemOnlyReward){
 		// Get the documents collection
 		collection = db.collection(collectionName)
 		
+		//updateUserTokens();
+		//return;
+		
 		//run for one day
 		var days = 1;
 		startProcess(days, steemOnlyReward);
@@ -81,6 +84,8 @@ async function startProcess (days, steemOnlyReward) {
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		await processTokenRewards(start, txEnd, days)
+		//update our user token count post reward
+		updateUserTokens();
 	}
 	var d = new Date();
 	var dayId = d.getDay();
@@ -486,4 +491,32 @@ async function updateProperties () {
   properties = await client.database.getDynamicGlobalProperties()
   totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+}
+
+//function handles updating current user token count
+async function updateUserTokens() {
+	console.log('---- Updating User Tokens ----');
+
+	try{
+		//group all token transactions per user, and sum them to generate new total count
+		let query = await db.collection('token_transactions').aggregate([
+			{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
+			{ $sort: { tokens: -1 } },
+			{ $project: { 
+				 _id: "$_id",
+				 user: "$_id",
+				 tokens: "$tokens",
+				 }
+			 }
+			])
+	
+		let user_tokens = await query.toArray();
+		//remove old token count per user
+		await db.collection('user_tokens').remove({});
+		//insert new count per user
+		await db.collection('user_tokens').insert(user_tokens);
+		console.log('---- Updating User Tokens Complete ----');
+	}catch(err){
+		console.log('>>save data error:'+err.message);
+	}
 }
