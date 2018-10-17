@@ -310,8 +310,10 @@ userRewardedPostCountFunc = async function(req, res){
 	if (typeof req.query.period != "undefined" && !isNaN(req.query.period)){
 		var days = req.query.period;
 		//console.log("days:"+days);
-		var startDate = moment().utc();
-		var endDate = moment().utc().subtract(days, 'days');
+		var startDate = moment(moment().utc().startOf('date').toDate());
+		var endDate = moment(moment().utc().startOf('date').subtract(days, 'days').toDate());
+		var startDateRegex = new RegExp ('^'+startDate); // /^2018-08-05/
+		var endDateRegex = new RegExp ('^'+endDate); // /^2018-08-05/
 		//console.log("startDate:"+startDate+" endDate:"+endDate);
 		//adjust query to include dates
 		query_json = {
