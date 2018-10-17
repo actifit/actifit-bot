@@ -310,18 +310,16 @@ userRewardedPostCountFunc = async function(req, res){
 	if (typeof req.query.period != "undefined" && !isNaN(req.query.period)){
 		var days = req.query.period;
 		//console.log("days:"+days);
-		var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		var endDate = moment(moment().utc().startOf('date').subtract(days, 'days').toDate()).format('YYYY-MM-DD');
-		var startDateRegex = new RegExp ('^'+startDate); // /^2018-08-05/
-		var endDateRegex = new RegExp ('^'+endDate); // /^2018-08-05/
+		var startDate = moment().utc();
+		var endDate = moment().utc().subtract(days, 'days');
 		//console.log("startDate:"+startDate+" endDate:"+endDate);
 		//adjust query to include dates
 		query_json = {
 				"reward_activity": "Post",
 				"user": user,
 				"date": {
-						"$gte": endDate,
-						"$lt": startDate
+						"$gte": new Date(endDate),
+						"$lt": new Date(startDate)
 					}
 		};
 	}
