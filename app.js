@@ -277,16 +277,24 @@ app.get('/upvoteCount', async function (req, res) {
 
 /* end point for counting number of rewarded posts on a certain date param (default current date) */
 app.get('/rewardedPostCount', async function (req, res) {
-		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		//fileName = "steemrewards"+fileName+".json";
-		var dateRegex = new RegExp ('^'+todayDate); // /^2018-08-05/
+		
+		var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 		if (req.query.targetDate){
-			dateRegex = new RegExp ('^'+req.query.targetDate);
+			startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
 		}
-		let query = await db.collection('token_transactions').find({
+		var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+		console.log("startDate:"+startDate+" endDate:"+endDate);
+		//adjust query to include dates
+		query_json = {
 				"reward_activity": "Post",
-				"date":  dateRegex
-		})
+				"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
+		};
+		
+		let query = await db.collection('token_transactions').find(query_json);
+		
 		try{
 			console.log('counting');
 			let rewarded_post_count = await query.count();
