@@ -1,5 +1,6 @@
 const dsteem = require('dsteem')
 const client = new dsteem.Client('https://api.steemit.com')
+//const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
@@ -21,6 +22,10 @@ let properties
 let totalVests
 let totalSteem
 
+let steemPrice = 1;
+let sbdPrice = 1;
+let newestTxId = -1;
+
 console.log('--- Reward script initialized ---');
 
 var schedule = require('node-schedule')
@@ -36,10 +41,14 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 runRewards(true);
 
 function runRewards(steemOnlyReward){
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
 	// Use connect method to connect to the server
-	MongoClient.connect(config.mongo_uri, async function (err, dbClient) {
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
 	  if (!err) {
-		console.log('Connected successfully to server: ' + config.mongo_uri)
+		console.log('Connected successfully to server: ' + mongo_conn)
 
 		db = dbClient.db(dbName)
 		// Get the documents collection
@@ -51,8 +60,11 @@ function runRewards(steemOnlyReward){
 		//run for one day
 		var days = 1;
 		startProcess(days, steemOnlyReward);
-		
 
+		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
+		setInterval(loadSteemPrices,5 * 60 * 1000);
+	  
+	  
 	  } else {
 		utils.log(err, 'delegations')
 		mail.sendPlainMail('Database Error', err, config.report_emails)
@@ -68,11 +80,171 @@ function runRewards(steemOnlyReward){
 	})
 }
 
+//function to grab latest payouts for beneficiaries and reward with AFIT tokens
+async function getBenefactorPosts (account, start, end) {
+
+  //connect to the token_transactions table to start transactions to users
+  var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
+
+  let totalSBD = 0
+  let totalSp = 0
+  let limit = 2000;
+  let txStart = -1;
+  
+  start = moment(start).format()
+  end = moment(end).format()
+  console.log(start)
+  console.log(end)
+  
+  //grab current AFIT price in USD
+  let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next()
+  console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
+  
+  // Query account history for delegations
+  properties = await client.database.getDynamicGlobalProperties()
+  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+  //console.log(properties);
+  const transactions = await client.database.call('get_account_history', [account, txStart, limit])
+  transactions.reverse()
+  let foundTx = false;
+  console.log("newestTxId:"+newestTxId);
+  let counter = 0;
+  for (let txs of transactions) {
+	if (counter == 0){
+		counter += 1;
+		//if this is not our first run, start from where we left
+		if (newestTxId==txs[0]){
+			//no new transactions, bail
+			console.log('we already went through last transaction');
+			break;
+		}else{
+			newestTxId = txs[0];
+			console.log('set newestTxId:'+newestTxId);
+		}
+	}
+    let date = moment(txs[1].timestamp).format()
+	
+    if (date >= start && date <= end) {
+	  console.log(txs[0]);
+      let op = txs[1].op
+      // Look for beneficiary payments
+      if (op[0] === 'comment_benefactor_reward') {
+		foundTx = true;
+		console.log('---------------------------------------');
+		//console.log(op);
+		let matchingAFIT = 0;
+		console.log(op[1]);
+        let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_payout).toFixed(3))
+		console.log("rewardedSP:"+rewardedSP);
+		//calculate dollar value
+		let steemInUSD = rewardedSP * steemPrice;
+		console.log("steemInUSD:"+steemInUSD);
+		
+		//convert to AFIT and add to total
+		matchingAFIT = steemInUSD / curAFITPrice.unit_price_usd;
+		console.log("matchingAFIT:"+matchingAFIT);
+		
+		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		
+		console.log("rewardedSBD:"+rewardedSBD);
+		
+		//calculate dollar value
+		let sbdInUSD = rewardedSBD * sbdPrice;
+		console.log("sbdInUSD:"+sbdInUSD);
+		
+		//convert to AFIT and add to total
+		let sbdToAFIT = sbdInUSD / curAFITPrice.unit_price_usd;
+		matchingAFIT += sbdToAFIT;
+		
+		//format to 3 decimals
+		matchingAFIT = parseFloat(matchingAFIT.toFixed(3));
+		
+		console.log("sbdToAFIT:"+sbdToAFIT);
+		
+		console.log("Total AFIT:"+matchingAFIT);
+		
+		let beneficSwapTansaction = {
+			user: op[1].author,
+			reward_activity: 'Full AFIT Payout',
+			url: op[1].permlink,
+			token_count: matchingAFIT,
+			orig_sbd_amount: rewardedSBD,
+			orig_steem_amount: rewardedSP,
+			date: new Date(date)
+		}
+		
+		//store this as a transaction
+		bulk_transactions.find(
+		{ 
+			user: beneficSwapTansaction.user,
+			reward_activity: beneficSwapTansaction.reward_activity,
+			url: beneficSwapTansaction.url
+		}).upsert().replaceOne(beneficSwapTansaction);
+
+      }
+    } else if (date < start){ 
+		break
+	}
+  }
+  //award transaction tokens
+  if (foundTx){
+	bulk_transactions.execute();
+	console.log('-- Processed Full AFIT Payouts --')
+	//once done, update user total token count
+	updateUserTokens();
+  }else{
+	console.log('-- No Posts to process --');
+  }
+  
+}
+
+//function to load relevant STEEM and SBD prices, and proceed with AFIT token swap/reward process
+function loadSteemPrices() {
+
+  console.log('-- start AFIT token swap process --')
+
+  // Require the "request" library for making HTTP requests
+  var request = require("request");
+
+  // Load the price feed data
+  request.get('https://api.coinmarketcap.com/v1/ticker/steem/', function (e, r, data) {
+    try {
+      steemPrice = parseFloat(JSON.parse(data)[0].price_usd);
+
+      console.log("Loaded STEEM price: " + steemPrice);
+	  
+	  // Load the price feed data
+	  request.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/', function (e, r, data) {
+		try {
+			sbdPrice = parseFloat(JSON.parse(data)[0].price_usd);
+
+			console.log("Loaded SBD price: " + sbdPrice);
+		  	
+			let days = 1;
+			let start = moment().utc().startOf('date').toDate()
+			let to = moment(start).subtract(days, 'days').toDate()
+		  
+			//bring the action
+			getBenefactorPosts(config.full_pay_benef_account,to, start);
+			
+		} catch (err) {
+		  console.log('Error loading SBD price: ' + err);
+		}
+	  });
+  
+    } catch (err) {
+      console.log('Error loading STEEM price: ' + err);
+    }
+  });
+}
+
 
 async function startProcess (days, steemOnlyReward) {
 	let end = 0
 	// Find last saved delegation transaction
 	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
+	console.log('last recorded delegation transaction');
 	console.log(lastTx)
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
