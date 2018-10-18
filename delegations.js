@@ -1,5 +1,6 @@
 const dsteem = require('dsteem')
 const client = new dsteem.Client('https://api.steemit.com')
+//const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
@@ -52,6 +53,9 @@ function runRewards(steemOnlyReward){
 		db = dbClient.db(dbName)
 		// Get the documents collection
 		collection = db.collection(collectionName)
+		
+		//updateUserTokens();
+		//return;
 		
 		//run for one day
 		var days = 1;
@@ -240,6 +244,7 @@ async function startProcess (days, steemOnlyReward) {
 	let end = 0
 	// Find last saved delegation transaction
 	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
+	console.log('last recorded delegation transaction');
 	console.log(lastTx)
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
@@ -251,6 +256,8 @@ async function startProcess (days, steemOnlyReward) {
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		await processTokenRewards(start, txEnd, days)
+		//update our user token count post reward
+		updateUserTokens();
 	}
 	var d = new Date();
 	var dayId = d.getDay();
@@ -317,9 +324,11 @@ async function processSteemRewards (start) {
   const from = moment(to).subtract(7, 'days').toDate()
   Promise.all([getAcumulatedSteemPower(from, to, true), getBenefactorRewards(to, start, -1)]).then(values => {
     const activeDelegations = values[0].users
-    const steemRewards = values[1]
+    const steemRewards = values[1].split(' ')[0]
+	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = values[0].totalSteem
     const rewardPerSteem = steemRewards / totalDelegatedSteem
+	const rewardPerSBD = sbdRewards / totalDelegatedSteem
     const rewards = _.map(activeDelegations, function (o) {
 	 //skip opt out users from reward
 		var user_opted_out = false;
@@ -335,7 +344,8 @@ async function processSteemRewards (start) {
 		if (!user_opted_out){
 			reward = {
         user: o.user,
-        steem: +(o.totalSteem * rewardPerSteem).toFixed(3)
+				steem: +(o.totalSteem * rewardPerSteem).toFixed(3),
+				sbd: +(o.totalSteem * rewardPerSBD).toFixed(3)
       }
 		}
 	
@@ -350,9 +360,11 @@ async function processSteemRewards (start) {
     })
     console.log(rewards)
     console.log("steem total beneficiary reward:"+steemRewards)
+	console.log("SBD total beneficiary reward:"+sbdRewards)
     const data = {
       rewards: rewards,
-      total: steemRewards,
+      totalSteem: steemRewards,
+	  totalSBD: sbdRewards,
       totalUsers: rewards.length
     }
 	
@@ -430,7 +442,8 @@ async function processDelegations (account, start, end) {
   }
 }
 
-async function getBenefactorRewards (start, end, txStart, totalSp) {
+async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
+  if (!totalSBD) totalSBD = 0
   if (!totalSp) totalSp = 0
   let limit = (txStart < 0) ? 10000 : Math.min(txStart, 10000)
   start = moment(start).format()
@@ -449,9 +462,11 @@ async function getBenefactorRewards (start, end, txStart, totalSp) {
       let op = txs[1].op
       // Look for delegation operations
       if (op[0] === 'comment_benefactor_reward') {
-		//console.log(op[1]);
+		console.log(op[1]);
         let newSp = vestsToSteemPower(op[1].vesting_payout)
         totalSp = totalSp + newSp
+		let newSBD = op[1].sbd_payout.split(' ')[0]
+		totalSBD += parseFloat(newSBD)
       }
     } else if (date < start) break
   }
@@ -463,7 +478,7 @@ async function getBenefactorRewards (start, end, txStart, totalSp) {
 
   console.log('-- Processed rewards ---')
   // console.log(totalSp.toFixed(3))
-  return +totalSp.toFixed(3)
+  return +totalSp.toFixed(3)+' ' +totalSBD.toFixed(3)
 }
 
 async function getActiveDelegations (start, excludeOn) {
@@ -648,4 +663,32 @@ async function updateProperties () {
   properties = await client.database.getDynamicGlobalProperties()
   totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+}
+
+//function handles updating current user token count
+async function updateUserTokens() {
+	console.log('---- Updating User Tokens ----');
+
+	try{
+		//group all token transactions per user, and sum them to generate new total count
+		let query = await db.collection('token_transactions').aggregate([
+			{ $group: { _id: "$user", tokens: { $sum: "$token_count" } } },
+			{ $sort: { tokens: -1 } },
+			{ $project: { 
+				 _id: "$_id",
+				 user: "$_id",
+				 tokens: "$tokens",
+				 }
+			 }
+			])
+	
+		let user_tokens = await query.toArray();
+		//remove old token count per user
+		await db.collection('user_tokens').remove({});
+		//insert new count per user
+		await db.collection('user_tokens').insert(user_tokens);
+		console.log('---- Updating User Tokens Complete ----');
+	}catch(err){
+		console.log('>>save data error:'+err.message);
+	}
 }
