@@ -524,7 +524,7 @@ function processVotes(query, subsequent) {
 							token_count: parseInt(config.moderator_comment_reward),
 							url: post.url,
 							comment_url: comments[cmt_it].url,
-							date: comments[cmt_it].created
+							date: new Date(comments[cmt_it].created)
 						}
 						bulk_transactions.find(
 						{ 
@@ -615,7 +615,7 @@ function processVotes(query, subsequent) {
 					reward_activity: activity_type,
 					token_count: post.post_score,
 					url: post.url,
-					date: post.created,
+					date: new Date(post.created),
 					note: note,
 					reward_system: reward_sys_version
 				}
@@ -650,7 +650,7 @@ function processVotes(query, subsequent) {
 								reward_activity: 'Post Vote',
 								token_count: voter_tokens,
 								url: post.url,
-								date: vote.time
+								date: new Date(vote.time)
       }
 							bulk_transactions.find(
 							{ 
