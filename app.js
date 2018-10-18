@@ -147,6 +147,49 @@ app.get('/delegationPayments', async function(req, res) {
 });
 
 
+/* end point for returning total payments (categorized by reward type as well as a full total) on a specific date */
+app.get('/totalTokensDistributed', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: 
+			{
+				"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+			}
+		},
+		{
+		   $group:
+			{
+			   _id: {reward_activity:"$reward_activity"},
+			   tokens_distributed: { $sum: "$token_count" },
+			}
+		}
+	   ]).toArray(function(err, results) {
+		res.header('Access-Control-Allow-Origin', '*');	
+		//also append total token count to the grouped display
+		let tot_tokens = 0;
+		for (let entry of results) {
+			tot_tokens += entry.tokens_distributed;
+		}
+		console.log(tot_tokens);
+		results.push([{"_id":null,"tokens_distributed":tot_tokens}]);
+		
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
 /* end point for returning count of posts/activities rewarded */
 app.get('/rewarded-activity-count', async function(req, res) {
 
@@ -469,6 +512,40 @@ app.get('/getRank/:user', async function (req, res) {
 		res.send(score_components);
 	}else{
 		res.send("");
+	}
+});
+
+
+/* end point for getting a post's reward */
+app.get('/getPostReward', async function (req, res) {
+	
+	if (typeof req.query.user!= "undefined" && req.query.user!=null
+		&& typeof req.query.url!= "undefined" && req.query.url!=null){
+		var user = req.query.user;
+		var url = req.query.url;
+		console.log('url:'+url);
+		//default query
+		var query_json = {
+				"reward_activity": "Post",
+				"user": user,
+				"url":url
+		};
+		
+		let post_details = await db.collection('token_transactions').findOne(query_json, {fields : { _id:0} });
+		console.log(post_details);
+		//fixing token amount display for 3 digits
+		if (typeof post_details!= "undefined" && post_details!=null){
+			if (typeof post_details.token_count!= "undefined"){
+				res.header('Access-Control-Allow-Origin', '*');	
+				res.send({token_count: post_details.token_count});
+			}
+		}else{
+			res.header('Access-Control-Allow-Origin', '*');	
+			res.send({token_count: 0});
+		}
+	}else{
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send({token_count: 0});
 	}
 });
 
