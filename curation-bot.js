@@ -566,30 +566,39 @@ function processVotes(query, subsequent) {
 			  continue;
 			}
 		
+			//due to the difference in server times, a user's post might have same date created.
+			//to avoid this issue, we will accept 2 posts for every user
+			//so we will check if 2 posts are already accumulated for the user, and if so reject the third
 		
         let last_index = _.findLastIndex(votePosts, ['author', post.author]);
-        if (last_index != -1) {
-				console.log('---- User already has post same date ------');
+			let first_index = _.findIndex(votePosts, ['author', post.author]);
+			
+			if (last_index != -1 && (first_index!=last_index)) {
+				console.log('---- User already has more than 2 posts in 24 hours ------');
           let last_voted = votePosts[last_index];
           var last_date = moment(last_voted.created).format('D');
+				let first_voted = votePosts[first_index];
+				var first_date = moment(first_voted.created).format('D');
           var this_date = moment(post.created).format('D');
-          if (last_date != this_date) {
-            console.log('Voting on: ' + post.url);
-            votePosts.push(post);
-          } else {
+				//if all 3 dates match, skip it
+				if ((last_date == this_date) && (first_date == this_date)) {
             console.log('---- Last voted -----');
             console.log(new Date (last_voted.created));
+					console.log('---- First voted -----');
+					console.log(new Date (first_voted.created));
             console.log('---- This voted -----');
             console.log(new Date (post.created));
             console.log('---- Moment-----');
             console.log(last_date);
+					console.log(first_date);
             console.log(this_date);
 					continue;
           }          
-        } else {
-			  //console.log('Voting on: ' + post.url);
-          votePosts.push(post);
         }        
+			
+			console.log('Voting on: ' + post.url);
+			votePosts.push(post);
+			
 			try{
 				console.log('going through '+post.url);
 				//insert post if not inserted before
