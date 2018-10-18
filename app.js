@@ -146,6 +146,49 @@ app.get('/delegationPayments', async function(req, res) {
 });
 
 
+/* end point for returning total payments (categorized by reward type as well as a full total) on a specific date */
+app.get('/totalTokensDistributed', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: 
+			{
+				"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+			}
+		},
+		{
+		   $group:
+			{
+			   _id: {reward_activity:"$reward_activity"},
+			   tokens_distributed: { $sum: "$token_count" },
+			}
+		}
+	   ]).toArray(function(err, results) {
+		res.header('Access-Control-Allow-Origin', '*');	
+		//also append total token count to the grouped display
+		let tot_tokens = 0;
+		for (let entry of results) {
+			tot_tokens += entry.tokens_distributed;
+		}
+		console.log(tot_tokens);
+		results.push([{"_id":null,"tokens_distributed":tot_tokens}]);
+		
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
 /* end point for returning count of posts/activities rewarded */
 app.get('/rewarded-activity-count', async function(req, res) {
 
@@ -253,16 +296,24 @@ app.get('/reblogCount', async function (req, res) {
 
 /* end point for counting number of upvotes on a certain date param (default current date) */
 app.get('/upvoteCount', async function (req, res) {
-		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		//fileName = "steemrewards"+fileName+".json";
-		var dateRegex = new RegExp ('^'+todayDate); // /^2018-08-05/
+
+		var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 		if (req.query.targetDate){
-			dateRegex = new RegExp ('^'+req.query.targetDate);
+			startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
 		}
-		let query = await db.collection('token_transactions').find({
+		var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+		console.log("startDate:"+startDate+" endDate:"+endDate);
+		//adjust query to include dates
+		query_json = {
 				"reward_activity": "Post Vote",
-				"date":  dateRegex
-		})
+				"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
+		};
+		
+		let query = await db.collection('token_transactions').find(query_json);
+
 		try{
 			console.log('counting');
 			let upvote_count = await query.count();
