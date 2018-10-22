@@ -248,9 +248,9 @@ async function startProcess (days, steemOnlyReward) {
 	console.log(lastTx)
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	if (!steemOnlyReward){
+	//if (!steemOnlyReward){
 		await processDelegations(config.account, -1, end)
-	}
+	//}
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
 	if (!steemOnlyReward){
