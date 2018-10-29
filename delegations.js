@@ -345,6 +345,11 @@ async function processSteemRewards (start) {
   console.log(config.pay_account)
   const to = moment(start).subtract(7, 'days').toDate()
   const from = moment(to).subtract(7, 'days').toDate()
+  
+  //load list of alt accounts to reward them instead of actual delegators
+  let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
+  console.log(altAccounts);
+  
   Promise.all([getAcumulatedSteemPower(from, to, true), getBenefactorRewards(to, start, -1)]).then(values => {
     const activeDelegations = values[0].users
     const steemRewards = values[1].split(' ')[0]
@@ -363,10 +368,21 @@ async function processSteemRewards (start) {
 			}
           }
 		
+		
+		let reward_user = o.user;
+		
+		//check if this user has an alt account with delegated rewards enabled
+		let delegator_entry = _.find(altAccounts, {'delegator': o.user, 'steem_reward_benefit': '1'});
+		
+		//if so reward the alt account instead
+		if (delegator_entry != null) {
+			reward_user = delegator_entry.alt_account;
+		}
+		
 		let reward = {};
 		if (!user_opted_out){
 			reward = {
-				user: o.user,
+				user: reward_user,
 				steem: +(o.totalSteem * rewardPerSteem).toFixed(3),
 				sbd: +(o.totalSteem * rewardPerSBD).toFixed(3)
 			  }
