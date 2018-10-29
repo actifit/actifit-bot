@@ -221,15 +221,15 @@ app.get('/topDelegators', async function (req, res) {
     res.send(delegatorList);
 });
 
-activeDelegationFunc = async function (req, res){
-	let user = await db.collection('active_delegations').findOne({_id: req.params.user}, {fields : { _id:0} });
+activeDelegationFunc = async function (userName){
+	let user = await db.collection('active_delegations').findOne({_id: userName}, {fields : { _id:0} });
 	console.log(user);
 	return user;
 }
 
 /* end point for returning a single user last recorded active delegation amount */
 app.get('/delegation/:user', async function (req, res) {
-	var user = await activeDelegationFunc(req, res);
+	var user = await activeDelegationFunc(req.params.user);
 	res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
@@ -474,12 +474,44 @@ app.get('/getRank/:user', async function (req, res) {
 		var user_rank = 0;
 		
 		//grab delegation amount
-		var userDelegations = await activeDelegationFunc(req, res);
+		var userDelegations = await activeDelegationFunc(req.params.user);
+		
+		let delegSP = 0;
+		//get current delegated SP if any
+		if (userDelegations != null){
+			console.log('already delegated');
+			delegSP = userDelegations.steem_power;
+		}
 		//console.log(userDelegations.steem_power);
 		
 		var delegation_score = 0;
-		if (userDelegations != null){
-			delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(userDelegations.steem_power));
+		
+		//check if the user has an alt account as beneficiary
+		let delegator_info = await getAltAccountStatusFunc(req.params.user);
+		//check if returned object is not empty
+		if (Object.keys(delegator_info).length > 0){
+			if (parseInt(delegator_info.user_rank_benefit) == 1){
+				//consider as no delegations
+				delegSP = 0;
+			}
+		}else{
+			//also check the other case where the account is an alt-account
+			delegator_info = await getAltAccountByNameFunc(req.params.user);
+			//check if returned object is not empty
+			if (Object.keys(delegator_info).length > 0){
+				if (parseInt(delegator_info.user_rank_benefit) == 1){
+					//get original user delegation amount
+					userDelegations = await activeDelegationFunc(delegator_info.delegator);		
+					if (userDelegations != null){
+						delegSP = userDelegations.steem_power;
+					}
+				}
+			}
+		}
+		
+		
+		if (parseFloat(delegSP) > 0){
+			delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(delegSP));
 		}
 		
 		user_rank += delegation_score;
@@ -529,6 +561,52 @@ app.get('/getRank/:user', async function (req, res) {
 	}
 });
 
+/* function handles the backbone for grabbing Alt Account Status */
+getAltAccountStatusFunc = async function (user){
+	let delegator_info = null;
+	if (typeof user!= "undefined" && user!=null){
+		//in this case, we check the status of a single user
+		var query_json = {
+			"delegator": user
+		};
+		
+		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {fields : { _id:0} });
+		if (delegator_info==null){
+			delegator_info = {};
+		}
+		console.log(delegator_info);
+	}else{
+		//alternatively grab all alt-account reward delegations
+		delegator_info = await db.collection('delegation_alt_beneficiaries').find().toArray();
+		console.log(delegator_info);
+	}
+	return delegator_info;
+}
+
+/* function handles checking if alt-account is linked to a delegator */
+getAltAccountByNameFunc = async function (targetUser){
+	let delegator_info = null;
+	if (typeof targetUser!= "undefined" && targetUser!=null){
+		//in this case, we check the status of a single user
+		var query_json = {
+			"alt_account": targetUser
+		};
+		
+		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {fields : { _id:0} });
+		if (delegator_info==null){
+			delegator_info = {};
+		}
+		console.log(delegator_info);
+	}
+	return delegator_info;
+}
+
+/* end point for getting list of SP delegator accounts who wish to move their user rank and/or rewards to their alt-accounts*/
+app.get('/getAltAccountStatus/:user?', async function (req, res) {
+	let delegator_info = await getAltAccountStatusFunc(req.params.user);
+	res.header('Access-Control-Allow-Origin', '*');	
+	res.send(delegator_info);
+});
 
 /* end point for getting a post's reward */
 app.get('/getPostReward', async function (req, res) {
