@@ -80,7 +80,7 @@ app.get('/transactions/:user?', async function (req, res) {
 		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
 	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
@@ -222,23 +222,28 @@ app.get('/topDelegators', async function (req, res) {
     res.send(delegatorList);
 });
 
-activeDelegationFunc = async function (req, res){
-	let user = await db.collection('active_delegations').findOne({_id: req.params.user}, {fields : { _id:0} });
+activeDelegationFunc = async function (userName){
+	let user = await db.collection('active_delegations').findOne({_id: userName}, {fields : { _id:0} });
 	console.log(user);
 	return user;
 }
 
 /* end point for returning a single user last recorded active delegation amount */
 app.get('/delegation/:user', async function (req, res) {
-	var user = await activeDelegationFunc(req, res);
+	var user = await activeDelegationFunc(req.params.user);
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
 
+moderatorsListFunc = async function () {
+	let moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
+	return moderatorList;
+}
+
 /* end point for returning current active moderators data by actifit */
 app.get('/moderators', async function (req, res) {
 	var moderatorList; 
-	moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
+	moderatorList = await moderatorsListFunc();
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(moderatorList);
 });
