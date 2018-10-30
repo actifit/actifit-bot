@@ -79,7 +79,7 @@ app.get('/transactions/:user?', async function (req, res) {
 		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(250).toArray();
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
 	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
@@ -234,10 +234,15 @@ app.get('/delegation/:user', async function (req, res) {
     res.send(user);
 });
 
+moderatorsListFunc = async function () {
+	let moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
+	return moderatorList;
+}
+
 /* end point for returning current active moderators data by actifit */
 app.get('/moderators', async function (req, res) {
 	var moderatorList; 
-	moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
+	moderatorList = await moderatorsListFunc();
     res.header('Access-Control-Allow-Origin', '*');	
     res.send(moderatorList);
 });
@@ -639,6 +644,65 @@ app.get('/getPostReward', async function (req, res) {
 		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: 0});
 	}
+});
+
+/* end point for capturing moderator activity on a specific date and for a specific period (defaults today and a single day activity) */
+app.get('/moderatorActivity', async function(req, res) {
+	let moderatorsList = await moderatorsListFunc();
+	
+	//default today
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	//default single day
+	let days = 1;
+	if (!isNaN(req.query.days)){
+		days = req.query.days;
+	}
+	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('team').aggregate([
+		{
+			$match: 
+			{
+				title:'moderator', 
+				status:'active'
+			}
+		},
+		{
+			$lookup: 
+			{
+				from: "token_transactions", 
+				localField: "name", 
+				foreignField: "user", 
+				as: "moderatorActivity"
+			}
+		}, 
+		{
+			$project: 
+			{
+				'_id':0,
+				items: 
+				{
+					$filter: {
+						input: "$moderatorActivity",
+						as: "singleEntry",
+						cond: { $and: [
+							{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+							{ "$gt": ["$$singleEntry.date", new Date(endDate)] }
+						] }
+					}
+				}
+			}
+		}
+	   ]).toArray(function(err, results) {
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
 });
 
 app.listen(process.env.PORT || 3000);
