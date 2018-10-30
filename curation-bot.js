@@ -894,7 +894,7 @@ function sendComment(post, vote_weight) {
 			//replace(/\{milestone\}/g, milestone_txt).
     
 			//adding proper meta content for later relevant reward via afit_tokens data
-			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, afit_tokens: token_count, moderator_score: post.moderator_score, post_score: post.activity_score };
+			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };
 			if (!config.testing){
       // Broadcast the comment
 		steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
