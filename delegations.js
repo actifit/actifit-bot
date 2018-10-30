@@ -287,8 +287,14 @@ async function processTokenRewards (start, end, days) {
 		console.log(">>>>went beyond rewards limit. Apply multiplier");
 	}
 	console.log(">>>>multiplier:"+multiplier);
+	
+	//load list of alt accounts to reward them instead of actual delegators
+	let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
+	console.log(altAccounts);
+	
 	//go through all delegators, and send out AFIT rewards
 	for (let user of acumulatedSteemPower.users) {
+	
 		//skip opt out users from reward
 		var user_opted_out = false;
 		for (var n = 0; n < config.exclude_rewards.length; n++) {
@@ -301,10 +307,24 @@ async function processTokenRewards (start, end, days) {
 		if (user_opted_out){
 			continue;
 		}
+		
+		let reward_user = user.user;
+		let reward_activity = 'Delegation';
+		
+		//check if this user has an alt account with delegated rewards enabled
+		let delegator_entry = _.find(altAccounts, {'delegator': user.user, 'reward_benefit': '1'});
+		
+		//if so reward the alt account instead
+		if (delegator_entry != null) {
+			reward_user = delegator_entry.alt_account;
+			reward_activity += ' On Behalf'; 
+		}
+	
 		let reward = {
-			user: user.user,
+			user: reward_user,
 			token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
-			reward_activity: 'Delegation',
+			reward_activity: reward_activity,
+			orig_account: user.user,
 			note: note,
 			date: end
 		}
@@ -322,6 +342,11 @@ async function processSteemRewards (start) {
   console.log(config.pay_account)
   const to = moment(start).subtract(7, 'days').toDate()
   const from = moment(to).subtract(7, 'days').toDate()
+  
+  //load list of alt accounts to reward them instead of actual delegators
+  let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
+  console.log(altAccounts);
+  
   Promise.all([getAcumulatedSteemPower(from, to, true), getBenefactorRewards(to, start, -1)]).then(values => {
     const activeDelegations = values[0].users
     const steemRewards = values[1].split(' ')[0]
@@ -340,10 +365,21 @@ async function processSteemRewards (start) {
 			}
           }
 		
+		
+		let reward_user = o.user;
+		
+		//check if this user has an alt account with delegated rewards enabled
+		let delegator_entry = _.find(altAccounts, {'delegator': o.user, 'steem_reward_benefit': '1'});
+		
+		//if so reward the alt account instead
+		if (delegator_entry != null) {
+			reward_user = delegator_entry.alt_account;
+		}
+		
 		let reward = {};
 		if (!user_opted_out){
 			reward = {
-        user: o.user,
+				user: reward_user,
 				steem: +(o.totalSteem * rewardPerSteem).toFixed(3),
 				sbd: +(o.totalSteem * rewardPerSBD).toFixed(3)
       }
