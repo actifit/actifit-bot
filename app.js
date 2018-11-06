@@ -473,7 +473,7 @@ app.get('/getRank/:user', async function (req, res) {
 			[4,0.40],
 			[6,0.60],
 			[8,0.80],
-			[10,1]
+			[9,1]
 		]
 		
 		var user_rank = 0;
