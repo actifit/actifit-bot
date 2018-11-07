@@ -673,6 +673,32 @@ app.get('/getPostFullAFITPayReward', async function (req, res) {
 });
 
 
+/* end point for returning total number of rewarded tokens to charities based upon user activity, along with unique user count who donated */
+app.get('/getCharityRewards', async function(req, res) {
+
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: {reward_activity:'Charity Post'}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   tokens_distributed: { $sum: "$token_count" },
+			   user_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		var output = 'rewarded users:'+results[0].user_count+',';
+		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
 /* end point for capturing moderator activity on a specific date and for a specific period (defaults today and a single day activity) */
 app.get('/moderatorActivity', async function(req, res) {
 	let moderatorsList = await moderatorsListFunc();
