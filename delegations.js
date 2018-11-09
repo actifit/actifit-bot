@@ -746,7 +746,7 @@ async function claimRewards(){
 	let privateKey = dsteem.PrivateKey.fromString(
         config.full_pay_posting_key
     );
-	//fetch account details first to use correct values for clai
+	//fetch account details first to use correct values for claim
 	let funds_account = await grabAccountDetails();
 	console.log(funds_account.reward_steem_balance);
 	console.log(funds_account.reward_sbd_balance);

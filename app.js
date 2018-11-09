@@ -651,7 +651,7 @@ app.get('/getPostReward', async function (req, res) {
 	}
 });
 
-/* end point for getting a post's full AFIT Pay reward */
+/* end point for retrieving a post's full AFIT Pay reward */
 app.get('/getPostFullAFITPayReward', async function (req, res) {
 	
 	if (typeof req.query.user!= "undefined" && req.query.user!=null
@@ -691,6 +691,33 @@ app.get('/getCharityRewards', async function(req, res) {
 	   ]).toArray(function(err, results) {
 		var output = 'rewarded users:'+results[0].user_count+',';
 		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
+
+/* end point for returning total number of AFIT tokens paid in return for full AFIT pay along with matching STEEM + SBD */
+app.get('/getFullAFITPayStats', async function(req, res) {
+
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: {"reward_activity": "Full AFIT Payout"}
+		},
+		{
+		   $group:
+			{
+				_id: null,
+				afit_tokens: { $sum: "$token_count" },
+				orig_sbd_amount: { $sum: "$orig_sbd_amount" },
+				orig_steem_amount: { $sum: "$orig_steem_amount" },
+				transaction_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
 		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
