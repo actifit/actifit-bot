@@ -473,7 +473,7 @@ app.get('/getRank/:user', async function (req, res) {
 			[4,0.40],
 			[6,0.60],
 			[8,0.80],
-			[10,1]
+			[9,1]
 		]
 		
 		var user_rank = 0;
@@ -613,17 +613,10 @@ app.get('/getAltAccountStatus/:user?', async function (req, res) {
 	res.send(delegator_info);
 });
 
-/* end point for getting a post's reward */
-app.get('/getPostReward', async function (req, res) {
-	
-	if (typeof req.query.user!= "undefined" && req.query.user!=null
-		&& typeof req.query.url!= "undefined" && req.query.url!=null){
-		var user = req.query.user;
-		var url = req.query.url;
-		console.log('url:'+url);
-		//default query
+/* function handles processing requests for getting AFIT token pay depending on reward activity type */
+getPostRewardFunc = async function(user, url, reward_activity){
 		var query_json = {
-				"reward_activity": "Post",
+			"reward_activity": reward_activity,
 				"user": user,
 				"url":url
 		};
@@ -633,18 +626,105 @@ app.get('/getPostReward', async function (req, res) {
 		//fixing token amount display for 3 digits
 		if (typeof post_details!= "undefined" && post_details!=null){
 			if (typeof post_details.token_count!= "undefined"){
+			return post_details.token_count;
+		}
+	}
+	//otherwise return no tokens
+	return 0;
+}
+
+/* end point for getting a post's reward */
+app.get('/getPostReward', async function (req, res) {
+	
+	if (typeof req.query.user!= "undefined" && req.query.user!=null
+		&& typeof req.query.url!= "undefined" && req.query.url!=null){
+		var user = req.query.user;
+		var url = req.query.url;
+		console.log('url:'+url);
+		//grab specific reward type for user and post
+		var token_count = await getPostRewardFunc(user, url, "Post");
 				res.header('Access-Control-Allow-Origin', '*');	
-				res.send({token_count: post_details.token_count});
-			}
+		res.send({token_count: token_count});
 		}else{
 			res.header('Access-Control-Allow-Origin', '*');	
 			res.send({token_count: 0});
 		}
+});
+
+/* end point for retrieving a post's full AFIT Pay reward */
+app.get('/getPostFullAFITPayReward', async function (req, res) {
+	
+	if (typeof req.query.user!= "undefined" && req.query.user!=null
+		&& typeof req.query.url!= "undefined" && req.query.url!=null){
+		var user = req.query.user;
+		var url = req.query.url;
+		
+		//for the full AFIT rewards, grab only permalink portion without the community and author name
+		url = url.substring(url.lastIndexOf('/')+1);
+		console.log('url:'+url);
+		//grab specific reward type for user and post
+		var token_count = await getPostRewardFunc(user, url, "Full AFIT Payout");
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send({token_count: token_count});
 	}else{
 		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: 0});
 	}
 });
+
+
+/* end point for returning total number of rewarded tokens to charities based upon user activity, along with unique user count who donated */
+app.get('/getCharityRewards', async function(req, res) {
+
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: {reward_activity:'Charity Post'}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   tokens_distributed: { $sum: "$token_count" },
+			   user_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		var output = 'rewarded users:'+results[0].user_count+',';
+		output += 'tokens distributed:'+results[0].tokens_distributed;
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
+
+/* end point for returning total number of AFIT tokens paid in return for full AFIT pay along with matching STEEM + SBD */
+app.get('/getFullAFITPayStats', async function(req, res) {
+
+	await db.collection('token_transactions').aggregate([
+		{
+			$match: {"reward_activity": "Full AFIT Payout"}
+		},
+		{
+		   $group:
+			{
+				_id: null,
+				afit_tokens: { $sum: "$token_count" },
+				orig_sbd_amount: { $sum: "$orig_sbd_amount" },
+				orig_steem_amount: { $sum: "$orig_steem_amount" },
+				transaction_count: { $sum: 1 }
+			}
+		}
+	   ]).toArray(function(err, results) {
+		res.header('Access-Control-Allow-Origin', '*');	
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
 
 /* end point for capturing moderator activity on a specific date and for a specific period (defaults today and a single day activity) */
 app.get('/moderatorActivity', async function(req, res) {
