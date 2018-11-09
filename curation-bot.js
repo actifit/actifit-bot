@@ -594,7 +594,24 @@ function processVotes(query, subsequent) {
             console.log(this_date);
 					continue;
           }          
+			}else if (last_index != -1){
+				console.log('last_index:'+last_index);
+				console.log(post.author+post.url);
+				//adding condition to reject a post if a prior one exists that is less than 6 hours away
+				let last_voted = votePosts[last_index];
+				//console.log(last_voted.author+last_voted.url);
+				var last_date = moment(last_voted.created).toDate();
+				var this_date = moment(post.created).toDate();
+				//check the hours difference
+				var hours_diff = Math.abs(this_date - last_date) / 36e5;
+				if (hours_diff<parseFloat(config.min_posting_hours_diff)){
+					//skip new post
+					console.log('hours difference:'+hours_diff+'...skipping');
+					continue;
+				}
+				
         }        
+			
 			
 			console.log('Voting on: ' + post.url);
 			votePosts.push(post);
