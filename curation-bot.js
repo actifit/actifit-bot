@@ -765,7 +765,7 @@ function processVotes(query, subsequent) {
 var post_rank = 0;
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
-  sendVote(posts.pop(), 20, power_per_vote)
+  sendVote(posts.pop(), 0, power_per_vote)
   .then( res => {
     // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
@@ -843,7 +843,7 @@ function sendVote(post, retries, power_per_vote) {
             utils.log(err, result);
 
              // Try again one time on error
-            if (retries < 1)
+					if (retries < 10)
             sendVote(post, retries + 1);
             else {
             var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='

@@ -81,7 +81,7 @@ function runRewards(steemOnlyReward){
 }
 
 //function to grab latest payouts for beneficiaries and reward with AFIT tokens
-async function getBenefactorPosts (account, start, end) {
+async function getBenefactorPosts (account, start) {
 
   //connect to the token_transactions table to start transactions to users
   var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
@@ -92,9 +92,8 @@ async function getBenefactorPosts (account, start, end) {
   let txStart = -1;
   
   start = moment(start).format()
-  end = moment(end).format()
-  console.log(start)
-  console.log(end)
+
+  console.log('start date:'+start)
   
   //grab current AFIT price in USD
   let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next()
@@ -125,7 +124,7 @@ async function getBenefactorPosts (account, start, end) {
 	}
     let date = moment(txs[1].timestamp).format()
 	
-    if (date >= start && date <= end) {
+    if (date >= start) {
 	  console.log(txs[0]);
       let op = txs[1].op
       // Look for beneficiary payments
@@ -226,7 +225,7 @@ function loadSteemPrices() {
 			let to = moment(start).subtract(days, 'days').toDate()
 		  
 			//bring the action
-			getBenefactorPosts(config.full_pay_benef_account,to, start);
+			getBenefactorPosts(config.full_pay_benef_account, to);
 			
 		} catch (err) {
 		  console.log('Error loading SBD price: ' + err);
@@ -248,7 +247,7 @@ async function startProcess (days, steemOnlyReward) {
 	console.log(lastTx)
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	if (!steemOnlyReward){
+	if (!testRun){
 	await processDelegations(config.account, -1, end)
 	}
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
@@ -257,7 +256,9 @@ async function startProcess (days, steemOnlyReward) {
 		console.log('processTokenRewards');
 		await processTokenRewards(start, txEnd, days)
 		//update our user token count post reward
+		if (!testRun){
 		updateUserTokens();
+	}
 	}
 	var d = new Date();
 	var dayId = d.getDay();
