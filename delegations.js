@@ -64,6 +64,8 @@ function runRewards(steemOnlyReward){
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
 		setInterval(loadSteemPrices,5 * 60 * 1000);
 	  
+		//claim rewards once per hour
+		setInterval(claimRewards,60 * 60 * 1000);
 
 	  } else {
 		utils.log(err, 'delegations')
@@ -727,5 +729,46 @@ async function updateUserTokens() {
 		console.log('---- Updating User Tokens Complete ----');
 	}catch(err){
 		console.log('>>save data error:'+err.message);
+	}
+}
+//function handles fetching account details for later use when claiming rewards
+async function grabAccountDetails(){
+	console.log('grabbing fund account details');
+	let account = await client.database.call('get_accounts', [[config.full_pay_benef_account]]);
+	console.log(account);
+	return account[0];
+}
+//function handles claiming pending account rewards
+async function claimRewards(){
+	//sign key properly to function with dsteem requirement
+	let privateKey = dsteem.PrivateKey.fromString(
+        config.full_pay_posting_key
+    );
+	//fetch account details first to use correct values for claim
+	let funds_account = await grabAccountDetails();
+	console.log(funds_account.reward_steem_balance);
+	console.log(funds_account.reward_sbd_balance);
+	console.log(funds_account.reward_vesting_balance);
+	//if we have any value to claim, proceed
+	if (parseFloat(funds_account.reward_steem_balance) > 0 || parseFloat(funds_account.reward_sbd_balance) > 0 || parseFloat(funds_account.reward_vesting_balance) > 0) {
+		const op = [
+			'claim_reward_balance',
+			{
+				account: config.full_pay_benef_account,
+				reward_steem: funds_account.reward_steem_balance.split(' ')[0] + ' STEEM',
+				reward_sbd: funds_account.reward_sbd_balance.split(' ')[0] + ' SBD',
+				reward_vests: funds_account.reward_vesting_balance.split(' ')[0] + ' VESTS',
+			},
+		];
+		client.broadcast.sendOperations([op], privateKey).then(
+			function(result) {
+				console.log(result);
+			},
+			function(error) {
+				console.log(error);
+			}
+		)
+	}else{
+		console.log('no rewards to claim for now');
 	}
 }
