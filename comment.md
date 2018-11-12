@@ -11,6 +11,7 @@ To improve your post score, get to the max activity count, work on improving you
 Actifit is now a Steem Witness. If you believe in our project, consider [voting for us](https://steemconnect.com/sign/account-witness-vote?witness=actifit&approve=1)
 
 ![rulersig2.jpg](https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg)
+Vote for [Actifit as a Witness](https://steemconnect.com/sign/account-witness-vote?witness=actifit&approve=1)
 Chat with us on [discord](https://discord.gg/aHtcA6r) | Visit our [website](https://actifit.io/) 
 [Download on playstore](https://bit.ly/actifit-app) | [Download on app store](https://bit.ly/actifit-ios)
 [FAQs](https://steemit.com/actifit/@katerinaramm/actifit-app-or-rewarding-fitness-activity-with-tokens-and-steemit-upvotes-faqs) | [Text Tutorial](https://steemit.com/utopian-io/@katerinaramm/tutorial-for-actifit-app-android) | [Video Tutorial](https://youtu.be/tqkaDoonyvI)</sub>
