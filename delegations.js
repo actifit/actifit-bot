@@ -224,7 +224,7 @@ function loadSteemPrices() {
 
 			console.log("Loaded SBD price: " + sbdPrice);
 		  	
-			let days = 1;
+			let days = 2;
 			let start = moment().utc().startOf('date').toDate()
 			let to = moment(start).subtract(days, 'days').toDate()
 		  
