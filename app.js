@@ -257,14 +257,26 @@ app.get('/ambassadors', async function (req, res) {
 
 /* end point for returning current top AFIT token holders */
 app.get('/topTokenHolders', async function (req, res) {
-	var delegatorList; 
+	var tokenHolders; 
 	if (isNaN(req.query.count)){
-		delegatorList = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
 	}else{
-		delegatorList = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
+	}
+	let output = tokenHolders;
+	if (req.query.pretty){
+		output = '#|Token Holder | AFIT Tokens Held |<br/>';
+		output += '|---|---|---|<br/>';
+		for(var i = 0; i < tokenHolders.length; i++) {
+			let tokenHolder = tokenHolders[i];
+			output += (i+1) + '|';
+			output += '@'+tokenHolder.user + '|';
+			output += gk_add_commas(tokenHolder.tokens.toFixed(3)) + '|';
+			output += '<br/>';
+		}
 	}
     res.header('Access-Control-Allow-Origin', '*');	
-    res.send(delegatorList);
+    res.send(output);
 });
 
 
@@ -784,5 +796,20 @@ app.get('/moderatorActivity', async function(req, res) {
 	   });
 
 });
+
+function gk_add_commas(nStr) {
+	if (isNaN(nStr)){ 
+		return nStr;
+	}
+	nStr += '';
+	var x = nStr.split('.');
+	var x1 = x[0];
+	var x2 = x.length > 1 ? '.' + x[1] : '';
+	var rgx = /(\d+)(\d{3})/;
+	while (rgx.test(x1)) {
+		x1 = x1.replace(rgx, '$1' + ',' + '$2');
+	}
+	return x1 + x2;
+}	
 
 app.listen(process.env.PORT || 3000);
