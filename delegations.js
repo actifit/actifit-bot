@@ -59,7 +59,7 @@ function runRewards(steemOnlyReward){
 		//return;
 		
 		//run for one day
-		var days = 1;
+		var days = 5;
 		startProcess(days, steemOnlyReward);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
@@ -68,7 +68,7 @@ function runRewards(steemOnlyReward){
 		//claim rewards once per hour
 		setInterval(claimRewards,60 * 60 * 1000);
 	  
-	    //loadSteemPrices();
+	    loadSteemPrices();
 	  } else {
 		utils.log(err, 'delegations')
 		mail.sendPlainMail('Database Error', err, config.report_emails)
