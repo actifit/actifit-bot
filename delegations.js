@@ -68,7 +68,7 @@ function runRewards(steemOnlyReward){
 		//claim rewards once per hour
 		setInterval(claimRewards,60 * 60 * 1000);
 	  
-	    loadSteemPrices();
+	    //loadSteemPrices();
 	  } else {
 		utils.log(err, 'delegations')
 		mail.sendPlainMail('Database Error', err, config.report_emails)
@@ -233,7 +233,7 @@ function loadSteemPrices() {
 
 			console.log("Loaded SBD price: " + sbdPrice);
 		  	
-			let days = 5;
+			let days = 1;
 			let start = moment().utc().startOf('date').toDate()
 			let to = moment(start).subtract(days, 'days').toDate()
 		  
