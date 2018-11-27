@@ -21,6 +21,7 @@ var vote_time;
 var last_votes = Array();
 var skip = false;
 var version = '0.3.4';
+var lucky_winner_id = -1;
 
 //version of the reward system
 var reward_sys_version = 'v0.2';
@@ -162,7 +163,7 @@ if (fs.existsSync('members.json')) {
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
-	  console.log("Connected successfully to server");
+	  console.log("Connected successfully to server "+url);
 
 	  db = client.db(db_name);
 
@@ -615,11 +616,11 @@ function processVotes(query, subsequent) {
 			}
 			
 			
-			console.log('Voting on: ' + post.url);
+			//console.log('Voting on: ' + post.url);
 			votePosts.push(post);
 			
 			try{
-				console.log('going through '+post.url);
+				console.log('going through selected post '+post.url);
 				//insert post if not inserted before
 				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 							   post
@@ -702,6 +703,10 @@ function processVotes(query, subsequent) {
 			try{
 				//store posts
 				await bulk.execute();
+			}catch(bulkerr){
+				console.log(bulkerr);
+			}
+			try{
 				//award transaction tokens
 				bulk_transactions.execute();
 			}catch(bulkerr){
@@ -718,6 +723,7 @@ function processVotes(query, subsequent) {
 			//call again with subsequent enabled to avoid duplicate posts, disparse the calls by 1 sec to avoid API timeouts
 			console.log("query:"+query['tag']);
 			console.log("query:"+query['start_permlink']);
+			
 			setTimeout(processVotes, 1000, query, true);
 		
 		}else{
@@ -731,11 +737,70 @@ function processVotes(query, subsequent) {
 		
 				
 				utils.log(vote_data.power_per_vote + ' power per full vote.');
-				/*utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
-				utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
-				utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
-				utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
-				utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');*/
+				
+				
+				/************************* winner reward ******************************/
+			
+				//let's pick a random winner to double up his votes and adjust his AFIT reward score
+				
+				try{
+					lucky_winner_id = utils.generateRandomNumber(1, votePosts.length);
+					let post = votePosts[lucky_winner_id];
+					
+					console.log('before');
+					console.log(votePosts[lucky_winner_id].post_score);
+					
+					let reward_user = post.author;
+					let activity_type = 'Post';
+					let note = '';
+					let reward_factor = 2;
+					
+					//if we find this is a charity run, let's switch it to the actual charity name
+					if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+						reward_user = post.json.charity;
+						activity_type = 'Charity Post';
+						note = 'Charity donation via actifit post by user '+post.author;
+					}	
+					
+					var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
+					
+					let post_transaction = {
+						user: reward_user,
+						reward_activity: activity_type,
+						token_count: post.post_score * reward_factor,
+						orig_token_count: post.post_score,
+						url: post.url,
+						date: new Date(post.created),
+						note: note,
+						lucky_winner: 1,
+						reward_factor: reward_factor,
+						reward_system: reward_sys_version
+					}
+					
+					//adjust post_score according to reward
+					post.post_score = post.post_score * reward_factor;
+					post.rate_multiplier = post.post_score / 100;
+					post.reward_factor = reward_factor;
+					post.lucky_winner = 1;
+				  
+					bulk_transactions.find(
+					{ 
+						user: post_transaction.user,
+						reward_activity: post_transaction.reward_activity,
+						url: post_transaction.url
+					}).upsert().replaceOne(post_transaction); 		
+
+					
+					//award transaction tokens
+					await bulk_transactions.execute();
+				}catch(bulkerr){
+					console.log(bulkerr);
+				}
+				console.log('after');
+				console.log(votePosts[lucky_winner_id].post_score);
+				
+				/********************* proceed with STEEM upvotes ************************/
+				
 				
 				var tot_weight = 0;
 				for (var xx=0;xx<votePosts.length;xx++){
@@ -911,6 +976,12 @@ function sendComment(post, vote_weight) {
 			content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
 			
 			//replace(/\{milestone\}/g, milestone_txt).
+			//if user is lucky winner, add a relevant message
+			if (typeof post.lucky_winner != 'undefined' && post.lucky_winner != '' && post.lucky_winner != 'undefined'){
+				content = content.replace(/\{lucky_reward}/g,'**You were also selected randomly as a LUCKY WINNER for the day. Your rewards were DOUBLED - DOUBLE CONGRATS!!**') 
+			}else{
+				content = content.replace(/\{lucky_reward}/g,'') 
+			}
 			
 			//adding proper meta content for later relevant reward via afit_tokens data
 			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };

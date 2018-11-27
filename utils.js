@@ -393,6 +393,13 @@ function format(n, c, d, t) {
   }
 }
 
+/* generate & return a random int value between min and max */
+function generateRandomNumber(min , max) {
+    
+   let random_number = Math.random() * (max - min) + min;
+   return Math.floor(random_number);
+}
+
 
  module.exports = {
    getVotingPower: getVotingPower,
@@ -412,5 +419,6 @@ function format(n, c, d, t) {
    getConfig: getConfig,
    loadBots: loadBots,
    checkBeneficiary: checkBeneficiary,
-   asyncForEach: asyncForEach
+   asyncForEach: asyncForEach,
+   generateRandomNumber: generateRandomNumber
  }
