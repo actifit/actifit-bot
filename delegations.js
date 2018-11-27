@@ -59,8 +59,8 @@ function runRewards(steemOnlyReward){
 		//return;
 		
 		//run for one day
-		var days = 5;
-		startProcess(days, steemOnlyReward);
+		var delegation_days = 1;
+		startProcess(delegation_days, steemOnlyReward);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
 		setInterval(loadSteemPrices,5 * 60 * 1000);
@@ -233,9 +233,9 @@ function loadSteemPrices() {
 
 			console.log("Loaded SBD price: " + sbdPrice);
 		  	
-			let days = 1;
+			let afit_swap_days = 1;
 			let start = moment().utc().startOf('date').toDate()
-			let to = moment(start).subtract(days, 'days').toDate()
+			let to = moment(start).subtract(afit_swap_days, 'days').toDate()
 		  
 			//bring the action
 			getBenefactorPosts(config.full_pay_benef_account, to);
