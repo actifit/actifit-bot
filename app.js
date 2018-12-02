@@ -726,6 +726,7 @@ app.get('/getFullAFITPayStats', async function(req, res) {
 				afit_tokens: { $sum: "$token_count" },
 				orig_sbd_amount: { $sum: "$orig_sbd_amount" },
 				orig_steem_amount: { $sum: "$orig_steem_amount" },
+				orig_sp_amount: { $sum: "$orig_sp_amount" },
 				transaction_count: { $sum: 1 }
 			}
 		}
