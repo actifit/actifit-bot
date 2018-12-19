@@ -798,6 +798,14 @@ app.get('/moderatorActivity', async function(req, res) {
 
 });
 
+/* end point to grab current AFIT token price */
+app.get('/curAFITPrice', async function(req, res) {
+	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
+	res.header('Access-Control-Allow-Origin', '*');	
+	res.send(curAFITPrice);
+});
+
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
 		return nStr;
