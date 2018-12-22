@@ -70,7 +70,7 @@ app.get('/user/:user', async function (req, res) {
     res.send(user);
 });
 
-/* end point for user transactions display (per user or general actifit token transactions, limited by 250 */
+/* end point for user transactions display (per user or general actifit token transactions, limited by 1000 */
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
 	var transactions;
@@ -83,6 +83,21 @@ app.get('/transactions/:user?', async function (req, res) {
 	}
 	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
+});
+
+/* end point for user referrals display (per user or general referrals */
+app.get('/signups/:user?', async function (req, res) {
+	let query = {account_created: true};
+	var referrals;
+	if(req.params.user){
+		query['referrer'] = req.params.user;
+		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	}else{
+		//only limit returned referrals in case this is a general query
+		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+	}
+	res.header('Access-Control-Allow-Origin', '*');	
+    res.send(referrals);
 });
 
 /* end point for returning number of awarded users and tokens distributed */
@@ -821,4 +836,4 @@ function gk_add_commas(nStr) {
 	return x1 + x2;
 }	
 
-app.listen(process.env.PORT || 3000);
+app.listen(process.env.PORT || 3120);
