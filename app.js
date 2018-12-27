@@ -64,6 +64,7 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (req, res){
 	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
@@ -939,7 +940,7 @@ app.get('/confirmPayment', async function(req,res){
 		let spToDelegate =4;
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
-			res.write('test');
+			res.write('ka');
 		}, 3000);
 		try{
 			//first step is to ensure memo has not been tampered with, nor has it been claimed before
@@ -967,7 +968,9 @@ app.get('/confirmPayment', async function(req,res){
 		}
 		//we're done, let's clear our running interval
 		clearInterval(intID);
-		res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+		//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+		res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+		res.end();
 	}
 });
 
