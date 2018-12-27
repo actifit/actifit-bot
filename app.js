@@ -939,7 +939,7 @@ app.get('/confirmPayment', async function(req,res){
 		let spToDelegate =4;
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
-			res.write('');
+			res.write('test');
 		}, 3000);
 		try{
 			//first step is to ensure memo has not been tampered with, nor has it been claimed before
