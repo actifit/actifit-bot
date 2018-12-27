@@ -262,7 +262,7 @@ async function startProcess() {
 		}
 		console.log(moderator_list);
 	  
-		var query = {tag: config.main_tag, limit: 100, start_author:'', start_permlink:''};
+		var query = {tag: config.main_tag, limit: 100};
 		votePosts = Array();
 		processVotes(query, false);      
     }else{
