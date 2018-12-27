@@ -937,7 +937,7 @@ app.get('/confirmPayment', async function(req,res){
 	}else{
 		let paymentReceivedTx = '';
 		let accountCreated = false;
-		let spToDelegate =4;
+		let spToDelegate = 10;
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
 			res.write(' ');
