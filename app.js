@@ -937,6 +937,10 @@ app.get('/confirmPayment', async function(req,res){
 		let paymentReceivedTx = '';
 		let accountCreated = false;
 		let spToDelegate =4;
+		//keeping request alive to avoid timeouts
+		let intID = setInterval(function(){
+			res.write('');
+		}, 3000);
 		try{
 			//first step is to ensure memo has not been tampered with, nor has it been claimed before
 			//to do that, let's try to find if any signup has been done using this memo
@@ -961,6 +965,8 @@ app.get('/confirmPayment', async function(req,res){
 		}catch(err){
 			console.log(err);
 		}
+		//we're done, let's clear our running interval
+		clearInterval(intID);
 		res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
 	}
 });
