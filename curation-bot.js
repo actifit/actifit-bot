@@ -270,12 +270,10 @@ async function startProcess() {
 		//if we're not voting, let's check to claim some more discounted account spots
 		utils.getRC(config.account).then(function(results){
 			console.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
-			if (results.estimated_pct>40){
+			if (results.estimated_pct>config.account_claim_rc_min){
 				//if we reached min threshold, claim more spots for discounted accounts
-				await utils.claimDiscountedAccount();
-			}
-			utils.createAccount();
-			
+				utils.claimDiscountedAccount();
+			}			
 		}, function(err) {
 			console.log("Error fetching RC");
 			console.log(err);
