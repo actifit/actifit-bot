@@ -1,6 +1,5 @@
 var fs = require("fs");
 const steem = require('steem');
-const dsteem = require('dsteem')
 var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
