@@ -4,6 +4,7 @@ const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const moment = require('moment')
 
+var appPort = process.env.PORT || 3120;
 
 var app = express();
 
@@ -13,7 +14,10 @@ app.set('view engine', 'handlebars');
 var config = utils.getConfig();
 
 // Connection URL
-const url = config.mongo_uri;
+let url = config.mongo_uri;
+if (config.testing){
+	url = config.mongo_local;
+}
 
 var db;
 var collection;
@@ -35,6 +39,25 @@ MongoClient.connect(url, function(err, client) {
 	}
   
 });
+
+//allows setting acceptable origins to be included across all function calls
+app.use(function(req, res, next) {
+  var allowedOrigins = ['*'];
+  var origin = req.headers.origin;
+  if(allowedOrigins.indexOf(origin) > -1){
+	   res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  return next();
+});
+
+app.use('/confirmPayment', function (req, res, next) {
+  var allowedOrigins = ['actifit.io'];
+  var origin = req.headers.origin;
+  if(allowedOrigins.indexOf(origin) > -1){
+	   res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  return next();
+})
 
 app.get('/', function (req, res) {
 	var data = {};
@@ -66,7 +89,6 @@ grabUserTokensFunc = async function (req, res){
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await grabUserTokensFunc(req,res);
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
 
@@ -81,7 +103,6 @@ app.get('/transactions/:user?', async function (req, res) {
 		//only limit returned transactions in case this is a general query
 		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
-	res.header('Access-Control-Allow-Origin', '*');	
     res.send(transactions);
 });
 
@@ -96,7 +117,6 @@ app.get('/signups/:user?', async function (req, res) {
 		//only limit returned referrals in case this is a general query
 		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
-	res.header('Access-Control-Allow-Origin', '*');	
     res.send(referrals);
 });
 
@@ -118,7 +138,6 @@ app.get('/user-tokens-info', async function(req, res) {
 	   ]).toArray(function(err, results) {
 		var output = 'rewarded users:'+results[0].user_count+',';
 		output += 'tokens distributed:'+results[0].tokens_distributed;
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
@@ -153,7 +172,6 @@ app.get('/delegationPayments', async function(req, res) {
 			}
 		}
 	   ]).toArray(function(err, results) {
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
@@ -189,7 +207,6 @@ app.get('/totalTokensDistributed', async function(req, res) {
 			}
 		}
 	   ]).toArray(function(err, results) {
-		res.header('Access-Control-Allow-Origin', '*');	
 		//also append total token count to the grouped display
 		let tot_tokens = 0;
 		for (let entry of results) {
@@ -212,7 +229,6 @@ app.get('/rewarded-activity-count', async function(req, res) {
 	]).toArray(function(err, results) {
 		console.log(results);
 		utils.log(results, 'rewarded-activity-count');
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 	});
 });
@@ -220,7 +236,6 @@ app.get('/rewarded-activity-count', async function(req, res) {
 /* end point for returning charity data supported by actifit */
 app.get('/charities', async function (req, res) {
 	var charities = await db.collection('available_charities').find({status:"enabled"}, {charity_name: 1}).sort({charity_name: 1}).toArray();
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(charities);
 });
 
@@ -232,7 +247,6 @@ app.get('/topDelegators', async function (req, res) {
 	}else{
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
 	}
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(delegatorList);
 });
 
@@ -245,7 +259,6 @@ activeDelegationFunc = async function (userName){
 /* end point for returning a single user last recorded active delegation amount */
 app.get('/delegation/:user', async function (req, res) {
 	var user = await activeDelegationFunc(req.params.user);
-	res.header('Access-Control-Allow-Origin', '*');	
     res.send(user);
 });
 
@@ -258,7 +271,6 @@ moderatorsListFunc = async function () {
 app.get('/moderators', async function (req, res) {
 	var moderatorList; 
 	moderatorList = await moderatorsListFunc();
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(moderatorList);
 });
 
@@ -266,7 +278,6 @@ app.get('/moderators', async function (req, res) {
 app.get('/ambassadors', async function (req, res) {
 	var ambassadorList; 
 	ambassadorList = await db.collection('team').find({title:'ambassador', status:'active'}).sort({name: 1}).toArray();
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(ambassadorList);
 });
 
@@ -290,7 +301,6 @@ app.get('/topTokenHolders', async function (req, res) {
 			output += '<br/>';
 		}
 	}
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(output);
 });
 
@@ -298,7 +308,6 @@ app.get('/topTokenHolders', async function (req, res) {
 /* end point for returning accounts banned by actifit*/
 app.get('/banned_users', async function (req, res) {
 	var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
-    res.header('Access-Control-Allow-Origin', '*');	
     res.send(banned_users);
 });
 
@@ -319,7 +328,6 @@ app.get('/reblogCount', async function (req, res) {
 			console.log('counting');
 			let reblog_count = await query.count();
 			console.log(reblog_count);
-			res.header('Access-Control-Allow-Origin', '*');	
 			res.send(JSON.stringify({reblog_count:reblog_count}));
 		}catch(err){
 			console.log(err.message);
@@ -350,7 +358,6 @@ app.get('/upvoteCount', async function (req, res) {
 			console.log('counting');
 			let upvote_count = await query.count();
 			console.log(upvote_count);
-			res.header('Access-Control-Allow-Origin', '*');	
 			res.send(JSON.stringify({upvote_count:upvote_count}));
 		}catch(err){
 			console.log(err.message);
@@ -382,7 +389,6 @@ app.get('/rewardedPostCount', async function (req, res) {
 			console.log('counting');
 			let rewarded_post_count = await query.count();
 			console.log(rewarded_post_count);
-			res.header('Access-Control-Allow-Origin', '*');	
 			res.send(JSON.stringify({rewarded_post_count:rewarded_post_count}));
 		}catch(err){
 			console.log(err.message);
@@ -436,7 +442,6 @@ app.get('/userRewardedPostCount/:user', async function (req, res) {
 	if (typeof req.params.user!= "undefined" && req.params.user!=null){
 		
 		var rewarded_post_count = await userRewardedPostCountFunc(req, res);
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(JSON.stringify({rewarded_post_count:rewarded_post_count}));
 	}else{
 		res.send("");
@@ -586,7 +591,6 @@ app.get('/getRank/:user', async function (req, res) {
 		});
 		console.log(score_components)
 		
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(score_components);
 	}else{
 		res.send("");
@@ -636,7 +640,6 @@ getAltAccountByNameFunc = async function (targetUser){
 /* end point for getting list of SP delegator accounts who wish to move their user rank and/or rewards to their alt-accounts*/
 app.get('/getAltAccountStatus/:user?', async function (req, res) {
 	let delegator_info = await getAltAccountStatusFunc(req.params.user);
-	res.header('Access-Control-Allow-Origin', '*');	
 	res.send(delegator_info);
 });
 
@@ -670,10 +673,8 @@ app.get('/getPostReward', async function (req, res) {
 		console.log('url:'+url);
 		//grab specific reward type for user and post
 		var token_count = await getPostRewardFunc(user, url, "Post");
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: token_count});
 	}else{
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: 0});
 	}
 });
@@ -691,10 +692,8 @@ app.get('/getPostFullAFITPayReward', async function (req, res) {
 		console.log('url:'+url);
 		//grab specific reward type for user and post
 		var token_count = await getPostRewardFunc(user, url, "Full AFIT Payout");
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: token_count});
 	}else{
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send({token_count: 0});
 	}
 });
@@ -718,7 +717,6 @@ app.get('/getCharityRewards', async function(req, res) {
 	   ]).toArray(function(err, results) {
 		var output = 'rewarded users:'+results[0].user_count+',';
 		output += 'tokens distributed:'+results[0].tokens_distributed;
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
@@ -746,7 +744,6 @@ app.get('/getFullAFITPayStats', async function(req, res) {
 			}
 		}
 	   ]).toArray(function(err, results) {
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
@@ -806,7 +803,6 @@ app.get('/moderatorActivity', async function(req, res) {
 			}
 		}
 	   ]).toArray(function(err, results) {
-		res.header('Access-Control-Allow-Origin', '*');	
 		res.send(results);
 		console.log(results);
 	   });
@@ -817,9 +813,193 @@ app.get('/moderatorActivity', async function(req, res) {
 app.get('/curAFITPrice', async function(req, res) {
 	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
-	res.header('Access-Control-Allow-Origin', '*');	
 	res.send(curAFITPrice);
 });
+
+/* handles the process of creating accounts*/
+proceedAccountCreation = async function (req){
+	//let's create the account now
+	let accountCreated = false;
+	let transStored = false;
+	accountCreated = await utils.createAccount(req.query.new_account, req.query.new_pass);
+	if (accountCreated){
+		transStored = await storeSignupTransaction(req);
+		//proceed only if a proper referrer was sent
+		if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
+			referralRewarded = await storeReferralReward(req);
+		}
+	}
+	console.log('account created:'+accountCreated);
+	return accountCreated;
+}
+
+/* handles saving data related to signup to db */
+storeSignupTransaction = async function (req){
+	console.log('reward new user');
+	let result = false;
+	//setup new reward transaction for user
+	let new_transaction = {
+		account_name: req.query.new_account,
+		usd_invest: parseFloat(req.query.usd_invest),
+		steem_invest: parseFloat(req.query.steem_invest),
+		afit_reward: parseFloat(req.query.afit_reward),
+		memo: req.query.memo,
+		account_created: true,
+		payment_confirmed: true,
+		confirming_tx: req.query.confirming_tx,
+		date: new Date(),
+	}
+	
+	if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
+		new_transaction['referrer'] = req.query.referrer;
+		new_transaction['referrer_afit_reward'] = parseFloat(req.query.afit_reward * config.referrerBonus);
+	}
+	
+	if (typeof req.query.email != 'undefined' && req.query.email != 'undefined' && req.query.email != '' && req.query.email != null){
+		new_transaction['email'] = req.query.email;
+	}
+	
+	//make sure we're not double storing referral
+	let query = { 
+		account_name: req.query.new_account,
+		referrer: req.query.referrer,
+	};
+	
+	try{
+	  let transaction = await db.collection('signup_transactions')
+			.replaceOne(query, new_transaction, { upsert: true });
+	  result = true;
+	}catch(e){
+	  console.log(e);
+	  result = false;
+	}
+	
+	//also store this properly into user balance
+	
+	new_transaction = {
+		user: req.query.new_account,
+		reward_activity: 'Signup Reward',
+		token_count: parseFloat(req.query.afit_reward),
+		date: new Date(),
+		steem_invest: parseFloat(req.query.steem_invest),
+		usd_invest: parseFloat(req.query.usd_invest),
+		note: 'Successful Signup',
+	}
+	
+	//make sure we're not double rewarding user
+	query = { 
+		user: req.query.new_account,
+		reward_activity: 'Signup Reward',
+	};
+			
+	try{
+	  let transaction = db.collection('token_transactions')
+			.replaceOne(query, new_transaction, { upsert: true });
+	  result = true;
+	}catch(e){
+	  console.log(e);
+	  result = false;
+	}
+	console.log(result);
+	return result;
+}
+
+
+/* function handles saving referral info and reward if the signup came through a referral */
+storeReferralReward = async function (req){
+	console.log('reward referrer');
+	//setup new reward transaction for user
+	let refRewarded = false;
+	let new_transaction = {
+		user: req.query.referrer,
+		reward_activity: 'Signup Referral',
+		token_count: parseFloat(req.query.afit_reward * config.referrerBonus),
+		date: new Date(),
+		referred: req.query.new_account,
+		note: 'Referral reward for signup of user '+req.query.new_account,
+	}
+	
+	//make sure we're not double rewarding user
+	let query = { 
+		user: req.query.referrer,
+		reward_activity: 'Signup Referral',
+		referred: req.query.new_account,
+	};
+	
+	try{
+		let transaction = await db.collection('token_transactions')
+			.replaceOne(query, new_transaction, { upsert: true });
+		refRewarded = true;
+	}catch(e){
+	  console.log(e);
+	}
+	
+	console.log('success');
+	return refRewarded;
+};
+
+//function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
+app.get('/confirmPayment', async function(req,res){
+	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+		res.send('{}');
+	}else{
+		let paymentReceivedTx = '';
+		let accountCreated = false;
+		let spToDelegate =4;
+		try{
+			//first step is to ensure memo has not been tampered with, nor has it been claimed before
+			//to do that, let's try to find if any signup has been done using this memo
+			let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
+			console.log('memo_used:'+memo_used);
+			if (typeof memo_used == "undefined" || memo_used == null){
+				paymentReceivedTx = await utils.confirmPaymentReceived(req);
+				console.log('>>>> got TX '+paymentReceivedTx);
+				if (paymentReceivedTx != ''){
+					req.query.confirming_tx = paymentReceivedTx;
+					console.log(req.query);
+					try{
+						accountCreated = await claimAndCreateAccount(req);
+						if (accountCreated){
+							delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+						}
+					}catch(e){
+						console.log(e);
+					}
+				}
+			}
+		}catch(err){
+			console.log(err);
+		}
+		res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+	}
+});
+
+/* core function for discounted account claims and creation */
+claimAndCreateAccount = async function (req){
+	let accountClaimed = false;
+	let accountCreated = false;
+	let results = '';
+	try{
+		results = await utils.getRC(config.account);
+		console.log('Current RC: ' + utils.format(results.estimated_pct) + '% ');
+		if (results.estimated_pct>50){
+			//if we reached min threshold, claim more spots for discounted accounts
+			accountClaimed = await utils.claimDiscountedAccount();
+		}
+	}catch(err){
+		console.log('error grabbing RC');
+	}
+	
+	console.log('discounted account claimed:'+accountClaimed);
+	//proceed creating account
+	try{
+		accountCreated = await proceedAccountCreation(req);
+	}catch(err){
+		console.log(err);
+	}
+	return accountCreated;
+
+};
 
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
@@ -836,4 +1016,4 @@ function gk_add_commas(nStr) {
 	return x1 + x2;
 }	
 
-app.listen(process.env.PORT || 3120);
+app.listen(appPort);

@@ -1,5 +1,6 @@
 var fs = require("fs");
 const steem = require('steem');
+const dsteem = require('dsteem')
 var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
@@ -107,15 +108,17 @@ const actifit_img_urls =  [
 	"https://cdn.steemitimages.com/DQmVD3pXR4EHzYeCapMNSanTeK9wGJeJ24XYJhZSUmjJReR/A-11.png", "https://cdn.steemitimages.com/DQmY67NW9SgDEsLo2nsAw4nYcddrTjp4aHNLyogKvGuVMMH/A-9.png", "https://cdn.steemitimages.com/DQmcrdacUAEHoeiX9gNVAiiL5iydmJoPve2nXpzszNtJZPb/A-12.png", "https://cdn.steemitimages.com/DQmbP8GuFvcHUyh7bKDheDN5iz8ERPCYzMaSVoRT2R5ZYPE/A-15.png","https://cdn.steemitimages.com/DQmW1VsUNbEjTUKawau4KJQ6agf41p69teEvdGAj1TMXmuc/A-5.png",
 	"https://cdn.steemitimages.com/DQmeBn1PLf6a3QaXjM23EbQcaKtfDckgtGPHE4DApoUeBEJ/A-1.png", "https://cdn.steemitimages.com/DQmV7NRosGCmNLsyHGzmh4Vr1pQJuBPEy2rk3WvnEUDxDFA/A-21.png", "https://cdn.steemitimages.com/DQmdNAWWwv6MAJjiNUWRahmAqbFBPxrX8WLQvoKyVHHqih1/A-19.png","https://cdn.steemitimages.com/DQmVNqM8wQj2TnfwqSPYtfAuPHYjeBXSFekCHGZw9K3B9Gi/A-16.png", "https://cdn.steemitimages.com/DQma7nn1yV2w9iY6qXDBJUoTWkELTYxot7R9eoG1M3Tbtqn/A-7.png"];
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
-//steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
-
-utils.log("* START - Version: " + version + " *");
 
 // Load the settings from the config file
 loadConfig();
 var botNames;
 
+steem.api.setOptions({ 
+	url: config.active_node ,
+	//useAppbaseApi: true
+});
+
+utils.log("* START - Version: " + version + " *");
 
 // Connection URL
 var url = config.mongo_uri;
@@ -260,17 +263,18 @@ async function startProcess() {
 		}
 		console.log(moderator_list);
 	  
-		var query = {tag: config.main_tag, limit: 100};
+		var query = {tag: config.main_tag, limit: 100, start_author:'', start_permlink:''};
 		votePosts = Array();
 		processVotes(query, false);      
     }else{
 		//if we're not voting, let's check to claim some more discounted account spots
 		utils.getRC(config.account).then(function(results){
 			console.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
-			if (results.estimated_pct>config.account_claim_rc_min){
+			if (results.estimated_pct>40){
 				//if we reached min threshold, claim more spots for discounted accounts
-				utils.claimDiscountedAccount();
+				await utils.claimDiscountedAccount();
 			}
+			utils.createAccount();
 			
 		}, function(err) {
 			console.log("Error fetching RC");
@@ -287,7 +291,8 @@ async function startProcess() {
 //var post_scores = [];
 function processVotes(query, subsequent) {
   
-
+  console.log('processVotes');
+  
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
     if (result && !err) {
 		is_voting = true;

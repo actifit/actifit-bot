@@ -1,5 +1,4 @@
 const dsteem = require('dsteem')
-const client = new dsteem.Client('https://api.steemit.com')
 //const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
@@ -7,6 +6,8 @@ const utils = require('./utils')
 const mail = require('./mail')
 
 const config = utils.getConfig()
+
+const client = new dsteem.Client(config.active_node)
 
 const MongoClient = require('mongodb').MongoClient
 
@@ -35,7 +36,7 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   runRewards(false);//param steemOnlyReward
 });
 
-
+//utils.lookupAccountPay();
 
 //param steemOnlyReward
 runRewards(true);
@@ -442,6 +443,16 @@ async function processSteemRewards (start) {
   })
 }
 
+
+
+
+function vestsToSteemPower (vests) {
+  vests = Number(vests.split(' ')[0])
+  const steemPower = (totalSteem * (vests / totalVests))
+  return steemPower
+}
+
+
 async function processDelegations (account, start, end) {
   let delegationTransactions = []
   let lastTrans = start
@@ -706,11 +717,6 @@ function upsertRewardTransaction (reward) {
   )
 }
 
-function vestsToSteemPower (vests) {
-  vests = Number(vests.split(' ')[0])
-  const steemPower = (totalSteem * (vests / totalVests))
-  return steemPower
-}
 
 async function updateProperties () {
   // Set STEEM global properties
