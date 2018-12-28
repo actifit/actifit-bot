@@ -1,5 +1,4 @@
 const dsteem = require('dsteem')
-const client = new dsteem.Client('https://api.steemit.com')
 //const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
@@ -7,6 +6,8 @@ const utils = require('./utils')
 const mail = require('./mail')
 
 const config = utils.getConfig()
+
+const client = new dsteem.Client(config.active_node)
 
 const MongoClient = require('mongodb').MongoClient
 
@@ -35,10 +36,11 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   runRewards(false);//param steemOnlyReward
 });
 
-
+//utils.lookupAccountPay();
 
 //param steemOnlyReward
 runRewards(true);
+//runRewards(false);
 
 function runRewards(steemOnlyReward){
 	let mongo_conn = config.mongo_uri
@@ -58,15 +60,16 @@ function runRewards(steemOnlyReward){
 		//return;
 		
 		//run for one day
-		var days = 1;
-		startProcess(days, steemOnlyReward);
-		
+		var delegation_days = 1;
+		startProcess(delegation_days, steemOnlyReward);
+
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
 		setInterval(loadSteemPrices,5 * 60 * 1000);
-	  
+		
 		//claim rewards once per hour
 		setInterval(claimRewards,60 * 60 * 1000);
-
+	  
+	    //loadSteemPrices();
 	  } else {
 		utils.log(err, 'delegations')
 		mail.sendPlainMail('Database Error', err, config.report_emails)
@@ -136,7 +139,7 @@ async function getBenefactorPosts (account, start) {
 		//console.log(op);
 		let matchingAFIT = 0;
 		console.log(op[1]);
-        let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_payout).toFixed(3))
+        let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_payout).toFixed(3)) 
 		console.log("rewardedSP:"+rewardedSP);
 		//calculate dollar value
 		let steemInUSD = rewardedSP * steemPrice;
@@ -145,6 +148,14 @@ async function getBenefactorPosts (account, start) {
 		//convert to AFIT and add to total
 		matchingAFIT = steemInUSD / curAFITPrice.unit_price_usd;
 		console.log("matchingAFIT:"+matchingAFIT);
+		
+		let rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
+		
+		console.log("rewardedSTEEM:"+rewardedSTEEM);
+		let steemPureInUSD = rewardedSTEEM * steemPrice;
+		
+		let steemPureToAFIT = steemPureInUSD / curAFITPrice.unit_price_usd;
+		matchingAFIT += steemPureToAFIT;
 		
 		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
 		
@@ -171,7 +182,8 @@ async function getBenefactorPosts (account, start) {
 			url: op[1].permlink,
 			token_count: matchingAFIT,
 			orig_sbd_amount: rewardedSBD,
-			orig_steem_amount: rewardedSP,
+			orig_sp_amount: rewardedSP,
+			orig_steem_amount: rewardedSTEEM,
 			date: new Date(date)
 		}
 		
@@ -222,9 +234,9 @@ function loadSteemPrices() {
 
 			console.log("Loaded SBD price: " + sbdPrice);
 		  	
-			let days = 1;
+			let afit_swap_days = 1;
 			let start = moment().utc().startOf('date').toDate()
-			let to = moment(start).subtract(days, 'days').toDate()
+			let to = moment(start).subtract(afit_swap_days, 'days').toDate()
 		  
 			//bring the action
 			getBenefactorPosts(config.full_pay_benef_account, to);
@@ -250,7 +262,7 @@ async function startProcess (days, steemOnlyReward) {
 	if (lastTx) end = lastTx.tx_number
 	await updateProperties()
 	if (!testRun){
-	await processDelegations(config.account, -1, end)
+		await processDelegations(config.account, -1, end)
 	}
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
@@ -259,8 +271,8 @@ async function startProcess (days, steemOnlyReward) {
 		await processTokenRewards(start, txEnd, days)
 		//update our user token count post reward
 		if (!testRun){
-		updateUserTokens();
-	}
+			updateUserTokens();
+		}
 	}
 	var d = new Date();
 	var dayId = d.getDay();
@@ -334,9 +346,9 @@ async function processTokenRewards (start, end, days) {
 		console.log(reward)
 		//only send out funds if not a test run
 		if (!testRun){
-		upsertRewardTransaction(reward)
+			upsertRewardTransaction(reward)
+		}
 	}
-}
 }
 
 async function processSteemRewards (start) {
@@ -348,10 +360,13 @@ async function processSteemRewards (start) {
   
   //load list of alt accounts to reward them instead of actual delegators
   let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
+  console.log('loading alt accounts');
   console.log(altAccounts);
   
   Promise.all([getAcumulatedSteemPower(from, to, true), getBenefactorRewards(to, start, -1)]).then(values => {
     const activeDelegations = values[0].users
+	console.log('***');
+	console.log(values[1]);
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = values[0].totalSteem
@@ -385,7 +400,7 @@ async function processSteemRewards (start) {
 				user: reward_user,
 				steem: +(o.totalSteem * rewardPerSteem).toFixed(3),
 				sbd: +(o.totalSteem * rewardPerSBD).toFixed(3)
-      }
+			  }
 		}
 	
 	
@@ -427,6 +442,16 @@ async function processSteemRewards (start) {
     mail.sendWithTemplate('Rewards mail', data, config.report_emails, 'rewards', attachment)*/
   })
 }
+
+
+
+
+function vestsToSteemPower (vests) {
+  vests = Number(vests.split(' ')[0])
+  const steemPower = (totalSteem * (vests / totalVests))
+  return steemPower
+}
+
 
 async function processDelegations (account, start, end) {
   let delegationTransactions = []
@@ -502,7 +527,8 @@ async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
       // Look for delegation operations
       if (op[0] === 'comment_benefactor_reward') {
 		console.log(op[1]);
-        let newSp = vestsToSteemPower(op[1].vesting_payout)
+		//SP is the sum of conversting vesting payout to SP, and appending any STEEM payouts
+        let newSp = vestsToSteemPower(op[1].vesting_payout) + parseFloat(op[1].steem_payout.split(' ')[0])
         totalSp = totalSp + newSp
 		let newSBD = op[1].sbd_payout.split(' ')[0]
 		totalSBD += parseFloat(newSBD)
@@ -523,31 +549,31 @@ async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
 async function getActiveDelegations (start, excludeOn) {
   start = new Date(start)
   if (excludeOn){
-  return collection.aggregate(
-    [
-      { $match: { 'tx_date': { '$lte': start } } },
-      { $sort: { delegator: 1, tx_date: 1 } },
-      {
-        $group:
-          {
-            _id: '$delegator',
-            steem_power: { $last: '$steem_power' },
-            vests: { $last: '$vesting_shares' },
-            tx_date: { $last: '$tx_date' }
-          }
-      },
-      { $project:
-        {
-          _id: '$_id',
-          delegator: '$_id',
-          steem_power: 1,
-          tx_date: start
-        }
-      },
-      { $match: { 'steem_power': { '$gt': 0 }, 'delegator': {$nin: config.exclude_rewards} } },
-      { $sort: { tx_date: 1 } }
-    ]
-  ).toArray()
+	  return collection.aggregate(
+		[
+		  { $match: { 'tx_date': { '$lte': start } } },
+		  { $sort: { delegator: 1, tx_date: 1 } },
+		  {
+			$group:
+			  {
+				_id: '$delegator',
+				steem_power: { $last: '$steem_power' },
+				vests: { $last: '$vesting_shares' },
+				tx_date: { $last: '$tx_date' }
+			  }
+		  },
+		  { $project:
+			{
+			  _id: '$_id',
+			  delegator: '$_id',
+			  steem_power: 1,
+			  tx_date: start
+			}
+		  },
+		  { $match: { 'steem_power': { '$gt': 0 }, 'delegator': {$nin: config.exclude_rewards} } },
+		  { $sort: { tx_date: 1 } }
+		]
+	  ).toArray()  
   }else{
 	  return collection.aggregate(
 		[
@@ -625,9 +651,9 @@ async function getAcumulatedSteemPower (from, to, excludeOn) {
   if (excludeOn){
 	console.log('excluding users');
 	weekTxs = await db.collection('delegation_transactions').find(
-    {'tx_date': {$gt: from, $lt: to},
-      'delegator': {$nin: config.exclude_rewards}})
-    .sort({tx_date: 1}).toArray()
+		{'tx_date': {$gt: from, $lt: to},
+		  'delegator': {$nin: config.exclude_rewards}})
+		.sort({tx_date: 1}).toArray()
   }else{
     console.log('no exclude');
 	weekTxs = await db.collection('delegation_transactions').find(
@@ -691,11 +717,6 @@ function upsertRewardTransaction (reward) {
   )
 }
 
-function vestsToSteemPower (vests) {
-  vests = Number(vests.split(' ')[0])
-  const steemPower = (totalSteem * (vests / totalVests))
-  return steemPower
-}
 
 async function updateProperties () {
   // Set STEEM global properties

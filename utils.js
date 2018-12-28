@@ -3,10 +3,12 @@ const steem = require('steem');
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
-
+const moment = require('moment')
 const client = new dsteem.Client('https://api.steemit.com');
 		
 var config;
+
+let th_id = -1;
 
 steem.api.setOptions({ url: 'https://api.steemit.com' });
 
@@ -22,6 +24,9 @@ var HOURS = 60 * 60;
  var totalVestingFund;
  var totalVestingShares;
  var botNames;
+ let properties
+ let totalVests
+ let totalSteem
  
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
@@ -68,8 +73,8 @@ var HOURS = 60 * 60;
 			
 			console.log(currentManaPerc);
 		return currentManaPerc;
- }
-
+	}
+	
 	//implement a get current Resource Credits function for normal operations consumption
 	async function getRC(account_name){
 		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
@@ -93,14 +98,52 @@ var HOURS = 60 * 60;
 			const estimated_pct = estimated_mana / estimated_max * 100;
 			const res= {"current_mana": current_mana, "last_update_time": last_update_time,
 				  "estimated_mana": estimated_mana, "estimated_max": estimated_max, "estimated_pct": estimated_pct.toFixed(2),"fullin":timeTilFullPower(estimated_pct*100)};
-			console.log(res);
 			return res;
 			
 		//});
 	}
 	
+	//function handles confirming if payment was received
+	async function confirmPaymentReceived (req) {
+		getConfig();
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				console.log('check funds');
+				steem.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
+					let tx_id = '';
+					let paymentFound = false;
+					for (let txs of transactions) {
+						let op = txs[1].op
+						//check if we received a transfer to our target account
+						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
+						if (op[0] === 'transfer'){
+							let sentAmount = op[1].amount.split(' ')[0];
+							if (op[1].to === config.signup_account && op[1].memo === req.query.memo && sentAmount >= (parseFloat(req.query.steem_invest)-0.1)){  
+								console.log('in');
+								console.log(op[1]);
+								tx_id = txs[1].trx_id;
+								paymentFound = true;
+								break;
+							}
+						}
+					}
+					if (paymentFound){
+						//need to look again
+						console.log('found');
+						clearInterval(th_id);
+						resolve(tx_id);
+					}
+				});
+			}, 5000);
+		});
+	}
+	
 	//function handles claiming spots for accounts
 	async function claimDiscountedAccount(){
+		console.log('claimDiscountedAccount');
+		if (typeof config == 'undefined' || config == null){
+			getConfig();
+		}
 		const claim_op = [
 			'claim_account',
 			{
@@ -113,15 +156,147 @@ var HOURS = 60 * 60;
 		const privateKey = dsteem.PrivateKey.fromString(
 							config.active_key
 						);
-		await client.broadcast.sendOperations(ops, privateKey).then(
-			function(result) {
-				console.log(result);
-				console.log('>>claimed discounted account spot');
-			},
-			function(error){
-				console.log(error);
-			}
+		let result = '';
+		try{
+			result = await client.broadcast.sendOperations(ops, privateKey);
+			console.log('success');
+			return true;
+		}catch(err){
+			console.log(err);
+			return false;
+		}
+	}
+	
+	//function handles creating accounts via discounted claimed spots or normal paid method
+	async function createAccount (username, password){
+		if (typeof config == 'undefined' || config == null){
+			getConfig();
+		}
+		//check if account exists		
+		const _account = await client.database.call('get_accounts', [[username]]);
+		//account not available to register
+		if (_account.length>0) {
+			console.log('account already exists');
+			console.log(_account);
+			return false;
+		}
+
+		console.log('account available');
+					
+		//create keys for new account
+		const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
+		const activeKey = dsteem.PrivateKey.fromLogin(username, password, 'active');
+		const postingKey = dsteem.PrivateKey.fromLogin(username, password, 'posting');
+		let memoKey = dsteem.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+		
+		//create auth values for passing to account creation
+		const ownerAuth = {
+			weight_threshold: 1,
+			account_auths: [],
+			key_auths: [[ownerKey.createPublic(), 1]],
+		};
+		const activeAuth = {
+			weight_threshold: 1,
+			account_auths: [],
+			key_auths: [[activeKey.createPublic(), 1]],
+		};
+		const postingAuth = {
+			weight_threshold: 1,
+			account_auths: [],
+			key_auths: [[postingKey.createPublic(), 1]],
+		};
+		
+		//container for required ops
+		let ops = [];
+		
+		
+		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
+		let creator = config.account;
+		
+		const _creator_account = await client.database.call('get_accounts', [
+			[creator],
+		]);
+		console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+		
+		if (_creator_account[0].pending_claimed_accounts > 0) {
+		
+			//the create discounted account operation
+			const create_op = [
+				'create_claimed_account',
+				{
+					creator: creator,
+					new_account_name: username,
+					owner: ownerAuth,
+					active: activeAuth,
+					posting: postingAuth,
+					memo_key: memoKey,
+					json_metadata: '',
+					extensions: [],
+				}
+			];
+			ops.push(create_op);
+		}else{
+		
+			const create_op = [
+				'account_create',
+				{
+					fee: '3.000 STEEM',
+					creator: creator,
+					new_account_name: username,
+					owner: ownerAuth,
+					active: activeAuth,
+					posting: postingAuth,
+					memo_key: memoKey,
+					json_metadata: '',
+					extensions: [],
+				}
+			];
+			ops.push(create_op);
+		}
+		
+		const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+		//proceed executing the selected operation(s)
+		let result = '';
+		try{
+			result = await client.broadcast.sendOperations(ops, privateKey);
+			console.log('success');
+			return true;
+		}catch(err){
+			console.log(err);
+			return false;
+		}
+	}
+
+	//function handles delegating to a specific account
+	async function delegateToAccount (delegatee, steemPowerAmount){
+		if (typeof config == 'undefined' || config == null){
+			getConfig();
+		}
+		const privateKey = dsteem.PrivateKey.fromString(
+			config.full_pay_ac_key
 		);
+		//grab matching amount of Vests to delegate
+		let matchingVests = await steemPowerToVests(steemPowerAmount);
+		console.log('matchingVests:'+matchingVests);
+		const op = [
+			'delegate_vesting_shares',
+			{
+				delegator: config.full_pay_benef_account,
+				delegatee: delegatee,
+				vesting_shares: matchingVests+' VESTS',
+			},
+		];
+		let result = '';
+		try{
+			result = await client.broadcast.sendOperations([op], privateKey);
+			console.log('Included in block:'+ result.block_num);
+			console.log('returning back');
+			return true;
+		}catch(err){
+			console.log(err);
+			console.log('returning back err');
+			return false;
+		}
 	}
 
  function getVoteRShares(voteWeight, account, power) {
@@ -295,7 +470,7 @@ function format(n, c, d, t) {
     
     if(!benefit)
       continue;
-	  
+
 	
 	//check if user is banned
 	var user_banned = false;
@@ -313,7 +488,7 @@ function format(n, c, d, t) {
 			dateSurpassed += 1;
 			continue;
 		}
-
+	 
     results.push(post);
   }
   //if we got to old posts and received at least 10 posts, inform calling function that no need to move forward further
@@ -354,8 +529,10 @@ function format(n, c, d, t) {
   */
  function calcScore(rules_array, factor, value){
 	var result;
+	//console.log("rules_array.length:"+rules_array.length);
 	for (var i=0; i<rules_array.length; i++){
 		var rule = rules_array[i];
+		//console.log(value<=rule[0]);
 		if (value<=rule[0]){
 			result = factor * rule[1];
 			break;
@@ -364,6 +541,7 @@ function format(n, c, d, t) {
 			result = factor * rule[1];
 		}
 	}
+	//console.log('result:'+result);
 	return result;
 }
 
@@ -390,6 +568,195 @@ function format(n, c, d, t) {
   }
 }
 
+/* generate & return a random int value between min and max */
+function generateRandomNumber(min , max) {
+    
+   let random_number = Math.random() * (max - min) + min;
+   return Math.floor(random_number);
+}
+
+let newestTxId = -1;
+let totalSBD = 0
+let totalSp = 0
+let total_STEEM = 0
+
+let curTotalSBD = 0
+let curTotalSp = 0
+let curTotalSTEEM = 0
+
+let producerSPRewards = 0
+let limit = 5000;
+let txStart = -1;
+let opsArr = [];
+
+function resetVals(){
+	totalSBD = 0
+	totalSp = 0
+	total_STEEM = 0
+
+	curTotalSBD = 0
+	curTotalSp = 0
+	curTotalSTEEM = 0
+
+	producerSPRewards = 0
+}
+
+async function lookupAccountPay (){
+	
+	const ONE_DAY = 1;
+	const ONE_WEEK = 7;
+	const ONE_MONTH = 30;
+	
+	let start_days = 1;
+	let lookup_days = ONE_DAY;
+	
+	let today = moment().utc().startOf('date').toDate()
+	let start = moment(today).subtract(start_days, 'days').toDate()
+	let to = moment(start).subtract(lookup_days, 'days').toDate()
+
+	//bring the action
+	console.log('start date:'+start)
+	console.log('************actifit rewards***************')
+	await getAccountPayTransactions('actifit', start, to);
+	//console.log('append actifit.pay rewards:'+start)
+	//await getAccountPayTransactions('actifit.pay', start, to);
+	
+	txStart = -1;
+	console.log('***********append actifit.funds rewards**********')
+	await getAccountPayTransactions('actifit.funds', start, to);
+}
+
+async function getAccountPayTransactions (account, start, end) {
+  
+  start = moment(start).format()
+  end = moment(end).format()
+    
+  // Query account history for delegations
+  properties = await client.database.getDynamicGlobalProperties()
+  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+  
+  //console.log(properties);
+  if (txStart != -1 && txStart < limit){
+	limit = txStart;
+  }
+  const transactions = await client.database.call('get_account_history', [account, txStart, limit])
+  transactions.reverse()
+  
+  console.log("newestTxId:"+transactions[0][0]);
+  
+  for (let txs of transactions) {
+    let date = moment(txs[1].timestamp).format()
+	//console.log(date >= end)
+	//console.log(date <= start)
+	
+    if (date >= end && date <= start) {
+	  //console.log(txs[0]);
+      let op = txs[1].op
+	  
+	  //console.log(op[0]);
+      // Look for beneficiary payments
+	  if (!opsArr.includes(op[0])){
+		opsArr.push(op[0]);
+	  }
+      if (op[0] === 'comment_benefactor_reward') {
+		//console.log('---------------------------------------');
+		//console.log(op);
+		//console.log(op[1]);
+        let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_payout).toFixed(3)) 
+		totalSp += rewardedSP;
+		//console.log("rewardedSP:"+rewardedSP);
+		//calculate dollar value
+		//let steemInUSD = rewardedSP * steemPrice;
+		//console.log("steemInUSD:"+steemInUSD);
+				
+		let rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
+		total_STEEM += rewardedSTEEM ;
+		//console.log("rewardedSTEEM:"+rewardedSTEEM);
+		
+		//let steemPureInUSD = rewardedSTEEM * steemPrice;
+
+		
+		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		
+		//console.log("rewardedSBD:"+rewardedSBD);
+		
+		totalSBD += rewardedSBD;
+		
+		//calculate dollar value
+		//let sbdInUSD = rewardedSBD * sbdPrice;
+
+      }else if (op[0] === 'producer_reward') {
+		//console.log('date:'+txs[1].timestamp+'op:'+op[1]);
+		let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_shares.split(' ')[0]).toFixed(3))
+		producerSPRewards += rewardedSP;
+	  }else if (op[0] === 'curation_reward') {
+		//console.log(op[1]);
+		let rewardedSP = parseFloat(vestsToSteemPower(op[1].reward.split(' ')[0]).toFixed(3)) 
+		curTotalSp += rewardedSP;
+		
+		//let rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
+		//curTotalSTEEM += rewardedSTEEM ;
+		
+		
+		//let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		
+		//console.log("rewardedSBD:"+rewardedSBD);
+		
+		//curTotalSBD += rewardedSBD;
+	  }
+    } else if (date < end){ 
+		break
+	}
+  }
+  
+  let lastTx = transactions[transactions.length - 1]
+  //console.log(lastTx[0]);
+  let lastDate = moment(lastTx[1].timestamp).format()
+  // console.log(lastDate)
+  if (lastDate >= end && (txStart == -1 || txStart > limit)){ 
+	txStart = lastTx[0];
+	return getAccountPayTransactions(account, start, end)
+  }
+  console.log ('querying complete');
+  console.log ('---benefic---');
+  console.log ('totalSP:'+totalSp);
+  console.log ('total_STEEM:'+total_STEEM);
+  console.log ('totalSBD:'+totalSBD);
+  console.log ('---curation---');
+  console.log ('totalSP:'+curTotalSp);
+  //console.log ('totalSTEEM:'+curTotalSTEEM);
+ // console.log ('totalSBD:'+curTotalSBD);
+  console.log ('---witness---');
+  console.log ('producerSPRewards:'+producerSPRewards);
+  
+  console.log ('---totals---');
+  let comSP = parseFloat(totalSp.toFixed(3))+parseFloat(curTotalSp.toFixed(3))+parseFloat(producerSPRewards.toFixed(3))+parseFloat(total_STEEM.toFixed(3));
+  console.log ('totalSTEEM:'+comSP.toFixed(3));
+  //console.log ('totalSTEEM:'+totalSTEEM.toFixed(3));
+  console.log ('totalSBD:'+totalSBD.toFixed(3));
+  console.log ('------------');
+  //console.log (opsArr);
+}
+
+
+function vestsToSteemPower (vests) {
+  vests = Number(vests.split(' ')[0])
+  const steemPower = (totalSteem * (vests / totalVests))
+  return steemPower
+}
+
+//function handles conversting SP to Vests
+async function steemPowerToVests (steemPower) {
+
+  if (isNaN(totalSteem) || isNaN(totalVests) ){
+	properties = await client.database.getDynamicGlobalProperties()
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+	totalVests = Number(properties.total_vesting_shares.split(' ')[0])
+  }
+  return parseFloat(steemPower * totalVests / totalSteem).toFixed(6);
+}
+
 
  module.exports = {
    getVotingPower: getVotingPower,
@@ -409,5 +776,11 @@ function format(n, c, d, t) {
    getConfig: getConfig,
    loadBots: loadBots,
    checkBeneficiary: checkBeneficiary,
-   asyncForEach: asyncForEach
+   asyncForEach: asyncForEach,
+   generateRandomNumber: generateRandomNumber,
+   lookupAccountPay: lookupAccountPay,
+   vestsToSteemPower: vestsToSteemPower,
+   createAccount: createAccount,
+   delegateToAccount: delegateToAccount,
+   confirmPaymentReceived: confirmPaymentReceived,
  }
