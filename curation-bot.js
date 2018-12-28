@@ -21,11 +21,13 @@ var vote_time;
 var last_votes = Array();
 var skip = false;
 var version = '0.3.4';
+var lucky_winner_id = -1;
 
 //version of the reward system
 var reward_sys_version = 'v0.2';
 
 var error_sent = false;
+
 
 var crypto = require('crypto');
 
@@ -105,15 +107,17 @@ const actifit_img_urls =  [
 	"https://cdn.steemitimages.com/DQmVD3pXR4EHzYeCapMNSanTeK9wGJeJ24XYJhZSUmjJReR/A-11.png", "https://cdn.steemitimages.com/DQmY67NW9SgDEsLo2nsAw4nYcddrTjp4aHNLyogKvGuVMMH/A-9.png", "https://cdn.steemitimages.com/DQmcrdacUAEHoeiX9gNVAiiL5iydmJoPve2nXpzszNtJZPb/A-12.png", "https://cdn.steemitimages.com/DQmbP8GuFvcHUyh7bKDheDN5iz8ERPCYzMaSVoRT2R5ZYPE/A-15.png","https://cdn.steemitimages.com/DQmW1VsUNbEjTUKawau4KJQ6agf41p69teEvdGAj1TMXmuc/A-5.png",
 	"https://cdn.steemitimages.com/DQmeBn1PLf6a3QaXjM23EbQcaKtfDckgtGPHE4DApoUeBEJ/A-1.png", "https://cdn.steemitimages.com/DQmV7NRosGCmNLsyHGzmh4Vr1pQJuBPEy2rk3WvnEUDxDFA/A-21.png", "https://cdn.steemitimages.com/DQmdNAWWwv6MAJjiNUWRahmAqbFBPxrX8WLQvoKyVHHqih1/A-19.png","https://cdn.steemitimages.com/DQmVNqM8wQj2TnfwqSPYtfAuPHYjeBXSFekCHGZw9K3B9Gi/A-16.png", "https://cdn.steemitimages.com/DQma7nn1yV2w9iY6qXDBJUoTWkELTYxot7R9eoG1M3Tbtqn/A-7.png"];
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });//https://gtg.steem.house:8090
-//steem.api.setOptions({ url: 'https://gtg.steem.house:8090' });
-
-utils.log("* START - Version: " + version + " *");
 
 // Load the settings from the config file
 loadConfig();
 var botNames;
 
+steem.api.setOptions({ 
+	url: config.active_node ,
+	//useAppbaseApi: true
+});
+
+utils.log("* START - Version: " + version + " *");
 
 // Connection URL
 var url = config.mongo_uri;
@@ -127,6 +131,7 @@ var db;
 var collection;
 
 var db_name = config.db_name;
+
 const collection_name = 'banned_accounts';
 
 var banned_users;
@@ -160,14 +165,14 @@ if (fs.existsSync('members.json')) {
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
-	  console.log("Connected successfully to server");
+	  console.log("Connected successfully to server "+url);
 
 	  db = client.db(db_name);
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  //only start the process once we connected to the DB
-startProcess();
+	  startProcess();
 	} else {
 		utils.log(err, 'api');
 	}
@@ -177,7 +182,7 @@ startProcess();
 
 // Schedule to run every minute
 if (!config.testing){
-setInterval(startProcess, 60 * 1000);
+	setInterval(startProcess, 60 * 1000);
 }else{
 	setTimeout(startProcess, 20 * 1000);
 }
@@ -240,8 +245,8 @@ async function startProcess() {
 		}
 	
 		console.log('lets vote');
-      skip = true;
-	  
+		skip = true;
+		  
 		console.log('fetch banned users list');  
 		//grab banned user list before rewarding
 		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
@@ -257,9 +262,9 @@ async function startProcess() {
 		}
 		console.log(moderator_list);
 	  
-	  var query = {tag: config.main_tag, limit: 100};
-	  votePosts = Array();
-      processVotes(query, false);      
+		var query = {tag: config.main_tag, limit: 100};
+		votePosts = Array();
+		processVotes(query, false);      
     }else{
 		//if we're not voting, let's check to claim some more discounted account spots
 		utils.getRC(config.account).then(function(results){
@@ -267,13 +272,12 @@ async function startProcess() {
 			if (results.estimated_pct>config.account_claim_rc_min){
 				//if we reached min threshold, claim more spots for discounted accounts
 				utils.claimDiscountedAccount();
-			}
-			
+			}			
 		}, function(err) {
 			console.log("Error fetching RC");
 			console.log(err);
 		});
-    }
+	}
     
   } else if(skip)
     skip = false;
@@ -284,13 +288,14 @@ async function startProcess() {
 //var post_scores = [];
 function processVotes(query, subsequent) {
   
-
+  console.log('processVotes');
+  
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
     if (result && !err) {
-      is_voting = true;
+		is_voting = true;
       
-      utils.log(result.length + ' posts to process...');      
-
+		utils.log(result.length + ' posts to process...');      
+		
 		//initialize inserting posts to db
 		
 		var bulk = db.collection('posts').initializeUnorderedBulkOp();
@@ -298,129 +303,129 @@ function processVotes(query, subsequent) {
 		//connect to the token_transactions table to start rewarding
 		var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
 		
-      for(var i = 0; i < result.length; i++) {
-        var post = result[i];
+		for(var i = 0; i < result.length; i++) {
+			var post = result[i];
 
-			//if this is a subsequent call, we need to skip first post
-			if (subsequent && i==0){
-				// console.log('skip post:'+post.title);
-				//continue to next element
-				continue;
-			}
-	
-			//if this is the last post, save it to skip it in next iteration
-			if (i == result.length - 1){
-				utils.log('storing last post iteration: ' + post.url);
-				//update query element to include the most recent post for a starting point of the next iteration
-				query['start_permlink'] = post.permlink;
-				query['start_author'] = post.author;									
-			}
-
-        // Make sure the post is older than config time
-        if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
-          utils.log('This post is too new for a vote: ' + post.url);
-          continue;
-        }
-
-        // Check if the bot already voted on this post
-        if(post.active_votes.find(v => v.voter == 'actifit')) {
-          utils.log('Bot already voted on: ' + post.url);
-          continue;
-        }
-
-        // Check if any tags on this post are blacklisted in the settings
-        if ((config.blacklisted_tags && config.blacklisted_tags.length > 0) || (config.whitelisted_tags && config.whitelisted_tags.length > 0) && post.json_metadata && post.json_metadata != '') {
-          var tags = JSON.parse(post.json_metadata).tags;
-
-          if((config.blacklisted_tags && config.blacklisted_tags.length > 0) && tags && tags.length > 0 && tags.find(t => config.blacklisted_tags.indexOf(t) >= 0)) {
-            utils.log('Post contains one or more blacklisted tags. ' + post.url);
-            continue;
-          }
-
-          if((config.whitelisted_tags && config.whitelisted_tags.length > 0) && tags && tags.length > 0 && !tags.find(t => config.whitelisted_tags.indexOf(t) >= 0)) {
-            utils.log('Post does not contain a whitelisted tag. ' + post.url);
-            continue;
-          }
-        }
-
-        // Check if post category is main tag
-        if (post.category != config.main_tag) {
-          utils.log('Post does not match category tag. ' + post.url);
-          continue;
-        }
-
-        // Check if this post has been flagged by any flag signal accounts
-        if(config.flag_signal_accounts) {
-          if(post.active_votes.find(function(v) { return v.percent < 0 && config.flag_signal_accounts.indexOf(v.voter) >= 0; })) {
-            utils.log('Post was downvoted by a flag signal account. ' + post.url);
-            continue;
-          }
-        }
-
-        // Check if this post has been voted by any type of paid bot
-        if(botNames && config.no_paid_bots) {
-          if(post.active_votes.find(function(v) { return botNames.includes(v.voter); })) {
-            utils.log('Post was vote by a paid bot account. ' + post.url);
-            continue;
-          }
-        }
-
-        // Check if account is beneficiary 
-        var benefit = 0;
-        for (var x = 0; x < post.beneficiaries.length; x++) {
-          for (var n = 0; n < config.beneficiaries.length; n++) {
-            if (post.beneficiaries[x].account === config.beneficiaries[n])
-              benefit ++;
-          }          
-          if (benefit === config.beneficiaries.length) {
-            benefit = true;
-            break;
-          }
-        }
-        if (!benefit) {
-          utils.log('Post does not match account beneficiary. ' + post.url);
-          continue;
-        }
+				//if this is a subsequent call, we need to skip first post
+				if (subsequent && i==0){
+					// console.log('skip post:'+post.title);
+					//continue to next element
+					continue;
+				}
 		
-		//check if user is banned
-		var user_banned = false;
-		for (var n = 0; n < banned_users.length; n++) {
-            if (post.author == banned_users[n].user){
-				utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
-				user_banned = true;
+				//if this is the last post, save it to skip it in next iteration
+				if (i == result.length - 1){
+					utils.log('storing last post iteration: ' + post.url);
+					//update query element to include the most recent post for a starting point of the next iteration
+					query['start_permlink'] = post.permlink;
+					query['start_author'] = post.author;									
+				}
+
+			// Make sure the post is older than config time
+			if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
+			  utils.log('This post is too new for a vote: ' + post.url);
+			  continue;
+			}
+
+			// Check if the bot already voted on this post
+			if(post.active_votes.find(v => v.voter == 'actifit')) {
+			  utils.log('Bot already voted on: ' + post.url);
+			  continue;
+			}
+
+			// Check if any tags on this post are blacklisted in the settings
+			if ((config.blacklisted_tags && config.blacklisted_tags.length > 0) || (config.whitelisted_tags && config.whitelisted_tags.length > 0) && post.json_metadata && post.json_metadata != '') {
+			  var tags = JSON.parse(post.json_metadata).tags;
+
+			  if((config.blacklisted_tags && config.blacklisted_tags.length > 0) && tags && tags.length > 0 && tags.find(t => config.blacklisted_tags.indexOf(t) >= 0)) {
+				utils.log('Post contains one or more blacklisted tags. ' + post.url);
+				continue;
+			  }
+
+			  if((config.whitelisted_tags && config.whitelisted_tags.length > 0) && tags && tags.length > 0 && !tags.find(t => config.whitelisted_tags.indexOf(t) >= 0)) {
+				utils.log('Post does not contain a whitelisted tag. ' + post.url);
+				continue;
+			  }
+			}
+
+			// Check if post category is main tag
+			if (post.category != config.main_tag) {
+			  utils.log('Post does not match category tag. ' + post.url);
+			  continue;
+			}
+
+			// Check if this post has been flagged by any flag signal accounts
+			if(config.flag_signal_accounts) {
+			  if(post.active_votes.find(function(v) { return v.percent < 0 && config.flag_signal_accounts.indexOf(v.voter) >= 0; })) {
+				utils.log('Post was downvoted by a flag signal account. ' + post.url);
+				continue;
+			  }
+			}
+
+			// Check if this post has been voted by any type of paid bot
+			if(botNames && config.no_paid_bots) {
+			  if(post.active_votes.find(function(v) { return botNames.includes(v.voter); })) {
+				utils.log('Post was vote by a paid bot account. ' + post.url);
+				continue;
+			  }
+			}
+			
+			// Check if account is beneficiary 
+			var benefit = 0;
+			for (var x = 0; x < post.beneficiaries.length; x++) {
+			  for (var n = 0; n < config.beneficiaries.length; n++) {
+				if (post.beneficiaries[x].account === config.beneficiaries[n])
+				  benefit ++;
+			  }          
+			  if (benefit === config.beneficiaries.length) {
+				benefit = true;
 				break;
+			  }
 			}
-          }   
-        if (user_banned) continue;
-		
-		//skip any posts that are more than 1.5 days old
-		if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
-			continue;
-		}
+			if (!benefit) {
+			  utils.log('Post does not match account beneficiary. ' + post.url);
+			  continue;
+			}
 			
-        try {
+			//check if user is banned
+			var user_banned = false;
+			for (var n = 0; n < banned_users.length; n++) {
+				if (post.author == banned_users[n].user){
+					utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
+					user_banned = true;
+					break;
+				}
+			  }   
+			if (user_banned) continue;
 			
-          post.json = JSON.parse(post.json_metadata);
-		
-		
-		//check if the post has an encryption key val, and ensure it is the proper one
-		if (post.json.actiCrVal){
-					var txt_to_encr = post.author + post.permlink + post.json.step_count ;
-			var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
-			let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
-			encr_txt += cipher.final('hex');
-			//test the result to the post's relevant data
-			if (post.json.actiCrVal != encr_txt){
-				//wrong, skip post
-				console.log('post has incorrect actiCrVal');
+			//skip any posts that are more than 1.5 days old
+			if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
 				continue;
-			}
-			//console.log('post is valid');
-		}else{
-			console.log('post does not contain actiCrVal');
-			continue;
-		}
-
+			}		
+			
+			try {
+			
+				post.json = JSON.parse(post.json_metadata);
+				
+				
+				//check if the post has an encryption key val, and ensure it is the proper one
+				if (post.json.actiCrVal){
+					var txt_to_encr = post.author + post.permlink + post.json.step_count ;
+					var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+					let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+					encr_txt += cipher.final('hex');
+					//test the result to the post's relevant data
+					if (post.json.actiCrVal != encr_txt){
+						//wrong, skip post
+						console.log('post has incorrect actiCrVal');
+						continue;
+					}
+					//console.log('post is valid');
+				}else{
+					console.log('post does not contain actiCrVal');
+					continue;
+				}
+				
 				/**************** Post Score calculation section *******************/
 				
 				/******************* activity count criteria *********************/
@@ -565,35 +570,35 @@ function processVotes(query, subsequent) {
 			  console.log(err);
 			  continue;
 			}
-		
+				
 			//due to the difference in server times, a user's post might have same date created.
 			//to avoid this issue, we will accept 2 posts for every user
 			//so we will check if 2 posts are already accumulated for the user, and if so reject the third
-		
-        let last_index = _.findLastIndex(votePosts, ['author', post.author]);
+			
+			let last_index = _.findLastIndex(votePosts, ['author', post.author]);
 			let first_index = _.findIndex(votePosts, ['author', post.author]);
 			
 			if (last_index != -1 && (first_index!=last_index)) {
 				console.log('---- User already has more than 2 posts in 24 hours ------');
-          let last_voted = votePosts[last_index];
-          var last_date = moment(last_voted.created).format('D');
+				let last_voted = votePosts[last_index];
+				var last_date = moment(last_voted.created).format('D');
 				let first_voted = votePosts[first_index];
 				var first_date = moment(first_voted.created).format('D');
-          var this_date = moment(post.created).format('D');
+				var this_date = moment(post.created).format('D');
 				//if all 3 dates match, skip it
 				if ((last_date == this_date) && (first_date == this_date)) {
-            console.log('---- Last voted -----');
-            console.log(new Date (last_voted.created));
+					console.log('---- Last voted -----');
+					console.log(new Date (last_voted.created));
 					console.log('---- First voted -----');
 					console.log(new Date (first_voted.created));
-            console.log('---- This voted -----');
-            console.log(new Date (post.created));
-            console.log('---- Moment-----');
-            console.log(last_date);
+					console.log('---- This voted -----');
+					console.log(new Date (post.created));
+					console.log('---- Moment-----');
+					console.log(last_date);
 					console.log(first_date);
-            console.log(this_date);
+					console.log(this_date);
 					continue;
-          }          
+				}          
 			}else if (last_index != -1){
 				console.log('last_index:'+last_index);
 				console.log(post.author+post.url);
@@ -610,14 +615,14 @@ function processVotes(query, subsequent) {
 					continue;
 				}
 				
-        }        
+			}
 			
 			
-			console.log('Voting on: ' + post.url);
+			//console.log('Voting on: ' + post.url);
 			votePosts.push(post);
 			
 			try{
-				console.log('going through '+post.url);
+				console.log('going through selected post '+post.url);
 				//insert post if not inserted before
 				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 							   post
@@ -677,7 +682,7 @@ function processVotes(query, subsequent) {
 								token_count: voter_tokens,
 								url: post.url,
 								date: new Date(vote.time)
-      }
+							}
 							bulk_transactions.find(
 							{ 
 								user: vote_transaction.user,
@@ -700,6 +705,10 @@ function processVotes(query, subsequent) {
 			try{
 				//store posts
 				await bulk.execute();
+			}catch(bulkerr){
+				console.log(bulkerr);
+			}
+			try{
 				//award transaction tokens
 				bulk_transactions.execute();
 			}catch(bulkerr){
@@ -716,26 +725,84 @@ function processVotes(query, subsequent) {
 			//call again with subsequent enabled to avoid duplicate posts, disparse the calls by 1 sec to avoid API timeouts
 			console.log("query:"+query['tag']);
 			console.log("query:"+query['start_permlink']);
+			
 			setTimeout(processVotes, 1000, query, true);
 		
 		}else{
-
-
-	      if (votePosts.length > 0) {
-	        utils.log(votePosts.length + ' posts to vote...');
+			if (votePosts.length > 0) {
+				utils.log(votePosts.length + ' posts to vote...');
 				var vote_data = utils.calculateVotes(votePosts, config.vote_weight);
-	        votePosts.sort(function(post1, post2) {
+				votePosts.sort(function(post1, post2) {
 				  //Sort posts by reverse score, so as when popping them we get sorted by highest
 				  return post1.post_score - post2.post_score;
-	        });
-	
+				});
+		
 				
-	        utils.log(vote_data.power_per_vote + ' power per full vote.');
-				/*utils.log(vote_data.power_per_vote * 0.8 + ' power per second vote.');
-	        utils.log(vote_data.power_per_vote * 0.65 + ' power per third vote.');
-	        utils.log(vote_data.power_per_vote * 0.5 + ' power per fourth vote.');
-	        utils.log(vote_data.power_per_vote * 0.35 + ' power per fifth vote.');
-				utils.log(vote_data.power_per_vote * 0.2 + ' power per lowest vote.');*/
+				utils.log(vote_data.power_per_vote + ' power per full vote.');
+				
+				
+				/************************* winner reward ******************************/
+			
+				//let's pick a random winner to double up his votes and adjust his AFIT reward score
+				
+				try{
+					lucky_winner_id = utils.generateRandomNumber(1, votePosts.length);
+					let post = votePosts[lucky_winner_id];
+					
+					console.log('before');
+					console.log(votePosts[lucky_winner_id].post_score);
+					
+					let reward_user = post.author;
+					let activity_type = 'Post';
+					let note = '';
+					let reward_factor = 2;
+					
+					//if we find this is a charity run, let's switch it to the actual charity name
+					if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+						reward_user = post.json.charity;
+						activity_type = 'Charity Post';
+						note = 'Charity donation via actifit post by user '+post.author;
+					}	
+					
+					var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
+					
+					let post_transaction = {
+						user: reward_user,
+						reward_activity: activity_type,
+						token_count: post.post_score * reward_factor,
+						orig_token_count: post.post_score,
+						url: post.url,
+						date: new Date(post.created),
+						note: note,
+						lucky_winner: 1,
+						reward_factor: reward_factor,
+						reward_system: reward_sys_version
+					}
+					
+					//adjust post_score according to reward
+					post.post_score = post.post_score * reward_factor;
+					post.rate_multiplier = post.post_score / 100;
+					post.reward_factor = reward_factor;
+					post.lucky_winner = 1;
+				  
+					bulk_transactions.find(
+					{ 
+						user: post_transaction.user,
+						reward_activity: post_transaction.reward_activity,
+						url: post_transaction.url
+					}).upsert().replaceOne(post_transaction); 		
+
+					
+					//award transaction tokens
+					await bulk_transactions.execute();
+				}catch(bulkerr){
+					console.log(bulkerr);
+				}
+				console.log('after');
+				console.log(votePosts[lucky_winner_id].post_score);
+				
+				/********************* proceed with STEEM upvotes ************************/
+				
 				
 				var tot_weight = 0;
 				for (var xx=0;xx<votePosts.length;xx++){
@@ -745,15 +812,15 @@ function processVotes(query, subsequent) {
 				}
 				console.log('total weight consumed'+tot_weight);
 				
-	          votingProcess(votePosts, vote_data.power_per_vote);
+				votingProcess(votePosts, vote_data.power_per_vote);
 	
-	      } else {
-	        utils.log('No posts to vote...');
-	        if(!error_sent) {
-	          //errorEmail('No posts to vote...', config.report_emails);          
-	          error_sent = true;
-	        }
-	      }
+			} else {
+				utils.log('No posts to vote...');
+				if(!error_sent) {
+				  //errorEmail('No posts to vote...', config.report_emails);          
+				  error_sent = true;
+				}
+			}
 		}
       last_voted++;
     } else {
@@ -762,6 +829,7 @@ function processVotes(query, subsequent) {
     }
   });
 }
+
 var post_rank = 0;
 function votingProcess(posts, power_per_vote) {
   // Get the first bid in the list
@@ -769,7 +837,7 @@ function votingProcess(posts, power_per_vote) {
   .then( res => {
     // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 3000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -791,21 +859,22 @@ function votingProcess(posts, power_per_vote) {
   })
 }
 
+
 function sendVote(post, retries, power_per_vote) {
-  utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
+	utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
 	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
   
 	var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
-  post_rank += 1;
-  utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
+	post_rank += 1;
+	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
-  if (vote_weight > config.max_vote_per_post){
+	if (vote_weight > config.max_vote_per_post){
 		vote_weight = config.max_vote_per_post;
 	}
-  post.vote_weight = vote_weight;
-  last_votes.push(post);
+	post.vote_weight = vote_weight;
+	last_votes.push(post);
 
-  return new Promise((resolve, reject) => {
+	return new Promise((resolve, reject) => {
 		if(config.testing){
 			//resolve('');
 			if(config.comment_location && config.comment){
@@ -817,44 +886,44 @@ function sendVote(post, retries, power_per_vote) {
 						.catch(err => {
 							reject(err);
 						})
-				}, 3000);
+				}, 5000);
 			}else{
 				resolve('');   
 			}
 		}else{
-    steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
-        if (!err && result) {
-            utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
+			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
+				if (!err && result) {
+					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
 
 					if(config.comment_location && config.comment){
-                setTimeout(function () { 
+						setTimeout(function () { 	
 							sendComment(post, vote_weight)
-                        .then( res => {
-                            resolve(res)
-                        })
-                        .catch(err => {
-                            reject(err);
-                        })
-                }, 3000);
+								.then( res => {
+									resolve(res)
+								})
+								.catch(err => {
+									reject(err);
+								})
+						}, 5000);
 					}else{
-                resolve(result);   
+						resolve(result);   
 					}
-        } else {
-            utils.log(err, result);
+				}else{
+					utils.log(err, result);
 
-             // Try again one time on error
+					 // Try again one time on error
 					if (retries < 10)
-            sendVote(post, retries + 1);
-            else {
-            var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
-            utils.log(message);
-            reject(err);
-            //errorEmail(message, config.report_emails);
-            }
-        }
-    });
+						sendVote(post, retries + 1);
+					else {
+						var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
+						utils.log(message);
+						reject(err);
+					//errorEmail(message, config.report_emails);
+					}
+				}
+			});
 		}
-  });
+	});
 }
 
 
@@ -892,37 +961,48 @@ function sendComment(post, vote_weight) {
 	var rate_multiplier = post.rate_multiplier;
 	var post_step_count = post.json.step_count;
 	
-  var content = null;
-  // Return promise
-  return new Promise((resolve, reject) => {
-  content = fs.readFileSync(config.comment_location, "utf8");
+	var content = null;
+	// Return promise
+	return new Promise((resolve, reject) => {
+		content = fs.readFileSync(config.comment_location, "utf8");
 
-  // If promotion content is specified in the config then use it to comment on the upvoted post
-  if (content && content != '') {
+		// If promotion content is specified in the config then use it to comment on the upvoted post
+		if (content && content != '') {
 
-    // Generate the comment permlink via steemit standard convention
-    var permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
+			// Generate the comment permlink via steemit standard convention
+			var permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
 
 			var token_count = post.post_score;//parseFloat(rate_multiplier)*100;
-	
-    // Replace variables in the promotion content
+			
+			// Replace variables in the promotion content
 			content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
-
+			
 			//replace(/\{milestone\}/g, milestone_txt).
-    
+			
 			//adding proper meta content for later relevant reward via afit_tokens data
 			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };
+			
+			//if user is lucky winner, add a relevant message
+
+			if (typeof post.lucky_winner != 'undefined' && post.lucky_winner != '' && post.lucky_winner != 'undefined'){
+				content = content.replace(/\{lucky_reward}/g,'**You were also selected randomly as a LUCKY WINNER for the day. Your rewards were DOUBLED - DOUBLE CONGRATS!!**');
+				jsonMetadata.lucky_winner = 1;
+			}else{
+				content = content.replace(/\{lucky_reward}/g,'') 
+			}
+			
+			
 			if (!config.testing){
-      // Broadcast the comment
-		steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
-          if (!err && result) {
-          utils.log('Posted comment: ' + permlink);
-          resolve(result);
-          } else {
-          utils.log('Error posting comment: ' + permlink);
-          reject(err);
-          }
-      });
+				// Broadcast the comment
+				steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
+					  if (!err && result) {
+						utils.log('Posted comment: ' + permlink);
+						resolve(result);
+					  } else {
+						utils.log('Error posting comment: ' + permlink);
+						reject(err);
+					  }
+				});
 			}else{
 				console.log('comment');
 				console.log(content);
@@ -930,9 +1010,9 @@ function sendComment(post, vote_weight) {
 				resolve('');
 			}
 		}else{
-    reject('Failed to load content');
+			reject('Failed to load content');
 		}
-});
+	});
   // Check if the bot should resteem this post
   /* if (config.resteem)
     resteem(parentAuthor, parentPermlink); */
@@ -1031,38 +1111,38 @@ function sendPayment(to, amount, currency, reason, retries, data) {
 }
 
 function claimRewards() {
-  if (!config.auto_claim_rewards)
-    return;
+	if (!config.auto_claim_rewards)
+		return;
 
-  // Make api call only if you have actual reward
-  if (parseFloat(account.reward_steem_balance) > 0 || parseFloat(account.reward_sbd_balance) > 0 || parseFloat(account.reward_vesting_balance) > 0) {
-    steem.broadcast.claimRewardBalance(config.posting_key, config.account, account.reward_steem_balance, account.reward_sbd_balance, account.reward_vesting_balance, function (err, result) {
-      if (err) {
-        utils.log(err);
-      }
+	// Make api call only if you have actual reward
+	if (parseFloat(account.reward_steem_balance) > 0 || parseFloat(account.reward_sbd_balance) > 0 || parseFloat(account.reward_vesting_balance) > 0) {
+		steem.broadcast.claimRewardBalance(config.posting_key, config.account, account.reward_steem_balance, account.reward_sbd_balance, account.reward_vesting_balance, function (err, result) {
+			if (err) {
+				utils.log(err);
+			}
 
-      if (result) {
+			if (result) {
 
-        var rewards_message = "$$$ ==> Rewards Claim";
-        if (parseFloat(account.reward_sbd_balance) > 0) { rewards_message = rewards_message + ' SBD: ' + parseFloat(account.reward_sbd_balance); }
-        if (parseFloat(account.reward_steem_balance) > 0) { rewards_message = rewards_message + ' STEEM: ' + parseFloat(account.reward_steem_balance); }
-        if (parseFloat(account.reward_vesting_balance) > 0) { rewards_message = rewards_message + ' VESTS: ' + parseFloat(account.reward_vesting_balance); }
+				var rewards_message = "$$$ ==> Rewards Claim";
+				if (parseFloat(account.reward_sbd_balance) > 0) { rewards_message = rewards_message + ' SBD: ' + parseFloat(account.reward_sbd_balance); }
+				if (parseFloat(account.reward_steem_balance) > 0) { rewards_message = rewards_message + ' STEEM: ' + parseFloat(account.reward_steem_balance); }
+				if (parseFloat(account.reward_vesting_balance) > 0) { rewards_message = rewards_message + ' VESTS: ' + parseFloat(account.reward_vesting_balance); }
 
-        utils.log(rewards_message);
+				utils.log(rewards_message);
 
-        // If there are liquid post rewards, withdraw them to the specified account
-        if (parseFloat(account.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
+				// If there are liquid post rewards, withdraw them to the specified account
+				if (parseFloat(account.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
 
-          // Send liquid post rewards to the specified account
-          steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, account.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
+					// Send liquid post rewards to the specified account
+					steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, account.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
 						if (err){
-              utils.log(err, response);
+							utils.log(err, response);
 						}else{
-              utils.log('$$$ Auto withdrawal - liquid post rewards: ' + account.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
-            }
-          });
-        }
-      }
-    });
-  }
+							utils.log('$$$ Auto withdrawal - liquid post rewards: ' + account.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
+						}
+					});
+				}
+			}
+		});
+	}
 }
