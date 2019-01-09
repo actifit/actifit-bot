@@ -42,7 +42,7 @@ MongoClient.connect(url, function(err, client) {
 
 //allows setting acceptable origins to be included across all function calls
 app.use(function(req, res, next) {
-  var allowedOrigins = ['*', 'https://actifit.io'];
+  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
   var origin = req.headers.origin;
   if(allowedOrigins.indexOf(origin) > -1){
 	   res.setHeader('Access-Control-Allow-Origin', origin);
