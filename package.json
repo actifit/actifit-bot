@@ -24,11 +24,10 @@
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "curate": "node curation-bot.js",
     "delegate": "node delegations.js",
     "api": "node app.js",
-    "all": "node app.js | node delegations.js | node curation-bot.js",
-    "start": "node app.js | node delegations.js | node curation-bot.js"
+    "all": "node app.js | node delegations.js ",
+    "start": "node app.js | node delegations.js "
   },
   "engines": {
     "node": "10.3.0"
