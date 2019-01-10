@@ -28,6 +28,12 @@ var reward_sys_version = 'v0.2';
 
 var error_sent = false;
 
+//keep alive
+var http = require("http");
+setInterval(function() {
+    http.get("http://actifitvoter.herokuapp.com");
+}, 600000); // every 10 minutes (600000)
+
 
 var crypto = require('crypto');
 
@@ -837,7 +843,7 @@ function votingProcess(posts, power_per_vote) {
   .then( res => {
     // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, config.voting_posting_delay);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -851,7 +857,7 @@ function votingProcess(posts, power_per_vote) {
 		//since we're done voting, we need to update all user tokens to reflect new rewards
 		updateUserTokens();
         //reportEmail(config.report_emails)
-      }, 5000);
+      }, config.voting_posting_delay);
     }
   })
   .catch(err => {
@@ -879,14 +885,14 @@ function sendVote(post, retries, power_per_vote) {
 			//resolve('');
 			if(config.comment_location && config.comment){
 				setTimeout(function () { 	
-					sendComment(post, vote_weight)
+					sendComment(post, 0, vote_weight)
 						.then( res => {
 							resolve('')
 						})
 						.catch(err => {
 							reject(err);
 						})
-				}, 5000);
+				}, config.voting_posting_delay);
 			}else{
 				resolve('');   
 			}
@@ -897,14 +903,14 @@ function sendVote(post, retries, power_per_vote) {
 
 					if(config.comment_location && config.comment){
 						setTimeout(function () { 	
-							sendComment(post, vote_weight)
+							sendComment(post, 0, vote_weight)
 								.then( res => {
 									resolve(res)
 								})
 								.catch(err => {
 									reject(err);
 								})
-						}, 5000);
+						}, config.voting_posting_delay);
 					}else{
 						resolve(result);   
 					}
@@ -912,9 +918,18 @@ function sendVote(post, retries, power_per_vote) {
 					utils.log(err, result);
 
 					 // Try again one time on error
-					if (retries < 10)
-						sendVote(post, retries + 1);
-					else {
+					if (retries < config.max_vote_comment_retries){
+						//try to vote again
+						setTimeout(function () { 	
+							sendVote(post, retries + 1, power_per_vote)
+								.then( res => {
+									resolve(res)
+								})
+								.catch(err => {
+									reject(err);
+								})
+						}, config.voting_posting_delay);
+					}else {
 						var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
 						utils.log(message);
 						reject(err);
@@ -955,7 +970,7 @@ async function updateUserTokens() {
 }
 
 
-function sendComment(post, vote_weight) {
+function sendComment(post, retries, vote_weight) {
 	var parentAuthor = post.author;
 	var parentPermlink = post.permlink;
 	var rate_multiplier = post.rate_multiplier;
@@ -1000,7 +1015,19 @@ function sendComment(post, vote_weight) {
 						resolve(result);
 					  } else {
 						utils.log('Error posting comment: ' + permlink);
-						reject(err);
+						if (retries < config.max_vote_comment_retries){
+							utils.log('Try again');
+							setTimeout(function () { 	
+								sendComment(post, retries + 1, vote_weight)
+									.then( res => {
+										resolve(res)
+									})
+									.catch(err => {
+										reject(err);
+									})
+							}, config.voting_posting_delay);
+						}
+						//reject(err);
 					  }
 				});
 			}else{
