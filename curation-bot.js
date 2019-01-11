@@ -656,6 +656,10 @@ function processVotes(query, subsequent) {
 					note: note,
 					reward_system: reward_sys_version
 				}
+				//also in case of charity, we need to append the actual user
+				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+					post_transaction['giver'] = post.author;
+				}
 			  
 				bulk_transactions.find(
 				{ 
@@ -663,6 +667,30 @@ function processVotes(query, subsequent) {
 					reward_activity: post_transaction.reward_activity,
 					url: post_transaction.url
 				}).upsert().replaceOne(post_transaction); 
+				
+				//the proper transaction without reward
+				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+					note = "Charity donation reference post transaction without rewards"
+					let charity_trans = {
+						user: post.author,
+						reward_activity: 'Post',
+						token_count: 0,
+						url: post.url,
+						date: new Date(post.created),
+						note: note,
+						charity: post.json.charity,
+						reward_system: reward_sys_version
+					}
+					
+					//we also need to insert another transaction to capture the actual activity/reward by the user
+					bulk_transactions.find(
+					{ 
+						user: charity_trans.user,
+						reward_activity: charity_trans.reward_activity,
+						url: charity_trans.url
+					}).upsert().replaceOne(charity_trans);
+				
+				}
 				
 				//reward upvoters
 				//make sure we already have a positive rshares
