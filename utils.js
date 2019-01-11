@@ -601,6 +601,8 @@ function resetVals(){
 	producerSPRewards = 0
 }
 
+lookupAccountPay();
+
 async function lookupAccountPay (){
 	
 	const ONE_DAY = 1;
@@ -608,7 +610,7 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	
 	let start_days = 1;
-	let lookup_days = ONE_DAY;
+	let lookup_days = ONE_WEEK;
 	
 	let today = moment().utc().startOf('date').toDate()
 	let start = moment(today).subtract(start_days, 'days').toDate()
@@ -617,16 +619,16 @@ async function lookupAccountPay (){
 	//bring the action
 	console.log('start date:'+start)
 	console.log('************actifit rewards***************')
-	await getAccountPayTransactions('actifit', start, to);
+	await getAccountPayTransactions('actifit', start, to, lookup_days);
 	//console.log('append actifit.pay rewards:'+start)
 	//await getAccountPayTransactions('actifit.pay', start, to);
 	
 	txStart = -1;
 	console.log('***********append actifit.funds rewards**********')
-	await getAccountPayTransactions('actifit.funds', start, to);
+	await getAccountPayTransactions('actifit.funds', start, to, lookup_days);
 }
 
-async function getAccountPayTransactions (account, start, end) {
+async function getAccountPayTransactions (account, start, end, period) {
   
   start = moment(start).format()
   end = moment(end).format()
@@ -716,25 +718,46 @@ async function getAccountPayTransactions (account, start, end) {
   // console.log(lastDate)
   if (lastDate >= end && (txStart == -1 || txStart > limit)){ 
 	txStart = lastTx[0];
-	return getAccountPayTransactions(account, start, end)
+	return getAccountPayTransactions(account, start, end, period)
   }
   console.log ('querying complete');
+  console.log ('>>period: '+period + ' days')
   console.log ('---benefic---');
   console.log ('totalSP:'+totalSp);
+  if (period>0 && totalSp>0){
+	console.log ('AVG Daily:'+totalSp/period);
+  }
   console.log ('total_STEEM:'+total_STEEM);
+  if (period>0 && total_STEEM>0){
+	console.log ('AVG Daily:'+total_STEEM/period);
+  }
   console.log ('totalSBD:'+totalSBD);
+  if (period>0 && totalSBD>0){
+    console.log ('AVG Daily:'+totalSBD/period);
+  }
   console.log ('---curation---');
   console.log ('totalSP:'+curTotalSp);
+  if (period>0 && curTotalSp>0){
+    console.log ('AVG Daily:'+curTotalSp/period);
+  }
   //console.log ('totalSTEEM:'+curTotalSTEEM);
  // console.log ('totalSBD:'+curTotalSBD);
   console.log ('---witness---');
   console.log ('producerSPRewards:'+producerSPRewards);
-  
+  if (period>0 && producerSPRewards>0){
+    console.log ('AVG Daily:'+producerSPRewards/period);
+  }
   console.log ('---totals---');
   let comSP = parseFloat(totalSp.toFixed(3))+parseFloat(curTotalSp.toFixed(3))+parseFloat(producerSPRewards.toFixed(3))+parseFloat(total_STEEM.toFixed(3));
   console.log ('totalSTEEM:'+comSP.toFixed(3));
+  if (period>0 && comSP>0){
+    console.log ('AVG Daily:'+comSP/period);
+  }
   //console.log ('totalSTEEM:'+totalSTEEM.toFixed(3));
   console.log ('totalSBD:'+totalSBD.toFixed(3));
+  if (period>0 && totalSBD>0){
+    console.log ('AVG Daily:'+totalSBD/period);
+  }
   console.log ('------------');
   //console.log (opsArr);
 }
