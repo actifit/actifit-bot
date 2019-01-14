@@ -28,6 +28,12 @@ var reward_sys_version = 'v0.2';
 
 var error_sent = false;
 
+//keep alive
+var http = require("http");
+setInterval(function() {
+    http.get("http://actifitvoter.herokuapp.com");
+}, 600000); // every 10 minutes (600000)
+
 
 var crypto = require('crypto');
 
@@ -126,7 +132,7 @@ var url = config.mongo_uri;
 if (config.testing){
 	url = config.mongo_local;
 }
-console.log('db url:'+url);
+utils.log('db url:'+url);
 var db;
 var collection;
 
@@ -165,7 +171,7 @@ if (fs.existsSync('members.json')) {
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
-	  console.log("Connected successfully to server "+url);
+	  utils.log("Connected successfully to server "+url);
 
 	  db = client.db(db_name);
 
@@ -195,14 +201,14 @@ async function startProcess() {
   if(!botNames)
     botNames = await utils.loadBots();
   if (config.detailed_logging)
-    console.log('Start process');
+    utils.log('Start process');
   // Load the settings from the config file each time so we can pick up any changes
   loadConfig();
 
   // Load the bot account info
   steem.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
-      console.log(err, result);
+      utils.log(err, result);
     else {
       account = result[0];
 
@@ -214,11 +220,11 @@ async function startProcess() {
   //deactivating condition of 24 hrs to pass
   var passedOneDay = true;//today >= oneMoreDay;
 
-  //console.log('found banned users');
-  //console.log(banned_users);
+  //utils.log('found banned users');
+  //utils.log(banned_users);
   
   /*for (var n = 0; n < banned_users.length; n++) {
-  console.log(banned_users[n].user);
+  utils.log(banned_users[n].user);
             //if (post.author == banned_users[n].user){
 				//utils.log('User '+post.author+' is banned, skipping his post:' + post.url);
 				//user_banned = true;
@@ -234,33 +240,33 @@ async function startProcess() {
     if (config.detailed_logging)
       utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 
-    console.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+    utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
 	
     // We are at voting power kick start - time to vote!
-	//console.log(vp >= parseFloat(config.vp_kickstart)/100);
+	//utils.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
 		// Check if there are any rewards to claim before voting
 		if (!config.testing){
 			claimRewards();
 		}
 	
-		console.log('lets vote');
+		utils.log('lets vote');
 		skip = true;
 		  
-		console.log('fetch banned users list');  
+		utils.log('fetch banned users list');  
 		//grab banned user list before rewarding
 		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	  
 		//grab list of moderators
 		var moderator_api_url = config.api_url+'moderators';
 		var moderator_info = await axios.get(moderator_api_url);
-		console.log(moderator_info.data);
+		utils.log(moderator_info.data);
 		var moderator_array = moderator_info.data;
 		moderator_list = [];
 		for (var mod_it=0;mod_it<moderator_array.length;mod_it++){
 			moderator_list.push(moderator_array[mod_it].name);
 		}
-		console.log(moderator_list);
+		utils.log(moderator_list);
 	  
 		var query = {tag: config.main_tag, limit: 100};
 		votePosts = Array();
@@ -268,27 +274,27 @@ async function startProcess() {
     }else{
 		//if we're not voting, let's check to claim some more discounted account spots
 		utils.getRC(config.account).then(function(results){
-			console.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
+			utils.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
 			if (results.estimated_pct>config.account_claim_rc_min){
 				//if we reached min threshold, claim more spots for discounted accounts
 				utils.claimDiscountedAccount();
 			}			
 		}, function(err) {
-			console.log("Error fetching RC");
-			console.log(err);
+			utils.log("Error fetching RC");
+			utils.log(err);
 		});
 	}
     
   } else if(skip)
     skip = false;
   else if (!account)
-    console.log('Loading account data...');
-  else console.log('Voting... or waiting for a day to pass');
+    utils.log('Loading account data...');
+  else utils.log('Voting... or waiting for a day to pass');
 }
 //var post_scores = [];
 function processVotes(query, subsequent) {
   
-  console.log('processVotes');
+  utils.log('processVotes');
   
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
     if (result && !err) {
@@ -305,21 +311,22 @@ function processVotes(query, subsequent) {
 		
 		for(var i = 0; i < result.length; i++) {
 			var post = result[i];
-
-				//if this is a subsequent call, we need to skip first post
-				if (subsequent && i==0){
-					// console.log('skip post:'+post.title);
-					//continue to next element
-					continue;
-				}
+			
 		
-				//if this is the last post, save it to skip it in next iteration
-				if (i == result.length - 1){
-					utils.log('storing last post iteration: ' + post.url);
-					//update query element to include the most recent post for a starting point of the next iteration
-					query['start_permlink'] = post.permlink;
-					query['start_author'] = post.author;									
-				}
+			//if this is a subsequent call, we need to skip first post
+			if (subsequent && i==0){
+				// utils.log('skip post:'+post.title);
+				//continue to next element
+				continue;
+			}
+	
+			//if this is the last post, save it to skip it in next iteration
+			if (i == result.length - 1){
+				utils.log('storing last post iteration: ' + post.url);
+				//update query element to include the most recent post for a starting point of the next iteration
+				query['start_permlink'] = post.permlink;
+				query['start_author'] = post.author;									
+			}
 
 			// Make sure the post is older than config time
 			if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
@@ -417,12 +424,12 @@ function processVotes(query, subsequent) {
 					//test the result to the post's relevant data
 					if (post.json.actiCrVal != encr_txt){
 						//wrong, skip post
-						console.log('post has incorrect actiCrVal');
+						utils.log('post has incorrect actiCrVal');
 						continue;
 					}
-					//console.log('post is valid');
+					//utils.log('post is valid');
 				}else{
-					console.log('post does not contain actiCrVal');
+					utils.log('post does not contain actiCrVal');
 					continue;
 				}
 				
@@ -461,14 +468,14 @@ function processVotes(query, subsequent) {
 					if (!actifit_img_urls.includes($(this).attr('src'))){
 						new_imgs += 1;
 						recorded_imgs.push($(this).attr('src'));
-						//console.log($(this).attr('src'));
+						//utils.log($(this).attr('src'));
 					}
 				});
 
 				//grab listing of recorded images as part of json
 				var json_img_list = post.json.image;
 				
-				//console.log(json_img_list);
+				//utils.log(json_img_list);
 				
 				//try to see if some images were not captured by our approach for HTML content, and grab them from json meta
 				if (json_img_list.length>0){
@@ -481,9 +488,9 @@ function processVotes(query, subsequent) {
 					};
 				}
 				
-				//console.log('2>>>new_imgs:'+new_imgs);
+				//utils.log('2>>>new_imgs:'+new_imgs);
 				
-				//console.log('>>>> unique images:'+new_imgs);
+				//utils.log('>>>> unique images:'+new_imgs);
 				//calculate img score
 				post.media_score = utils.calcScore(img_rules, config.media_factor, new_imgs);
 				
@@ -491,7 +498,7 @@ function processVotes(query, subsequent) {
 				
 				//calculate upvote score relying on positive votes only
 				post.upvote_score = utils.calcScore(upv_rules, config.upvotes_factor, post.net_votes);
-				//console.log('upvotes:'+post.net_votes);
+				//utils.log('upvotes:'+post.net_votes);
 				
 				/***************** moderator upvote factor ******************/
 				
@@ -500,49 +507,50 @@ function processVotes(query, subsequent) {
 				post.active_votes.some(function(vote){
 					if (moderator_list.includes(vote.voter)){
 						post.moderator_score = parseInt(config.moderator_upvote_factor);
-						//console.log('found moderator upvote'+vote.voter);
+						//utils.log('found moderator upvote'+vote.voter);
 						return true;
 					}
 				});
 				
-				//console.log(post.moderator_score);
+				//utils.log(post.moderator_score);
 				
 				/******************* comments criteria *********************/
-				
-				
-				let comments = await steem.api.getContentRepliesAsync(post.author, post.permlink);
 				var matching_comment_count = 0;
-				for(var cmt_it = 0; cmt_it < comments.length; cmt_it++) {
-					//console.log('>>>>>>'+comments[cmt_it].body);
-					const $ = cheerio.load('<div class="comment_container">'+comments[cmt_it].body+'</div>');
-					var comment_pure = $('.comment_container').text().replace(/\s+/g,' ');
-					//console.log(comment_pure);
-					if (comment_pure.length > 50){
-						matching_comment_count += 1;
-					}
+				//if (!config.testing){
+					let comments = await steem.api.getContentRepliesAsync(post.author, post.permlink);
 					
-					//check if the comment is made by a moderator, if it is we need to reward the moderator
-					if (moderator_list.includes(comments[cmt_it].author)){
-						let comment_transaction = {
-							user: comments[cmt_it].author,
-							reward_activity: 'Moderator Comment',
-							token_count: parseInt(config.moderator_comment_reward),
-							url: post.url,
-							comment_url: comments[cmt_it].url,
-							date: new Date(comments[cmt_it].created)
+					for(var cmt_it = 0; cmt_it < comments.length; cmt_it++) {
+						//utils.log('>>>>>>'+comments[cmt_it].body);
+						const $ = cheerio.load('<div class="comment_container">'+comments[cmt_it].body+'</div>');
+						var comment_pure = $('.comment_container').text().replace(/\s+/g,' ');
+						//utils.log(comment_pure);
+						if (comment_pure.length > 50){
+							matching_comment_count += 1;
 						}
-						bulk_transactions.find(
-						{ 
-							user: comment_transaction.user,
-							reward_activity: comment_transaction.reward_activity,
-							url: comment_transaction.url,
-							comment_url: comment_transaction.comment_url
-						}).upsert().replaceOne(comment_transaction);
-						console.log('found comment>>>>');
-						console.log(comment_transaction);
+						
+						//check if the comment is made by a moderator, if it is we need to reward the moderator
+						if (moderator_list.includes(comments[cmt_it].author)){
+							let comment_transaction = {
+								user: comments[cmt_it].author,
+								reward_activity: 'Moderator Comment',
+								token_count: parseInt(config.moderator_comment_reward),
+								url: post.url,
+								comment_url: comments[cmt_it].url,
+								date: new Date(comments[cmt_it].created)
+							}
+							bulk_transactions.find(
+							{ 
+								user: comment_transaction.user,
+								reward_activity: comment_transaction.reward_activity,
+								url: comment_transaction.url,
+								comment_url: comment_transaction.comment_url
+							}).upsert().replaceOne(comment_transaction);
+							utils.log('found comment>>>>');
+							utils.log(comment_transaction);
+						}
 					}
-				}
-				//console.log("comments:"+matching_comment_count);
+				//}
+				//utils.log("comments:"+matching_comment_count);
 				//calculate comment score
 				post.comment_score = utils.calcScore(cmts_rules, config.comments_factor, matching_comment_count);
 				
@@ -550,11 +558,11 @@ function processVotes(query, subsequent) {
 				//var request = require('request');
 				var rank_api_url = config.api_url+'getRank/'+post.author;
 				var user_rank_info = await axios.get(rank_api_url);
-				//console.log(user_rank_info.user_rank);
+				//utils.log(user_rank_info.user_rank);
 				post.user_rank = user_rank_info.data.user_rank;
 				//calculate user rank score relying on positive votes only
 				post.user_rank_score = parseFloat(user_rank_info.data.user_rank)*parseInt(config.rank_factor)/100;
-				//console.log('rank'+post.user_rank_score);
+				//utils.log('rank'+post.user_rank_score);
 				
 				
 				//calculate total post score
@@ -563,11 +571,11 @@ function processVotes(query, subsequent) {
 				//rate multiplier to allow assigning proper steem upvote value per each post according to its post_score/afit payout
 				post.rate_multiplier = post.post_score / 100;
 				//post_scores.push([post.url,post.post_score]);
-				//console.log(post);
+				//utils.log(post);
 			
 			} catch (err) {
-			  console.log('Error parsing json metadata');
-			  console.log(err);
+			  utils.log('Error parsing json metadata');
+			  utils.log(err);
 			  continue;
 			}
 				
@@ -579,7 +587,7 @@ function processVotes(query, subsequent) {
 			let first_index = _.findIndex(votePosts, ['author', post.author]);
 			
 			if (last_index != -1 && (first_index!=last_index)) {
-				console.log('---- User already has more than 2 posts in 24 hours ------');
+				utils.log('---- User already has more than 2 posts in 24 hours ------');
 				let last_voted = votePosts[last_index];
 				var last_date = moment(last_voted.created).format('D');
 				let first_voted = votePosts[first_index];
@@ -587,42 +595,42 @@ function processVotes(query, subsequent) {
 				var this_date = moment(post.created).format('D');
 				//if all 3 dates match, skip it
 				if ((last_date == this_date) && (first_date == this_date)) {
-					console.log('---- Last voted -----');
-					console.log(new Date (last_voted.created));
-					console.log('---- First voted -----');
-					console.log(new Date (first_voted.created));
-					console.log('---- This voted -----');
-					console.log(new Date (post.created));
-					console.log('---- Moment-----');
-					console.log(last_date);
-					console.log(first_date);
-					console.log(this_date);
+					utils.log('---- Last voted -----');
+					utils.log(new Date (last_voted.created));
+					utils.log('---- First voted -----');
+					utils.log(new Date (first_voted.created));
+					utils.log('---- This voted -----');
+					utils.log(new Date (post.created));
+					utils.log('---- Moment-----');
+					utils.log(last_date);
+					utils.log(first_date);
+					utils.log(this_date);
 					continue;
 				}          
 			}else if (last_index != -1){
-				console.log('last_index:'+last_index);
-				console.log(post.author+post.url);
+				utils.log('last_index:'+last_index);
+				utils.log(post.author+post.url);
 				//adding condition to reject a post if a prior one exists that is less than 6 hours away
 				let last_voted = votePosts[last_index];
-				//console.log(last_voted.author+last_voted.url);
+				//utils.log(last_voted.author+last_voted.url);
 				var last_date = moment(last_voted.created).toDate();
 				var this_date = moment(post.created).toDate();
 				//check the hours difference
 				var hours_diff = Math.abs(this_date - last_date) / 36e5;
 				if (hours_diff<parseFloat(config.min_posting_hours_diff)){
 					//skip new post
-					console.log('hours difference:'+hours_diff+'...skipping');
+					utils.log('hours difference:'+hours_diff+'...skipping');
 					continue;
 				}
 				
 			}
 			
 			
-			//console.log('Voting on: ' + post.url);
+			//utils.log('Voting on: ' + post.url);
 			votePosts.push(post);
 			
 			try{
-				console.log('going through selected post '+post.url);
+				utils.log('going through selected post '+post.url);
 				//insert post if not inserted before
 				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 							   post
@@ -650,6 +658,10 @@ function processVotes(query, subsequent) {
 					note: note,
 					reward_system: reward_sys_version
 				}
+				//also in case of charity, we need to append the actual user
+				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+					post_transaction['giver'] = post.author;
+				}
 			  
 				bulk_transactions.find(
 				{ 
@@ -658,14 +670,42 @@ function processVotes(query, subsequent) {
 					url: post_transaction.url
 				}).upsert().replaceOne(post_transaction); 
 				
+				//the proper transaction without reward
+				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
+					note = "Charity donation reference post transaction without rewards"
+					let charity_trans = {
+						user: post.author,
+						reward_activity: 'Post',
+						token_count: 0,
+						url: post.url,
+						date: new Date(post.created),
+						note: note,
+						charity: post.json.charity,
+						reward_system: reward_sys_version
+					}
+					
+					//we also need to insert another transaction to capture the actual activity/reward by the user
+					bulk_transactions.find(
+					{ 
+						user: charity_trans.user,
+						reward_activity: charity_trans.reward_activity,
+						url: charity_trans.url
+					}).upsert().replaceOne(charity_trans);
+				
+				}
+				
 				//reward upvoters
 				//make sure we already have a positive rshares
+				utils.log('post.vote_rshares');
+				utils.log(post.vote_rshares);
 				var total_post_upv_shares = parseInt(post.vote_rshares);
+				utils.log('total_post_upv_shares'+total_post_upv_shares);
 				if (total_post_upv_shares>0){
 					
 					//calculate max token payment based upon post pending payout
 					var max_afits = Math.min(parseFloat(post.pending_payout_value) * parseFloat(config.per_post_alloc_afits), parseFloat(config.per_post_alloc_afits));
-					//console.log('max afits '+max_afits);
+					utils.log('max afits '+max_afits);
+					utils.log(post.active_votes);
 					post.active_votes.forEach(async vote => {
 
 						//grab user's contribution to the upvote pool
@@ -691,13 +731,13 @@ function processVotes(query, subsequent) {
 							}).upsert().replaceOne(vote_transaction);
 							//transactions.push(vote_transaction);
 							
-							//console.log(vote_transaction);
+							//utils.log(vote_transaction);
 						}
 					});
 				}
 				//result = posts_collection.insert(post);
 			}catch(err){
-				console.log(err);
+				utils.log(err);
 			}
 		}//end of loop going through posts
 		
@@ -706,13 +746,13 @@ function processVotes(query, subsequent) {
 				//store posts
 				await bulk.execute();
 			}catch(bulkerr){
-				console.log(bulkerr);
+				utils.log(bulkerr);
 			}
 			try{
 				//award transaction tokens
 				bulk_transactions.execute();
 			}catch(bulkerr){
-				console.log(bulkerr);
+				utils.log(bulkerr);
 			}
 		}
 	  
@@ -723,8 +763,8 @@ function processVotes(query, subsequent) {
 			//update last count
 			lastIterationCount = votePosts.length;
 			//call again with subsequent enabled to avoid duplicate posts, disparse the calls by 1 sec to avoid API timeouts
-			console.log("query:"+query['tag']);
-			console.log("query:"+query['start_permlink']);
+			utils.log("query:"+query['tag']);
+			utils.log("query:"+query['start_permlink']);
 			
 			setTimeout(processVotes, 1000, query, true);
 		
@@ -749,8 +789,8 @@ function processVotes(query, subsequent) {
 					lucky_winner_id = utils.generateRandomNumber(1, votePosts.length);
 					let post = votePosts[lucky_winner_id];
 					
-					console.log('before');
-					console.log(votePosts[lucky_winner_id].post_score);
+					utils.log('before');
+					utils.log(votePosts[lucky_winner_id].post_score);
 					
 					let reward_user = post.author;
 					let activity_type = 'Post';
@@ -796,10 +836,10 @@ function processVotes(query, subsequent) {
 					//award transaction tokens
 					await bulk_transactions.execute();
 				}catch(bulkerr){
-					console.log(bulkerr);
+					utils.log(bulkerr);
 				}
-				console.log('after');
-				console.log(votePosts[lucky_winner_id].post_score);
+				utils.log('after');
+				utils.log(votePosts[lucky_winner_id].post_score);
 				
 				/********************* proceed with STEEM upvotes ************************/
 				
@@ -807,13 +847,14 @@ function processVotes(query, subsequent) {
 				var tot_weight = 0;
 				for (var xx=0;xx<votePosts.length;xx++){
 					var vote_weight = Math.floor(votePosts[xx].rate_multiplier * vote_data.power_per_vote);
-					console.log('url:'+votePosts[xx].url+' VP:'+vote_weight)
+					utils.log('author:'+votePosts[xx].author+' url:'+votePosts[xx].url+' VP:'+vote_weight)
 					tot_weight += vote_weight;
 				}
-				console.log('total weight consumed'+tot_weight);
+				utils.log('total weight consumed'+tot_weight);
 				
-				votingProcess(votePosts, vote_data.power_per_vote);
-	
+				//if (!config.testing){
+					votingProcess(votePosts, vote_data.power_per_vote);
+				//}
 			} else {
 				utils.log('No posts to vote...');
 				if(!error_sent) {
@@ -824,7 +865,7 @@ function processVotes(query, subsequent) {
 		}
       last_voted++;
     } else {
-      console.log(err, result);
+      utils.log(err, result);
       //errorEmail(err, config.report_emails);
     }
   });
@@ -837,7 +878,7 @@ function votingProcess(posts, power_per_vote) {
   .then( res => {
     // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, config.voting_posting_delay);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -851,11 +892,11 @@ function votingProcess(posts, power_per_vote) {
 		//since we're done voting, we need to update all user tokens to reflect new rewards
 		updateUserTokens();
         //reportEmail(config.report_emails)
-      }, 5000);
+      }, config.voting_posting_delay);
     }
   })
   .catch(err => {
-      console.log(err);
+      utils.log(err);
   })
 }
 
@@ -879,14 +920,14 @@ function sendVote(post, retries, power_per_vote) {
 			//resolve('');
 			if(config.comment_location && config.comment){
 				setTimeout(function () { 	
-					sendComment(post, vote_weight)
+					sendComment(post, 0, vote_weight)
 						.then( res => {
 							resolve('')
 						})
 						.catch(err => {
 							reject(err);
 						})
-				}, 5000);
+				}, config.voting_posting_delay);
 			}else{
 				resolve('');   
 			}
@@ -897,14 +938,14 @@ function sendVote(post, retries, power_per_vote) {
 
 					if(config.comment_location && config.comment){
 						setTimeout(function () { 	
-							sendComment(post, vote_weight)
+							sendComment(post, 0, vote_weight)
 								.then( res => {
 									resolve(res)
 								})
 								.catch(err => {
 									reject(err);
 								})
-						}, 5000);
+						}, config.voting_posting_delay);
 					}else{
 						resolve(result);   
 					}
@@ -912,9 +953,18 @@ function sendVote(post, retries, power_per_vote) {
 					utils.log(err, result);
 
 					 // Try again one time on error
-					if (retries < 10)
-						sendVote(post, retries + 1);
-					else {
+					if (retries < config.max_vote_comment_retries){
+						//try to vote again
+						setTimeout(function () { 	
+							sendVote(post, retries + 1, power_per_vote)
+								.then( res => {
+									resolve(res)
+								})
+								.catch(err => {
+									reject(err);
+								})
+						}, config.voting_posting_delay);
+					}else {
 						var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
 						utils.log(message);
 						reject(err);
@@ -929,7 +979,7 @@ function sendVote(post, retries, power_per_vote) {
 
 //function handles updating current user token count
 async function updateUserTokens() {
-	console.log('---- Updating Users ----');
+	utils.log('---- Updating Users ----');
 
 	try{
 		//group all token transactions per user, and sum them to generate new total count
@@ -950,12 +1000,12 @@ async function updateUserTokens() {
 		//insert new count per user
 		await db.collection('user_tokens').insert(user_tokens);
 	}catch(err){
-		console.log('>>save data error:'+err.message);
+		utils.log('>>save data error:'+err.message);
 	}
 }
 
 
-function sendComment(post, vote_weight) {
+function sendComment(post, retries, vote_weight) {
 	var parentAuthor = post.author;
 	var parentPermlink = post.permlink;
 	var rate_multiplier = post.rate_multiplier;
@@ -1000,13 +1050,25 @@ function sendComment(post, vote_weight) {
 						resolve(result);
 					  } else {
 						utils.log('Error posting comment: ' + permlink);
-						reject(err);
+						if (retries < config.max_vote_comment_retries){
+							utils.log('Try again');
+							setTimeout(function () { 	
+								sendComment(post, retries + 1, vote_weight)
+									.then( res => {
+										resolve(res)
+									})
+									.catch(err => {
+										reject(err);
+									})
+							}, config.voting_posting_delay);
+						}
+						//reject(err);
 					  }
 				});
 			}else{
-				console.log('comment');
-				console.log(content);
-				console.log(jsonMetadata);
+				utils.log('comment');
+				utils.log(content);
+				utils.log(jsonMetadata);
 				resolve('');
 			}
 		}else{
@@ -1035,9 +1097,9 @@ function errorEmail(message, to) {
   mail.sendPlainMail('Info Mail', message, to)
       .then(function(res, err) {
         if (!err) {
-          console.log(res);
+          utils.log(res);
         } else {
-          console.log(err);
+          utils.log(err);
         }
       });
 }
