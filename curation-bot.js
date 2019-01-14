@@ -28,12 +28,6 @@ var reward_sys_version = 'v0.2';
 
 var error_sent = false;
 
-//keep alive
-var http = require("http");
-setInterval(function() {
-    http.get("http://actifitvoter.herokuapp.com");
-}, 600000); // every 10 minutes (600000)
-
 
 var crypto = require('crypto');
 
@@ -656,10 +650,6 @@ function processVotes(query, subsequent) {
 					note: note,
 					reward_system: reward_sys_version
 				}
-				//also in case of charity, we need to append the actual user
-				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
-					post_transaction['giver'] = post.author;
-				}
 			  
 				bulk_transactions.find(
 				{ 
@@ -667,30 +657,6 @@ function processVotes(query, subsequent) {
 					reward_activity: post_transaction.reward_activity,
 					url: post_transaction.url
 				}).upsert().replaceOne(post_transaction); 
-				
-				//the proper transaction without reward
-				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
-					note = "Charity donation reference post transaction without rewards"
-					let charity_trans = {
-						user: post.author,
-						reward_activity: 'Post',
-						token_count: 0,
-						url: post.url,
-						date: new Date(post.created),
-						note: note,
-						charity: post.json.charity,
-						reward_system: reward_sys_version
-					}
-					
-					//we also need to insert another transaction to capture the actual activity/reward by the user
-					bulk_transactions.find(
-					{ 
-						user: charity_trans.user,
-						reward_activity: charity_trans.reward_activity,
-						url: charity_trans.url
-					}).upsert().replaceOne(charity_trans);
-				
-				}
 				
 				//reward upvoters
 				//make sure we already have a positive rshares
@@ -871,7 +837,7 @@ function votingProcess(posts, power_per_vote) {
   .then( res => {
     // If there are more posts, vote on the next one after 5 seconds
     if (posts.length > 0) {
-      setTimeout(function () { votingProcess(posts, power_per_vote); }, config.voting_posting_delay);
+      setTimeout(function () { votingProcess(posts, power_per_vote); }, 5000);
     } else {
 	post_rank = 0;
       setTimeout(function () {
@@ -885,7 +851,7 @@ function votingProcess(posts, power_per_vote) {
 		//since we're done voting, we need to update all user tokens to reflect new rewards
 		updateUserTokens();
         //reportEmail(config.report_emails)
-      }, config.voting_posting_delay);
+      }, 5000);
     }
   })
   .catch(err => {
@@ -913,14 +879,14 @@ function sendVote(post, retries, power_per_vote) {
 			//resolve('');
 			if(config.comment_location && config.comment){
 				setTimeout(function () { 	
-					sendComment(post, 0, vote_weight)
+					sendComment(post, vote_weight)
 						.then( res => {
 							resolve('')
 						})
 						.catch(err => {
 							reject(err);
 						})
-				}, config.voting_posting_delay);
+				}, 5000);
 			}else{
 				resolve('');   
 			}
@@ -931,14 +897,14 @@ function sendVote(post, retries, power_per_vote) {
 
 					if(config.comment_location && config.comment){
 						setTimeout(function () { 	
-							sendComment(post, 0, vote_weight)
+							sendComment(post, vote_weight)
 								.then( res => {
 									resolve(res)
 								})
 								.catch(err => {
 									reject(err);
 								})
-						}, config.voting_posting_delay);
+						}, 5000);
 					}else{
 						resolve(result);   
 					}
@@ -946,18 +912,9 @@ function sendVote(post, retries, power_per_vote) {
 					utils.log(err, result);
 
 					 // Try again one time on error
-					if (retries < config.max_vote_comment_retries){
-						//try to vote again
-						setTimeout(function () { 	
-							sendVote(post, retries + 1, power_per_vote)
-								.then( res => {
-									resolve(res)
-								})
-								.catch(err => {
-									reject(err);
-								})
-						}, config.voting_posting_delay);
-					}else {
+					if (retries < 10)
+						sendVote(post, retries + 1);
+					else {
 						var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
 						utils.log(message);
 						reject(err);
@@ -998,7 +955,7 @@ async function updateUserTokens() {
 }
 
 
-function sendComment(post, retries, vote_weight) {
+function sendComment(post, vote_weight) {
 	var parentAuthor = post.author;
 	var parentPermlink = post.permlink;
 	var rate_multiplier = post.rate_multiplier;
@@ -1043,19 +1000,7 @@ function sendComment(post, retries, vote_weight) {
 						resolve(result);
 					  } else {
 						utils.log('Error posting comment: ' + permlink);
-						if (retries < config.max_vote_comment_retries){
-							utils.log('Try again');
-							setTimeout(function () { 	
-								sendComment(post, retries + 1, vote_weight)
-									.then( res => {
-										resolve(res)
-									})
-									.catch(err => {
-										reject(err);
-									})
-							}, config.voting_posting_delay);
-						}
-						//reject(err);
+						reject(err);
 					  }
 				});
 			}else{
