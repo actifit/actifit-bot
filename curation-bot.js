@@ -696,16 +696,16 @@ function processVotes(query, subsequent) {
 				
 				//reward upvoters
 				//make sure we already have a positive rshares
-				utils.log('post.vote_rshares');
-				utils.log(post.vote_rshares);
-				var total_post_upv_shares = parseInt(post.vote_rshares);
-				utils.log('total_post_upv_shares'+total_post_upv_shares);
+				//switching to net_rshares as the older vote_rshares is deprecated
+				var total_post_upv_shares = parseInt(post.net_rshares);
+				//utils.log('total_post_upv_shares'+total_post_upv_shares);
 				if (total_post_upv_shares>0){
 					
 					//calculate max token payment based upon post pending payout
 					var max_afits = Math.min(parseFloat(post.pending_payout_value) * parseFloat(config.per_post_alloc_afits), parseFloat(config.per_post_alloc_afits));
 					utils.log('max afits '+max_afits);
-					utils.log(post.active_votes);
+					
+					//utils.log(post.active_votes);
 					post.active_votes.forEach(async vote => {
 
 						//grab user's contribution to the upvote pool
@@ -715,6 +715,7 @@ function processVotes(query, subsequent) {
 						if (post.author != vote.voter && upv_tokens>0){
 							//calculate the percentage of the user's contribution, and allocate him his AFIT tokens share
 							var voter_tokens = upv_tokens / total_post_upv_shares * max_afits;
+							//console.log(voter_tokens);
 							voter_tokens = parseFloat(voter_tokens.toFixed(3));
 							let vote_transaction = {
 								user: vote.voter,
