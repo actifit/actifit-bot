@@ -601,8 +601,6 @@ function resetVals(){
 	producerSPRewards = 0
 }
 
-lookupAccountPay();
-
 async function lookupAccountPay (){
 	
 	const ONE_DAY = 1;
