@@ -42,7 +42,7 @@ MongoClient.connect(url, function(err, client) {
 
 //allows setting acceptable origins to be included across all function calls
 app.use(function(req, res, next) {
-  var allowedOrigins = ['*', 'https://actifit.io'];
+  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
   var origin = req.headers.origin;
   if(allowedOrigins.indexOf(origin) > -1){
 	   res.setHeader('Access-Control-Allow-Origin', origin);
@@ -1000,6 +1000,49 @@ claimAndCreateAccount = async function (req){
 	return accountCreated;
 
 };
+
+
+//function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
+app.get('/appendVerifiedPost', async function(req,res){
+	var passed_var = eval("req.query."+config.verifyParam);
+	//console.log(passed_var);
+	//make sure needed security var is passed, and with proper value
+	if ((typeof passed_var == 'undefined') || passed_var != config.verifyPostToken){
+		res.send('{}');
+	}else{
+		let verified_post = {
+			author: req.query.author,
+			permlink: req.query.permlink,
+			json_metadata: JSON.parse(req.query.json_metadata),
+		};
+		try{
+			let transaction = await db.collection('verified_posts').insert(verified_post);
+			console.log('success inserting post data');
+			res.send('{success}');
+		}catch(err){
+			console.log(err);
+			res.send('{error inserting post data}');
+		}
+	}
+});
+
+//function handles checking and fetching a verified post
+app.get('/fetchVerifiedPost', async function(req,res){
+	//make sure we have both an author and permlink passed
+	if ((typeof req.query.author == 'undefined') || req.query.author == '' ||
+		(typeof req.query.permlink == 'undefined') || req.query.permlink == '') {
+		res.send('{}');
+	}else{
+		try{
+			let verified_post = await db.collection('verified_posts').findOne({author: req.query.author, permlink: req.query.permlink});
+			console.log('found verified post');
+			res.send(verified_post);
+		}catch(err){
+			console.log(err);
+			res.send('{}');
+		}
+	}
+});
 
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
