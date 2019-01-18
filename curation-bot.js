@@ -343,7 +343,9 @@ function processVotes(query, subsequent) {
 			  utils.log('Bot already voted on: ' + post.url);
 			  continue;
 			}
-
+			
+			//post.json_metadata = JSON.parse(body);
+			
 			// Check if any tags on this post are blacklisted in the settings
 			if ((config.blacklisted_tags && config.blacklisted_tags.length > 0) || (config.whitelisted_tags && config.whitelisted_tags.length > 0) && post.json_metadata && post.json_metadata != '') {
 			  var tags = JSON.parse(post.json_metadata).tags;
@@ -414,9 +416,96 @@ function processVotes(query, subsequent) {
 				continue;
 			}		
 			
+			
+			
 			try {
 			
 				post.json = JSON.parse(post.json_metadata);
+					
+				//we need to fetch the proper json_metadata from our own DB to ensure those have not been changed
+				
+				let ver_url = config.api_url + "fetchVerifiedPost";			
+				let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID'];
+				
+				let incons_detected = false;
+				let incons_field = '';
+				
+				try{
+					var verf_res = await axios.get(ver_url, {
+							params:{
+								author: post.author, 
+								permlink: post.permlink
+							}
+						});
+					
+					//let's compare mission critical data to find if manipulation was done
+					let auth_meta = verf_res.data.json_metadata;
+					
+					//if either stored or current metadata is non-empty we need to investigate further
+					if (auth_meta != '' || post.json_metadata != ''){
+						//check all critical values
+						critical_fields.some(function(element) {
+						  //initialize incons field in case we find a match (or lack of)
+						  incons_field = element;
+						  let stored_meta = eval("auth_meta."+element);
+						  let new_meta = eval("post.json."+element);
+						  /*console.log('stored_meta');
+						  console.log(stored_meta);
+						  console.log('new_meta');
+						  console.log(new_meta);*/
+						  //if old data is not empty
+						  if (typeof stored_meta != 'undefined' && stored_meta != ''){
+							if (stored_meta instanceof Array ){
+							  if (new_meta instanceof Array){
+								//our arrays are single valued, compare first entry
+								if (stored_meta[0] != new_meta[0]){
+								  //different value, manipulation
+								  incons_detected = true;
+								  return true;
+								}
+							  }else{
+								//different object types, manipulation
+								incons_detected = true;
+								return true;
+							  }
+							}else{
+							  if (stored_meta != new_meta){
+								//different value, manipulation
+								incons_detected = true;
+								return true;
+							  }
+							}
+						  }else{
+							//original data is empty, need to check if new data is not
+							if (typeof new_meta != 'undefined' && new_meta != ''){
+							  incons_detected = true;
+							  return true;
+							}
+						  }
+						});
+					}
+				}catch(verf_err){
+					console.log('error finding matching post on DB');
+					console.dir(verf_err);
+				}
+				console.log('data inconsistency: ' + incons_detected);
+				//check if we found metadata issue
+				if (incons_detected){
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					console.log('problematic field:' + incons_field);
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					console.log('***********************');
+					//we've got a problem, skip this post/guy. We might want to report too.
+					continue;
+				}
+				
 				
 				
 				//check if the post has an encryption key val, and ensure it is the proper one
