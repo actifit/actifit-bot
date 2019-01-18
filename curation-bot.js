@@ -197,6 +197,8 @@ if (!config.testing){
 var votePosts;
 var lastIterationCount = 0;
 
+let queryCount = 0;
+
 async function startProcess() {
   if(!botNames)
     botNames = await utils.loadBots();
@@ -297,6 +299,8 @@ function processVotes(query, subsequent) {
   utils.log('processVotes');
   
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
+	//track how many queries were ran
+	queryCount += 1;
     if (result && !err) {
 		is_voting = true;
       
@@ -759,7 +763,7 @@ function processVotes(query, subsequent) {
 	  
 	  
 		//if this is the first try, or the new count of posts is bigger than the one before, let's try adding again
-		if (!subsequent || votePosts.length>lastIterationCount){
+		if (!subsequent || votePosts.length > lastIterationCount || queryCount < config.max_query_count){
 		
 			//update last count
 			lastIterationCount = votePosts.length;
