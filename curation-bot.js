@@ -179,6 +179,7 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	  //only start the process once we connected to the DB
 	  startProcess();
+	  //updateUserTokens();
 	} else {
 		utils.log(err, 'api');
 	}
@@ -738,7 +739,7 @@ function processVotes(query, subsequent) {
 				var result;
 				//if we find this is a charity run, let's switch it to the actual charity name
 				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
-					reward_user = post.json.charity;
+					reward_user = post.json.charity[0];
 					activity_type = 'Charity Post';
 					note = 'Charity donation via activity by user '+post.author;
 				}		
@@ -893,7 +894,7 @@ function processVotes(query, subsequent) {
 					
 					//if we find this is a charity run, let's switch it to the actual charity name
 					if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
-						reward_user = post.json.charity;
+						reward_user = post.json.charity[0];
 						activity_type = 'Charity Post';
 						note = 'Charity donation via actifit post by user '+post.author;
 					}	
@@ -1074,7 +1075,7 @@ function sendVote(post, retries, power_per_vote) {
 //function handles updating current user token count
 async function updateUserTokens() {
 	utils.log('---- Updating Users ----');
-
+	let insert_res
 	try{
 		//group all token transactions per user, and sum them to generate new total count
 		let query = await db.collection('token_transactions').aggregate([
@@ -1089,11 +1090,18 @@ async function updateUserTokens() {
 			])
 	
 		let user_tokens = await query.toArray();
+		console.log('grab query all items');
 		//remove old token count per user
 		await db.collection('user_tokens').remove({});
+		console.log('removed all entries');
+		console.log(user_tokens);
 		//insert new count per user
-		await db.collection('user_tokens').insert(user_tokens);
+		insert_res = await db.collection('user_tokens').insertMany(user_tokens);
+		console.log(insert_res.insertedCount);
+		console.log('inserted all entries');
 	}catch(err){
+		console.log(insert_res);
+		console.log(err);
 		utils.log('>>save data error:'+err.message);
 	}
 }
