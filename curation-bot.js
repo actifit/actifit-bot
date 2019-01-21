@@ -801,6 +801,7 @@ function processVotes(query, subsequent) {
 					
 					//utils.log(post.active_votes);
 					post.active_votes.forEach(async vote => {
+						console.log(vote);
 
 						//grab user's contribution to the upvote pool
 						var upv_tokens = parseInt(vote.rshares);
@@ -811,12 +812,17 @@ function processVotes(query, subsequent) {
 							var voter_tokens = upv_tokens / total_post_upv_shares * max_afits;
 							//console.log(voter_tokens);
 							voter_tokens = parseFloat(voter_tokens.toFixed(3));
+							let used_date = vote.time;
+							if (used_date == undefined || used_date == ''){
+							  used_date = post.created;
+							}
+							console.log(used_date);
 							let vote_transaction = {
 								user: vote.voter,
 								reward_activity: 'Post Vote',
 								token_count: voter_tokens,
 								url: post.url,
-								date: new Date(vote.time)
+								date: new Date(used_date)//vote.time)
 							}
 							bulk_transactions.find(
 							{ 
