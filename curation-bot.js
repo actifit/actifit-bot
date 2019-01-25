@@ -144,6 +144,8 @@ var banned_users;
 
 var moderator_list;
 
+var skippable_posts;
+
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
   var state = JSON.parse(fs.readFileSync("state.json"));
@@ -270,6 +272,12 @@ async function startProcess() {
 			moderator_list.push(moderator_array[mod_it].name);
 		}
 		utils.log(moderator_list);
+		
+		//grab list of skippable posts
+		skippable_posts = await db.collection('posts_to_skip').find().toArray();
+		
+		console.log('skippable_posts');
+		console.log(skippable_posts);
 	  
 		var query = {tag: config.main_tag, limit: 100};
 		votePosts = Array();
@@ -313,6 +321,9 @@ function processVotes(query, subsequent) {
 		
 		//connect to the token_transactions table to start rewarding
 		var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
+		
+		var bulk_posts_skip = db.collection('posts_to_skip').initializeUnorderedBulkOp();
+		
 		
 		for(var i = 0; i < result.length; i++) {
 			var post = result[i];
@@ -412,12 +423,22 @@ function processVotes(query, subsequent) {
 			  }   
 			if (user_banned) continue;
 			
-			//skip any posts that are more than 1.5 days old
+			//skip any posts that are more than max days old
 			if((new Date() - new Date(post.created + 'Z')) >= (config.max_days * 24 * 60 * 60 * 1000)) {
 				continue;
 			}		
 			
+			//skip any posts that are flagged as skippable in prior iterations
 			
+			var post_skippable = false;
+			for (var n = 0; n < skippable_posts.length; n++) {
+				if (post.author == skippable_posts[n].author && post.permlink == skippable_posts[n].permlink){
+					utils.log('>>>>>>>Post by '+post.author+' is skippable, move ahead:' + post.url);
+					post_skippable = true;
+					break;
+				}
+			  }   
+			if (post_skippable) continue;
 			
 			try {
 			
@@ -489,7 +510,7 @@ function processVotes(query, subsequent) {
 					console.log('error finding matching post on DB');
 					console.dir(verf_err);
 				}
-				console.log('data inconsistency: ' + incons_detected);
+				//console.log('data inconsistency: ' + incons_detected);
 				//check if we found metadata issue
 				if (incons_detected){
 					console.log('***********************');
@@ -526,6 +547,80 @@ function processVotes(query, subsequent) {
 					utils.log('post does not contain actiCrVal');
 					continue;
 				}
+					
+				
+				//moving this section before the actual token rewards
+				
+				//due to the difference in server times, a user's post might have same date created.
+				//to avoid this issue, we will accept 2 posts for every user
+				//so we will check if 2 posts are already accumulated for the user, and if so reject the third
+				
+				let last_index = _.findLastIndex(votePosts, ['author', post.author]);
+				let first_index = _.findIndex(votePosts, ['author', post.author]);
+				let skip_date_diff = false;
+				
+				if (last_index != -1 && (first_index!=last_index)) {
+					utils.log('---- User already has more than 2 posts in 24 hours ------');
+					let last_voted = votePosts[last_index];
+					var last_date = moment(last_voted.created).format('D');
+					let first_voted = votePosts[first_index];
+					var first_date = moment(first_voted.created).format('D');
+					var this_date = moment(post.created).format('D');
+					//if all 3 dates match, skip it
+					if ((last_date == this_date) && (first_date == this_date)) {
+						utils.log('---- Last voted -----');
+						utils.log(new Date (last_voted.created));
+						utils.log('---- First voted -----');
+						utils.log(new Date (first_voted.created));
+						utils.log('---- This voted -----');
+						utils.log(new Date (post.created));
+						utils.log('---- Moment-----');
+						utils.log(last_date);
+						utils.log(first_date);
+						utils.log(this_date);
+						
+						//skip new post
+						skip_date_diff = true;
+						
+					}          
+				}else if (last_index != -1){
+					utils.log('last_index:'+last_index);
+					utils.log(post.author+post.url);
+					//adding condition to reject a post if a prior one exists that is less than 6 hours away
+					let last_voted = votePosts[last_index];
+					//utils.log(last_voted.author+last_voted.url);
+					var last_date = moment(last_voted.created).toDate();
+					var this_date = moment(post.created).toDate();
+					//check the hours difference
+					var hours_diff = Math.abs(this_date - last_date) / 36e5;
+					if (hours_diff<parseFloat(config.min_posting_hours_diff)){
+						//skip new post
+						utils.log('hours difference:'+hours_diff+'...skipping');
+						
+						skip_date_diff = true;
+					}
+					
+				}
+				
+				
+				//store this entry to db to make sure we skip it in future voting iterations
+				if (skip_date_diff){
+				  
+				  let post_entry_skip = {
+					author: post.author,
+					permlink: post.permlink,
+					date: new Date(post.created),
+				  }
+				
+				  bulk_posts_skip.find(
+					{ 
+						author: post.author,
+						permlink: post.permlink
+					}).upsert().replaceOne(post_entry_skip);
+					
+				  continue;
+				}
+				
 				
 				/**************** Post Score calculation section *******************/
 				
@@ -672,53 +767,6 @@ function processVotes(query, subsequent) {
 			  utils.log(err);
 			  continue;
 			}
-				
-			//due to the difference in server times, a user's post might have same date created.
-			//to avoid this issue, we will accept 2 posts for every user
-			//so we will check if 2 posts are already accumulated for the user, and if so reject the third
-			
-			let last_index = _.findLastIndex(votePosts, ['author', post.author]);
-			let first_index = _.findIndex(votePosts, ['author', post.author]);
-			
-			if (last_index != -1 && (first_index!=last_index)) {
-				utils.log('---- User already has more than 2 posts in 24 hours ------');
-				let last_voted = votePosts[last_index];
-				var last_date = moment(last_voted.created).format('D');
-				let first_voted = votePosts[first_index];
-				var first_date = moment(first_voted.created).format('D');
-				var this_date = moment(post.created).format('D');
-				//if all 3 dates match, skip it
-				if ((last_date == this_date) && (first_date == this_date)) {
-					utils.log('---- Last voted -----');
-					utils.log(new Date (last_voted.created));
-					utils.log('---- First voted -----');
-					utils.log(new Date (first_voted.created));
-					utils.log('---- This voted -----');
-					utils.log(new Date (post.created));
-					utils.log('---- Moment-----');
-					utils.log(last_date);
-					utils.log(first_date);
-					utils.log(this_date);
-					continue;
-				}          
-			}else if (last_index != -1){
-				utils.log('last_index:'+last_index);
-				utils.log(post.author+post.url);
-				//adding condition to reject a post if a prior one exists that is less than 6 hours away
-				let last_voted = votePosts[last_index];
-				//utils.log(last_voted.author+last_voted.url);
-				var last_date = moment(last_voted.created).toDate();
-				var this_date = moment(post.created).toDate();
-				//check the hours difference
-				var hours_diff = Math.abs(this_date - last_date) / 36e5;
-				if (hours_diff<parseFloat(config.min_posting_hours_diff)){
-					//skip new post
-					utils.log('hours difference:'+hours_diff+'...skipping');
-					continue;
-				}
-				
-			}
-			
 			
 			//utils.log('Voting on: ' + post.url);
 			votePosts.push(post);
@@ -797,11 +845,10 @@ function processVotes(query, subsequent) {
 					
 					//calculate max token payment based upon post pending payout
 					var max_afits = Math.min(parseFloat(post.pending_payout_value) * parseFloat(config.per_post_alloc_afits), parseFloat(config.per_post_alloc_afits));
-					utils.log('max afits '+max_afits);
+					//utils.log('max afits '+max_afits);
 					
 					//utils.log(post.active_votes);
 					post.active_votes.forEach(async vote => {
-						console.log(vote);
 
 						//grab user's contribution to the upvote pool
 						var upv_tokens = parseInt(vote.rshares);
@@ -816,7 +863,6 @@ function processVotes(query, subsequent) {
 							if (used_date == undefined || used_date == ''){
 							  used_date = post.created;
 							}
-							console.log(used_date);
 							let vote_transaction = {
 								user: vote.voter,
 								reward_activity: 'Post Vote',
@@ -841,6 +887,13 @@ function processVotes(query, subsequent) {
 				utils.log(err);
 			}
 		}//end of loop going through posts
+		
+		//properly stored any future skippable posts
+		try{
+			await bulk_posts_skip.execute();
+		}catch(bulkerr){
+			utils.log(bulkerr);
+		}
 		
 		if (votePosts.length>0){
 			try{
