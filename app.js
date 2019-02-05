@@ -1044,6 +1044,58 @@ app.get('/fetchVerifiedPost', async function(req,res){
 	}
 });
 
+/* end point handling the display of categorized token holders */
+app.get('/fetchTokenHoldersByCategory', async function(req, res){
+	//connect to DB, and identify token holders by category
+	await db.collection('user_tokens').aggregate([
+	{
+	  $project: {    
+		"range": {
+		   $concat: [
+			  { $cond: [{$lt: ["$tokens",1]}, "< 1 AFIT", ""]}, 
+			  { $cond: [{$and:[ {$gte:["$tokens", 1 ]}, {$lt: ["$tokens", 11]}]}, "1 - 10 AFIT", ""] },
+			  { $cond: [{$and:[ {$gte:["$tokens",11]}, {$lt:["$tokens", 101]}]}, "11 - 100 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",101]}, {$lt:["$tokens", 1001]}]}, "101 - 1,000 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",1001]}, {$lt:["$tokens", 10001]}]}, "1,001 - 10,000 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",10001]}, {$lt:["$tokens", 50001]}]}, "10,001 - 50,000 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",50001]}, {$lt:["$tokens", 100001]}]}, "50,001 - 100,000 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",100001]}, {$lt:["$tokens", 500001]}]}, "100,001 - 500,000 AFIT", ""]},
+			  { $cond: [{$and:[ {$gte:["$tokens",500001]}, {$lt:["$tokens", 1000001]}]}, "500,001 - 1,000,000 AFIT", ""]},
+			  { $cond: [{$gte:["$tokens",1000001]}, "> 1,000,000 AFIT", ""]}
+		   ]
+		}  
+	  }    
+	},
+	{
+	  $group: { 
+		"_id" : "$range", 
+		count: { 
+		  $sum: 1
+		} 
+	  }
+	},
+	{
+	  $sort: {
+		"count": -1,
+	  }
+	}
+	]).toArray(function(err, results) {
+	  if (req.query.pretty==1){
+		let output = '|Category|Count|<br/>';
+		output += '|---|---|<br/>';
+	    for (let entry of results) {
+			output += '|' + entry._id + '|' + entry.count + '<br/>';
+		}
+		res.send(output);
+	  }else{
+	    res.send(results);
+	  }
+    });
+
+});
+
+
+
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
 		return nStr;
