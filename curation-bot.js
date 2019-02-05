@@ -170,22 +170,16 @@ MongoClient.connect(url, function(err, client) {
 	  db = client.db(db_name);
 
 	  // Get the documents collection
-	  collection = db.collection(collection_name);
-	  //only start the process once we connected to the DB
-	  startProcess();
+	  //collection = db.collection("user_tokens");
+	  
+	  
+	  //letsLoad();
+	  
 	} else {
 		utils.log(err, 'api');
 	}
   
 });
-
-
-// Schedule to run every minute
-if (!config.testing){
-	setInterval(startProcess, 60 * 1000);
-}else{
-	setTimeout(startProcess, 20 * 1000);
-}
 
 
 var votePosts;

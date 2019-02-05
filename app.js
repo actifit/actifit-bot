@@ -1094,6 +1094,57 @@ app.get('/fetchTokenHoldersByCategory', async function(req, res){
 
 });
 
+app.get('/rewardActifitWebEdit/:user', async function(req,res){
+	if (req.query.web_edit_token != config.actifitWebEditToken){
+		res.send('{}');
+	}else{
+		//store outcome 
+		let rewarded = false;
+		
+		//make sure we have user and url params set
+		if (req.params.user && typeof req.query.url!= "undefined" && req.query.url!=null) {
+		  try{
+			//let's reward this user for performing an edit using our web interface
+			let reward_date = new Date();
+			let reward_activity = 'Web Edit';
+			
+			//only one reward per day, disregard time
+			reward_date.setHours(0,0,0,0);
+			
+			let new_transaction = {
+				user: req.params.user,
+				reward_activity: reward_activity,
+				token_count: parseFloat(config.actifitWebEditRewardAmount),
+				date: new Date(),
+				reward_date: reward_date,
+				url: req.query.url,
+			}
+			
+			//make sure we're not double rewarding user. New url edits override older ones on same date
+			let query = { 
+				user: req.params.user,
+				reward_activity: reward_activity,
+				reward_date: reward_date,
+			};
+			
+			try{
+			  let transaction = db.collection('token_transactions')
+					.replaceOne(query, new_transaction, { upsert: true });
+			  rewarded = true;
+			}catch(e){
+			  console.log(e);
+			  rewarded = false;
+			}
+			console.log(rewarded);
+			
+		  }catch(err){
+			console.log(err);
+		  }
+		}
+		res.send({'rewarded':rewarded, amount: config.actifitWebEditRewardAmount});
+	}
+});
+
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
 		return nStr;
