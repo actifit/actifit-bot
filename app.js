@@ -1095,6 +1095,79 @@ app.get('/fetchTokenHoldersByCategory', async function(req, res){
 });
 
 
+/* end point handling additional reward to user votes via web */
+app.get('/rewardActifitWebVote/:user', async function(req,res){
+	if (req.query.web_vote_token != config.actifitWebVoteToken){
+		res.send('{}');
+	}else{
+		let reward_activity = 'Web Vote';
+		let rewarded = await rewardActifitTokenWeb(req, reward_activity);
+		res.send({'rewarded':rewarded, amount: config.actifitWebVoteRewardAmount});
+	}
+});
+
+/* end point handling rewarding web edits */
+app.get('/rewardActifitWebEdit/:user', async function(req,res){
+	if (req.query.web_edit_token != config.actifitWebEditToken){
+		res.send('{}');
+	}else{
+		let reward_activity = 'Web Edit';
+		let rewarded = await rewardActifitTokenWeb(req, reward_activity);
+		res.send({'rewarded':rewarded, amount: config.actifitWebEditRewardAmount});
+	}
+});
+
+/* core function handling user rewards for various web related activities */
+rewardActifitTokenWeb = async function (req, reward_activity) {
+	//store outcome 
+	let rewarded = false;
+	
+	//make sure we have user and url params set
+	if (req.params.user && typeof req.query.url!= "undefined" && req.query.url!=null) {
+	  try{
+		//let's reward this user for performing an edit using our web interface
+		let reward_date = new Date();
+		
+		//only one reward per day, disregard time
+		reward_date.setHours(0,0,0,0);
+		
+		let new_transaction = {
+			user: req.params.user,
+			reward_activity: reward_activity,
+			token_count: parseFloat(config.actifitWebEditRewardAmount),
+			date: new Date(),
+			reward_date: reward_date,
+			url: req.query.url,
+		}
+		
+		//make sure we're not double rewarding user. New url edits override older ones on same date
+		let query = { 
+			user: req.params.user,
+			reward_activity: reward_activity,
+			reward_date: reward_date,
+		};
+		
+		//check if we have a match already to skip rewarding and/or notifying the user
+		let user_pre_rewarded = await db.collection('token_transactions').findOne(query);
+		if (typeof user_pre_rewarded == undefined || user_pre_rewarded == 'undefined' || user_pre_rewarded == null){
+		  console.log('first reward today');
+		  try{
+		    let transaction = db.collection('token_transactions')
+				.replaceOne(query, new_transaction, { upsert: true });
+		    rewarded = true;
+		  }catch(e){
+		    console.log(e);
+		  }
+		}
+		console.log(rewarded);
+		
+	  }catch(err){
+		console.log(err);
+	  }
+	}
+	
+	return rewarded;
+}
 
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
