@@ -1117,6 +1117,18 @@ app.get('/rewardActifitWebEdit/:user', async function(req,res){
 	}
 });
 
+/* end point handling additional reward to user comments via web */
+app.get('/rewardActifitWebComment/:user', async function(req,res){
+	if (req.query.web_comment_token != config.actifitWebCommentToken){
+		res.send('{}');
+	}else{
+		let reward_activity = 'Web Comment';
+		let rewarded = await rewardActifitTokenWeb(req, reward_activity);
+		res.send({'rewarded':rewarded, amount: config.actifitWebCommentRewardAmount});
+	}
+});
+
+
 /* core function handling user rewards for various web related activities */
 rewardActifitTokenWeb = async function (req, reward_activity) {
 	//store outcome 
