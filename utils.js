@@ -585,6 +585,11 @@ let curTotalSp = 0
 let curTotalSTEEM = 0
 
 let producerSPRewards = 0
+
+let authorRewardedSBD = 0
+let authorRewardedSp = 0
+let authorRewardedSTEEM = 0
+
 let limit = 5000;
 let txStart = -1;
 let opsArr = [];
@@ -599,16 +604,23 @@ function resetVals(){
 	curTotalSTEEM = 0
 
 	producerSPRewards = 0
+	
+	authorRewardedSBD = 0
+	authorRewardedSp = 0
+	authorRewardedSTEEM = 0
 }
+
+//lookupAccountPay();
 
 async function lookupAccountPay (){
 	
 	const ONE_DAY = 1;
 	const ONE_WEEK = 7;
 	const ONE_MONTH = 30;
+	const ONE_YEAR = 365;
 	
 	let start_days = 1;
-	let lookup_days = ONE_WEEK;
+	let lookup_days = ONE_YEAR;
 	
 	let today = moment().utc().startOf('date').toDate()
 	let start = moment(today).subtract(start_days, 'days').toDate()
@@ -624,6 +636,10 @@ async function lookupAccountPay (){
 	txStart = -1;
 	console.log('***********append actifit.funds rewards**********')
 	await getAccountPayTransactions('actifit.funds', start, to, lookup_days);
+	
+	txStart = -1;
+	console.log('***********append actifit.pay rewards**********')
+	await getAccountPayTransactions('actifit.pay', start, to, lookup_days);
 }
 
 async function getAccountPayTransactions (account, start, end, period) {
@@ -704,6 +720,16 @@ async function getAccountPayTransactions (account, start, end, period) {
 		//console.log("rewardedSBD:"+rewardedSBD);
 		
 		//curTotalSBD += rewardedSBD;
+	  }else if (op[0] === 'author_reward') {
+	    //console.log('caught one author_reward');
+		//console.log(op);
+		
+		authorRewardedSBD += parseFloat(op[1].sbd_payout.split(' ')[0])
+		authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
+		authorRewardedSTEEM += parseFloat((op[1].steem_payout.split(' ')[0]))
+	  }else if (op[0] === 'comment_reward') {
+	    console.log('comment_reward FOUND');
+		console.log(op);
 	  }
     } else if (date < end){ 
 		break
@@ -738,6 +764,15 @@ async function getAccountPayTransactions (account, start, end, period) {
   if (period>0 && curTotalSp>0){
     console.log ('AVG Daily:'+curTotalSp/period);
   }
+  
+  console.log ('---author---');
+  console.log ('totalSP:'+authorRewardedSp);
+  console.log ('total_STEEM:'+authorRewardedSTEEM);
+  console.log ('totalSBD:'+authorRewardedSBD);
+  if (period>0 && curTotalSp>0){
+    console.log ('AVG Daily:'+curTotalSp/period);
+  }
+  
   //console.log ('totalSTEEM:'+curTotalSTEEM);
  // console.log ('totalSBD:'+curTotalSBD);
   console.log ('---witness---');
@@ -746,15 +781,17 @@ async function getAccountPayTransactions (account, start, end, period) {
     console.log ('AVG Daily:'+producerSPRewards/period);
   }
   console.log ('---totals---');
-  let comSP = parseFloat(totalSp.toFixed(3))+parseFloat(curTotalSp.toFixed(3))+parseFloat(producerSPRewards.toFixed(3))+parseFloat(total_STEEM.toFixed(3));
+  let comSP = parseFloat(totalSp.toFixed(3))+parseFloat(curTotalSp.toFixed(3))+parseFloat(producerSPRewards.toFixed(3))+parseFloat(total_STEEM.toFixed(3))
+				+ parseFloat(authorRewardedSp.toFixed(3))+parseFloat(authorRewardedSTEEM.toFixed(3));
   console.log ('totalSTEEM:'+comSP.toFixed(3));
   if (period>0 && comSP>0){
     console.log ('AVG Daily:'+comSP/period);
   }
   //console.log ('totalSTEEM:'+totalSTEEM.toFixed(3));
-  console.log ('totalSBD:'+totalSBD.toFixed(3));
-  if (period>0 && totalSBD>0){
-    console.log ('AVG Daily:'+totalSBD/period);
+  let comSBD = parseFloat(totalSBD.toFixed(3))+parseFloat(authorRewardedSBD.toFixed(3));
+  console.log ('totalSBD:'+comSBD);
+  if (period>0 && comSBD>0){
+    console.log ('AVG Daily:'+comSBD/period);
   }
   console.log ('------------');
   //console.log (opsArr);
