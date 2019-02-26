@@ -1014,6 +1014,7 @@ app.get('/appendVerifiedPost', async function(req,res){
 			author: req.query.author,
 			permlink: req.query.permlink,
 			json_metadata: JSON.parse(req.query.json_metadata),
+			date: new Date(),
 		};
 		try{
 			let transaction = await db.collection('verified_posts').insert(verified_post);
