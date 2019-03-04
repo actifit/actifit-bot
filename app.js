@@ -1116,7 +1116,7 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 	//keeping request alive to avoid timeouts
 	let intID = setInterval(function(){
 		res.write(' ');
-	}, 3000);
+	},8000);
 	try{
 		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account);
 		console.log('>>>> got TX '+paymentReceivedTx);

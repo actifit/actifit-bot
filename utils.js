@@ -157,7 +157,7 @@ var HOURS = 60 * 60;
 		getConfig();
 		console.log('confirmPaymentReceivedPassword');
 		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
+			let th_id = setInterval(async function(){
 				console.log('check funds');
 				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
