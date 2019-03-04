@@ -176,7 +176,7 @@ var HOURS = 60 * 60;
 								let duration = moment.duration(now.diff(end));
 								let hrs = duration.asHours();
 								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 5){
+								if (hrs < 24){
 									tx_id = txs[1].trx_id;
 									paymentFound = true;
 									break;
