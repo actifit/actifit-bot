@@ -3,6 +3,7 @@ var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const moment = require('moment')
+var crypto = require('crypto');
 
 var appPort = process.env.PORT || 3120;
 
@@ -66,8 +67,8 @@ app.get('/', function (req, res) {
 
 
 /* function handles calculating and returning user token count */
-grabUserTokensFunc = async function (req, res){
-	let user = await collection.findOne({_id: req.params.user}, {fields : { _id:0} });
+grabUserTokensFunc = async function (username){
+	let user = await collection.findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
 	if (typeof user!= "undefined" && user!=null){
@@ -80,7 +81,7 @@ grabUserTokensFunc = async function (req, res){
 
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
-	let user = await grabUserTokensFunc(req,res);
+	let user = await grabUserTokensFunc(req.params.user);
     res.send(user);
 });
 
@@ -546,7 +547,7 @@ app.get('/getRank/:user', async function (req, res) {
 		user_rank += delegation_score;
 		
 		//grab user token count
-		var userTokens = await grabUserTokensFunc(req,res);
+		var userTokens = await grabUserTokensFunc(req.params.user);
 		//console.log(userTokens.tokens);
 		
 		var afit_tokens_score = 0;
@@ -1044,6 +1045,222 @@ app.get('/fetchVerifiedPost', async function(req,res){
 		}
 	}
 });
+
+
+/* end point for checking if user has funds pass */
+app.get('/userHasFundsPassSet/:user', async function (req, res) {
+	let query = {user: req.params.user};
+	console.log(query);
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+	console.log(entryFound);
+	if (entryFound != null){
+		res.send({'hasFundsPass': true, 'passVerified': entryFound.passVerified, 'date': entryFound.date});
+	}else{
+		res.send({'hasFundsPass': false});
+	}
+});
+
+/* end point for setting a user's funds pass */
+app.get('/setUserFundsPass/:user/:pass', async function (req, res) {
+	let query = {user: req.params.user};
+	console.log(query);
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+	
+	let proceed = true;
+	//password can be set/replaced only if none exists, or its not verified already and has not been 10 mins since setting first attempt
+	if (entryFound == null || 
+		(!entryFound.passVerified)){
+		if (entryFound != null){
+		  
+		  //checking last entry date 
+		  var now = moment(new Date()); //todays date
+		  var end = moment(entryFound.date); // last update date
+		  var duration = moment.duration(now.diff(end));
+		  var mins = duration.asMinutes();
+		  console.log(mins);
+		  if (mins < 10){
+			  res.send({'error': 'You can only update your funds pass once every 10 minutes'});
+			  proceed = false;
+		  }
+		}
+		if (proceed){
+		
+		  //create encrypted version of the password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(req.params.pass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			
+		  //store pass with unverified status
+		  let new_pass_entry = {user: req.params.user, pass: encr_pass, passVerified: false, date: new Date()};
+		  try{
+		    let transaction = await db.collection('account_funds_pass')
+				.replaceOne(query, new_pass_entry, { upsert: true });
+		    res.send({'status': 'Success'});
+		  }catch(e){
+		    console.log(e);
+		    res.send({'error': 'Error setting your funds password. Please contact us on discord if you wish to do so.'});
+		  }
+		}
+	}else{
+		res.send({'error': 'You cannot change your verified funds password. Please contact us on discord if you wish to do so.'});
+	}
+	
+});
+
+
+
+//function handles the process of confirming password verification receipt, and sets proper password status accordingly
+app.get('/confirmPaymentPasswordVerify', async function(req,res){
+	let paymentReceivedTx = '';
+	let statusUpdated = false;
+	//keeping request alive to avoid timeouts
+	let intID = setInterval(function(){
+		res.write(' ');
+	}, 3000);
+	try{
+		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account);
+		console.log('>>>> got TX '+paymentReceivedTx);
+		if (paymentReceivedTx != ''){
+			try{
+				//we found the transfer, now let's update the status properly
+				let query = {user: req.query.from};
+				console.log(query);
+				let entryFound = await db.collection('account_funds_pass').findOne(query);
+				console.log(entryFound);
+				if (entryFound != null &&  
+					(!entryFound.passVerified)){
+					try{
+					  //we need to set this transaction as processed via upvote
+					  entryFound.passVerified = true;
+					  let transaction = await db.collection('account_funds_pass').save(entryFound);
+					  statusUpdated = true;
+					  console.log('saved');
+					}catch(e){
+					  console.log(e);
+					}
+				}
+			}catch(e){
+				console.log(e);
+			}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	//we're done, let's clear our running interval
+	clearInterval(intID);
+	//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+	res.write(JSON.stringify({'paymentReceivedTx': paymentReceivedTx, 'statusUpdated': statusUpdated}));
+	res.end();
+});
+
+
+/* end point finding whether user has a pending AFIT token swap */
+app.get('/userHasPendingTokenSwap/:user', async function(req, res){
+	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: req.params.user,upvote_processed: {$in: [null, false, 'false']}},{fields : { _id:0} });
+	res.send({user_pending_swap: user_pending_swap});
+});
+
+/* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
+app.get('/getPendingTokenSwapTransCount/', async function(req, res){
+	let count = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+	res.send({pendingSwap: count.length});
+});
+
+/* end point handling storing transaction for AFIT/STEEM upvote exchange */
+app.get('/performAfitSteemExchange', async function(req, res){
+	if ((typeof req.query.user == 'undefined') || req.query.user == '' ||
+		(typeof req.query.pass == 'undefined') || req.query.pass == '' ||
+		(typeof req.query.tokens == 'undefined') || req.query.tokens == '') {
+		//make sure all params are sent
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let paid_tokens = req.query.tokens;
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+	
+		//confirm proper AFIT token count. Test against our own minimum, and the request's minimum
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		let cur_user_token_count = parseFloat(user_info.tokens);
+		if (cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
+			res.send({'error': 'Account does not have enough AFIT funds'});
+			return;
+		}
+		
+		//check if user already has an unprocessed entry
+		let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: user,upvote_processed: {$in: [null, false, 'false']}});
+		if (user_pending_swap){
+			res.send({'error': 'You already have a pending AFIT/STEEM upvote exchange. You can only request one per each reward cycle'});
+			return;
+		}
+		
+		//decrease count
+		let tokenExchangeTrans = {
+			user: user,
+			reward_activity: 'Exchange AFIT To STEEM Upvote',
+			token_count: -paid_tokens,
+			date: new Date(),
+		}
+		try{
+			console.log(tokenExchangeTrans);
+			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
+			return;
+		}
+		
+		//store in pending AFIT/Upvote list
+		let exchange_trans = {
+			user: user,
+			paid_afit: paid_tokens,
+			upvote_processed: false,
+			date: new Date(),
+		}
+		try{
+			let transaction = await db.collection('exchange_afit_steem').insert(exchange_trans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error storing the exchange transaction to queue'});
+			return;
+		}
+		
+		//update current user's token balance & store to db
+		let new_token_count = cur_user_token_count - parseFloat(paid_tokens);
+		user_info.tokens = new_token_count;
+		console.log('new_token_count:'+new_token_count);
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+		
+		res.send({'status': 'Success'});
+	}
+})
 
 /* end point handling the display of categorized token holders */
 app.get('/fetchTokenHoldersByCategory', async function(req, res){
