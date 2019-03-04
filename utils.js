@@ -171,16 +171,16 @@ var HOURS = 60 * 60;
 								console.log('in');
 								console.log(op[1]);
 								//console.log(txs);
-								let now = moment(new Date()); //todays date
+								/*let now = moment(new Date()); //todays date
 								let end = moment(txs[1].timestamp); // last update date
 								let duration = moment.duration(now.diff(end));
 								let hrs = duration.asHours();
 								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 24){
+								if (hrs < 24){*/
 									tx_id = txs[1].trx_id;
 									paymentFound = true;
 									break;
-								}
+								//}
 							}
 						}
 					}
