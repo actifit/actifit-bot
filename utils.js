@@ -159,7 +159,7 @@ var HOURS = 60 * 60;
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
 				console.log('check funds');
-				steem.api.getAccountHistory(config.exchange_account, -1, 3000, (err, transactions) => {
+				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {

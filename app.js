@@ -1162,8 +1162,14 @@ app.get('/userHasPendingTokenSwap/:user', async function(req, res){
 
 /* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
 app.get('/getPendingTokenSwapTransCount/', async function(req, res){
-	let count = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
-	res.send({pendingSwap: count.length});
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+	res.send({pendingSwap: tokenSwapTrans.length});
+});
+
+/* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
+app.get('/getPendingTokenSwapTrans/', async function(req, res){
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length});
 });
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange */
