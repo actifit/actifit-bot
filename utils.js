@@ -155,6 +155,7 @@ var HOURS = 60 * 60;
 	//function handles confirming if payment was received
 	async function confirmPaymentReceivedPassword (req) {
 		getConfig();
+		console.log('confirmPaymentReceivedPassword');
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
 				console.log('check funds');
