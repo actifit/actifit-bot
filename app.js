@@ -942,7 +942,7 @@ app.get('/confirmPayment', async function(req,res){
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
 			res.write(' ');
-		}, 3000);
+		}, 6000);
 		try{
 			//first step is to ensure memo has not been tampered with, nor has it been claimed before
 			//to do that, let's try to find if any signup has been done using this memo
@@ -1166,10 +1166,40 @@ app.get('/getPendingTokenSwapTransCount/', async function(req, res){
 	res.send({pendingSwap: tokenSwapTrans.length});
 });
 
-/* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
+/* end point for getting exchanges pending upvotes  */
 app.get('/getPendingTokenSwapTrans/', async function(req, res){
 	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
-	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length});
+	//generate total AFIT value as well
+	let afit_count = 0;
+	for (let i=0;i<tokenSwapTrans.length;i++){
+		tokenSwapTrans[i].order = i+1;
+		tokenSwapTrans[i].reward_round = Math.ceil((i+1)/config.max_afit_steem_upvotes_per_session);
+		afit_count += +tokenSwapTrans[i].paid_afit
+	}
+	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_pending: afit_count});
+});
+
+/* end point for getting exchanges pending upvotes  */
+app.get('/getProcessedTokenSwapTrans/', async function(req, res){
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [true, 'true']}}).sort({'date': 1}).toArray();
+	//generate total AFIT value as well
+	let afit_count = 0;
+	for (let i=0;i<tokenSwapTrans.length;i++){
+		afit_count += +tokenSwapTrans[i].paid_afit
+	}
+	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_exchanged: afit_count});
+});
+
+/* end point for getting exchanges pending upvotes  */
+app.get('/getUnverifiedFundsAccountList/', async function(req, res){
+	let pendingAccounts = await db.collection('account_funds_pass').find({passVerified: {$in: [null, false, 'false']}}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
+	res.send({pendingAccounts: pendingAccounts, count: pendingAccounts.length});
+});
+
+/* end point for getting exchanges pending upvotes  */
+app.get('/getFullFundsAccountList/', async function(req, res){
+	let fullAccountList = await db.collection('account_funds_pass').find({}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
+	res.send({fullAccountList: fullAccountList, count: fullAccountList.length});
 });
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange */
@@ -1404,6 +1434,38 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 	
 	return rewarded;
 }
+
+
+
+
+/* end point for returning total post count on a specific date */
+app.get('/totalPostsSubmitted', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('verified_posts').aggregate([
+		{
+			$match: 
+			{
+				"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+			}
+		}
+	   ]).toArray(function(err, results) {
+		//also append total token count to the grouped display
+		console.log(results.length);
+		res.send({count:results.length});
+	   });
+
+});
+
 
 function gk_add_commas(nStr) {
 	if (isNaN(nStr)){ 
