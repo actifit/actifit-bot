@@ -1,7 +1,7 @@
 Congrats on providing **Proof of Activity** via your Actifit report!
 {lucky_reward}
 You have accordingly been rewarded {token_count} AFIT tokens for your effort in reaching {step_count} activity, as well as your user rank and report quality!
-You also received an {weight}% upvote via @actifit account.
+You also received an {weight}% upvote via @actifit account. {exchange_vote}
 Actifit rewards and upvotes are based on your:
 - User rank: which depends on your delegated SP, accumulated AFIT tokens, rewarded post count and recent rewarded activity.
 - Post score: which depends on your activity count, post content, post upvotes, quality comments, moderator review and user rank.
