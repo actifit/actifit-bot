@@ -8,6 +8,7 @@ const MongoClient = require('mongodb').MongoClient;
 
 const cheerio = require('cheerio')
 const axios = require('axios');
+const request = require("request");
 
 var account = null;
 var last_trans = 0;
@@ -27,6 +28,13 @@ var lucky_winner_id = -1;
 var reward_sys_version = 'v0.2';
 
 var error_sent = false;
+
+var steem_price = 1;  // This will get overridden with actual prices if a price_feed_url is specified in settings
+var sbd_price = 1;    // This will get overridden with actual prices if a price_feed_url is specified in settings
+
+var STEEMIT_100_PERCENT = 10000;
+var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
+var HOURS = 60 * 60;
 
 //keep alive
 var http = require("http");
@@ -146,6 +154,13 @@ var moderator_list;
 
 var skippable_posts;
 
+var afit_steem_upvote_list;
+
+var cur_afit_price;
+
+var helping_accounts_votes = 0;
+
+
 // Check if bot state has been saved to disk, in which case load it
 if (fs.existsSync('state.json')) {
   var state = JSON.parse(fs.readFileSync("state.json"));
@@ -181,6 +196,11 @@ MongoClient.connect(url, function(err, client) {
 	  collection = db.collection(collection_name);
 	  //only start the process once we connected to the DB
 	  startProcess();
+	  
+	  // Load updated STEEM and SBD prices every 30 minutes
+	  loadPrices();
+	  setInterval(loadPrices, 30 * 60 * 1000);
+	  
 	  //updateUserTokens();
 	} else {
 		utils.log(err, 'api');
@@ -201,6 +221,59 @@ var votePosts;
 var lastIterationCount = 0;
 
 let queryCount = 0;
+
+let properties, rewardFund, rewardBalance, recentClaims, totalSteem, totalVests, votePowerReserveRate, sbd_print_percentage;
+
+
+//handles grabbing the vote value /STEEM
+  function getVoteValue(voteWeight, account, currentVotingPower, steem_price) {
+	if (rewardBalance && recentClaims && steem_price && votePowerReserveRate) {
+	  let voteValue = getVoteRShares(voteWeight, account, currentVotingPower * 100)
+		* rewardBalance / recentClaims
+		* steem_price;
+	  
+	  return voteValue;
+	}
+  }
+  //calculate voting value based on rshares contribution
+  function getVoteRShares (voteWeight, account, power) {
+  
+	let effective_vesting_shares = Math.round(getVestingShares(account) * 1000000);
+	let voting_power = account.voting_power;
+	let weight = voteWeight * 100;
+	let last_vote_time = new Date((account.last_vote_time) + 'Z');
+
+	let elapsed_seconds = (new Date() - last_vote_time) / 1000;
+
+	let regenerated_power = Math.round((STEEMIT_100_PERCENT * elapsed_seconds) / STEEMIT_VOTE_REGENERATION_SECONDS);
+
+	let current_power = power || Math.min(voting_power + regenerated_power, STEEMIT_100_PERCENT);
+	let max_vote_denom = votePowerReserveRate * STEEMIT_VOTE_REGENERATION_SECONDS / (60 * 60 * 24);
+	let used_power = Math.round((current_power * weight) / STEEMIT_100_PERCENT);
+	used_power = Math.round((used_power + max_vote_denom - 1) / max_vote_denom);
+
+	let rshares = Math.round((effective_vesting_shares * used_power) / (STEEMIT_100_PERCENT))
+
+	return rshares;
+  }
+  //grab account vesting shares value
+  function getVestingShares(account) {
+	var effective_vesting_shares = parseFloat(account.vesting_shares.replace(" VESTS", ""))
+		+ parseFloat(account.received_vesting_shares.replace(" VESTS", ""))
+	   - parseFloat(account.delegated_vesting_shares.replace(" VESTS", ""));
+	return effective_vesting_shares;
+  }
+  //handles display vote value in USD
+  function getVoteValueUSD(voteWeight, account, currentVotingPower, sbd_price) {
+	let vote_value = getVoteValue(voteWeight, account, currentVotingPower, steem_price);
+	const steempower_value = vote_value * 0.5
+	const sbd_print_percentage_half = (0.5 * sbd_print_percentage)
+	const sbd_value = vote_value * sbd_print_percentage_half
+	const steem_value = vote_value * (0.5 - sbd_print_percentage_half)
+	let vote_value_usd = ((sbd_value * sbd_price) + steem_value + steempower_value).toFixed(3);
+	return vote_value_usd
+  }
+
 
 async function startProcess() {
   if(!botNames)
@@ -237,6 +310,10 @@ async function startProcess() {
 			//}
           }
   return;*/
+  
+  
+  
+  //utils.updateSteemVariables();
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
@@ -250,11 +327,31 @@ async function startProcess() {
     // We are at voting power kick start - time to vote!
 	//utils.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
+	
 		// Check if there are any rewards to claim before voting
 		if (!config.testing){
 			claimRewards();
 		}
-	
+		
+		
+		//reset number of helping votes case
+		helping_accounts_votes = 0;
+		
+		
+		// Load Steem global variables
+
+		properties = await steem.api.getDynamicGlobalPropertiesAsync();
+		  //grab reward fund data
+		rewardFund = await steem.api.getRewardFundAsync("post");
+		rewardBalance = parseFloat(rewardFund.reward_balance.replace(" STEEM", ""));
+		recentClaims = rewardFund.recent_claims;
+		
+		totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0]);
+		totalVests = Number(properties.total_vesting_shares.split(' ')[0]);
+		
+		votePowerReserveRate = properties.vote_power_reserve_rate;
+		sbd_print_percentage = properties.sbd_print_rate / 10000;
+		
 		utils.log('lets vote');
 		skip = true;
 		  
@@ -273,6 +370,16 @@ async function startProcess() {
 		}
 		utils.log(moderator_list);
 		
+		//grab list of users exchanging AFIT for STEEM upvotes who were not processed yet by oldest
+		afit_steem_upvote_list = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+		
+		console.log('afit_steem_upvote_list');
+		console.log(afit_steem_upvote_list);
+	
+		//grab AFIT token price
+		cur_afit_price = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+		console.log('curAfitPrice:'+cur_afit_price.unit_price_usd);
+		
 		//grab list of skippable posts
 		skippable_posts = await db.collection('posts_to_skip').find().toArray();
 		
@@ -280,6 +387,10 @@ async function startProcess() {
 		console.log(skippable_posts);
 	  
 		var query = {tag: config.main_tag, limit: 100};
+		
+		if (config.testing){
+			query.limit = config.max_query_count;
+		}
 		votePosts = Array();
 		processVotes(query, false);      
     }else{
@@ -302,6 +413,68 @@ async function startProcess() {
     utils.log('Loading account data...');
   else utils.log('Voting... or waiting for a day to pass');
 }
+
+
+function loadPrices() {
+  if(config.price_source == 'coinmarketcap') {
+    // Load the price feed data
+    request.get('https://api.coinmarketcap.com/v1/ticker/steem/', function (e, r, data) {
+      try {
+        steem_price = parseFloat(JSON.parse(data)[0].price_usd);
+
+        utils.log("Loaded STEEM price: " + steem_price);
+      } catch (err) {
+        utils.log('Error loading STEEM price: ' + err);
+      }
+    });
+
+    // Load the price feed data
+    request.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/', function (e, r, data) {
+      try {
+        sbd_price = parseFloat(JSON.parse(data)[0].price_usd);
+
+        utils.log("Loaded SBD price: " + sbd_price);
+      } catch (err) {
+        utils.log('Error loading SBD price: ' + err);
+      }
+    });
+  } else if (config.price_source && config.price_source.startsWith('http')) {
+    request.get(config.price_source, function (e, r, data) {
+      try {
+        sbd_price = parseFloat(JSON.parse(data).sbd_price);
+        steem_price = parseFloat(JSON.parse(data).steem_price);
+
+        utils.log("Loaded STEEM price: " + steem_price);
+        utils.log("Loaded SBD price: " + sbd_price);
+      } catch (err) {
+        utils.log('Error loading STEEM/SBD prices: ' + err);
+      }
+    });
+  } else {
+    // Load STEEM price in BTC from bittrex and convert that to USD using BTC price in coinmarketcap
+    request.get('https://api.coinmarketcap.com/v1/ticker/bitcoin/', function (e, r, data) {
+      request.get('https://bittrex.com/api/v1.1/public/getticker?market=BTC-STEEM', function (e, r, btc_data) {
+        try {
+          steem_price = parseFloat(JSON.parse(data)[0].price_usd) * parseFloat(JSON.parse(btc_data).result.Last);
+          utils.log('Loaded STEEM Price from Bittrex: ' + steem_price);
+        } catch (err) {
+          utils.log('Error loading STEEM price from Bittrex: ' + err);
+        }
+      });
+
+      request.get('https://bittrex.com/api/v1.1/public/getticker?market=BTC-SBD', function (e, r, btc_data) {
+        try {
+          sbd_price = parseFloat(JSON.parse(data)[0].price_usd) * parseFloat(JSON.parse(btc_data).result.Last);
+          utils.log('Loaded SBD Price from Bittrex: ' + sbd_price);
+        } catch (err) {
+          utils.log('Error loading SBD price from Bittrex: ' + err);
+        }
+      });
+    });
+  }
+}
+
+
 //var post_scores = [];
 function processVotes(query, subsequent) {
   
@@ -344,10 +517,12 @@ function processVotes(query, subsequent) {
 				query['start_author'] = post.author;									
 			}
 
-			// Make sure the post is older than config time
-			if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
-			  utils.log('This post is too new for a vote: ' + post.url);
-			  continue;
+			if (!config.testing){
+				// Make sure the post is older than config time
+				if (new Date(post.created) >= new Date(new Date().getTime() - (config.min_hours * 60 * 60 * 1000))) { 
+				  utils.log('This post is too new for a vote: ' + post.url);
+				  continue;
+				}
 			}
 
 			// Check if the bot already voted on this post
@@ -374,10 +549,10 @@ function processVotes(query, subsequent) {
 			}
 
 			// Check if post category is main tag
-			if (post.category != config.main_tag) {
+			/*if (post.category != config.main_tag) {
 			  utils.log('Post does not match category tag. ' + post.url);
 			  continue;
-			}
+			}*/
 
 			// Check if this post has been flagged by any flag signal accounts
 			if(config.flag_signal_accounts) {
@@ -446,88 +621,90 @@ function processVotes(query, subsequent) {
 					
 				//we need to fetch the proper json_metadata from our own DB to ensure those have not been changed
 				
-				let ver_url = config.api_url + "fetchVerifiedPost";			
-				let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID'];
+				if (!config.testing){
 				
-				let incons_detected = false;
-				let incons_field = '';
-				
-				try{
-					var verf_res = await axios.get(ver_url, {
-							params:{
-								author: post.author, 
-								permlink: post.permlink
-							}
-						});
+					let ver_url = config.api_url + "fetchVerifiedPost";			
+					let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID'];
 					
-					//let's compare mission critical data to find if manipulation was done
-					let auth_meta = verf_res.data.json_metadata;
+					let incons_detected = false;
+					let incons_field = '';
 					
-					//if either stored or current metadata is non-empty we need to investigate further
-					if (auth_meta != '' || post.json_metadata != ''){
-						//check all critical values
-						critical_fields.some(function(element) {
-						  //initialize incons field in case we find a match (or lack of)
-						  incons_field = element;
-						  let stored_meta = eval("auth_meta."+element);
-						  let new_meta = eval("post.json."+element);
-						  /*console.log('stored_meta');
-						  console.log(stored_meta);
-						  console.log('new_meta');
-						  console.log(new_meta);*/
-						  //if old data is not empty
-						  if (typeof stored_meta != 'undefined' && stored_meta != ''){
-							if (stored_meta instanceof Array ){
-							  if (new_meta instanceof Array){
-								//our arrays are single valued, compare first entry
-								if (stored_meta[0] != new_meta[0]){
-								  //different value, manipulation
+					try{
+						var verf_res = await axios.get(ver_url, {
+								params:{
+									author: post.author, 
+									permlink: post.permlink
+								}
+							});
+						
+						//let's compare mission critical data to find if manipulation was done
+						let auth_meta = verf_res.data.json_metadata;
+						
+						//if either stored or current metadata is non-empty we need to investigate further
+						if (auth_meta != '' || post.json_metadata != ''){
+							//check all critical values
+							critical_fields.some(function(element) {
+							  //initialize incons field in case we find a match (or lack of)
+							  incons_field = element;
+							  let stored_meta = eval("auth_meta."+element);
+							  let new_meta = eval("post.json."+element);
+							  /*console.log('stored_meta');
+							  console.log(stored_meta);
+							  console.log('new_meta');
+							  console.log(new_meta);*/
+							  //if old data is not empty
+							  if (typeof stored_meta != 'undefined' && stored_meta != ''){
+								if (stored_meta instanceof Array ){
+								  if (new_meta instanceof Array){
+									//our arrays are single valued, compare first entry
+									if (stored_meta[0] != new_meta[0]){
+									  //different value, manipulation
+									  incons_detected = true;
+									  return true;
+									}
+								  }else{
+									//different object types, manipulation
+									incons_detected = true;
+									return true;
+								  }
+								}else{
+								  if (stored_meta != new_meta){
+									//different value, manipulation
+									incons_detected = true;
+									return true;
+								  }
+								}
+							  }else{
+								//original data is empty, need to check if new data is not
+								if (typeof new_meta != 'undefined' && new_meta != ''){
 								  incons_detected = true;
 								  return true;
 								}
-							  }else{
-								//different object types, manipulation
-								incons_detected = true;
-								return true;
 							  }
-							}else{
-							  if (stored_meta != new_meta){
-								//different value, manipulation
-								incons_detected = true;
-								return true;
-							  }
-							}
-						  }else{
-							//original data is empty, need to check if new data is not
-							if (typeof new_meta != 'undefined' && new_meta != ''){
-							  incons_detected = true;
-							  return true;
-							}
-						  }
-						});
+							});
+						}
+					}catch(verf_err){
+						console.log('error finding matching post on DB');
+						console.dir(verf_err);
 					}
-				}catch(verf_err){
-					console.log('error finding matching post on DB');
-					console.dir(verf_err);
+					//console.log('data inconsistency: ' + incons_detected);
+					//check if we found metadata issue
+					if (incons_detected){
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						console.log('problematic field:' + incons_field);
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						console.log('***********************');
+						//we've got a problem, skip this post/guy. We might want to report too.
+						continue;
+					}
 				}
-				//console.log('data inconsistency: ' + incons_detected);
-				//check if we found metadata issue
-				if (incons_detected){
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					console.log('problematic field:' + incons_field);
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					console.log('***********************');
-					//we've got a problem, skip this post/guy. We might want to report too.
-					continue;
-				}
-				
 				
 				
 				//check if the post has an encryption key val, and ensure it is the proper one
@@ -912,7 +1089,7 @@ function processVotes(query, subsequent) {
 	  
 	  
 		//if this is the first try, or the new count of posts is bigger than the one before, let's try adding again
-		if (!subsequent || votePosts.length > lastIterationCount || queryCount < config.max_query_count){
+		if (!config.testing && (!subsequent || votePosts.length > lastIterationCount || queryCount < config.max_query_count)){
 		
 			//update last count
 			lastIterationCount = votePosts.length;
@@ -926,10 +1103,14 @@ function processVotes(query, subsequent) {
 			if (votePosts.length > 0) {
 				utils.log(votePosts.length + ' posts to vote...');
 				var vote_data = utils.calculateVotes(votePosts, config.vote_weight);
-				votePosts.sort(function(post1, post2) {
-				  //Sort posts by reverse score, so as when popping them we get sorted by highest
-				  return post1.post_score - post2.post_score;
-				});
+				
+				
+				//if (!config.testing){
+					votePosts.sort(function(post1, post2) {
+					  //Sort posts by reverse score, so as when popping them we get sorted by highest
+					  return post1.post_score - post2.post_score;
+					});
+				//}
 		
 				
 				utils.log(vote_data.power_per_vote + ' power per full vote.');
@@ -995,20 +1176,85 @@ function processVotes(query, subsequent) {
 				utils.log('after');
 				utils.log(votePosts[lucky_winner_id].post_score);
 				
+				/***************** Check for AFIT/STEEM upvote exchange ******************/
+				try{
+				
+					//assign an ID to this reward cycle
+					let reward_cycle_ID = 'RC' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase()
+					
+					//calculate current vote value, and relating voting percentage needed
+					//get vote value at 100%
+					let full_vote_value = getVoteValueUSD(100, account, 100, sbd_price);
+					console.log('full_vote_value')
+					console.log(full_vote_value)
+					
+					console.log('afit_steem_upvote_list');
+					console.log(afit_steem_upvote_list);
+					
+					let matched_exchanges = 0;
+					let list_length = afit_steem_upvote_list.length;
+					
+					//loop through pending AFIT swaps, consuming older ones
+					for (let xx=0 ; xx < list_length && matched_exchanges < config.max_afit_steem_upvotes_per_session ; xx++){
+						let cur_upvote_entry = afit_steem_upvote_list[xx];
+						//find a matching report card, if exists
+						let result = votePosts.find( user_post => user_post.author === cur_upvote_entry.user);
+						console.log('matching post');
+						console.log(result);
+						if (result != null){
+							matched_exchanges += 1;
+							//found a match, need to increase rewards according to AFIT pay
+							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
+							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
+							
+							//expand the USD val to take into consideration 75% curation reward
+							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
+							
+							//final upvote value after avoiding deductions
+							let usd_val = usd_val_no_benef / 0.65 
+							
+							//emulate proper voting power to give user matching rewards
+							let user_added_vote_weight = usd_val * 100 / full_vote_value;
+							
+							let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
+							
+							//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
+							if (helping_accounts_votes < config.max_helping_votes){
+								user_added_vote_weight -= 1;
+								
+								helping_accounts_votes += 1;
+								
+								votePosts[entry_index].helperVotes = true;
+							}
+							
+							user_added_vote_weight = user_added_vote_weight.toFixed(2);
+							
+							votePosts[entry_index].additional_vote_weight = user_added_vote_weight * 100;
+							votePosts[entry_index].afit_swapped = cur_upvote_entry.paid_afit;
+							console.log('Additional Vote Weight for AFIT/STEEM Upvote Exchange: '+votePosts[entry_index].author + ' ' + votePosts[entry_index].url);
+							console.log(votePosts[entry_index].additional_vote_weight);
+							
+							//we need to set this transaction as processed via upvote
+							cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
+							cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
+							cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
+							cur_upvote_entry.usd_val = +usd_val.toFixed(2);
+							cur_upvote_entry.upvote_processed = true;
+							cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
+							db.collection('exchange_afit_steem').save(cur_upvote_entry);
+							
+						}
+					}
+					console.log('done going through pending AFIT to STEEM upvote exchange');
+					
+				}catch(err){
+					utils.log(err);
+				}
+				
 				/********************* proceed with STEEM upvotes ************************/
 				
-				
-				var tot_weight = 0;
-				for (var xx=0;xx<votePosts.length;xx++){
-					var vote_weight = Math.floor(votePosts[xx].rate_multiplier * vote_data.power_per_vote);
-					utils.log('author:'+votePosts[xx].author+' url:'+votePosts[xx].url+' VP:'+vote_weight)
-					tot_weight += vote_weight;
-				}
-				utils.log('total weight consumed'+tot_weight);
-				
-				//if (!config.testing){
-					votingProcess(votePosts, vote_data.power_per_vote);
-				//}
+				votingProcess(votePosts, vote_data.power_per_vote);
+			
 			} else {
 				utils.log('No posts to vote...');
 				if(!error_sent) {
@@ -1060,6 +1306,13 @@ function sendVote(post, retries, power_per_vote) {
 	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
   
 	var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
+	console.log('vote weight:'+vote_weight);
+	
+	//if user had paid AFIT for extra STEEM upvotes, add this to their upvote value
+	if (post.additional_vote_weight){
+		vote_weight += post.additional_vote_weight
+		console.log('new vote weight:'+vote_weight);
+	}
 	post_rank += 1;
 	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
@@ -1086,6 +1339,30 @@ function sendVote(post, retries, power_per_vote) {
 				resolve('');   
 			}
 		}else{
+			//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
+			if (post.additional_vote_weight && post.helperVotes){
+				let vote_percent_add_accounts = 5000;//at 50%: 5000
+				try{
+					steem.broadcast.vote(config.full_pay_posting_key, config.full_pay_benef_account, post.author, post.permlink, vote_percent_add_accounts, function (err, result) {
+						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
+						if (!err && result) {
+							utils.log(err, result);
+						}
+					});
+				}catch(err){
+					utils.log(err);
+				}
+				try{
+					steem.broadcast.vote(config.pay_account_post_key, config.pay_account, post.author, post.permlink, vote_percent_add_accounts, function (err, result) {
+						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
+						if (!err && result) {
+							utils.log(err, result);
+						}
+					});
+				}catch(err){
+					utils.log(err);
+				}
+			}
 			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
 				if (!err && result) {
 					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
@@ -1193,6 +1470,16 @@ function sendComment(post, retries, vote_weight) {
 			//adding proper meta content for later relevant reward via afit_tokens data
 			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };
 			
+			//if this reward contains an exchange amount, list it here
+			if (post.additional_vote_weight != null){
+				jsonMetadata.promoted_post = true;
+				jsonMetadata.additional_vote_weight = post.additional_vote_weight;
+				console.log('new vote weight:'+vote_weight);
+				content = content.replace(/\{exchange_vote}/g,'**'+utils.format(post.additional_vote_weight/100)+'% of this upvote value is a result of an exchange transaction you performed for '+post.afit_swapped+' AFIT tokens !**');
+			}else{
+				content = content.replace(/\{exchange_vote}/g,'') 
+			}
+			
 			//if user is lucky winner, add a relevant message
 
 			if (typeof post.lucky_winner != 'undefined' && post.lucky_winner != '' && post.lucky_winner != 'undefined'){
@@ -1201,7 +1488,6 @@ function sendComment(post, retries, vote_weight) {
 			}else{
 				content = content.replace(/\{lucky_reward}/g,'') 
 			}
-			
 			
 			if (!config.testing){
 				// Broadcast the comment
@@ -1228,8 +1514,8 @@ function sendComment(post, retries, vote_weight) {
 				});
 			}else{
 				utils.log('comment');
-				utils.log(content);
-				utils.log(jsonMetadata);
+				console.log(content);
+				console.log(jsonMetadata);
 				resolve('');
 			}
 		}else{
