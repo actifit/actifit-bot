@@ -15,6 +15,8 @@ const testRun = false;
 
 let db
 let collection
+let bulk_delegation_entries
+
 // Database Name
 const dbName = config.db_name
 const collectionName = 'delegation_transactions'
@@ -55,6 +57,8 @@ function runRewards(steemOnlyReward){
 		db = dbClient.db(dbName)
 		// Get the documents collection
 		collection = db.collection(collectionName)
+		
+		bulk_delegation_entries = db.collection(collectionName).initializeUnorderedBulkOp();
 		
 		//updateUserTokens();
 		//return;
@@ -256,10 +260,10 @@ function loadSteemPrices() {
 async function startProcess (days, steemOnlyReward) {
 	let end = 0
 	// Find last saved delegation transaction
-	let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
+	//let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
 	console.log('last recorded delegation transaction');
-	console.log(lastTx)
-	if (lastTx) end = lastTx.tx_number
+	//console.log(lastTx)
+	//if (lastTx) end = lastTx.tx_number
 	await updateProperties()
 	if (!testRun){
 		await processDelegations(config.account, -1, end)
@@ -464,7 +468,16 @@ async function processDelegations (account, start, end) {
     const transactions = await client.database.call('get_account_history', [account, start, limit])
     transactions.reverse()
     for (let txs of transactions) {
-      if (txs[0] === end) {
+	  //let's only fetch a max of 5 days ago delegation transactions
+	  let tx_date = moment(txs[1].timestamp).format()
+	  
+	  //today
+	  let start = moment().utc().startOf('date').toDate()
+	  
+	  let to = moment(start).subtract(5, 'days').toDate()
+	  let end = moment(to).format()
+	  
+      if (txs[0] === end || tx_date < end) {
         console.log('--- Found last transaction ---')
         ended = true
         break
@@ -473,6 +486,7 @@ async function processDelegations (account, start, end) {
       lastTrans = txs[0]
       // Look for delegation operations
       if (op[0] === 'delegate_vesting_shares' && op[1].delegatee === account) {
+		//console.log(txs);
         // Calculate in steem power
         const steemPower = vestsToSteemPower(op[1].vesting_shares)
         let data = op[1]
@@ -480,12 +494,22 @@ async function processDelegations (account, start, end) {
         data.tx_number = txs[0]
         data.tx_date = new Date(txs[1].timestamp)
         delegationTransactions.push(data)
+		
+		bulk_delegation_entries.find(
+		{ 
+			delegator: data.delegator,
+			vesting_shares: data.vesting_shares,
+		}).upsert().replaceOne(data);
       }
     }
     // Insert new transactions and update active ones
-    // console.log(delegationTransactions)
     if (delegationTransactions.length > 0) {
-      await collection.insert(delegationTransactions)
+      try{
+		await bulk_delegation_entries.execute();
+	  }catch(bulkerr){
+		utils.log(bulkerr);
+	  }
+	  //await collection.insert(delegationTransactions)
       await updateActiveDelegations()
     } else {
       console.log('--- No new delegations ---')
