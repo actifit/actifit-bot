@@ -23,6 +23,8 @@ var HOURS = 60 * 60;
  var votePowerReserveRate;
  var totalVestingFund;
  var totalVestingShares;
+ var steem_per_mvests;
+ var sbd_print_percentage;
  var botNames;
  let properties
  let totalVests
@@ -41,6 +43,10 @@ var HOURS = 60 * 60;
          votePowerReserveRate = t.vote_power_reserve_rate;
          totalVestingFund = parseFloat(t.total_vesting_fund_steem.replace(" STEEM", ""));
          totalVestingShares = parseFloat(t.total_vesting_shares.replace(" VESTS", ""));
+		 steem_per_mvests = ((totalVestingFund / totalVestingShares) * 1000000);
+		 sbd_print_percentage = t.sbd_print_rate / 10000
+		 console.log(steem_per_mvests);
+		 console.log(sbd_print_percentage);
      });
 
      setTimeout(updateSteemVariables, 180 * 1000)
@@ -121,9 +127,17 @@ var HOURS = 60 * 60;
 							if (op[1].to === config.signup_account && op[1].memo === req.query.memo && sentAmount >= (parseFloat(req.query.steem_invest)-0.1)){  
 								console.log('in');
 								console.log(op[1]);
-								tx_id = txs[1].trx_id;
-								paymentFound = true;
-								break;
+								
+								let now = moment(new Date()); //todays date
+								let end = moment(txs[1].timestamp); // last update date
+								let duration = moment.duration(now.diff(end));
+								let hrs = duration.asHours();
+								//transaction needs to have been concluded within 5 hours.
+								if (hrs < 5){
+									tx_id = txs[1].trx_id;
+									paymentFound = true;
+									break;
+								}
 							}
 						}
 					}
@@ -137,6 +151,51 @@ var HOURS = 60 * 60;
 			}, 5000);
 		});
 	}
+	
+	//function handles confirming if payment was received
+	async function confirmPaymentReceivedPassword (req) {
+		getConfig();
+		console.log('confirmPaymentReceivedPassword');
+		return new Promise((resolve, reject) => {
+			let th_id = setInterval(async function(){
+				console.log('check funds');
+				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
+					let tx_id = '';
+					let paymentFound = false;
+					for (let txs of transactions) {
+						let op = txs[1].op
+						//check if we received a transfer to our target account
+						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
+						if (op[0] === 'transfer'){
+							let sentAmount = op[1].amount.split(' ')[0];
+							if (op[1].to === config.exchange_account && op[1].from === req.query.from && sentAmount >= 1){  
+								console.log('in');
+								console.log(op[1]);
+								//console.log(txs);
+								/*let now = moment(new Date()); //todays date
+								let end = moment(txs[1].timestamp); // last update date
+								let duration = moment.duration(now.diff(end));
+								let hrs = duration.asHours();
+								//transaction needs to have been concluded within 5 hours.
+								if (hrs < 24){*/
+									tx_id = txs[1].trx_id;
+									paymentFound = true;
+									break;
+								//}
+							}
+						}
+					}
+					if (paymentFound){
+						//need to look again
+						console.log('found');
+						clearInterval(th_id);
+						resolve(tx_id);
+					}
+				});
+			}, 5000);
+		});
+	}
+	
 	
 	//function handles claiming spots for accounts
 	async function claimDiscountedAccount(){
@@ -326,7 +385,7 @@ var HOURS = 60 * 60;
      }
  }
 
- function getVoteValue(voteWeight, account, power) {
+ function getVoteValue(voteWeight, account, power, steem_price) {
      if (!account) {
          return;
      }
@@ -338,6 +397,14 @@ var HOURS = 60 * 60;
          return voteValue;
 
      }
+ }
+
+ function getVoteValueUSD(vote_value, sbd_price) {
+  const steempower_value = vote_value * 0.5
+  const sbd_print_percentage_half = (0.5 * sbd_print_percentage)
+  const sbd_value = vote_value * sbd_print_percentage_half
+  const steem_value = vote_value * (0.5 - sbd_print_percentage_half)
+  return (sbd_value * sbd_price) + steem_value + steempower_value
  }
 
 function timeTilFullPower(cur_power){
@@ -838,9 +905,11 @@ async function steemPowerToVests (steemPower) {
 
 
  module.exports = {
+   updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
    getRC: getRC,
    claimDiscountedAccount: claimDiscountedAccount,
+   getVoteValueUSD: getVoteValueUSD,
    getVoteValue: getVoteValue,
    timeTilFullPower: timeTilFullPower,
    getVestingShares: getVestingShares,
@@ -862,4 +931,5 @@ async function steemPowerToVests (steemPower) {
    createAccount: createAccount,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
+   confirmPaymentReceivedPassword: confirmPaymentReceivedPassword
  }
