@@ -1030,8 +1030,18 @@ function processVotes(query, subsequent) {
 						//grab user's contribution to the upvote pool
 						var upv_tokens = parseInt(vote.rshares);
 					
+						//skip votes of banned users
+						var user_banned = false;
+						for (var n = 0; n < banned_users.length; n++) {
+							if (vote.voter == banned_users[n].user){
+								utils.log('User '+vote.voter+' is banned, skipping his vote on post:' + post.url);
+								user_banned = true;
+								break;
+							}
+						} 
+					
 						//skip self vote from rewards and make sure this is a positive upvote
-						if (post.author != vote.voter && upv_tokens>0){
+						if (post.author != vote.voter && upv_tokens>0 && !user_banned){
 							//calculate the percentage of the user's contribution, and allocate him his AFIT tokens share
 							var voter_tokens = upv_tokens / total_post_upv_shares * max_afits;
 							//console.log(voter_tokens);
