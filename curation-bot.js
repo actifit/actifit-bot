@@ -595,7 +595,7 @@ function processVotes(query, subsequent) {
 					user_banned = true;
 					break;
 				}
-			  }   
+			}   
 			if (user_banned) continue;
 			
 			//skip any posts that are more than max days old
@@ -967,11 +967,16 @@ function processVotes(query, subsequent) {
 					reward_user = post.json.charity[0];
 					activity_type = 'Charity Post';
 					note = 'Charity donation via activity by user '+post.author;
-				}		
+				}
+				let activity_afit_reward = post.post_score;
+				//if this is a sponsored athlete, give them special reward
+				if (config.sponsored_athletes.includes(reward_user)){
+					activity_afit_reward = config.sponsored_athlete_afit_reward;
+				}
 				let post_transaction = {
 					user: reward_user,
 					reward_activity: activity_type,
-					token_count: post.post_score,
+					token_count: activity_afit_reward,
 					url: post.url,
 					date: new Date(post.created),
 					note: note,
@@ -1029,7 +1034,7 @@ function processVotes(query, subsequent) {
 
 						//grab user's contribution to the upvote pool
 						var upv_tokens = parseInt(vote.rshares);
-					
+						
 						//skip votes of banned users
 						var user_banned = false;
 						for (var n = 0; n < banned_users.length; n++) {
@@ -1330,6 +1335,12 @@ function sendVote(post, retries, power_per_vote) {
 	post_rank += 1;
 	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
+	//if this is a sponsored athlete, give them special reward
+	if (config.sponsored_athletes.includes(post.author)){
+		vote_weight = config.sponsored_athlete_upvote_reward;
+	}
+  
+  
 	if (vote_weight > config.max_vote_per_post){
 		vote_weight = config.max_vote_per_post;
 	}
@@ -1393,7 +1404,7 @@ function sendVote(post, retries, power_per_vote) {
 			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
 				if (!err && result) {
 					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
-
+					
 					//store exchange transaction as complete
 					if (post.additional_vote_weight){
 						console.log('Exchange vote');
@@ -1499,6 +1510,11 @@ function sendComment(post, retries, vote_weight) {
 			var permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
 
 			var token_count = post.post_score;//parseFloat(rate_multiplier)*100;
+			
+			//if this is a sponsored athlete, give them special reward
+			if (config.sponsored_athletes.includes(parentAuthor)){
+				token_count = config.sponsored_athlete_afit_reward;
+			}
 			
 			// Replace variables in the promotion content
 			content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
