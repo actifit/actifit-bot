@@ -1160,6 +1160,12 @@ app.get('/userHasPendingTokenSwap/:user', async function(req, res){
 	res.send({user_pending_swap: user_pending_swap});
 });
 
+/* end point finding user's historical AFIT token swap */
+app.get('/getUserTokenSwapHistory/:user', async function(req, res){
+	let user_token_swap_hist = await db.collection('exchange_afit_steem').find({user: req.params.user},{fields : { _id:0} }).sort({'date': -1}).toArray();
+	res.send({userTokenSwapHist: user_token_swap_hist});
+});
+
 /* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
 app.get('/getPendingTokenSwapTransCount/', async function(req, res){
 	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
