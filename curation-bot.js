@@ -1239,18 +1239,22 @@ function processVotes(query, subsequent) {
 							
 							user_added_vote_weight = user_added_vote_weight.toFixed(2);
 							
-							votePosts[entry_index].additional_vote_weight = user_added_vote_weight * 100;
+							votePosts[entry_index].additional_vote_weight = Math.floor(user_added_vote_weight * 100);
 							votePosts[entry_index].afit_swapped = cur_upvote_entry.paid_afit;
 							console.log('Additional Vote Weight for AFIT/STEEM Upvote Exchange: '+votePosts[entry_index].author + ' ' + votePosts[entry_index].url);
 							console.log(votePosts[entry_index].additional_vote_weight);
 							
-							//we need to set this transaction as processed via upvote
+							//we need to set params of this transaction
 							cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
 							cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
 							cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
 							cur_upvote_entry.usd_val = +usd_val.toFixed(2);
-							cur_upvote_entry.upvote_processed = true;
+							
 							cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
+							
+							cur_upvote_entry.post_author = votePosts[entry_index].author;
+							cur_upvote_entry.post_permlink = votePosts[entry_index].permlink;
+							
 							db.collection('exchange_afit_steem').save(cur_upvote_entry);
 							
 						}
@@ -1335,6 +1339,19 @@ function sendVote(post, retries, power_per_vote) {
 	return new Promise((resolve, reject) => {
 		if(config.testing){
 			//resolve('');
+			
+			//console.log(afit_steem_upvote_list);
+			if (post.additional_vote_weight){
+				console.log('Exchange vote');
+				//store exchange transaction as complete
+				let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+								entry.post_permlink === post.permlink && 
+								entry.user === post.author);
+				console.log(cur_upvote_entry);
+				cur_upvote_entry.upvote_processed = true;
+				db.collection('exchange_afit_steem').save(cur_upvote_entry);
+			}
+			
 			if(config.comment_location && config.comment){
 				setTimeout(function () { 	
 					sendComment(post, 0, vote_weight)
@@ -1376,6 +1393,17 @@ function sendVote(post, retries, power_per_vote) {
 			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
 				if (!err && result) {
 					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
+
+					//store exchange transaction as complete
+					if (post.additional_vote_weight){
+						console.log('Exchange vote');
+						let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+										entry.post_permlink === post.permlink && 
+										entry.user === post.author);
+						console.log(cur_upvote_entry);
+						cur_upvote_entry.upvote_processed = true;
+						db.collection('exchange_afit_steem').save(cur_upvote_entry);
+					}
 
 					if(config.comment_location && config.comment){
 						setTimeout(function () { 	
