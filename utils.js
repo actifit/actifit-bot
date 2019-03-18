@@ -4,13 +4,14 @@ var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
-const client = new dsteem.Client('https://api.steemit.com');
+const steem_node = 'https://api.steemit.com';//'https://api.steem.house';
+const client = new dsteem.Client(steem_node);
 		
 var config;
 
 let th_id = -1;
 
-steem.api.setOptions({ url: 'https://api.steemit.com' });
+steem.api.setOptions({ url: steem_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -86,7 +87,7 @@ var HOURS = 60 * 60;
 		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
 		//return new Promise(function(fulfill,reject){
 			//var request = require("request");
-			let location = "https://api.steemit.com";
+			let location = steem_node;
 			var response = await axios.post(location, {"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":[account_name]}});
 			
 			console.log(response.data.result.rc_accounts);
@@ -692,8 +693,8 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	const ONE_YEAR = 365;
 	
-	let start_days = 1;
-	let lookup_days = ONE_YEAR;
+	let start_days = 2;
+	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
 	let start = moment(today).subtract(start_days, 'days').toDate()
@@ -805,8 +806,6 @@ async function getAccountPayTransactions (account, start, end, period) {
 		console.log(op);
 	  }else if (op[0] === 'transfer' && op[1].from === account && 
 		(op[1].to !== 'bittrex' && !op[1].to.includes('actifit'))){//skip bittrex and actifit account transfers
-		console.log('>>>>>><<<<<<<');
-		console.log(op[1]);
 		let amountWithCur = op[1].amount;
 		let amount = amountWithCur.split(' ')[0]
 		let cur = amountWithCur.split(' ')[1]
