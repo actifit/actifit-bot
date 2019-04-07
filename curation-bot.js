@@ -1379,7 +1379,7 @@ function sendVote(post, retries, power_per_vote) {
 		}else{
 			//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
 			if (post.additional_vote_weight && post.helperVotes){
-				let vote_percent_add_accounts = 5000;//at 50%: 5000
+				let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
 				try{
 					steem.broadcast.vote(config.full_pay_posting_key, config.full_pay_benef_account, post.author, post.permlink, vote_percent_add_accounts, function (err, result) {
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
