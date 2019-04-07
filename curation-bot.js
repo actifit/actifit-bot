@@ -869,9 +869,10 @@ function processVotes(query, subsequent) {
 				/***************** moderator upvote factor ******************/
 				
 				//check if a moderator upvoted the post to give it better reward
+				//we need to skip self-votes reward to avoid extra rewarding mods for self-votes
 				post.moderator_score = 0;
 				post.active_votes.some(function(vote){
-					if (moderator_list.includes(vote.voter)){
+					if (moderator_list.includes(vote.voter) && vote.voter != post.author){
 						post.moderator_score = parseInt(config.moderator_upvote_factor);
 						//utils.log('found moderator upvote'+vote.voter);
 						return true;
@@ -895,7 +896,8 @@ function processVotes(query, subsequent) {
 						}
 						
 						//check if the comment is made by a moderator, if it is we need to reward the moderator
-						if (moderator_list.includes(comments[cmt_it].author)){
+						//we need to skip own comment reward to avoid extra rewarding mods
+						if (moderator_list.includes(comments[cmt_it].author) && comments[cmt_it].author != post.author){
 							let comment_transaction = {
 								user: comments[cmt_it].author,
 								reward_activity: 'Moderator Comment',
