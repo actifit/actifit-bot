@@ -1304,6 +1304,80 @@ app.get('/performAfitSteemExchange', async function(req, res){
 	}
 })
 
+/* end point handling cancelling outdated exchange transactions for AFIT/STEEM upvote exchange */
+app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
+	//grab list of pending & outdated exchange requests 
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	let endDate = moment(moment(startDate).utc().subtract(config.exchange_refund_max_days, 'days').toDate()).format('YYYY-MM-DD');
+	let transQuery = {
+		upvote_processed: {$in: [null, false, 'false']},
+		date: {
+				$lte: new Date(endDate)
+			}
+	}
+	let outdatedTokenSwapTrans = await db.collection('exchange_afit_steem').find(transQuery).toArray();
+	console.log(outdatedTokenSwapTrans);
+	
+	let refundedCount = 0;
+	
+	//go through each transaction and cancel it
+	for(let i = 0, transLen = outdatedTokenSwapTrans.length; i < transLen; i++) {
+		try{
+			//set as processed, and flag as refunded
+			outdatedTokenSwapTrans[i].refunded = true;
+			outdatedTokenSwapTrans[i].refund_reason = 'overdue for '+config.exchange_refund_max_days + ' days';
+			outdatedTokenSwapTrans[i].upvote_processed = true;
+			await db.collection('exchange_afit_steem').save(outdatedTokenSwapTrans[i]);
+			console.log('exchange transaction cancelled');
+		}catch(err){
+			console.log('unable to cancel exchange transaction');
+			res.send({'error': 'Unable to cancel exchange transaction'});
+			return;
+		}
+		
+		//send out refunded AFIT tokens
+		//decrease count
+		let tokenExchangeTrans = {
+			user: outdatedTokenSwapTrans[i].user,
+			reward_activity: 'Refund Exchange AFIT To STEEM Upvote',
+			token_count: outdatedTokenSwapTrans[i].paid_afit,
+			note: 'Refund Exchange AFIT To STEEM Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
+			date: new Date(),
+		}
+		try{
+			console.log(tokenExchangeTrans);
+			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
+			console.log('tokens refunded for user');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
+			return;
+		}
+		
+		let user_info = await grabUserTokensFunc (outdatedTokenSwapTrans[i].user);
+		console.log(user_info);
+		let cur_user_token_count = 0;
+		if (user_info){
+			cur_user_token_count = parseFloat(user_info.tokens);
+			//update current user's token balance & store to db
+			let new_token_count = cur_user_token_count + parseFloat(outdatedTokenSwapTrans[i].paid_afit);
+			user_info.tokens = new_token_count;
+			console.log('new_token_count:'+new_token_count);
+			try{
+				let trans = await db.collection('user_tokens').save(user_info);
+				console.log('success updating user token count');
+			}catch(err){
+				console.log(err);
+				return;
+			}
+		}
+		
+		refundedCount += 1;
+	}
+	//we got here, we're good
+	res.send({'status': 'Success', 'trans_refunded_count': refundedCount});
+});
+
 /* end point handling the display of categorized token holders */
 app.get('/fetchTokenHoldersByCategory', async function(req, res){
 	//connect to DB, and identify token holders by category
