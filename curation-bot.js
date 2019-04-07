@@ -39,7 +39,18 @@ var HOURS = 60 * 60;
 //keep alive
 var http = require("http");
 setInterval(function() {
+  try{
     http.get("http://actifitvoter.herokuapp.com");
+	//let's also run our token exchange cleanup process
+	console.log('running cleanup');
+	request('https://actifitbot.herokuapp.com/cancelOutdatedAfitSteemExchange', function (error, response, body) {
+		console.log('cleanup result');
+		console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
+		console.log('error: '+ error)
+	});
+  }catch(err){
+	console.log('error:'+err);
+  }
 }, 600000); // every 10 minutes (600000)
 
 
