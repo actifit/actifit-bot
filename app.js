@@ -533,7 +533,7 @@ app.get('/getRank/:user', async function (req, res) {
 					//get original user delegation amount
 					userDelegations = await activeDelegationFunc(delegator_info.delegator);		
 					if (userDelegations != null){
-						delegSP = userDelegations.steem_power;
+						delegSP += userDelegations.steem_power;
 					}
 				}
 			}
