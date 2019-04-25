@@ -931,6 +931,80 @@ storeReferralReward = async function (req){
 	return refRewarded;
 };
 
+app.get('/confirmAFITSEBulk', async function(req,res){
+	//let's call the service by S-E
+	let url = new URL(config.steem_engine_trans_acct_his_lrg);
+	console.log(config.steem_engine_trans_acct_his_lrg);
+	//connect with our service to confirm AFIT received to proper wallet
+	try{
+		let se_connector = await fetch(url);
+		let trx_entries = await se_connector.json();
+		
+		
+		//console.log(trx_entries);
+		trx_entries.forEach( async function(entry){
+			console.log(entry);
+			
+			let user = entry.from;
+			//query to see if entry already stored
+			let tokenExchangeTransQuery = {
+				user: user,
+				se_trx_ref: entry.txid
+			}
+			//store the transaction to the user's profile
+			let tokenExchangeTrans = {
+				user: user,
+				reward_activity: 'Move AFIT SE to Actifit Wallet',
+				token_count: parseFloat(entry.quantity),
+				se_trx_ref: entry.txid,
+				date: new Date(),
+			}
+			try{
+				console.log(tokenExchangeTrans);
+				//insert the query ensuring we do not write it twice
+				let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
+				let trans_res = transaction.result;
+				console.log(trans_res);
+				
+				if (trans_res.upserted){
+					//we have a new entry, increase user token count
+					
+					let user_info = await grabUserTokensFunc (user);
+					
+					let cur_user_token_count = 0;
+					if (user_info){
+						cur_user_token_count = parseFloat(user_info.tokens);
+						//update current user's token balance & store to db
+						afit_amount = parseFloat(entry.quantity);
+						let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+						user_info.tokens = new_token_count;
+						console.log('new_token_count:'+new_token_count);
+						try{
+							let trans = await db.collection('user_tokens').save(user_info);
+							console.log('success adding AFIT tokens to user balance');
+						}catch(err){
+							console.log(err);
+							return;
+						}
+					}
+				}
+				
+			}catch(err){
+				console.log(err);
+				res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+				res.end();
+				return;
+			}
+		});
+		
+		res.write(JSON.stringify({'status': 'done updating AFIT SE moves'}));
+		res.end();
+		
+	}catch(err){
+		console.log(err);
+	}
+})
+
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
 app.get('/confirmAFITSEReceipt', async function(req,res){
 	if (!req.query.user){
