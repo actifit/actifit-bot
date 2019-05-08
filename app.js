@@ -232,6 +232,51 @@ app.get('/charities', async function (req, res) {
     res.send(charities);
 });
 
+/* end point for fetching user's current badges */
+app.get('/userBadges/:user', async function (req, res) {
+	let user = await db.collection('user_badges').find({user: req.params.user}).toArray();
+	res.send(user);
+});
+
+/* claim this badge and store it for this user */
+app.get('/claimBadge/', async function (req, res) {
+	if (req.query.user && req.query.badge){
+		let proceed = false;
+		//double check user eligibility in case of ISO
+		if (req.query.badge === 'iso'){
+			let isoParticipant = await db.collection('iso_participants').find({user: req.query.user}).toArray();
+			if (isoParticipant.length > 0){
+				proceed = true;
+			}
+		}
+		if (proceed){
+			let user_badge = {
+				user: req.query.user,
+				badge: req.query.badge,
+				date_claimed: new Date(),
+			};
+			try{
+				let transaction = await db.collection('user_badges').insert(user_badge);
+				console.log('success inserting post data');
+				res.send({status: 'success', user: req.query.user, badge: req.query.badge});
+			}catch(err){
+				console.log('error');
+				res.send({status: 'error'});
+			}	
+		}else{
+			res.send({status: 'error'});
+		}
+	}else{
+		res.send({status: 'error'});
+	}
+});
+
+/* end point for checking if user took part of ISO event */
+app.get('/isoParticipant/:user', async function (req, res) {
+	let user = await db.collection('iso_participants').find({user: req.params.user}).toArray();
+	res.send(user);
+});
+
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
 	var delegatorList; 
