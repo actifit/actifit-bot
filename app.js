@@ -557,6 +557,7 @@ app.get('/getRank/:user', async function (req, res) {
 			console.log('already delegated');
 			delegSP = userDelegations.steem_power;
 		}
+		//console.log('delegSP:'+delegSP);
 		//console.log(userDelegations.steem_power);
 		
 		var delegation_score = 0;
@@ -573,12 +574,15 @@ app.get('/getRank/:user', async function (req, res) {
 			//also check the other case where the account is an alt-account
 			delegator_info = await getAltAccountByNameFunc(req.params.user);
 			//check if returned object is not empty
-			if (Object.keys(delegator_info).length > 0){
-				if (parseInt(delegator_info.user_rank_benefit) == 1){
-					//get original user delegation amount
-					userDelegations = await activeDelegationFunc(delegator_info.delegator);		
-					if (userDelegations != null){
-						delegSP += userDelegations.steem_power;
+			if (delegator_info.length > 0){
+				for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
+					if (parseInt(delegator_info[x].user_rank_benefit) == 1){
+						//get original user delegation amount
+						userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
+						if (userDelegations != null){
+							delegSP += userDelegations.steem_power;
+							//console.log('delegSP:'+delegSP);
+						}
 					}
 				}
 			}
@@ -666,10 +670,7 @@ getAltAccountByNameFunc = async function (targetUser){
 			"alt_account": targetUser
 		};
 		
-		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {fields : { _id:0} });
-		if (delegator_info==null){
-			delegator_info = {};
-		}
+		delegator_info = await db.collection('delegation_alt_beneficiaries').find(query_json, {fields : { _id:0} }).toArray();
 		console.log(delegator_info);
 	}
 	return delegator_info;
