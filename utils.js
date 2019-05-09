@@ -109,7 +109,8 @@ var HOURS = 60 * 60;
 			
 		//});
 	}
-
+	
+	
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser) {
 		getConfig();
@@ -144,7 +145,6 @@ var HOURS = 60 * 60;
 			}, 5000);
 		});
 	}
-	
 	
 	//function handles confirming if payment was received
 	async function confirmPaymentReceived (req) {
@@ -697,6 +697,9 @@ let authorRewardedSTEEM = 0
 let accountSTEEMTransfer = 0;
 let accountSBDTransfer = 0;
 
+let accountSTEEMTransferIn = 0
+let accountSBDTransferIn = 0
+
 let limit = 5000;
 let txStart = -1;
 let opsArr = [];
@@ -718,6 +721,9 @@ function resetVals(){
 	
 	accountSTEEMTransfer = 0
 	accountSBDTransfer = 0
+	
+	accountSBDTransferIn = 0
+	accountSTEEMTransferIn = 0
 }
 
 //lookupAccountPay();
@@ -729,7 +735,7 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	const ONE_YEAR = 365;
 	
-	let start_days = 2;
+	let start_days = 0;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
@@ -750,6 +756,14 @@ async function lookupAccountPay (){
 	txStart = -1;
 	console.log('***********append actifit.pay rewards**********')
 	await getAccountPayTransactions('actifit.pay', start, to, lookup_days);
+	
+	txStart = -1;
+	console.log('***********append actifit.exchange rewards**********')
+	await getAccountPayTransactions('actifit.exchange', start, to, lookup_days);
+	
+	txStart = -1;
+	console.log('***********append actifit.signup rewards**********')
+	await getAccountPayTransactions('actifit.signup', start, to, lookup_days);	
 }
 
 async function getAccountPayTransactions (account, start, end, period) {
@@ -850,6 +864,16 @@ async function getAccountPayTransactions (account, start, end, period) {
 		}else{
 			accountSTEEMTransfer += parseFloat(amount)
 		}
+	  }else if (op[0] === 'transfer' && op[1].to === account && 
+		(!op[1].from.includes('actifit'))){//skip intra account transfer
+		let amountWithCur = op[1].amount;
+		let amount = amountWithCur.split(' ')[0]
+		let cur = amountWithCur.split(' ')[1]
+		if (cur == 'SBD'){
+			accountSBDTransferIn += parseFloat(amount)
+		}else{
+			accountSTEEMTransferIn += parseFloat(amount)
+		}
 	  }
     } else if (date < end){ 
 		break
@@ -902,13 +926,13 @@ async function getAccountPayTransactions (account, start, end, period) {
   }
   console.log ('---totals---');
   let comSP = parseFloat(totalSp.toFixed(3))+parseFloat(curTotalSp.toFixed(3))+parseFloat(producerSPRewards.toFixed(3))+parseFloat(total_STEEM.toFixed(3))
-				+ parseFloat(authorRewardedSp.toFixed(3))+parseFloat(authorRewardedSTEEM.toFixed(3));
+				+ parseFloat(authorRewardedSp.toFixed(3))+parseFloat(authorRewardedSTEEM.toFixed(3)) + parseFloat(accountSTEEMTransferIn.toFixed(3));
   console.log ('totalSTEEM:'+comSP.toFixed(3));
   if (period>0 && comSP>0){
     console.log ('AVG Daily:'+comSP/period);
   }
   //console.log ('totalSTEEM:'+totalSTEEM.toFixed(3));
-  let comSBD = parseFloat(totalSBD.toFixed(3))+parseFloat(authorRewardedSBD.toFixed(3));
+  let comSBD = parseFloat(totalSBD.toFixed(3))+parseFloat(authorRewardedSBD.toFixed(3))+ parseFloat(accountSBDTransferIn.toFixed(3));;
   console.log ('totalSBD:'+comSBD);
   if (period>0 && comSBD>0){
     console.log ('AVG Daily:'+comSBD/period);
