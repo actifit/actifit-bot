@@ -232,6 +232,51 @@ app.get('/charities', async function (req, res) {
     res.send(charities);
 });
 
+/* end point for fetching user's current badges */
+app.get('/userBadges/:user', async function (req, res) {
+	let user = await db.collection('user_badges').find({user: req.params.user}).toArray();
+	res.send(user);
+});
+
+/* claim this badge and store it for this user */
+app.get('/claimBadge/', async function (req, res) {
+	if (req.query.user && req.query.badge){
+		let proceed = false;
+		//double check user eligibility in case of ISO
+		if (req.query.badge === 'iso'){
+			let isoParticipant = await db.collection('iso_participants').find({user: req.query.user}).toArray();
+			if (isoParticipant.length > 0){
+				proceed = true;
+			}
+		}
+		if (proceed){
+			let user_badge = {
+				user: req.query.user,
+				badge: req.query.badge,
+				date_claimed: new Date(),
+			};
+			try{
+				let transaction = await db.collection('user_badges').insert(user_badge);
+				console.log('success inserting post data');
+				res.send({status: 'success', user: req.query.user, badge: req.query.badge});
+			}catch(err){
+				console.log('error');
+				res.send({status: 'error'});
+			}	
+		}else{
+			res.send({status: 'error'});
+		}
+	}else{
+		res.send({status: 'error'});
+	}
+});
+
+/* end point for checking if user took part of ISO event */
+app.get('/isoParticipant/:user', async function (req, res) {
+	let user = await db.collection('iso_participants').find({user: req.params.user}).toArray();
+	res.send(user);
+});
+
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
 	var delegatorList; 
@@ -512,6 +557,7 @@ app.get('/getRank/:user', async function (req, res) {
 			console.log('already delegated');
 			delegSP = userDelegations.steem_power;
 		}
+		//console.log('delegSP:'+delegSP);
 		//console.log(userDelegations.steem_power);
 		
 		var delegation_score = 0;
@@ -528,12 +574,15 @@ app.get('/getRank/:user', async function (req, res) {
 			//also check the other case where the account is an alt-account
 			delegator_info = await getAltAccountByNameFunc(req.params.user);
 			//check if returned object is not empty
-			if (Object.keys(delegator_info).length > 0){
-				if (parseInt(delegator_info.user_rank_benefit) == 1){
-					//get original user delegation amount
-					userDelegations = await activeDelegationFunc(delegator_info.delegator);		
-					if (userDelegations != null){
-						delegSP += userDelegations.steem_power;
+			if (delegator_info.length > 0){
+				for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
+					if (parseInt(delegator_info[x].user_rank_benefit) == 1){
+						//get original user delegation amount
+						userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
+						if (userDelegations != null){
+							delegSP += userDelegations.steem_power;
+							//console.log('delegSP:'+delegSP);
+						}
 					}
 				}
 			}
@@ -621,10 +670,7 @@ getAltAccountByNameFunc = async function (targetUser){
 			"alt_account": targetUser
 		};
 		
-		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {fields : { _id:0} });
-		if (delegator_info==null){
-			delegator_info = {};
-		}
+		delegator_info = await db.collection('delegation_alt_beneficiaries').find(query_json, {fields : { _id:0} }).toArray();
 		console.log(delegator_info);
 	}
 	return delegator_info;
@@ -931,88 +977,79 @@ storeReferralReward = async function (req){
 	return refRewarded;
 };
 
-
-//function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
-app.get('/confirmAFITSEReceipt', async function(req,res){
-	if (!req.query.user){
-		res.send('{}');
-	}else{
-		//keeping request alive to avoid timeouts
-		let intID = setInterval(function(){
-			res.write(' ');
-		}, 6000);
-		let afit_amount = 0;
-		try{
-			//attempt to find matching transaction
-			let targetUser = req.query.user;
-			let match_trx = await utils.confirmSEAFITReceived(targetUser);
-			console.log(match_trx);
-			//we found a match
-			if (match_trx){
-				//query to see if entry already stored
-				let tokenExchangeTransQuery = {
-					user: targetUser,
-					se_trx_ref: match_trx.txid
-				}
-				//store the transaction to the user's profile
-				let tokenExchangeTrans = {
-					user: targetUser,
-					reward_activity: 'Move AFIT SE to Actifit Wallet',
-					token_count: parseFloat(match_trx.quantity),
-					se_trx_ref: match_trx.txid,
-					date: new Date(),
-				}
-				try{
-					console.log(tokenExchangeTrans);
-					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
-					let trans_res = transaction.result;
-					console.log(trans_res);
-					/*console.log('nMatched:'+trans_res.nMatched);
-					console.log('nUpserted:'+trans_res.upserted);
-					console.log('nModified:'+trans_res.nModified);*/
-					if (trans_res.upserted){
-						//we have a new entry, increase user token count
-						
-						let user_info = await grabUserTokensFunc (targetUser);
-						
-						let cur_user_token_count = 0;
-						if (user_info){
-							cur_user_token_count = parseFloat(user_info.tokens);
-							//update current user's token balance & store to db
-							afit_amount = parseFloat(match_trx.quantity);
-							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
-							user_info.tokens = new_token_count;
-							console.log('new_token_count:'+new_token_count);
-							try{
-								let trans = await db.collection('user_tokens').save(user_info);
-								console.log('success adding AFIT tokens to user balance');
-							}catch(err){
-								console.log(err);
-								return;
-							}
-						}
-					}else{
-						//do nothing
-					}
-				}catch(err){
-					console.log(err);
-					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
-					res.end();
-					return;
-				}
+app.get('/confirmAFITSEBulk', async function(req,res){
+	//let's call the service by S-E
+	let url = new URL(config.steem_engine_trans_acct_his_lrg);
+	console.log(config.steem_engine_trans_acct_his_lrg);
+	//connect with our service to confirm AFIT received to proper wallet
+	try{
+		let se_connector = await fetch(url);
+		let trx_entries = await se_connector.json();
+		
+		
+		//console.log(trx_entries);
+		trx_entries.forEach( async function(entry){
+			console.log(entry);
+			
+			let user = entry.from;
+			//query to see if entry already stored
+			let tokenExchangeTransQuery = {
+				user: user,
+				se_trx_ref: entry.txid
 			}
-		}catch(err){
-			console.log(err);
-		}
-		//we're done, let's clear our running interval
-		clearInterval(intID);
-		//send response with confirming AFIT power up
-		res.write(JSON.stringify({'afit_se_power': 'success', 'afit_amount': afit_amount}));
+			//store the transaction to the user's profile
+			let tokenExchangeTrans = {
+				user: user,
+				reward_activity: 'Move AFIT SE to Actifit Wallet',
+				token_count: parseFloat(entry.quantity),
+				se_trx_ref: entry.txid,
+				date: new Date(),
+			}
+			try{
+				console.log(tokenExchangeTrans);
+				//insert the query ensuring we do not write it twice
+				let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
+				let trans_res = transaction.result;
+				console.log(trans_res);
+				
+				if (trans_res.upserted){
+					//we have a new entry, increase user token count
+					
+					let user_info = await grabUserTokensFunc (user);
+					
+					let cur_user_token_count = 0;
+					if (user_info){
+						cur_user_token_count = parseFloat(user_info.tokens);
+						//update current user's token balance & store to db
+						afit_amount = parseFloat(entry.quantity);
+						let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+						user_info.tokens = new_token_count;
+						console.log('new_token_count:'+new_token_count);
+						try{
+							let trans = await db.collection('user_tokens').save(user_info);
+							console.log('success adding AFIT tokens to user balance');
+						}catch(err){
+							console.log(err);
+							return;
+						}
+					}
+				}
+				
+			}catch(err){
+				console.log(err);
+				res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+				res.end();
+				return;
+			}
+		});
+		
+		res.write(JSON.stringify({'status': 'done updating AFIT SE moves'}));
 		res.end();
+		
+	}catch(err){
+		console.log(err);
 	}
-});
-
+})
 
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
 app.get('/confirmAFITSEReceipt', async function(req,res){
