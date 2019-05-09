@@ -109,6 +109,42 @@ var HOURS = 60 * 60;
 			
 		//});
 	}
+
+	//function handles confirming if AFIT from SE were received
+	async function confirmSEAFITReceived (targetUser) {
+		getConfig();
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				console.log('Check AFIT Power Up');
+				//let's call the service by S-E
+				let url = new URL(config.steem_engine_trans_acct_his);
+				console.log(config.steem_engine_trans_acct_his);
+				//connect with our service to confirm AFIT received to proper wallet
+				try{
+					let se_connector = await fetch(url);
+					let trx_entries = await se_connector.json();
+					
+					let match_trx;
+					
+					//check if we have a proper entry matching user transfer
+					if (match_trx = trx_entries.find(trx => trx.from == targetUser)) {
+						//found match, let's make sure transaction is recent enough
+						console.log('found match');
+						paymentFound = true;
+						if (paymentFound){
+							//need to look again
+							console.log('found');
+							clearInterval(th_id);
+							resolve(match_trx);
+						}
+					}
+				}catch(err){
+					console.log(err);
+				}
+			}, 5000);
+		});
+	}
+	
 	
 	//function handles confirming if payment was received
 	async function confirmPaymentReceived (req) {
@@ -930,5 +966,6 @@ async function steemPowerToVests (steemPower) {
    createAccount: createAccount,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
-   confirmPaymentReceivedPassword: confirmPaymentReceivedPassword
+   confirmPaymentReceivedPassword: confirmPaymentReceivedPassword,
+   confirmSEAFITReceived: confirmSEAFITReceived,
  }
