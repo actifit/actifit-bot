@@ -41,13 +41,24 @@ var http = require("http");
 setInterval(function() {
   try{
     http.get("http://actifitvoter.herokuapp.com");
-	//let's also run our token exchange cleanup process
-	console.log('running cleanup');
-	request('https://actifitbot.herokuapp.com/cancelOutdatedAfitSteemExchange', function (error, response, body) {
-		console.log('cleanup result');
-		console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
-		console.log('error: '+ error)
-	});
+	
+	if (!is_voting){
+		//let's also run our token exchange cleanup process
+		console.log('running cleanup');
+		request('https://actifitbot.herokuapp.com/cancelOutdatedAfitSteemExchange', function (error, response, body) {
+			console.log('cleanup result');
+			console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
+			console.log('error: '+ error)
+		});
+		
+		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
+		/*request('https://actifitbot.herokuapp.com/confirmAFITSEBulk', function (error, response, body) {
+			console.log('process any missed AFIT SE to Actifit Wallet');
+			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
+			//console.log('error: '+ error)
+		});*/
+	}
+	
   }catch(err){
 	console.log('error:'+err);
   }
@@ -63,7 +74,9 @@ const activity_rules = [
 	[7999,0.50],
 	[8999,0.65],
 	[9999,0.80],
-	[10000,1.00]
+	[10000,1.00],
+	[149999,1.00],
+	[150000,0],
 ]
 
 const content_rules = [
@@ -816,6 +829,9 @@ function processVotes(query, subsequent) {
 				
 				//calculate activity count score
 				post.activity_score = utils.calcScore(activity_rules, config.activity_factor, post.json.step_count);
+				
+				//console.log('step count:'+post.json.step_count);
+				//console.log('activity score:'+post.activity_score);
 				
 				//skip post if it has less than min activity recorded
 				if (post.activity_score == 0){
