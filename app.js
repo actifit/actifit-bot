@@ -931,6 +931,88 @@ storeReferralReward = async function (req){
 	return refRewarded;
 };
 
+
+//function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
+app.get('/confirmAFITSEReceipt', async function(req,res){
+	if (!req.query.user){
+		res.send('{}');
+	}else{
+		//keeping request alive to avoid timeouts
+		let intID = setInterval(function(){
+			res.write(' ');
+		}, 6000);
+		let afit_amount = 0;
+		try{
+			//attempt to find matching transaction
+			let targetUser = req.query.user;
+			let match_trx = await utils.confirmSEAFITReceived(targetUser);
+			console.log(match_trx);
+			//we found a match
+			if (match_trx){
+				//query to see if entry already stored
+				let tokenExchangeTransQuery = {
+					user: targetUser,
+					se_trx_ref: match_trx.txid
+				}
+				//store the transaction to the user's profile
+				let tokenExchangeTrans = {
+					user: targetUser,
+					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					token_count: parseFloat(match_trx.quantity),
+					se_trx_ref: match_trx.txid,
+					date: new Date(),
+				}
+				try{
+					console.log(tokenExchangeTrans);
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
+					let trans_res = transaction.result;
+					console.log(trans_res);
+					/*console.log('nMatched:'+trans_res.nMatched);
+					console.log('nUpserted:'+trans_res.upserted);
+					console.log('nModified:'+trans_res.nModified);*/
+					if (trans_res.upserted){
+						//we have a new entry, increase user token count
+						
+						let user_info = await grabUserTokensFunc (targetUser);
+						
+						let cur_user_token_count = 0;
+						if (user_info){
+							cur_user_token_count = parseFloat(user_info.tokens);
+							//update current user's token balance & store to db
+							afit_amount = parseFloat(match_trx.quantity);
+							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+							user_info.tokens = new_token_count;
+							console.log('new_token_count:'+new_token_count);
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success adding AFIT tokens to user balance');
+							}catch(err){
+								console.log(err);
+								return;
+							}
+						}
+					}else{
+						//do nothing
+					}
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+					res.end();
+					return;
+				}
+			}
+		}catch(err){
+			console.log(err);
+		}
+		//we're done, let's clear our running interval
+		clearInterval(intID);
+		//send response with confirming AFIT power up
+		res.write(JSON.stringify({'afit_se_power': 'success', 'afit_amount': afit_amount}));
+		res.end();
+	}
+});
+
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
