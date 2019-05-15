@@ -557,7 +557,6 @@ app.get('/getRank/:user', async function (req, res) {
 			console.log('already delegated');
 			delegSP = userDelegations.steem_power;
 		}
-		//console.log('delegSP:'+delegSP);
 		//console.log(userDelegations.steem_power);
 		
 		var delegation_score = 0;
@@ -581,7 +580,6 @@ app.get('/getRank/:user', async function (req, res) {
 						userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
 						if (userDelegations != null){
 							delegSP += userDelegations.steem_power;
-							//console.log('delegSP:'+delegSP);
 						}
 					}
 				}
@@ -865,7 +863,9 @@ proceedAccountCreation = async function (req){
 		transStored = await storeSignupTransaction(req);
 		//proceed only if a proper referrer was sent
 		if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
-			referralRewarded = await storeReferralReward(req);
+			if (!req.query.promo_proceed || (req.query.promo_proceed && req.query.referrer_reward)){
+				referralRewarded = await storeReferralReward(req);
+			}
 		}
 	}
 	console.log('account created:'+accountCreated);
@@ -886,6 +886,9 @@ storeSignupTransaction = async function (req){
 		account_created: true,
 		payment_confirmed: true,
 		confirming_tx: req.query.confirming_tx,
+		promo_code: req.query.promo_code,
+		promo_used: req.query.promo_proceed,
+		signup_reward: req.query.signup_reward,
 		date: new Date(),
 	}
 	
@@ -914,32 +917,34 @@ storeSignupTransaction = async function (req){
 	}
 	
 	//also store this properly into user balance
+	if (!req.query.promo_proceed || (req.query.promo_proceed && req.query.signup_reward)){
 	
-	new_transaction = {
-		user: req.query.new_account,
-		reward_activity: 'Signup Reward',
-		token_count: parseFloat(req.query.afit_reward),
-		date: new Date(),
-		steem_invest: parseFloat(req.query.steem_invest),
-		usd_invest: parseFloat(req.query.usd_invest),
-		note: 'Successful Signup',
+		new_transaction = {
+			user: req.query.new_account,
+			reward_activity: 'Signup Reward',
+			token_count: parseFloat(req.query.afit_reward),
+			date: new Date(),
+			steem_invest: parseFloat(req.query.steem_invest),
+			usd_invest: parseFloat(req.query.usd_invest),
+			note: 'Successful Signup',
+		}
+		
+		//make sure we're not double rewarding user
+		query = { 
+			user: req.query.new_account,
+			reward_activity: 'Signup Reward',
+		};
+				
+		try{
+		  let transaction = db.collection('token_transactions')
+				.replaceOne(query, new_transaction, { upsert: true });
+		  result = true;
+		}catch(e){
+		  console.log(e);
+		  result = false;
+		}
+		console.log(result);
 	}
-	
-	//make sure we're not double rewarding user
-	query = { 
-		user: req.query.new_account,
-		reward_activity: 'Signup Reward',
-	};
-			
-	try{
-	  let transaction = db.collection('token_transactions')
-			.replaceOne(query, new_transaction, { upsert: true });
-	  result = true;
-	}catch(e){
-	  console.log(e);
-	  result = false;
-	}
-	console.log(result);
 	return result;
 }
 
@@ -1140,6 +1145,44 @@ app.get('/confirmPayment', async function(req,res){
 		let paymentReceivedTx = '';
 		let accountCreated = false;
 		let spToDelegate = 10;
+		//check if promo code was sent, and confirm against available promo codes
+		if (req.query.promo_code){
+		  let promo_match = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
+		  console.log(promo_match);
+		  
+		  if (promo_match && parseInt(promo_match.entries) > 0){
+			//proceed creating account
+			req.query.promo_proceed = true;
+			req.query.signup_reward = promo_match.signup_reward;
+			req.query.referrer_reward = promo_match.referrer_reward;
+			try{
+				accountCreated = await claimAndCreateAccount(req);
+				//only delegate if account created and delegation is enabled
+				if (accountCreated && promo_match.delegation){
+					delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+				}
+				
+				//decrease number of permitted entries
+				//update current user's token balance & store to db
+				promo_match.entries = parseInt(promo_match.entries) - 1;
+				console.log('promo_match.entries:'+promo_match.entries);
+				try{
+					let trans = await db.collection('signup_promo_codes').save(promo_match);
+					console.log('success updating pending entries');
+				}catch(err){
+					console.log(err);
+					return;
+				}
+			}catch(e){
+				console.log(e);
+			}
+			paymentReceivedTx = req.query.promo_code;
+		  }
+		  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+		  res.end();
+		  return;
+		}
+		req.query.promo_proceed = false;
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
 			res.write(' ');
