@@ -1145,77 +1145,78 @@ app.get('/confirmPayment', async function(req,res){
 		let paymentReceivedTx = '';
 		let accountCreated = false;
 		let spToDelegate = 10;
-		//check if promo code was sent, and confirm against available promo codes
-		if (req.query.promo_code){
-		  let promo_match = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
-		  console.log(promo_match);
-		  
-		  if (promo_match && parseInt(promo_match.entries) > 0){
-			//proceed creating account
-			req.query.promo_proceed = true;
-			req.query.signup_reward = promo_match.signup_reward;
-			req.query.referrer_reward = promo_match.referrer_reward;
-			try{
-				accountCreated = await claimAndCreateAccount(req);
-				//only delegate if account created and delegation is enabled
-				if (accountCreated && promo_match.delegation){
-					delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
-				}
-				
-				//decrease number of permitted entries
-				//update current user's token balance & store to db
-				promo_match.entries = parseInt(promo_match.entries) - 1;
-				console.log('promo_match.entries:'+promo_match.entries);
-				try{
-					let trans = await db.collection('signup_promo_codes').save(promo_match);
-					console.log('success updating pending entries');
-				}catch(err){
-					console.log(err);
-					return;
-				}
-			}catch(e){
-				console.log(e);
-			}
-			paymentReceivedTx = req.query.promo_code;
-		  }
-		  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
-		  res.end();
-		  return;
-		}
-		req.query.promo_proceed = false;
 		//keeping request alive to avoid timeouts
 		let intID = setInterval(function(){
 			res.write(' ');
 		}, 6000);
 		try{
-			//first step is to ensure memo has not been tampered with, nor has it been claimed before
-			//to do that, let's try to find if any signup has been done using this memo
-			let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
-			console.log('memo_used:'+memo_used);
-			if (typeof memo_used == "undefined" || memo_used == null){
-				paymentReceivedTx = await utils.confirmPaymentReceived(req);
-				console.log('>>>> got TX '+paymentReceivedTx);
-				if (paymentReceivedTx != ''){
-					req.query.confirming_tx = paymentReceivedTx;
-					console.log(req.query);
+			//check if promo code was sent, and confirm against available promo codes
+			if (req.query.promo_code){
+			  let promo_match = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
+			  console.log(promo_match);
+			  
+			  if (promo_match && parseInt(promo_match.entries) > 0){
+				//proceed creating account
+				req.query.promo_proceed = true;
+				req.query.signup_reward = promo_match.signup_reward;
+				req.query.referrer_reward = promo_match.referrer_reward;
+				try{
+					accountCreated = await claimAndCreateAccount(req);
+					//only delegate if account created and delegation is enabled
+					if (accountCreated && promo_match.delegation){
+						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+					}
+					
+					//decrease number of permitted entries
+					//update current user's token balance & store to db
+					promo_match.entries = parseInt(promo_match.entries) - 1;
+					console.log('promo_match.entries:'+promo_match.entries);
 					try{
-						accountCreated = await claimAndCreateAccount(req);
-						if (accountCreated){
-							delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+						let trans = await db.collection('signup_promo_codes').save(promo_match);
+						console.log('success updating pending entries');
+					}catch(err){
+						console.log(err);
+						return;
+					}
+				}catch(e){
+					console.log(e);
+				}
+				paymentReceivedTx = req.query.promo_code;
+			  }
+			  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+			  res.end();
+			}else{
+			    req.query.promo_proceed = false;
+			
+				//first step is to ensure memo has not been tampered with, nor has it been claimed before
+				//to do that, let's try to find if any signup has been done using this memo
+				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
+				console.log('memo_used:'+memo_used);
+				if (typeof memo_used == "undefined" || memo_used == null){
+					paymentReceivedTx = await utils.confirmPaymentReceived(req);
+					console.log('>>>> got TX '+paymentReceivedTx);
+					if (paymentReceivedTx != ''){
+						req.query.confirming_tx = paymentReceivedTx;
+						console.log(req.query);
+						try{
+							accountCreated = await claimAndCreateAccount(req);
+							if (accountCreated){
+								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+							}
+						}catch(e){
+							console.log(e);
 						}
-					}catch(e){
-						console.log(e);
 					}
 				}
-			}
+				//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+				res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+				res.end();
 		}catch(err){
 			console.log(err);
 		}
 		//we're done, let's clear our running interval
 		clearInterval(intID);
-		//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
-		res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
-		res.end();
+		
 	}
 });
 
