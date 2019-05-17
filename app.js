@@ -1211,6 +1211,7 @@ app.get('/confirmPayment', async function(req,res){
 				//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
 				res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
 				res.end();
+			}
 		}catch(err){
 			console.log(err);
 		}
