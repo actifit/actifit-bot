@@ -241,13 +241,42 @@ app.get('/userBadges/:user', async function (req, res) {
 /* claim this badge and store it for this user */
 app.get('/claimBadge/', async function (req, res) {
 	if (req.query.user && req.query.badge){
+		const iso_badge = 'iso';
+		const rew_activity_badge = 'rewarded_activity_lev_';
 		let proceed = false;
 		//double check user eligibility in case of ISO
-		if (req.query.badge === 'iso'){
+		if (req.query.badge === iso_badge){
 			let isoParticipant = await db.collection('iso_participants').find({user: req.query.user}).toArray();
 			if (isoParticipant.length > 0){
 				proceed = true;
 			}
+		}else if (req.query.badge.includes(rew_activity_badge)){
+		//double check user eligibility in case of Rewarded Activity
+			req.params.user = req.query.user;
+			let activityCount = await userRewardedPostCountFunc(req, res);
+			//console.log('activityCount:'+activityCount);
+			let badgeLevel = req.query.badge.replace(rew_activity_badge,'');
+			//console.log('badgeLevel:'+badgeLevel);
+			let rewarded_posts_rules = [
+									[9,0],
+									[29,1],
+									[59,2],
+									[89,3],
+									[119,4],
+									[179,5],
+									[359,6],
+									[539,7],
+									[719,8],
+									[1079,9],
+									[1080,10]
+								];
+			rewarded_posts_rules.some(function (item){
+				//console.log(item);
+				//if we are attempting to claim the proper activity count passing level at proper matching level, proceed
+				if (parseInt(activityCount) > item[0] && parseInt(badgeLevel) == item[1] + 1){
+					proceed = true;
+				}
+			});
 		}
 		if (proceed){
 			let user_badge = {
