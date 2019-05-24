@@ -238,11 +238,31 @@ app.get('/userBadges/:user', async function (req, res) {
 	res.send(user);
 });
 
+/* end point for fetching all users badges */
+app.get('/allUserBadges/', async function (req, res) {
+	let badges = await db.collection('user_badges').find().toArray();
+	let distinctUsers = [...new Set(badges.map(x => x.user))];
+	res.send({badges: badges, userCount: distinctUsers.length});
+});
+
+/* end point for fetching if the user had a random doubled up win before */
+app.get('/luckyWinner/:user', async function (req, res) {
+	let user = await db.collection('token_transactions').find({user: req.params.user, reward_activity : "Post", lucky_winner: 1}).toArray();
+	res.send(user);
+});
+
+/* end point for fetching all random doubled up winners */
+app.get('/luckyWinnerList/', async function (req, res) {
+	let user = await db.collection('token_transactions').find({reward_activity : "Post", lucky_winner: 1}).toArray();
+	res.send(user);
+});
+
 /* claim this badge and store it for this user */
 app.get('/claimBadge/', async function (req, res) {
 	if (req.query.user && req.query.badge){
 		const iso_badge = 'iso';
 		const rew_activity_badge = 'rewarded_activity_lev_';
+		const doubledup_badge = 'doubledup_badge';
 		let proceed = false;
 		//double check user eligibility in case of ISO
 		if (req.query.badge === iso_badge){
@@ -277,6 +297,11 @@ app.get('/claimBadge/', async function (req, res) {
 					proceed = true;
 				}
 			});
+		}else if (req.query.badge === doubledup_badge){
+			let doubledupWinner = await db.collection('token_transactions').find({user: req.query.user, reward_activity : "Post", lucky_winner: 1}).toArray();
+			if (doubledupWinner.length > 0){
+				proceed = true;
+			}
 		}
 		if (proceed){
 			let user_badge = {
