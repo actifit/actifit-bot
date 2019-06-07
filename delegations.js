@@ -735,7 +735,7 @@ async function updateActiveDelegations () {
 
 function upsertRewardTransaction (reward) {
   return db.collection('token_transactions').update(
-    { user: reward.user, date: reward.date, reward_activity: reward.reward_activity },
+    { user: reward.user, date: reward.date, reward_activity: reward.reward_activity, orig_account: reward.orig_account },
     reward,
     { upsert: true }
   )
