@@ -251,6 +251,12 @@ app.get('/luckyWinner/:user', async function (req, res) {
 	res.send(user);
 });
 
+/* end point for fetching if the user had contributed to charity before */
+app.get('/charityDonor/:user', async function (req, res) {
+	let user = await db.collection('token_transactions').find({reward_activity : "Charity Post", giver: req.params.user}).toArray();
+	res.send(user);
+});
+
 /* end point for fetching all random doubled up winners */
 app.get('/luckyWinnerList/', async function (req, res) {
 	let user = await db.collection('token_transactions').find({reward_activity : "Post", lucky_winner: 1}).toArray();
@@ -263,6 +269,7 @@ app.get('/claimBadge/', async function (req, res) {
 		const iso_badge = 'iso';
 		const rew_activity_badge = 'rewarded_activity_lev_';
 		const doubledup_badge = 'doubledup_badge';
+		const charity_badge = 'charity_badge';
 		let proceed = false;
 		//double check user eligibility in case of ISO
 		if (req.query.badge === iso_badge){
@@ -300,6 +307,11 @@ app.get('/claimBadge/', async function (req, res) {
 		}else if (req.query.badge === doubledup_badge){
 			let doubledupWinner = await db.collection('token_transactions').find({user: req.query.user, reward_activity : "Post", lucky_winner: 1}).toArray();
 			if (doubledupWinner.length > 0){
+				proceed = true;
+			}
+		}else if (req.query.badge === charity_badge){
+			let charityDonor = await db.collection('token_transactions').find({reward_activity : "Charity Post", giver: req.query.user}).toArray();
+			if (charityDonor.length > 0){
 				proceed = true;
 			}
 		}

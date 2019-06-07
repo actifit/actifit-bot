@@ -4,7 +4,7 @@ var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
-const steem_node = 'https://api.steemit.com';//'https://api.steem.house';
+const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
 const client = new dsteem.Client(steem_node);
 		
 var config;
@@ -735,7 +735,7 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	const ONE_YEAR = 365;
 	
-	let start_days = 0;
+	let start_days = 1;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
