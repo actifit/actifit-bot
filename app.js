@@ -1466,6 +1466,90 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 });
 
 
+//function handles the process of confirming buy event for AFIT via STEEM
+app.get('/confirmBuyAction', async function(req,res){
+	let match_trx = '';
+	let statusUpdated = false;
+	//keeping request alive to avoid timeouts
+	let intID = setInterval(function(){
+		res.write(' ');
+	},8000);
+	try{
+		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account);
+		console.log('>>>> got TX '+match_trx);
+		let targetUser = req.query.from;
+		if (match_trx != ''){
+			try{
+				//we found the transfer, now let's book proper AFIT tokens for the user
+				//query to see if entry already stored
+				let tokenBuyTransQuery = {
+					user: targetUser,
+					buy_trx_ref: match_trx
+				}
+				//store the transaction to the user's profile
+				let tokenBuyTrans = {
+					user: targetUser,
+					reward_activity: 'Buy AFIT Actifit.io',
+					steem_spent: req.query.steem_amount,
+					token_count: parseFloat(req.query.afit_amount),
+					buy_trx_ref: match_trx,
+					date: new Date(),
+				}
+				try{
+					console.log(tokenBuyTrans);
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('token_transactions').update(tokenBuyTransQuery, tokenBuyTrans, { upsert: true });
+					let trans_res = transaction.result;
+					console.log(trans_res);
+					/*console.log('nMatched:'+trans_res.nMatched);
+					console.log('nUpserted:'+trans_res.upserted);
+					console.log('nModified:'+trans_res.nModified);*/
+					if (trans_res.upserted){
+						//we have a new entry, increase user token count
+						
+						let user_info = await grabUserTokensFunc (targetUser);
+						
+						let cur_user_token_count = 0;
+						if (user_info){
+							cur_user_token_count = parseFloat(user_info.tokens);
+							//update current user's token balance & store to db
+							let afit_amount = parseFloat(req.query.afit_amount);
+							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+							user_info.tokens = new_token_count;
+							console.log('new_token_count:'+new_token_count);
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success adding AFIT tokens to user balance');
+							}catch(err){
+								console.log(err);
+								return;
+							}
+						}
+					}else{
+						//do nothing
+					}
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+					res.end();
+					return;
+				}
+			}catch(e){
+				console.log(e);
+			}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	//we're done, let's clear our running interval
+	clearInterval(intID);
+	//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+	res.write(JSON.stringify({'paymentReceivedTx': match_trx}));
+	res.end();
+});
+
+
+
 /* end point finding whether user has a pending AFIT token swap */
 app.get('/userHasPendingTokenSwap/:user', async function(req, res){
 	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: req.params.user,upvote_processed: {$in: [null, false, 'false']}},{fields : { _id:0} });
