@@ -1538,14 +1538,20 @@ app.get("/downEbook", async function(req, res) {
   //need to set download to disabled to prevent future unauthorized access
   token_match.enabled = false;
   db.collection('user_product_key').save(token_match);
-		
+
   const fileName = config.ebook1
   const filePath =  config.ebook1path + fileName
   
   const fs = require('fs');
+  
+  		
+  const path = require('path');
+  let pathname = path.join(__dirname, filePath);
+  console.log(pathname);
+  //return;
 
   // Check if file specified by the filePath exists 
-  fs.access(filePath, (err) => {
+  fs.access(pathname, (err) => {
 	  if (!err) {
 		console.log('match ebook');
 		res.writeHead(200, {
