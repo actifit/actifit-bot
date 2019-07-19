@@ -1540,7 +1540,7 @@ app.get("/downEbook", async function(req, res) {
   db.collection('user_product_key').save(token_match);
 
   const fileName = config.ebook1
-  const filePath =  config.ebook1pathtest + fileName
+  const filePath = config.ebook1pathlive + fileName
   
   const fs = require('fs');
   
