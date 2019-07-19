@@ -1559,7 +1559,7 @@ app.get("/downEbook", async function(req, res) {
 	  console.log('ebook does not exist');
 	  res.writeHead(400, {"Content-Type": "text/plain"});
       //res.end("ERROR File does not exist");
-	  res.end(err);
+	  res.end(filePath);
 	});
  
 })
