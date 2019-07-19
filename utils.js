@@ -781,7 +781,8 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	const ONE_YEAR = 365;
 	
-	let start_days = 1;
+	//when is our start day: 1 is yesterday, 10 is 10 days ago
+	let start_days = 11;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
