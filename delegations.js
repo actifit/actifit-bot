@@ -31,18 +31,24 @@ let newestTxId = -1;
 
 console.log('--- Reward script initialized ---');
 
-var schedule = require('node-schedule')
-//console.log('pre-schedule');
-var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
-  console.log('--- Start delegators reward ---');
-  runRewards(false);//param steemOnlyReward
-});
+if (process.env.BOT_THREAD == 'MAIN'){
 
-//utils.lookupAccountPay();
+	console.log('--- Main Bot Thread Detected ---');
 
-//param steemOnlyReward
-runRewards(true);
-//runRewards(false);
+	var schedule = require('node-schedule')
+	//console.log('pre-schedule');
+	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
+	  console.log('--- Start delegators reward ---');
+	  runRewards(false);//param steemOnlyReward
+	});
+
+	//utils.lookupAccountPay();
+
+	//param steemOnlyReward
+	runRewards(true);
+	//runRewards(false);
+
+}
 
 function runRewards(steemOnlyReward){
 	let mongo_conn = config.mongo_uri
