@@ -597,9 +597,10 @@ app.get('/tipAccount', async function(req, res){
 tippedToday = async function (req, res){
 	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
-	console.log("startDate:"+startDate+" endDate:"+endDate);
+	//console.log("startDate:"+startDate+" endDate:"+endDate);
 	//adjust query to include dates
 	query_json = {
+			"user": req.query.user,
 			"reward_activity": "Send Tip",
 			"date": {
 					"$lte": new Date(endDate),
@@ -611,6 +612,7 @@ tippedToday = async function (req, res){
 	let totalTipAmount = 0;
 	try{
 		for (let i = 0; i< result.length; i++){
+			//console.log(result[i]);
 			totalTipAmount += parseFloat(result[i].tip_amount);
 		}
 		console.log('totalTipAmount:'+totalTipAmount);
