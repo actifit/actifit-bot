@@ -58,7 +58,7 @@ function runRewards(steemOnlyReward){
 	// Use connect method to connect to the server
 	MongoClient.connect(mongo_conn, async function (err, dbClient) {
 	  if (!err) {
-		console.log('Connected successfully to server: ' + mongo_conn)
+		console.log('Connected successfully to server: ')
 
 		db = dbClient.db(dbName)
 		// Get the documents collection
