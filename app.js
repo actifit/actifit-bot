@@ -595,18 +595,27 @@ app.get('/tipAccount', async function(req, res){
 
 
 tippedToday = async function (req, res){
-	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	//console.log("startDate:"+startDate+" endDate:"+endDate);
-	//adjust query to include dates
+	
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	
+	let endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	
 	query_json = {
-			"user": req.query.user,
 			"reward_activity": "Send Tip",
 			"date": {
 					"$lte": new Date(endDate),
 					"$gt": new Date(startDate)
 				}
 	};
+	//adjust query to include user
+	//console.log(req.params.user)
+	if (req.params.user){
+		query_json.user = req.params.user;
+	}
 	
 	let result = await db.collection('token_transactions').find(query_json).toArray();
 	let totalTipAmount = 0;
@@ -623,6 +632,13 @@ tippedToday = async function (req, res){
 }
 
 /* end point for counting amount of tips on a single day */
+app.get('/totalTipped', async function (req, res) {
+	let totalTipAmount = await tippedToday(req, res);
+	res.send(JSON.stringify({total_tip:totalTipAmount}));
+	
+});
+
+/* end point for counting amount of tips by user on a single day */
 app.get('/tippedToday/:user', async function (req, res) {
 	let totalTipAmount = await tippedToday(req, res);
 	res.send(JSON.stringify({total_tip:totalTipAmount}));
