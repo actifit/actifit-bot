@@ -475,6 +475,13 @@ app.get('/tipAccount', async function(req, res){
 			return;
 		}
 		
+		//check first if targetUuser is banned, as he wont be able to tip
+		is_banned = await db.collection('banned_accounts').findOne({user: targetUser, ban_status:"active"});
+		if (is_banned){
+			res.send({'error': 'You cannot tip AFIT to a banned account'});
+			return;
+		}
+		
 		//confirm matching funds password
 		let query = {user: user};
 		
@@ -623,6 +630,8 @@ tippedToday = async function (req, res){
 	//console.log(req.params.user)
 	if (req.params.user){
 		query_json.user = req.params.user;
+	}else if (req.query.user){
+		query_json.user = req.query.user;
 	}
 	
 	let result = await db.collection('token_transactions').find(query_json).toArray();
