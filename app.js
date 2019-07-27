@@ -467,6 +467,14 @@ app.get('/tipAccount', async function(req, res){
 		let amount = parseFloat(req.query.amount);
 		let fundsPass = req.query.fundsPass;
 		
+		
+		//check first if user is banned, as he wont be able to tip
+		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
+		if (is_banned){
+			res.send({'error': 'You cannot tip AFIT as your account is banned'});
+			return;
+		}
+		
 		//confirm matching funds password
 		let query = {user: user};
 		
