@@ -56,6 +56,8 @@ fetchAFITXBal(0);
   
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
+  //reset array
+  usersAFITXBal = [];
   fetchAFITXBal(0);
 });
 
@@ -69,7 +71,7 @@ async function fetchAFITXBal(offset){
 		fetchAFITXBal(usersAFITXBal.length);
 	}, 300);
   }
-  //console.log(usersAFITXBal.length);
+  //console.log(usersAFITXBal);
 }
 
 
