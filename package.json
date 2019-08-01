@@ -18,6 +18,7 @@
     "nodemailer-express-handlebars": "^3.0.0",
     "p-iteration": "^1.1.7",
     "request": "^2.88.0",
+    "sscjs": "0.0.8",
     "steem": "^0.6.7"
   },
   "devDependencies": {
