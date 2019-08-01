@@ -60,11 +60,15 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 }
 
+const SSC = require('sscjs');
+const ssc = new SSC(config.steem_engine_rpc);
+
 //airdropAFITX();
 
 //moveAFITToSE();
 
 function moveAFITToSE(){
+	console.log('*** process moving AFIT to SE ***');
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
 		mongo_conn = config.mongo_local
@@ -88,75 +92,97 @@ function moveAFITToSE(){
 		let delay = 0;
 		
 		//loop through entries, and send over AFIT
-		poweringDown.forEach(function(entry){
-			setTimeout(function(){
-				console.log(entry);
-				let json_data = {
-					contractName: 'tokens',
-					contractAction: 'transfer',
-					contractPayload: {
-						symbol: 'AFIT',
-						to: entry.user,
-						quantity: ''+entry.daily_afit_transfer,//needs to be string
-						memo: ''
+		poweringDown.forEach(async function(entry){
+			//let's make sure user still has proper AFITX amount
+			let userHasProperFunds = true;
+			let afitx_se_balance = 0;
+			let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+			if (bal){
+				afitx_se_balance = bal.balance;
+			}else{
+				res.send({'error': 'Unable to fetch AFITX Funds. Try again later.'});
+				return;
+			}
+			//make sure user has at least 0.1 AFITX to move tokens
+			if (afitx_se_balance < 0.1){
+				userHasProperFunds = false;
+			}
+			  //console.log(amount_to_powerdown);
+			  //console.log(this.afitx_se_balance);
+			  //calculate amount that can be transferred daily
+			if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_se_balance){
+				userHasProperFunds = false;
+			}
+			console.log('entry.user:'+entry.user+' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
+			if (userHasProperFunds){
+				setTimeout(function(){
+					console.log(entry);
+					let json_data = {
+						contractName: 'tokens',
+						contractAction: 'transfer',
+						contractPayload: {
+							symbol: 'AFIT',
+							to: entry.user,
+							quantity: ''+entry.daily_afit_transfer,//needs to be string
+							memo: ''
+						}
 					}
-				}
-				
-				try{
 					
-					setTimeout(async function(){
+					try{
 						
-						let amount = parseFloat(entry.daily_afit_transfer);
+						setTimeout(async function(){
+							
+							let amount = parseFloat(entry.daily_afit_transfer);
+						
+							//perform transaction, decrease sender amount
+							let moveTrans = {
+								user: entry.user,
+								reward_activity: 'Move AFIT to S-E',
+								token_count: -amount,
+								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
+								date: new Date(),
+							}
+							
+							console.log(moveTrans);
+							//update our DB
+							let transaction = await db.collection('token_transactions').insert(moveTrans);
+							console.log('success inserting move AFIT data');
+							
+							//update user total token count
+							console.log('>>> update user token count');
+							let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
+							let cur_sender_token_count = parseFloat(user_info.tokens);
+							let new_token_count = cur_sender_token_count - amount;
+							user_info.tokens = new_token_count;
+							console.log('new_token_count:'+new_token_count);
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success updating user token count');
+							}catch(err){
+								console.log(err);
+							}
+						}, 1);
 					
-						//perform transaction, decrease sender amount
-						let moveTrans = {
-							user: entry.user,
-							reward_activity: 'Move AFIT to S-E',
-							token_count: -amount,
-							note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
-							date: new Date(),
-						}
-						
-						console.log(moveTrans);
-						//update our DB
-						let transaction = await db.collection('token_transactions').insert(moveTrans);
-						console.log('success inserting move AFIT data');
-						
-						//update user total token count
-						console.log('>>> update user token count');
-						let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
-						let cur_sender_token_count = parseFloat(user_info.tokens);
-						let new_token_count = cur_sender_token_count - amount;
-						user_info.tokens = new_token_count;
-						console.log('new_token_count:'+new_token_count);
-						try{
-							let trans = await db.collection('user_tokens').save(user_info);
-							console.log('success updating user token count');
-						}catch(err){
-							console.log(err);
-						}
-					}, 1);
-				
-					//broadcast to BC
-					console.log('broadcast to BC');
-					client.broadcast.json({
-						required_auths: [config.account],
-						required_posting_auths: [],
-						id: 'ssc-mainnet1',
-						json: JSON.stringify(json_data),
-					}, privateKey).then(
-						result => { console.log(result) },
-						error => { console.error(error) }
-					)
+						//broadcast to BC
+						console.log('broadcast to BC');
+						client.broadcast.json({
+							required_auths: [config.account],
+							required_posting_auths: [],
+							id: 'ssc-mainnet1',
+							json: JSON.stringify(json_data),
+						}, privateKey).then(
+							result => { console.log(result) },
+							error => { console.error(error) }
+						)
 					
+					}catch(err){
+						console.log(err);
+						res.send({'error': 'Error inserting move AFIT data. DB storing issue'});
+						return;
+					}
 				
-				}catch(err){
-					console.log(err);
-					res.send({'error': 'Error inserting move AFIT data. DB storing issue'});
-					return;
-				}
-			
-			}, delay+=3300);
+				}, delay+=3300);
+			}
 		});
 	  } else {
 		utils.log(err, 'delegations')
