@@ -62,7 +62,7 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 });
 
 async function fetchAFITXBal(offset){
-  //console.log('--- Fetch new AFITX token balance ---');
+  console.log('--- Fetch new AFITX token balance ---');
   let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
   usersAFITXBal = usersAFITXBal.concat(tempArr);
   if (tempArr.length > 999){
@@ -73,6 +73,14 @@ async function fetchAFITXBal(offset){
   }
   //console.log(usersAFITXBal);
 }
+
+
+
+/* end point for user total token count display */
+app.get('/topAFITXHolders', async function (req, res) {
+	let afitxSorted = utils.sortArrLodash(usersAFITXBal);
+    res.send(afitxSorted);
+});
 
 
 //allows setting acceptable origins to be included across all function calls

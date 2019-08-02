@@ -56,7 +56,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//let's schedule the AFIT to S-E token move event at 10:00 
 	let moveJob = schedule.scheduleJob({hour: 10, minute: 00}, function(){
 	  console.log('--- Start AFIT to S-E Move ---');
-	  moveAFITToSE();//param steemOnlyReward
+	  moveAFITToSE(false);//param test
 	});
 }
 
@@ -65,9 +65,9 @@ const ssc = new SSC(config.steem_engine_rpc);
 
 //airdropAFITX();
 
-//moveAFITToSE();
+//moveAFITToSE(true);
 
-function moveAFITToSE(){
+function moveAFITToSE(testMode){
 	console.log('*** process moving AFIT to SE ***');
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
@@ -115,65 +115,75 @@ function moveAFITToSE(){
 			}
 			console.log('entry.user:'+entry.user+' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
 			if (userHasProperFunds){
-				setTimeout(function(){
-					console.log(entry);
-					let json_data = {
-						contractName: 'tokens',
-						contractAction: 'transfer',
-						contractPayload: {
-							symbol: 'AFIT',
-							to: entry.user,
-							quantity: ''+entry.daily_afit_transfer,//needs to be string
-							memo: ''
-						}
-					}
-					
+				setTimeout(async function(){
+									
 					try{
 						
-						setTimeout(async function(){
+						/*setTimeout(async function(){
 							
-							let amount = parseFloat(entry.daily_afit_transfer);
+							
+						}, 1);*/
+					
+						console.log(entry);
+										
+						let amount = parseFloat(entry.daily_afit_transfer);
 						
-							//perform transaction, decrease sender amount
-							let moveTrans = {
-								user: entry.user,
-								reward_activity: 'Move AFIT to S-E',
-								token_count: -amount,
-								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
-								date: new Date(),
-							}
-							
-							console.log(moveTrans);
-							//update our DB
+						//perform transaction, decrease sender amount
+						let moveTrans = {
+							user: entry.user,
+							reward_activity: 'Move AFIT to S-E',
+							token_count: -amount,
+							note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
+							date: new Date(),
+						}
+						
+						console.log(moveTrans);
+						//update our DB
+						if (!testMode){
 							let transaction = await db.collection('token_transactions').insert(moveTrans);
-							console.log('success inserting move AFIT data');
-							
-							//update user total token count
-							console.log('>>> update user token count');
-							let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
-							let cur_sender_token_count = parseFloat(user_info.tokens);
-							let new_token_count = cur_sender_token_count - amount;
-							user_info.tokens = new_token_count;
-							console.log('new_token_count:'+new_token_count);
+						}
+						console.log('success inserting move AFIT data');
+						
+						//update user total token count
+						console.log('>>> update user token count');
+						let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
+						let cur_sender_token_count = parseFloat(user_info.tokens);
+						let new_token_count = cur_sender_token_count - amount;
+						user_info.tokens = new_token_count;
+						console.log('new_token_count:'+new_token_count);
+						if (!testMode){
 							try{
 								let trans = await db.collection('user_tokens').save(user_info);
 								console.log('success updating user token count');
 							}catch(err){
 								console.log(err);
 							}
-						}, 1);
-					
+						}
+						
+						let json_data = {
+							contractName: 'tokens',
+							contractAction: 'transfer',
+							contractPayload: {
+								symbol: 'AFIT',
+								to: entry.user,
+								quantity: ''+entry.daily_afit_transfer,//needs to be string
+								memo: ''
+							}
+						}
+						
 						//broadcast to BC
 						console.log('broadcast to BC');
-						client.broadcast.json({
-							required_auths: [config.account],
-							required_posting_auths: [],
-							id: 'ssc-mainnet1',
-							json: JSON.stringify(json_data),
-						}, privateKey).then(
-							result => { console.log(result) },
-							error => { console.error(error) }
-						)
+						if (!testMode){
+							client.broadcast.json({
+								required_auths: [config.account],
+								required_posting_auths: [],
+								id: 'ssc-mainnet1',
+								json: JSON.stringify(json_data),
+							}, privateKey).then(
+								result => { console.log(result) },
+								error => { console.error(error) }
+							)
+						}
 					
 					}catch(err){
 						console.log(err);
@@ -191,6 +201,8 @@ function moveAFITToSE(){
 	})
 }
 
+/*
+//OUR AFITX AIRDROP FUNCTION
 async function airdropAFITX(){
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
@@ -214,13 +226,19 @@ async function airdropAFITX(){
 			let totalAFITXSpent = 0;
 			let totalUsersRewarded = 0;
 			
+			//sign key properly to function with dsteem requirement
+			let privateKey = dsteem.PrivateKey.fromString(
+				//config.token_dist_pkey
+				config.active_key
+			);
+			
 			tokenHolders.forEach(function(entry){
 				//check if user is banned
 				//check if user is banned
 				let user_banned = false;
 				for (let n = 0; n < banned_users.length; n++) {
 					if (entry.user == banned_users[n].user){
-						console.log('User '+entry.user+' is banned, skipping' );
+						//console.log('User '+entry.user+' is banned, skipping' );
 						user_banned = true;
 						break;
 					}
@@ -228,7 +246,7 @@ async function airdropAFITX(){
 				if (!user_banned){
 				
 					setTimeout(function(){
-						//console.log(entry);
+						console.log(entry);
 						let rewardAFITX = 0;
 						let userAFIT = parseFloat(entry.tokens);
 						if (userAFIT >= 10000){
@@ -240,13 +258,13 @@ async function airdropAFITX(){
 							contractName: 'tokens',
 							contractAction: 'transfer',
 							contractPayload: {
-								symbol: 'AFIT',
+								symbol: 'AFITX',
 								to: entry.user,
 								quantity: '' + rewardAFITX,//needs to be string
 								memo: ''
 							}
 						}
-						//console.log(json_data);
+						console.log(json_data);
 						totalAFITXSpent += parseFloat(rewardAFITX);
 						totalUsersRewarded += 1;
 						client.broadcast.json({
@@ -259,8 +277,8 @@ async function airdropAFITX(){
 							result => { console.log(result) },
 							error => { console.error(error) }
 						)
-						console.log('total airdrop:'+totalAFITXSpent);
-						console.log('total recipients:'+totalUsersRewarded);
+						//console.log('total airdrop:'+totalAFITXSpent);
+						//console.log('total recipients:'+totalUsersRewarded);
 					
 					}, delay+=3300);
 				}
@@ -273,6 +291,8 @@ async function airdropAFITX(){
 	    }
 	});
 }
+
+*/
 
 function runRewards(steemOnlyReward){
 	let mongo_conn = config.mongo_uri
