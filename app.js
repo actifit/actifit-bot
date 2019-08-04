@@ -571,6 +571,12 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			return;
 		}
 		
+		//check if amount is numeric
+		if (isNaN(amount)){
+			res.send({'error': 'Amount sent is non numeric'});
+			return;
+		}
+		
 		//confirm matching funds password
 		let query = {user: user};
 		
