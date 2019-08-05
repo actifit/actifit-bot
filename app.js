@@ -1601,6 +1601,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 			res.write(' ');
 		}, 6000);
 		let afit_amount = 0;
+		let found_entry = false;
 		try{
 			//attempt to find matching transaction
 			let targetUser = req.query.user;
@@ -1608,6 +1609,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 			console.log(match_trx);
 			//we found a match
 			if (match_trx){
+				found_entry = true;
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
@@ -1667,7 +1669,12 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 		//we're done, let's clear our running interval
 		clearInterval(intID);
 		//send response with confirming AFIT power up
-		res.write(JSON.stringify({'afit_se_power': 'success', 'afit_amount': afit_amount}));
+		let status = 'success';
+		if (!found_entry){
+			status = 'error';
+			afit_amount = '';
+		}
+		res.write(JSON.stringify({'afit_se_power': status, 'afit_amount': afit_amount}));
 		res.end();
 	}
 });

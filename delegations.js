@@ -58,6 +58,9 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  console.log('--- Start AFIT to S-E Move ---');
 	  moveAFITToSE(false);//param test
 	});
+}else{
+	
+	runRewards(true);
 }
 
 const SSC = require('sscjs');
