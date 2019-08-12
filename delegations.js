@@ -60,7 +60,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 }else{
 	
-	runRewards(true);
+	//runRewards(true);
 }
 
 const SSC = require('sscjs');
@@ -103,7 +103,7 @@ function moveAFITToSE(testMode){
 			if (bal){
 				afitx_se_balance = bal.balance;
 			}else{
-				res.send({'error': 'Unable to fetch AFITX Funds. Try again later.'});
+				console.log('error - Unable to fetch AFITX Funds. Try again later.');
 				return;
 			}
 			//make sure user has at least 0.1 AFITX to move tokens
@@ -116,7 +116,32 @@ function moveAFITToSE(testMode){
 			if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_se_balance){
 				userHasProperFunds = false;
 			}
-			console.log('entry.user:'+entry.user+' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
+			
+			//make sure user has enough funds to send to SE
+			
+			let user = await db.collection('user_tokens').findOne({_id: entry.user});
+			console.log(user);
+			//fixing token amount display for 3 digits
+			if (typeof user!= "undefined" && user!=null){
+				if (typeof user.tokens!= "undefined"){
+					user.tokens = user.tokens.toFixed(3)
+				}else{
+					userHasProperFunds = false;
+				}
+			}else{
+				userHasProperFunds = false;
+			}
+			let cur_user_token_count = 0;
+			try{
+				cur_user_token_count = parseFloat(user.tokens);
+				if (cur_user_token_count < entry.daily_afit_transfer){
+					userHasProperFunds = false;
+				}
+			}catch(err){
+				userHasProperFunds = false;
+			}
+			
+			console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
 			if (userHasProperFunds){
 				setTimeout(async function(){
 									
@@ -153,7 +178,7 @@ function moveAFITToSE(testMode){
 						let cur_sender_token_count = parseFloat(user_info.tokens);
 						let new_token_count = cur_sender_token_count - amount;
 						user_info.tokens = new_token_count;
-						console.log('new_token_count:'+new_token_count);
+						console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
 						if (!testMode){
 							try{
 								let trans = await db.collection('user_tokens').save(user_info);
@@ -190,11 +215,14 @@ function moveAFITToSE(testMode){
 					
 					}catch(err){
 						console.log(err);
-						res.send({'error': 'Error inserting move AFIT data. DB storing issue'});
+						console.log('error - Error inserting move AFIT data. DB storing issue');
 						return;
 					}
 				
 				}, delay+=3300);
+			}else{
+				console.log('error - user does not have enough funds');
+				return;
 			}
 		});
 	  } else {
