@@ -219,7 +219,7 @@ function moveAFITToSE(testMode){
 						return;
 					}
 				
-				}, delay+=3300);
+				}, delay+=4500);
 			}else{
 				console.log('error - user does not have enough funds');
 				return;
