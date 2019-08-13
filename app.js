@@ -57,31 +57,47 @@ fetchAFITXBal(0);
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
-  usersAFITXBal = [];
+  //usersAFITXBal = [];
   fetchAFITXBal(0);
 });
 
 async function fetchAFITXBal(offset){
+  try{
   console.log('--- Fetch new AFITX token balance ---');
+  console.log(offset);
   let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITXBal = [];
+  }
   usersAFITXBal = usersAFITXBal.concat(tempArr);
+  
   if (tempArr.length > 999){
 	//we possibly have more entries, let's call again
 	setTimeout(function(){
 		fetchAFITXBal(usersAFITXBal.length);
-	}, 300);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBal(0);
+		}, 30000);
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBal(0);
+		}, 30000);
+	  }
   }
   //console.log(usersAFITXBal);
 }
-
-
-
-/* end point for user total token count display */
-app.get('/topAFITXHolders', async function (req, res) {
-	let afitxSorted = utils.sortArrLodash(usersAFITXBal);
-    res.send(afitxSorted);
-});
-
 
 //allows setting acceptable origins to be included across all function calls
 app.use(function(req, res, next) {
@@ -203,6 +219,20 @@ app.get('/user-tokens-info', async function(req, res) {
 		}
 	   });
 
+});
+
+
+/* end point for user total token count display */
+app.get('/topAFITXHolders', async function (req, res) {
+	let afitxSorted = utils.sortArrLodash(usersAFITXBal);
+	let maxAmount = parseInt(req.query.count);
+	if (isNaN(maxAmount)){
+		//set max as 200
+		maxAmount = 200;
+	}
+	//always skip top holder as that would be actifit
+	afitxSorted = afitxSorted.slice(1, maxAmount + 1);
+    res.send(afitxSorted);
 });
 
 
