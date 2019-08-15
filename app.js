@@ -51,6 +51,7 @@ const ssc = new SSC(config.steem_engine_rpc);
 let rule = new schedule.RecurrenceRule();
 
 let usersAFITXBal = [];
+let fullSortedAFITXList = [];
 //initial fetch
 fetchAFITXBal(0);
   
@@ -60,6 +61,31 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //usersAFITXBal = [];
   fetchAFITXBal(0);
 });
+
+//allows setting acceptable origins to be included across all function calls
+app.use(function(req, res, next) {
+  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
+  var origin = req.headers.origin;
+  if(allowedOrigins.indexOf(origin) > -1){
+	   res.setHeader('Access-Control-Allow-Origin', origin);
+  }
+  return next();
+});
+
+app.get('/', function (req, res) {
+	var data = {};
+	data.posts = [
+		{
+			url: 'dsadsa',
+			net_votes: 44,
+			vote_weight: "0.03"
+		}];
+	data.total_votes = 323;
+	data.total_money = "$0.63";
+    // res.render('home', data);
+    res.send('Hello there!');
+});
+
 
 async function fetchAFITXBal(offset){
   try{
@@ -99,30 +125,11 @@ async function fetchAFITXBal(offset){
   //console.log(usersAFITXBal);
 }
 
-//allows setting acceptable origins to be included across all function calls
-app.use(function(req, res, next) {
-  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
-  var origin = req.headers.origin;
-  if(allowedOrigins.indexOf(origin) > -1){
-	   res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  return next();
-});
-
-app.get('/', function (req, res) {
-	var data = {};
-	data.posts = [
-		{
-			url: 'dsadsa',
-			net_votes: 44,
-			vote_weight: "0.03"
-		}];
-	data.total_votes = 323;
-	data.total_money = "$0.63";
-    // res.render('home', data);
-    res.send('Hello there!');
-});
-
+async function getAFITXUserData(user){
+	let ind = fullSortedAFITXList.findIndex(v => v.account == user)
+	let entry = fullSortedAFITXList.find(v => v.account == user)
+	return {ind: ind, entry: entry}
+}
 
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (username){
@@ -221,10 +228,21 @@ app.get('/user-tokens-info', async function(req, res) {
 
 });
 
+/* end point for user total token count display */
+app.get('/topAFITHolders', async function (req, res) {
+	let tokenHolders = [];
+	if (isNaN(req.query.count)){
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
+	}else{
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
+	}
+    res.send(tokenHolders);
+});
 
 /* end point for user total token count display */
 app.get('/topAFITXHolders', async function (req, res) {
 	let afitxSorted = utils.sortArrLodash(usersAFITXBal);
+	fullSortedAFITXList = afitxSorted;
 	let maxAmount = parseInt(req.query.count);
 	if (isNaN(maxAmount)){
 		//set max as 200
@@ -234,6 +252,13 @@ app.get('/topAFITXHolders', async function (req, res) {
 	afitxSorted = afitxSorted.slice(1, maxAmount + 1);
     res.send(afitxSorted);
 });
+
+/* end point for fetching user AFITX data */
+app.get('/afitxData/:user', async function (req, res) {
+    let val = await getAFITXUserData(req.params.user);
+	res.send(val);
+});
+
 
 
 /* end point for returning total delegation payments (number of delegators and amount paid) on a specific date */
