@@ -441,6 +441,12 @@ app.get('/isoParticipant/:user', async function (req, res) {
 	res.send(user);
 });
 
+/* end point for checking if user took part of ISO event */
+app.get('/isoParticipantList/', async function (req, res) {
+	let userList = await db.collection('iso_participants').find().toArray();
+	res.send(userList);
+});
+
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
 	var delegatorList; 
