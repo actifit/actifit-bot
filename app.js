@@ -1590,7 +1590,7 @@ storeReferralReward = async function (req){
 app.get('/confirmAFITSEBulk', async function(req,res){
 	//let's call the service by S-E
 	let url = new URL(config.steem_engine_trans_acct_his_lrg);
-	console.log(config.steem_engine_trans_acct_his_lrg);
+	//console.log(config.steem_engine_trans_acct_his_lrg);
 	//connect with our service to confirm AFIT received to proper wallet
 	try{
 		let se_connector = await fetch(url);
@@ -1600,7 +1600,6 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		//console.log(trx_entries);
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
-			
 			let user = entry.from;
 			//query to see if entry already stored
 			let tokenExchangeTransQuery = {
@@ -1613,7 +1612,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				reward_activity: 'Move AFIT SE to Actifit Wallet',
 				token_count: parseFloat(entry.quantity),
 				se_trx_ref: entry.txid,
-				date: new Date(),
+				date: new Date(entry.timestamp)
 			}
 			try{
 				console.log(tokenExchangeTrans);
@@ -1691,7 +1690,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 					reward_activity: 'Move AFIT SE to Actifit Wallet',
 					token_count: parseFloat(match_trx.quantity),
 					se_trx_ref: match_trx.txid,
-					date: new Date(),
+					date: new Date(match_trx.timestamp)
 				}
 				try{
 					console.log(tokenExchangeTrans);
