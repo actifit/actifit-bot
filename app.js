@@ -2520,7 +2520,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 		console.log(user_info);
 		let cur_user_token_count = parseFloat(user_info.tokens);
 		if (cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
-			res.send({'error': 'Account does not have enough AFIT funds'});
+			res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+config.min_afit_for_steem_upvote});
 			return;
 		}
 		
