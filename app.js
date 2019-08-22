@@ -653,6 +653,11 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			return;
 		}
 		
+		if (amount > config.max_afit_to_se_day){
+			res.send({'error': 'You cannot transfer more than ' + config.max_afit_to_se_day + ' AFIT / day'});
+			return;
+		}
+		
 		//confirm matching funds password
 		let query = {user: user};
 		
