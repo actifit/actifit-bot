@@ -1243,7 +1243,7 @@ app.get('/getRank/:user', async function (req, res) {
 		}
 		
 		var score_components = JSON.stringify({
-			user_rank: user_rank,
+			user_rank: user_rank.toFixed(2),
 			rank_no_afitx: rank_no_afitx,
 			afitx_rank: parseFloat(user_rank_afitx),
 			delegation_score: delegation_score,
