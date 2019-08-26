@@ -251,12 +251,25 @@ app.get('/topAFITXHolders', async function (req, res) {
 	fullSortedAFITXList = afitxSorted;
 	let maxAmount = parseInt(req.query.count);
 	if (isNaN(maxAmount)){
-		//set max as 200
-		maxAmount = 200;
+		//set max as 100
+		maxAmount = 100;
 	}
 	//always skip top holder as that would be actifit
 	afitxSorted = afitxSorted.slice(1, maxAmount + 1);
-    res.send(afitxSorted);
+	let output = afitxSorted;
+	if (req.query.pretty){
+		output = '#|Token Holder | AFITX Tokens Held |<br/>';
+		output += '|---|---|---|<br/>';
+		for(var i = 0; i < afitxSorted.length; i++) {
+			let tokenHolder = afitxSorted[i];
+			output += (i+1) + '|';
+			output += '@'+tokenHolder.account + '|';
+			output += gk_add_commas(parseFloat(tokenHolder.balance).toFixed(3)) + '|';
+			output += '<br/>';
+		}
+	}
+	
+    res.send(output);
 });
 
 /* end point for fetching user AFITX data */
