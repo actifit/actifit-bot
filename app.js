@@ -1213,8 +1213,24 @@ app.get('/getRank/:user', async function (req, res) {
 		
 		user_rank += recent_posts_score;
 		
+		let rank_no_afitx = user_rank;
+		//also append AFITX based rank. for every 1 AFITX, increase 0.1 rank
+		let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
+		let user_rank_afitx = 0;
+		
+		if (userHasAFITX){
+			user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
+			//max increase by holding AFITX is 100
+			if (user_rank_afitx > 100){
+				user_rank_afitx = 100;
+			}
+			user_rank += parseFloat(user_rank_afitx);
+		}
+		
 		var score_components = JSON.stringify({
-			user_rank: user_rank,
+			user_rank: user_rank.toFixed(2),
+			rank_no_afitx: rank_no_afitx,
+			afitx_rank: parseFloat(user_rank_afitx),
 			delegation_score: delegation_score,
 			afit_tokens_score: afit_tokens_score,
 			tot_posts_score: tot_posts_score,
@@ -1576,7 +1592,7 @@ storeReferralReward = async function (req){
 app.get('/confirmAFITSEBulk', async function(req,res){
 	//let's call the service by S-E
 	let url = new URL(config.steem_engine_trans_acct_his_lrg);
-	console.log(config.steem_engine_trans_acct_his_lrg);
+	//console.log(config.steem_engine_trans_acct_his_lrg);
 	//connect with our service to confirm AFIT received to proper wallet
 	try{
 		let se_connector = await fetch(url);
@@ -1586,7 +1602,6 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		//console.log(trx_entries);
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
-			
 			let user = entry.from;
 			//query to see if entry already stored
 			let tokenExchangeTransQuery = {
