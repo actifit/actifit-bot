@@ -1614,7 +1614,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				reward_activity: 'Move AFIT SE to Actifit Wallet',
 				token_count: parseFloat(entry.quantity),
 				se_trx_ref: entry.txid,
-				date: new Date(),
+				date: new Date(entry.timestamp)
 			}
 			try{
 				console.log(tokenExchangeTrans);
@@ -1672,6 +1672,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 			res.write(' ');
 		}, 6000);
 		let afit_amount = 0;
+		let found_entry = false;
 		try{
 			//attempt to find matching transaction
 			let targetUser = req.query.user;
@@ -1679,6 +1680,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 			console.log(match_trx);
 			//we found a match
 			if (match_trx){
+				found_entry = true;
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
@@ -1690,7 +1692,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 					reward_activity: 'Move AFIT SE to Actifit Wallet',
 					token_count: parseFloat(match_trx.quantity),
 					se_trx_ref: match_trx.txid,
-					date: new Date(),
+					date: new Date(match_trx.timestamp)
 				}
 				try{
 					console.log(tokenExchangeTrans);
@@ -1738,7 +1740,12 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 		//we're done, let's clear our running interval
 		clearInterval(intID);
 		//send response with confirming AFIT power up
-		res.write(JSON.stringify({'afit_se_power': 'success', 'afit_amount': afit_amount}));
+		let status = 'success';
+		if (!found_entry){
+			status = 'error';
+			afit_amount = '';
+		}
+		res.write(JSON.stringify({'afit_se_power': status, 'afit_amount': afit_amount}));
 		res.end();
 	}
 });
