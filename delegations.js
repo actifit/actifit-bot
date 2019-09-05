@@ -31,7 +31,13 @@ let newestTxId = -1;
 
 console.log('--- Reward script initialized ---');
 
-var schedule = require('node-schedule')
+let schedule = require('node-schedule')
+
+if (process.env.BOT_THREAD == 'MAIN'){
+
+	console.log('--- Main Bot Thread Detected ---');
+
+	
 //console.log('pre-schedule');
 var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
   console.log('--- Start delegators reward ---');
@@ -44,6 +50,281 @@ var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 runRewards(true);
 //runRewards(false);
 
+	
+}else if (process.env.BOT_THREAD == 'SECOND_API'){
+	
+	//let's schedule the AFIT to S-E token move event at 10:00 
+	let moveJob = schedule.scheduleJob({hour: 10, minute: 00}, function(){
+	  console.log('--- Start AFIT to S-E Move ---');
+	  moveAFITToSE(false);//param test
+	});
+}else{
+	
+	runRewards(true);
+}
+
+const SSC = require('sscjs');
+const ssc = new SSC(config.steem_engine_rpc);
+
+//airdropAFITX();
+
+//moveAFITToSE(true);
+
+function moveAFITToSE(testMode){
+	console.log('*** process moving AFIT to SE ***');
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ')
+
+		db = dbClient.db(dbName)
+		// Get the documents collection
+		let poweringDown = await db.collection('powering_down').find().toArray();
+		console.log (poweringDown)
+		
+		//sign key properly to function with dsteem requirement
+		let privateKey = dsteem.PrivateKey.fromString(
+			//config.token_dist_pkey
+			config.active_key
+		);
+		
+		let delay = 0;
+		
+		//loop through entries, and send over AFIT
+		poweringDown.forEach(async function(entry){
+			//let's make sure user still has proper AFITX amount
+			let userHasProperFunds = true;
+			let afitx_se_balance = 0;
+			let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+			if (bal){
+				afitx_se_balance = bal.balance;
+			}else{
+				console.log('error - Unable to fetch AFITX Funds. Try again later.');
+				return;
+			}
+			//make sure user has at least 0.1 AFITX to move tokens
+			if (afitx_se_balance < 0.1){
+				userHasProperFunds = false;
+			}
+			  //console.log(amount_to_powerdown);
+			  //console.log(this.afitx_se_balance);
+			  //calculate amount that can be transferred daily
+			if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_se_balance){
+				userHasProperFunds = false;
+			}
+			
+			//make sure user has enough funds to send to SE
+			
+			let user = await db.collection('user_tokens').findOne({_id: entry.user});
+			console.log(user);
+			//fixing token amount display for 3 digits
+			if (typeof user!= "undefined" && user!=null){
+				if (typeof user.tokens!= "undefined"){
+					user.tokens = user.tokens.toFixed(3)
+				}else{
+					userHasProperFunds = false;
+				}
+			}else{
+				userHasProperFunds = false;
+			}
+			let cur_user_token_count = 0;
+			try{
+				cur_user_token_count = parseFloat(user.tokens);
+				if (cur_user_token_count < entry.daily_afit_transfer){
+					userHasProperFunds = false;
+				}
+			}catch(err){
+				userHasProperFunds = false;
+			}
+			
+			console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
+			if (userHasProperFunds){
+				setTimeout(async function(){
+									
+					try{
+						
+						/*setTimeout(async function(){
+							
+							
+						}, 1);*/
+					
+						console.log(entry);
+										
+						let amount = parseFloat(entry.daily_afit_transfer);
+						
+						//perform transaction, decrease sender amount
+						let moveTrans = {
+							user: entry.user,
+							reward_activity: 'Move AFIT to S-E',
+							token_count: -amount,
+							note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
+							date: new Date(),
+						}
+						
+						console.log(moveTrans);
+						//update our DB
+						if (!testMode){
+							let transaction = await db.collection('token_transactions').insert(moveTrans);
+						}
+						console.log('success inserting move AFIT data');
+						
+						//update user total token count
+						console.log('>>> update user token count');
+						let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
+						let cur_sender_token_count = parseFloat(user_info.tokens);
+						let new_token_count = cur_sender_token_count - amount;
+						user_info.tokens = new_token_count;
+						console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
+						if (!testMode){
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success updating user token count');
+							}catch(err){
+								console.log(err);
+							}
+						}
+						
+						let json_data = {
+							contractName: 'tokens',
+							contractAction: 'transfer',
+							contractPayload: {
+								symbol: 'AFIT',
+								to: entry.user,
+								quantity: ''+entry.daily_afit_transfer,//needs to be string
+								memo: ''
+							}
+						}
+						
+						//broadcast to BC
+						console.log('broadcast to BC');
+						if (!testMode){
+							client.broadcast.json({
+								required_auths: [config.account],
+								required_posting_auths: [],
+								id: 'ssc-mainnet1',
+								json: JSON.stringify(json_data),
+							}, privateKey).then(
+								result => { console.log(result) },
+								error => { console.error(error) }
+							)
+						}
+					
+					}catch(err){
+						console.log(err);
+						console.log('error - Error inserting move AFIT data. DB storing issue');
+						return;
+					}
+				
+				}, delay+=4500);
+			}else{
+				console.log('error - user does not have enough funds');
+				return;
+			}
+		});
+	  } else {
+		utils.log(err, 'delegations')
+		process.exit()
+	  }
+	})
+}
+
+/*
+//OUR AFITX AIRDROP FUNCTION
+async function airdropAFITX(){
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+		if (!err) {
+			
+			console.log('Connected successfully to server: ')
+			db = dbClient.db(dbName)
+			
+			//let's fetch all users with proper AFIT count
+			let tokenHolders = await db.collection('user_tokens').find( { tokens: { $gte: 100 } }).toArray();//sort({tokens: -1}).
+			
+			//let's also fetch banned accounts, to ensure they dont receive an airdrop
+			let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
+			
+			let delay = 0;
+			
+			let totalAFITXSpent = 0;
+			let totalUsersRewarded = 0;
+			
+			//sign key properly to function with dsteem requirement
+			let privateKey = dsteem.PrivateKey.fromString(
+				//config.token_dist_pkey
+				config.active_key
+			);
+			
+			tokenHolders.forEach(function(entry){
+				//check if user is banned
+				//check if user is banned
+				let user_banned = false;
+				for (let n = 0; n < banned_users.length; n++) {
+					if (entry.user == banned_users[n].user){
+						//console.log('User '+entry.user+' is banned, skipping' );
+						user_banned = true;
+						break;
+					}
+				}
+				if (!user_banned){
+				
+					setTimeout(function(){
+						console.log(entry);
+						let rewardAFITX = 0;
+						let userAFIT = parseFloat(entry.tokens);
+						if (userAFIT >= 10000){
+							rewardAFITX = 10;
+						}else if (userAFIT >= 100){
+							rewardAFITX = (userAFIT/1000).toFixed(3);
+						}
+						let json_data = {
+							contractName: 'tokens',
+							contractAction: 'transfer',
+							contractPayload: {
+								symbol: 'AFITX',
+								to: entry.user,
+								quantity: '' + rewardAFITX,//needs to be string
+								memo: ''
+							}
+						}
+						console.log(json_data);
+						totalAFITXSpent += parseFloat(rewardAFITX);
+						totalUsersRewarded += 1;
+						client.broadcast.json({
+							//required_auths: [config.token_dist_account],
+							required_auths: [config.account],
+							required_posting_auths: [],
+							id: 'ssc-mainnet1',
+							json: JSON.stringify(json_data),
+						}, privateKey).then(
+							result => { console.log(result) },
+							error => { console.error(error) }
+						)
+						//console.log('total airdrop:'+totalAFITXSpent);
+						//console.log('total recipients:'+totalUsersRewarded);
+					
+					}, delay+=3300);
+				}
+			});
+			
+			
+		}else {
+		  utils.log(err, 'delegations')
+		  process.exit()
+	    }
+	});
+}
+
+*/
+
 function runRewards(steemOnlyReward){
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
@@ -52,7 +333,7 @@ function runRewards(steemOnlyReward){
 	// Use connect method to connect to the server
 	MongoClient.connect(mongo_conn, async function (err, dbClient) {
 	  if (!err) {
-		console.log('Connected successfully to server: ' + mongo_conn)
+		console.log('Connected successfully to server: ')
 
 		db = dbClient.db(dbName)
 		// Get the documents collection
