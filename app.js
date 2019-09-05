@@ -192,10 +192,22 @@ app.get('/user-tokens-info', async function(req, res) {
 			}
 		}
 	   ]).toArray(function(err, results) {
-		var output = 'rewarded users:'+results[0].user_count+',';
-		output += 'tokens distributed:'+results[0].tokens_distributed;
-		res.send(results);
-		console.log(results);
+		if (results.length>0){
+			try{
+				var output = 'rewarded users:'+results[0].user_count+',';
+				output += 'tokens distributed:'+results[0].tokens_distributed;
+				res.send(results);
+				console.log(results);
+			}catch(err){
+				console.log(err);
+				res.send('');
+			}
+		}else{
+			res.send('');
+		}
+	   });
+
+});
 	   });
 
 });
