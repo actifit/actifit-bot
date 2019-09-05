@@ -24,6 +24,10 @@ var skip = false;
 var version = '0.3.4';
 var lucky_winner_id = -1;
 
+
+let usersAFITXBal = [];
+let topUsersAFITX = [];
+
 //version of the reward system
 var reward_sys_version = 'v0.2';
 
@@ -150,6 +154,27 @@ const actifit_img_urls =  [
 loadConfig();
 var botNames;
 
+
+const SSC = require('sscjs');
+const ssc = new SSC(config.steem_engine_rpc);
+
+
+// Initial Load of top AFITX token holders
+// Top 25 will be stored in topUsersAFITX
+fetchAFITXBal(0);
+
+setInterval(function(){
+	try{
+	  if (!is_voting){
+		// Load updated top AFITX token holders every 10 minutes
+		// Top 25 will be stored in topUsersAFITX
+		fetchAFITXBal(0);
+	  }
+	}catch(err){
+		console.log(err);
+	}
+}, 1200000); // every 20 minutes (1200000)
+
 steem.api.setOptions({ 
 	url: config.active_node ,
 	//useAppbaseApi: true
@@ -164,7 +189,7 @@ var url = config.mongo_uri;
 if (config.testing){
 	url = config.mongo_local;
 }
-utils.log('db url:'+url);
+//utils.log('db url:'+url);
 var db;
 var collection;
 
@@ -302,7 +327,7 @@ let properties, rewardFund, rewardBalance, recentClaims, totalSteem, totalVests,
 async function startProcess() {
   if(!botNames)
     botNames = await utils.loadBots();
-  if (config.detailed_logging)
+  //if (config.detailed_logging)
     utils.log('Start process');
   // Load the settings from the config file each time so we can pick up any changes
   loadConfig();
@@ -338,16 +363,18 @@ async function startProcess() {
   
   
   //utils.updateSteemVariables();
+  console.log('account');	
+  console.log(account!=null);	
+  console.log('skip:'+skip);	
+  console.log('is_voting:'+is_voting);	
+  console.log('passedOneDay:'+passedOneDay);	
 
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
     var vp = utils.getVotingPower(account);
 
-    if (config.detailed_logging)
-      utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
+    utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp*100)));
 
-    utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp)));
-	
     // We are at voting power kick start - time to vote!
 	//utils.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
@@ -503,6 +530,11 @@ function loadPrices() {
 function processVotes(query, subsequent) {
   
   utils.log('processVotes');
+  
+  //fetch top AFITX holders as of current
+  //top 25 will be stored in topUsersAFITX
+  //fetchAFITXBal(0);
+	
   
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
 	//track how many queries were ran
@@ -1232,20 +1264,106 @@ function processVotes(query, subsequent) {
 					console.log('full_vote_value')
 					console.log(full_vote_value)
 					
+					console.log('topUsersAFITX')
+					console.log(topUsersAFITX);
+					
+					//number of found exchanges to perform in coming round
+					let matched_exchanges = 0;
+					//number of entries, maximum set by config
+					let list_length = Math.min(topUsersAFITX.length, config.topAFITXCount);
+					
+					
+					//loop through top AFITX holders to get confirmed upvotes
+					for (let xx=0 ; xx < list_length && matched_exchanges < config.max_afit_steem_upvotes_per_session ; xx++){
+						let cur_top_entry = topUsersAFITX[xx];
+						//find a matching report card, if exists
+						console.log(cur_top_entry.account);
+						let result = votePosts.find( user_post => user_post.author === cur_top_entry.account);
+						console.log('matching priority post');
+						//console.log(result);
+						
+						//also find matching exchange request
+						
+						let cur_upvote_entry = afit_steem_upvote_list.find( upvote_request => upvote_request.user === cur_top_entry.account);
+						
+						//console.log('cur_upvote_entry');
+						
+						//console.log(cur_upvote_entry);
+						
+						if (result && cur_upvote_entry){
+							console.log('>>match found');
+							matched_exchanges += 1;
+							//found a match, need to increase rewards according to AFIT pay
+							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
+							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
+							
+							//expand the USD val to take into consideration 75% curation reward
+							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
+							
+							//final upvote value after avoiding deductions
+							let usd_val = usd_val_no_benef / 0.65 
+							
+							//emulate proper voting power to give user matching rewards
+							let user_added_vote_weight = usd_val * 100 / full_vote_value;
+							
+							let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
+							
+							//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
+							//only consume half of those now, leave the rest to other accounts
+							if (helping_accounts_votes < (config.max_helping_votes / 2)){
+								user_added_vote_weight -= 1;
+								
+								helping_accounts_votes += 1;
+								
+								votePosts[entry_index].helperVotes = true;
+							}
+							
+							user_added_vote_weight = user_added_vote_weight.toFixed(2);
+							
+							votePosts[entry_index].additional_vote_weight = Math.floor(user_added_vote_weight * 100);
+							votePosts[entry_index].afit_swapped = cur_upvote_entry.paid_afit;
+							votePosts[entry_index].top_afitx_holder = 1;
+							console.log('Additional Vote Weight for AFIT/STEEM Upvote Exchange: '+votePosts[entry_index].author + ' ' + votePosts[entry_index].url);
+							console.log(votePosts[entry_index].additional_vote_weight);
+							
+							//we need to set params of this transaction
+							cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
+							cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
+							cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
+							cur_upvote_entry.usd_val = +usd_val.toFixed(2);
+							
+							cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
+							
+							cur_upvote_entry.top_afitx_holder = 1
+							
+							cur_upvote_entry.post_author = votePosts[entry_index].author;
+							cur_upvote_entry.post_permlink = votePosts[entry_index].permlink;
+							
+							db.collection('exchange_afit_steem').save(cur_upvote_entry);
+							
+							//console.log(votePosts[entry_index]);
+							
+						}
+					}
+					
 					console.log('afit_steem_upvote_list');
 					console.log(afit_steem_upvote_list);
 					
-					let matched_exchanges = 0;
-					let list_length = afit_steem_upvote_list.length;
+					//number of entries
+					list_length = afit_steem_upvote_list.length;
 					
 					//loop through pending AFIT swaps, consuming older ones
 					for (let xx=0 ; xx < list_length && matched_exchanges < config.max_afit_steem_upvotes_per_session ; xx++){
 						let cur_upvote_entry = afit_steem_upvote_list[xx];
 						//find a matching report card, if exists
 						let result = votePosts.find( user_post => user_post.author === cur_upvote_entry.user);
-						console.log('matching post');
-						console.log(result);
+						console.log('matching second post');
+						//console.log(result);
 						if (result != null){
+							console.log('>>match found. Check if added already');
+							//if this post has not been recorded yet
+							if (!result.additional_vote_weight){
+								console.log('fresh game');
 							matched_exchanges += 1;
 							//found a match, need to increase rewards according to AFIT pay
 							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
@@ -1290,11 +1408,11 @@ function processVotes(query, subsequent) {
 							cur_upvote_entry.post_permlink = votePosts[entry_index].permlink;
 							
 							db.collection('exchange_afit_steem').save(cur_upvote_entry);
-							
+							}
 						}
 					}
 					console.log('done going through pending AFIT to STEEM upvote exchange');
-					
+					console.log('matched_exchanges:'+matched_exchanges);
 				}catch(err){
 					utils.log(err);
 				}
@@ -1317,6 +1435,51 @@ function processVotes(query, subsequent) {
       //errorEmail(err, config.report_emails);
     }
   });
+}
+
+async function fetchAFITXBal(offset){
+  try{
+	  console.log('--- Fetch AFITX token balance --- '+offset);
+	  console.log(offset);
+	  let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+	  if (offset == 0 && tempArr.length > 0){
+		  console.log('>>Found new results, reset older ones');
+		  //reset existing data if we have fresh new data
+		  usersAFITXBal = [];
+		  topUsersAFITX = [];
+	  }
+	  usersAFITXBal = usersAFITXBal.concat(tempArr);
+	  if (tempArr.length > 999){
+		//we possibly have more entries, let's call again
+		setTimeout(function(){
+			fetchAFITXBal(usersAFITXBal.length);
+		}, 1000);
+	  }else{
+		//if we were not able to fetch entries, we need to try API again
+		if (offset == 0){
+			console.log('no AFITX data, fetch again in 30 secs');
+			setTimeout(function(){
+				fetchAFITXBal(0);
+			}, 30000);
+		}else{
+			console.log('AFITX list fetching complete');
+			usersAFITXBal = utils.sortArrLodash(usersAFITXBal);
+			//skip first entry as thats Actifit account
+			topUsersAFITX = usersAFITXBal.slice(1, config.topAFITXCount);
+			
+			console.log(topUsersAFITX);
+		}
+	  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBal(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITXBal);
 }
 
 var post_rank = 0;
@@ -1563,6 +1726,10 @@ function sendComment(post, retries, vote_weight) {
 				content = content.replace(/\{exchange_vote}/g,'') 
 			}
 			
+			//if this is a top AFITX reward exchange
+			if (post.top_afitx_holder != null){
+				jsonMetadata.top_afitx_holder = true;
+			}
 			//if user is lucky winner, add a relevant message
 
 			if (typeof post.lucky_winner != 'undefined' && post.lucky_winner != '' && post.lucky_winner != 'undefined'){
