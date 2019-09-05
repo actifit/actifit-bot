@@ -551,6 +551,183 @@ app.get('/banned_users', async function (req, res) {
     res.send(banned_users);
 });
 
+/* end point for returning if a user is banned by actifit*/
+app.get('/is_banned/:user', async function (req, res) {
+	let is_banned = await db.collection('banned_accounts').findOne({user: req.params.user, ban_status:"active"});
+    console.log (is_banned!=null)
+	res.send(is_banned!=null);
+});
+
+/* end point for returning if a user is powering down AFIT*/
+app.get('/isPoweringDown/:user', async function (req, res) {
+	let poweringDown = await db.collection('powering_down').findOne({user: req.params.user});
+    console.log (poweringDown)
+	if (!poweringDown){
+		res.send({});
+	}else{
+		res.send(poweringDown);
+	}
+});
+
+/* end point for returning the list of users powering down AFIT*/
+app.get('/poweringDownList/', async function (req, res) {
+	let poweringDown = await db.collection('powering_down').find().toArray();
+    console.log (poweringDown)
+	res.send(poweringDown);
+});
+
+app.get('/cancelAFITMoveSE', async function(req, res){
+	if (!req.query.user || !req.query.fundsPass){
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let fundsPass = req.query.fundsPass;
+		
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+		
+		//reached here, we're fine
+		
+		try{
+			let result = await db.collection('powering_down').remove({user: req.query.user});
+			res.send({'status': 'Success'});
+		}catch(err){
+			console.log(err);
+		}
+	}
+});
+
+/* function handles the processing of AFIT power down and moving tokens to S-E */
+app.get('/initiateAFITMoveSE', async function(req, res){
+	if (!req.query.user || !req.query.amount || !req.query.fundsPass) {
+		//make sure all params are sent
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let amount = parseFloat(req.query.amount);
+		let fundsPass = req.query.fundsPass;
+		
+		
+		//check first if user is banned, as he wont be able to move funds
+		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
+		if (is_banned){
+			res.send({'error': 'You cannot move AFIT as your account is banned'});
+			return;
+		}
+		
+		//check if amount is numeric
+		if (isNaN(amount)){
+			res.send({'error': 'Amount sent is non numeric'});
+			return;
+		}
+		
+		if (amount > config.max_afit_to_se_day){
+			res.send({'error': 'You cannot transfer more than ' + config.max_afit_to_se_day + ' AFIT / day'});
+			return;
+		}
+		
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+		
+		//reached here, we're fine
+		
+		//confirm proper AFIT token balance. Test against target amount to be sent
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		let cur_sender_token_count = parseFloat(user_info.tokens);	
+		
+		if (cur_sender_token_count < amount){
+			res.send({'error': 'Account does not have enough AFIT funds'});
+			return;
+		}
+		let afitx_se_balance = 0;
+		//confirm amount within AFITX conditions
+		let bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		if (bal){
+			afitx_se_balance = bal.balance;
+		}else{
+			res.send({'error': 'Unable to fetch AFITX Funds. Try again later.'});
+			return;
+		}
+		
+		//make sure user has at least 0.1 AFITX to move tokens
+		if (afitx_se_balance < 0.1){
+			res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
+			return;
+		}
+		  //console.log(amount_to_powerdown);
+		  //console.log(this.afitx_se_balance);
+		  //calculate amount that can be transferred daily
+		if (amount / 100 > afitx_se_balance){
+			res.send({'error': 'You do not have enough AFITX to move '+afitx_se_balance+ ' AFIT'});
+			return;
+		}
+		
+		//register transaction for upcoming powering down cycle
+		
+		//query to see if user is already powering down
+		let tokenPowerDownQuery = {
+			user: user,
+		}
+		//store the transaction to the user's profile
+		let tokenPowerDownTrans = {
+			user: user,
+			daily_afit_transfer: amount,
+			min_afitx: amount / 100,
+			date: new Date(),
+		}
+		
+		try{
+			console.log(tokenPowerDownTrans);
+			let transaction = await db.collection('powering_down').update(tokenPowerDownQuery, tokenPowerDownTrans, { upsert: true });
+			console.log('success inserting power down data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing power down. DB storing issue'});
+			return;
+		}
+		
+		res.send({'status': 'Success', trx: tokenPowerDownTrans});
+	}
+})
 
 /* function handles the processing of a buy order */
 app.get('/tipAccount', async function(req, res){
