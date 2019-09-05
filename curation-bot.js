@@ -1200,7 +1200,7 @@ function processVotes(query, subsequent) {
 			}
 			try{
 				//award transaction tokens
-				bulk_transactions.execute();
+				await bulk_transactions.execute();
 			}catch(bulkerr){
 				utils.log(bulkerr);
 			}
@@ -1225,10 +1225,14 @@ function processVotes(query, subsequent) {
 				
 				
 				//if (!config.testing){
-					votePosts.sort(function(post1, post2) {
+				/*	
 					  //Sort posts by reverse score, so as when popping them we get sorted by highest
+					votePosts.sort(function(post1, post2) {
+					  
 					  return post1.post_score - post2.post_score;
 					});
+				*/
+				
 				//}
 		
 				
