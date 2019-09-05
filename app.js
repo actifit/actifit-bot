@@ -41,6 +41,25 @@ MongoClient.connect(url, function(err, client) {
   
 });
 
+let schedule = require('node-schedule')
+
+const SSC = require('sscjs');
+const ssc = new SSC(config.steem_engine_rpc);
+
+let rule = new schedule.RecurrenceRule();
+
+let usersAFITXBal = [];
+let fullSortedAFITXList = [];
+//initial fetch
+fetchAFITXBal(0);
+  
+//fetch new AFITX user account balance every 5 mins
+let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
+  //reset array
+  //usersAFITXBal = [];
+  fetchAFITXBal(0);
+});
+
 //allows setting acceptable origins to be included across all function calls
 app.use(function(req, res, next) {
   var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
@@ -65,6 +84,50 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
+async function fetchAFITXBal(offset){
+  try{
+  console.log('--- Fetch new AFITX token balance ---');
+  console.log(offset);
+  let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITXBal = [];
+  }
+  usersAFITXBal = usersAFITXBal.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITXBal(usersAFITXBal.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBal(0);
+		}, 30000);
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBal(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITXBal);
+}
+
+async function getAFITXUserData(user){
+	let ind = fullSortedAFITXList.findIndex(v => v.account == user)
+	let entry = fullSortedAFITXList.find(v => v.account == user)
+	return {ind: ind, entry: entry}
+}
 
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (username){
