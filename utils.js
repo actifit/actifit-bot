@@ -114,8 +114,13 @@ var HOURS = 60 * 60;
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser) {
 		getConfig();
+		//track attempts for timeout
+		let attempts = 1;
+		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					attempts += 1;
 				console.log('Check AFIT Power Up');
 				//let's call the service by S-E
 				let url = new URL(config.steem_engine_trans_acct_his);
@@ -141,6 +146,10 @@ var HOURS = 60 * 60;
 					}
 				}catch(err){
 					console.log(err);
+				}
+				}else{
+					//return error
+					resolve(null);
 				}
 			}, 5000);
 		});
