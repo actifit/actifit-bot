@@ -552,6 +552,212 @@ app.get('/banned_users', async function (req, res) {
 });
 
 
+/* function handles the processing of a buy order */
+app.get('/tipAccount', async function(req, res){
+	if (!req.query.user || !req.query.targetUser || !req.query.amount || !req.query.fundsPass) {
+		//make sure all params are sent
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let targetUser = req.query.targetUser;
+		let amount = parseFloat(req.query.amount);
+		let fundsPass = req.query.fundsPass;
+		
+		
+		//check first if user is banned, as he wont be able to tip
+		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
+		if (is_banned){
+			res.send({'error': 'You cannot tip AFIT as your account is banned'});
+			return;
+		}
+		
+		//check first if targetUuser is banned, as he wont be able to tip
+		is_banned = await db.collection('banned_accounts').findOne({user: targetUser, ban_status:"active"});
+		if (is_banned){
+			res.send({'error': 'You cannot tip AFIT to a banned account'});
+			return;
+		}
+		
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+		
+		//reached here, we're fine
+		
+		//confirm proper AFIT token balance. Test against target amount to be sent
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		let cur_sender_token_count = parseFloat(user_info.tokens);
+		
+		if (cur_sender_token_count < amount){
+			res.send({'error': 'Account does not have enough AFIT funds'});
+			return;
+		}
+		
+		//check how much the user has tipped today
+		let totalTipAmount = await tippedToday(req, res);
+		if (parseFloat(totalTipAmount) >= parseFloat(config.max_allowed_tips_per_day)){
+			res.send({'error': 'User cannot tip more today. Max tips per day is set at '+config.max_allowed_tips_per_day + ' AFIT'});
+			return;
+		}
+		
+		if (parseFloat(totalTipAmount) + amount > parseFloat(config.max_allowed_tips_per_day)){
+			res.send({'error': 'Tip amount exceeds daily limit (' + config.max_allowed_tips_per_day + ') by '+ ((parseFloat(totalTipAmount) + amount) - parseFloat(config.max_allowed_tips_per_day) ) + ' AFIT. Try a smaller amount.'});
+			return;
+		}
+	
+		//perform transaction, decrease sender amount
+		let tipTrans = {
+			user: user,
+			reward_activity: 'Send Tip',
+			recipient: targetUser,
+			token_count: -amount,
+			tip_amount: amount,
+			note: user + ' tipped ' + targetUser + ' ' + amount + ' AFIT',
+			date: new Date(),
+		}
+		try{
+			console.log(tipTrans);
+			let transaction = await db.collection('token_transactions').insert(tipTrans);
+			console.log('success inserting tip data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing tip action. DB storing issue'});
+			return;
+		}
+		
+		//perform transaction, increase recipient amount
+		let tipReceiptTrans = {
+			user: targetUser,
+			reward_activity: 'Receive Tip',
+			sender: user,
+			token_count: amount,
+			tip_amount: amount,
+			note: user + ' tipped ' + targetUser + ' ' + amount + ' AFIT',
+			date: new Date(),
+		}
+		
+		try{
+			console.log(tipReceiptTrans);
+			let transaction = await db.collection('token_transactions').insert(tipReceiptTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing tip action. DB storing issue'});
+			return;
+		}
+		
+		
+		//update sending user's token balance & store to db
+		let new_token_count = cur_sender_token_count - amount;
+		user_info.tokens = new_token_count;
+		console.log('new_token_count:'+new_token_count);
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+		
+		//confirm proper AFIT token balance. Test against target amount to be sent
+		let target_user_info = await grabUserTokensFunc (targetUser);
+		if (target_user_info == null){
+			//first time actifit user, let's create a new entry
+			target_user_info = new Object();
+			target_user_info._id = targetUser;
+			target_user_info.user = targetUser;
+			target_user_info.tokens = 0;
+		}
+		console.log(target_user_info);
+		let cur_target_user_token_count = parseFloat(target_user_info.tokens);
+		
+		//update receiving user's token balance & store to db
+		let upd_token_count = cur_target_user_token_count + amount;
+		target_user_info.tokens = upd_token_count;
+		console.log('upd_token_count:'+upd_token_count);
+		try{
+			let trans = await db.collection('user_tokens').save(target_user_info);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+		
+		res.send({'status': 'Success', 'tipAmount': amount,'senderTokenCount': new_token_count, 'recipientTokenCount': upd_token_count});
+	}
+})
+
+
+tippedToday = async function (req, res){
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	//console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	
+	let endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	
+	query_json = {
+			"reward_activity": "Send Tip",
+			"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+	};
+	//adjust query to include user
+	//console.log(req.params.user)
+	if (req.params.user){
+		query_json.user = req.params.user;
+	}else if (req.query.user){
+		query_json.user = req.query.user;
+	}
+	
+	let result = await db.collection('token_transactions').find(query_json).toArray();
+	let totalTipAmount = 0;
+	try{
+		for (let i = 0; i< result.length; i++){
+			//console.log(result[i]);
+			totalTipAmount += parseFloat(result[i].tip_amount);
+		}
+		console.log('totalTipAmount:'+totalTipAmount);
+	}catch(err){
+		console.log(err.message);
+	}
+	return totalTipAmount;
+}
+
+/* end point for counting amount of tips on a single day */
+app.get('/totalTipped', async function (req, res) {
+	let totalTipAmount = await tippedToday(req, res);
+	res.send(JSON.stringify({total_tip:totalTipAmount}));
+	
+});
+
+/* end point for counting amount of tips by user on a single day */
+app.get('/tippedToday/:user', async function (req, res) {
+	let totalTipAmount = await tippedToday(req, res);
+	res.send(JSON.stringify({total_tip:totalTipAmount}));
+	
+});
+
 /* end point for counting number of reblogs on a certain date param (default current date) */
 app.get('/reblogCount', async function (req, res) {
 		var todayDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
