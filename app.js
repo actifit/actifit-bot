@@ -14,6 +14,8 @@ app.set('view engine', 'handlebars');
 
 var config = utils.getConfig();
 
+let ObjectId = require('mongodb').ObjectId; 
+
 // Connection URL
 let url = config.mongo_uri;
 if (config.testing){
@@ -142,6 +144,22 @@ grabUserTokensFunc = async function (username){
 	return user;
 }
 
+/* function handles returning product specific data */
+grabProductInfo = async function(product_id){
+	let o_id = new ObjectId(product_id);
+	let product = await db.collection('products').findOne({_id: o_id});
+	return product;
+}
+
+/* function handles generating a random password/access_token */
+generatePassword = function (multip) {
+	//generate random 11 characters password
+	let passString = '';
+	for (let i=0;i<multip;i++){
+		passString += Math.random().toString(36).substr(2, 13);
+	}
+	return passString;
+  };
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await grabUserTokensFunc(req.params.user);
@@ -1750,6 +1768,340 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 	}
 });
 
+
+
+/* function handles the processing of a buy order */
+app.get('/processBuyOrder', async function(req, res){
+	if (!req.query.user || !req.query.product_id) {
+		//make sure all params are sent
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let product_id = req.query.product_id;
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let access_token;
+		
+		/*let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+		*/
+		
+		//fetch product info
+		let product = await grabProductInfo (product_id);
+		if (!product){
+			res.send({'error': 'Product not found'});
+			return;
+		}
+		
+		//confirm proper AFIT token balance. Test against product price
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		let cur_user_token_count = parseFloat(user_info.tokens);
+		
+		let price_options = product.price;
+		let price_options_count = price_options.length;
+		let item_price = 0;
+		let item_currency = 'AFIT';
+		let actifit_percent_cut = 10;
+		for (let i=0; i < price_options_count; i++){
+			let entry = price_options[i];
+			item_price = entry.price;
+			item_currency = entry.currency;
+			actifit_percent_cut = entry.actifit_percent_cut;
+		}
+		
+		if (cur_user_token_count < item_price){
+			res.send({'error': 'Account does not have enough AFIT funds'});
+			return;
+		}
+		
+		//product.provider = 'actifit.test.provider';
+		
+		//perform transaction
+		let productBuyTrans = {
+			user: user,
+			reward_activity: 'Buy Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_price: item_price,
+			token_count: -item_price,
+			note: 'Bought Product '+product.name+ ' by '+product.provider,
+			date: new Date(),
+		}
+		try{
+			console.log(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+		
+		
+		
+		//store this in escrow
+		let productSellTrans = {
+			user: config.escrow_account,//targetAccount,//product.provider,//config.escrow_account,
+			reward_activity: 'Sell Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_price: item_price,
+			token_count: item_price,
+			actifit_percent_cut: actifit_percent_cut,
+			note: 'Sold Product '+product.name+ ' to '+user,
+			date: new Date(),
+		}
+		
+		//alternatively, send to provider directly
+		if (product.type == 'ebook'){
+			//close the transaction on the fly, no need to put in escrow. Rewards goes to seller
+			productSellTrans.user = product.provider;
+			productSellTrans.token_count = parseFloat(item_price) * (100 - parseFloat(actifit_percent_cut)) / 100;
+		}
+		
+		try{
+			console.log(productSellTrans);
+			let transaction = await db.collection('token_transactions').insert(productSellTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing sell action. DB storing issue'});
+			return;
+		}
+		
+		if (product.type == 'ebook'){
+			//also put profit to actifit.profit account
+			
+			productSellTrans = {
+				user: config.sale_profit_account,
+				reward_activity: 'Sell Product Profit',
+				buyer: user,
+				seller: product.provider,
+				product_id: product_id,
+				product_type: product.type,
+				product_price: item_price,
+				token_count: parseFloat(item_price) * parseFloat(actifit_percent_cut) / 100,
+				actifit_percent_cut: actifit_percent_cut,
+				note: 'Sale Profit Product '+product.name+ ' by ' + product.provider + ' to '+user,
+				date: new Date(),
+			}
+			
+			try{
+				console.log(productSellTrans);
+				let transaction = await db.collection('token_transactions').insert(productSellTrans);
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing sell action. DB storing issue'});
+				return;
+			}
+			
+			//we also need to store this transaction alongside an access token that enables this user only to access the download ebook
+			access_token = generatePassword(2);
+			
+			let productTokenTrans = {
+				user: user,
+				product_id: product_id,
+				access_token: access_token,
+				enabled: true,
+				date: new Date(),
+			}
+			
+			try{
+				console.log(productTokenTrans);
+				let transaction = await db.collection('user_product_key').insert(productTokenTrans);
+				console.log('success inserting access_token');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing sell action. DB storing issue'});
+				return;
+			}
+			
+		}
+		
+		
+		//update current user's token balance & store to db
+		let new_token_count = cur_user_token_count - parseFloat(item_price);
+		user_info.tokens = new_token_count;
+		console.log('new_token_count:'+new_token_count);
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+		
+		res.send({'status': 'Success', 'access_token': access_token});
+	}
+})
+
+/* grab user token entry for user */
+
+matchProductTrans = async function (user, product_id){
+  let token_match = await db.collection('user_product_key').findOne(
+	{ user: user, product_id: product_id },
+	{ user: 1, product_id: 1 }
+  );
+  console.log(token_match);
+  return token_match;
+}
+
+matchAccessToken = async function (user, product_id, access_token){
+  let token_match = await db.collection('user_product_key').findOne({user: user, product_id: product_id, access_token: access_token});
+  return token_match;
+}
+
+app.get("/productBought", async function(req, res) {
+	console.log('productBought');
+	console.log(req.query);
+  //check if proper params sent
+  if (!req.query.user || !req.query.product_id) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let product_id = req.query.product_id;
+  
+  //check if the proper access token is valid for this user/product combination
+  let token_match = await matchProductTrans(user, product_id);
+  
+  res.send(token_match);
+});
+
+app.get("/productBoughtToken", async function(req, res) {
+  //check if proper params sent
+  if (!req.query.user || !req.query.access_token || !req.query.product_id) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let access_token = req.query.access_token;
+  let product_id = req.query.product_id;
+  
+  //check if the proper access token is valid for this user/product combination
+  let token_match = await matchAccessToken(user, product_id, access_token);
+  
+  let token_match = await db.collection('user_product_key').findOne({user: user, access_token: access_token});
+  res.send(token_match);
+});
+
+
+app.get("/validatePassForDownload", async function(req, res) {
+	let user = req.query.user;
+	let product_id = req.query.product_id;
+	let query = {user: user};
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+	if (entryFound == null){
+		res.send({'error': 'Account does not have a recorded funds password'});
+		return;
+	}else if (!entryFound.passVerified){
+		res.send({'error': 'Account\'s funds password not verified'});
+		return;
+	}else{
+	  //create encrypted version of sent password
+	  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+	  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
+	  encr_pass += cipher.final('hex');
+		if (entryFound.pass !== encr_pass){
+			res.send({'error': 'Incorrect username and/or funds password'});
+			return;
+		}
+		
+		//if pass if valid, re-enable download for this link for this user
+		let token_match = await db.collection('user_product_key').findOne({ user: user, product_id: product_id });
+		token_match.enabled = true;
+		db.collection('user_product_key').save(token_match);
+		res.send({'success': 'success', 'access_token': token_match.access_token});
+	}
+});
+
+/* function handles providing user for proper access to download ebook, while enforcing CORS */
+
+app.get("/downEbook", async function(req, res) {
+  //check if proper params sent
+  if (!req.query.user || !req.query.access_token || !req.query.product_id) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let access_token = req.query.access_token;
+  let product_id = req.query.product_id;
+  
+  //check if the proper access token is valid for this user/product combination
+  let token_match = await matchAccessToken(user, product_id, access_token);
+  console.log(token_match);
+  if (!token_match){
+	console.log('not found');
+	res.send({error: "access not permitted"});
+	return;
+  }
+  
+  if (!token_match.enabled){
+	console.log('found disabled');
+	res.send({error: "user access not permitted"});
+	return;
+  }
+  //need to set download to disabled to prevent future unauthorized access
+  token_match.enabled = false;
+  db.collection('user_product_key').save(token_match);
+
+  const fileName = config.ebook1
+  const filePath = config.ebook1pathlive + fileName
+  
+  const fs = require('fs');
+  
+  		
+  const path = require('path');
+  let pathname = path.join(__dirname, filePath);
+  console.log(pathname);
+  //return;
+
+  // Check if file specified by the filePath exists 
+  fs.access(pathname, (err) => {
+	  if (!err) {
+		console.log('match ebook');
+		res.writeHead(200, {
+          "Content-Type": "application/pdf",
+          "Content-Disposition": "attachment; filename=" + fileName
+        });
+        fs.createReadStream(filePath).pipe(res);
+		return;
+	  }
+	  console.log(err);
+	  console.log('ebook does not exist');
+	  res.writeHead(400, {"Content-Type": "text/plain"});
+      res.end("ERROR File does not exist");
+	});
+ 
+})
+ 
+ 
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
@@ -2011,6 +2363,90 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 	res.write(JSON.stringify({'paymentReceivedTx': paymentReceivedTx, 'statusUpdated': statusUpdated}));
 	res.end();
 });
+
+
+//function handles the process of confirming buy event for AFIT via STEEM
+app.get('/confirmBuyAction', async function(req,res){
+	let match_trx = '';
+	let statusUpdated = false;
+	//keeping request alive to avoid timeouts
+	let intID = setInterval(function(){
+		res.write(' ');
+	},8000);
+	try{
+		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account);
+		console.log('>>>> got TX '+match_trx);
+		let targetUser = req.query.from;
+		if (match_trx != ''){
+			try{
+				//we found the transfer, now let's book proper AFIT tokens for the user
+				//query to see if entry already stored
+				let tokenBuyTransQuery = {
+					user: targetUser,
+					buy_trx_ref: match_trx
+				}
+				//store the transaction to the user's profile
+				let tokenBuyTrans = {
+					user: targetUser,
+					reward_activity: 'Buy AFIT Actifit.io',
+					steem_spent: parseFloat(req.query.steem_amount),
+					token_count: parseFloat(req.query.afit_amount),
+					buy_trx_ref: match_trx,
+					date: new Date(),
+				}
+				try{
+					console.log(tokenBuyTrans);
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('token_transactions').update(tokenBuyTransQuery, tokenBuyTrans, { upsert: true });
+					let trans_res = transaction.result;
+					console.log(trans_res);
+					/*console.log('nMatched:'+trans_res.nMatched);
+					console.log('nUpserted:'+trans_res.upserted);
+					console.log('nModified:'+trans_res.nModified);*/
+					if (trans_res.upserted){
+						//we have a new entry, increase user token count
+						
+						let user_info = await grabUserTokensFunc (targetUser);
+						
+						let cur_user_token_count = 0;
+						if (user_info){
+							cur_user_token_count = parseFloat(user_info.tokens);
+							//update current user's token balance & store to db
+							let afit_amount = parseFloat(req.query.afit_amount);
+							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+							user_info.tokens = new_token_count;
+							console.log('new_token_count:'+new_token_count);
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success adding AFIT tokens to user balance');
+							}catch(err){
+								console.log(err);
+								return;
+							}
+						}
+					}else{
+						//do nothing
+					}
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+					res.end();
+					return;
+				}
+			}catch(e){
+				console.log(e);
+			}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	//we're done, let's clear our running interval
+	clearInterval(intID);
+	//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
+	res.write(JSON.stringify({'paymentReceivedTx': match_trx}));
+	res.end();
+});
+
 
 
 /* end point finding whether user has a pending AFIT token swap */
