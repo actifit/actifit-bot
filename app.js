@@ -1028,10 +1028,13 @@ userRewardedPostCountFunc = async function(req, res){
 	};
 	//if this is a sum for specific period v/s a total sum
 	if (typeof req.query.period != "undefined" && !isNaN(req.query.period)){
-		var days = req.query.period;
+		let days = req.query.period;
 		//console.log("days:"+days);
-		var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		var endDate = moment(moment().utc().startOf('date').subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+		let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		if (!isNaN(req.query.delay)){
+			startDate = moment(moment().utc().startOf('date').subtract(req.query.delay, 'days').toDate()).format('YYYY-MM-DD');
+		}
+		let endDate = moment(moment(startDate).utc().startOf('date').subtract(days, 'days').toDate()).format('YYYY-MM-DD');
 		//console.log("startDate:"+startDate+" endDate:"+endDate);
 		//adjust query to include dates
 		query_json = {
@@ -1199,6 +1202,9 @@ app.get('/getRank/:user', async function (req, res) {
 		
 		//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
 		req.query.period = config.recent_posts_period;
+		
+		//add a 2 day delay to take into consideration late voting rounds
+		req.query.delay = 2;
 		
 		var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
 		//console.log(recent_rewarded_post_count);
