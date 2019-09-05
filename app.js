@@ -160,6 +160,13 @@ generatePassword = function (multip) {
 	}
 	return passString;
   };
+  
+  
+app.get('/votingStatus', async function (req, res) {
+	let votingStatus = await db.collection('voting_status').findOne({});
+	res.send(votingStatus);
+});
+
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await grabUserTokensFunc(req.params.user);
@@ -176,6 +183,42 @@ app.get('/transactions/:user?', async function (req, res) {
 	}else{
 		//only limit returned transactions in case this is a general query
 		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+	}
+    res.send(transactions);
+});
+
+/* end point for transactions display by type (limited by 1000) */
+app.get('/transactionsByType/', async function (req, res) {
+	let query = {};
+	let transactions = {};
+	let proceed = false;
+	if (req.query.type){
+		proceed = true;
+		query = {reward_activity: req.query.type}
+		
+	}
+	let startDate = '';
+	let endDate = '';
+	if (req.query.startDate){
+		startDate = moment(moment(req.query.startDate).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	}
+	if (req.query.endDate){
+		//let endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+		endDate = moment(moment(req.query.endDate).utc().endOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	}
+	if (startDate && endDate){
+		query["date"] = {
+					"$lt": new Date(endDate),
+					"$gte": new Date(startDate)
+				};
+	}else if (startDate){
+		query["date"] = {
+					"$gte": new Date(startDate)
+				};
+	}
+	console.log(query);
+	if (proceed){
+		transactions = await db.collection('token_transactions').find(query).sort({date: 1}).limit(1000).toArray();
 	}
     res.send(transactions);
 });
@@ -2540,7 +2583,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 		console.log(user_info);
 		let cur_user_token_count = parseFloat(user_info.tokens);
 		if (cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
-			res.send({'error': 'Account does not have enough AFIT funds'});
+			res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+config.min_afit_for_steem_upvote});
 			return;
 		}
 		
