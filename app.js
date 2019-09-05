@@ -208,8 +208,49 @@ app.get('/user-tokens-info', async function(req, res) {
 	   });
 
 });
+
+/* end point for user total token count display */
+app.get('/topAFITHolders', async function (req, res) {
+	let tokenHolders = [];
+	if (isNaN(req.query.count)){
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
+	}else{
+		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
+	}
+    res.send(tokenHolders);
 	   });
 
+/* end point for user total token count display */
+app.get('/topAFITXHolders', async function (req, res) {
+	let afitxSorted = utils.sortArrLodash(usersAFITXBal);
+	fullSortedAFITXList = afitxSorted;
+	let maxAmount = parseInt(req.query.count);
+	if (isNaN(maxAmount)){
+		//set max as 100
+		maxAmount = 100;
+	}
+	//always skip top holder as that would be actifit
+	afitxSorted = afitxSorted.slice(1, maxAmount + 1);
+	let output = afitxSorted;
+	if (req.query.pretty){
+		output = '#|Token Holder | AFITX Tokens Held |<br/>';
+		output += '|---|---|---|<br/>';
+		for(var i = 0; i < afitxSorted.length; i++) {
+			let tokenHolder = afitxSorted[i];
+			output += (i+1) + '|';
+			output += '@'+tokenHolder.account + '|';
+			output += gk_add_commas(parseFloat(tokenHolder.balance).toFixed(3)) + '|';
+			output += '<br/>';
+		}
+	}
+	
+    res.send(output);
+});
+
+/* end point for fetching user AFITX data */
+app.get('/afitxData/:user', async function (req, res) {
+    let val = await getAFITXUserData(req.params.user);
+	res.send(val);
 });
 
 
