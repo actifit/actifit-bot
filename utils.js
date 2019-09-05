@@ -1017,6 +1017,10 @@ async function steemPowerToVests (steemPower) {
   return parseFloat(steemPower * totalVests / totalSteem).toFixed(6);
 }
 
+function sortArrLodash (arrToSort) {
+	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
+}
+
 
  module.exports = {
    updateSteemVariables: updateSteemVariables,
@@ -1047,4 +1051,6 @@ async function steemPowerToVests (steemPower) {
    confirmPaymentReceived: confirmPaymentReceived,
    confirmPaymentReceivedPassword: confirmPaymentReceivedPassword,
    confirmSEAFITReceived: confirmSEAFITReceived,
+   confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
+   sortArrLodash: sortArrLodash,
  }
