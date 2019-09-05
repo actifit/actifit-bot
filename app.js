@@ -459,6 +459,12 @@ app.get('/isoParticipant/:user', async function (req, res) {
 	res.send(user);
 });
 
+/* end point for checking if user took part of ISO event */
+app.get('/isoParticipantList/', async function (req, res) {
+	let userList = await db.collection('iso_participants').find().toArray();
+	res.send(userList);
+});
+
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
 	var delegatorList; 
@@ -499,6 +505,20 @@ app.get('/ambassadors', async function (req, res) {
 	var ambassadorList; 
 	ambassadorList = await db.collection('team').find({title:'ambassador', status:'active'}).sort({name: 1}).toArray();
     res.send(ambassadorList);
+});
+
+/* end point for returning current active professionals list */
+app.get('/professionals', async function (req, res) {
+	var professionalsList; 
+	professionalsList = await db.collection('professionals').find({active:true}).sort({name: 1}).toArray();
+    res.send(professionalsList);
+});
+
+/* end point for returning current active product list */
+app.get('/products', async function (req, res) {
+	var productsList; 
+	productsList = await db.collection('products').find({active:true}).sort({name: -1}).toArray();
+    res.send(productsList);
 });
 
 /* end point for returning current top AFIT token holders */
