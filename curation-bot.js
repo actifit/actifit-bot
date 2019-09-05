@@ -818,9 +818,26 @@ function processVotes(query, subsequent) {
 				let first_index = _.findIndex(votePosts, ['author', post.author]);
 				let skip_date_diff = false;
 				
-				if (last_index != -1 && (first_index!=last_index)) {
-					utils.log('---- User already has more than 2 posts in 24 hours ------');
+				//if both posts have the same date using new json metadata format, definitely bail out
+				if (last_index != -1){
+					utils.log('---- User has 2 posts, lets check if they have same target date ------');
 					let last_voted = votePosts[last_index];
+					let json_meta_vals = JSON.parse(last_voted.json_metadata);
+					if ((typeof json_meta_vals.activityDate != 'undefined' && json_meta_vals.activityDate != '' && json_meta_vals.activityDate != 'undefined') &&
+						(typeof post.json.activityDate != 'undefined' && post.json.activityDate != '' && post.json.activityDate != 'undefined')){
+						//both posts have values and particularly same value
+						if (json_meta_vals.activityDate.length == post.json.activityDate.length 
+							&& json_meta_vals.activityDate.length > 0
+							&& json_meta_vals.activityDate[0] == post.json.activityDate[0]){
+							utils.log('same target date with value '+ json_meta_vals.activityDate + ' ...skipping');
+							//skip new post
+							skip_date_diff = true
+						}else{
+							utils.log('posts okay different dates');
+						}
+					}else{
+						if (first_index!=last_index) {
+							utils.log('---- User already has more than 2 posts in 24 hours ------');
 					var last_date = moment(last_voted.created).format('D');
 					let first_voted = votePosts[first_index];
 					var first_date = moment(first_voted.created).format('D');
@@ -840,13 +857,11 @@ function processVotes(query, subsequent) {
 						
 						//skip new post
 						skip_date_diff = true;
-						
 					}          
-				}else if (last_index != -1){
-					utils.log('last_index:'+last_index);
+						}else{
+							utils.log('reject a post if a prior one exists that is less than 6 hours away');
 					utils.log(post.author+post.url);
 					//adding condition to reject a post if a prior one exists that is less than 6 hours away
-					let last_voted = votePosts[last_index];
 					//utils.log(last_voted.author+last_voted.url);
 					var last_date = moment(last_voted.created).toDate();
 					var this_date = moment(post.created).toDate();
@@ -859,6 +874,8 @@ function processVotes(query, subsequent) {
 						skip_date_diff = true;
 					}
 					
+				}
+					}
 				}
 				
 				
