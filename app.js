@@ -148,13 +148,13 @@ app.get('/user/:user', async function (req, res) {
     res.send(user);
 });
 
-/* end point for user transactions display (per user or general actifit token transactions, limited by 1000 */
+/* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
 	var transactions;
 	if(req.params.user){
 		query = {user: req.params.user}
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
 		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
