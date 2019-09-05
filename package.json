@@ -4,11 +4,11 @@
   "description": "actifit curation bot",
   "main": "curation-bot.js",
   "dependencies": {
-    "axios": "^0.18.0",
+    "axios": "^0.18.1",
     "cheerio": "^1.0.0-rc.2",
     "dsteem": "^0.10.1",
     "express": "^4.16.2",
-    "jquery": "^3.3.1",
+    "jquery": "^3.4.1",
     "lodash": ">=4.17.11",
     "moment": "^2.22.2",
     "mongodb": "^3.0.10",
@@ -17,6 +17,7 @@
     "nodemailer-express-handlebars": "^3.0.0",
     "p-iteration": "^1.1.7",
     "request": "^2.88.0",
+    "sscjs": "0.0.8",
     "steem": "^0.6.7"
   },
   "devDependencies": {
