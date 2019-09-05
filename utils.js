@@ -242,6 +242,52 @@ var HOURS = 60 * 60;
 		});
 	}
 	
+	//function handles confirming if payment was received
+	async function confirmPaymentReceivedBuy (req) {
+		getConfig();
+		console.log('confirmPaymentReceivedBuy');
+		return new Promise((resolve, reject) => {
+			let th_id = setInterval(async function(){
+				console.log('check buy funds');
+				steem.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
+					let tx_id = '';
+					let paymentFound = false;
+					for (let txs of transactions) {
+						let op = txs[1].op
+						//check if we received a transfer to our target account
+						//if we found a transfer operation sent to our target account, with the correct sender and the proper amount, proceed
+						if (op[0] === 'transfer'){
+							let sentAmount = op[1].amount.split(' ')[0];
+							if (op[1].to === config.buy_account && op[1].from === req.query.from && sentAmount === req.query.steem_amount){  
+								console.log('in');
+								console.log(op[1]);
+								//console.log(txs);
+								
+								let now = moment(new Date()); //todays date
+								let end = moment(txs[1].timestamp); // last update date
+								let duration = moment.duration(now.diff(end));
+								let hrs = duration.asHours();
+								//transaction needs to have been concluded within 5 hours.
+								if (hrs < 5){
+									tx_id = txs[1].trx_id;
+									paymentFound = true;
+									break;
+								}
+							}
+						}
+					}
+					if (paymentFound){
+						//need to look again
+						console.log('found');
+						clearInterval(th_id);
+						resolve(tx_id);
+					}
+				});
+			}, 5000);
+		});
+	}
+	
+	
 	
 	//function handles claiming spots for accounts
 	async function claimDiscountedAccount(){
