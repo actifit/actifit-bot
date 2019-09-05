@@ -56,18 +56,19 @@ setInterval(function() {
 		});
 		
 		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
-		/*request('https://actifitbot.herokuapp.com/confirmAFITSEBulk', function (error, response, body) {
+		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk', function (error, response, body) {
 			console.log('process any missed AFIT SE to Actifit Wallet');
+			console.log(response);
 			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
 			//console.log('error: '+ error)
-		});*/
+		});
 	}
 	
   }catch(err){
 	console.log('error:'+err);
   }
-}, 600000); // every 10 minutes (600000)
 
+}, 600000); // every 10 minutes (600000)
 
 var crypto = require('crypto');
 
@@ -272,6 +273,25 @@ var lastIterationCount = 0;
 let queryCount = 0;
 
 let properties, rewardFund, rewardBalance, recentClaims, totalSteem, totalVests, votePowerReserveRate, sbd_print_percentage;
+
+async function setIsVoting(running){
+	try{
+		is_voting = running;
+		let votingStatus = await db.collection('voting_status').findOne({});
+		if (!votingStatus){
+			votingStatus = new Object();
+		}
+		votingStatus.is_voting = running;
+		if (running){
+			votingStatus.voting_start = new Date();
+		}else{
+			votingStatus.voting_end = new Date();
+		}
+		db.collection('voting_status').save(votingStatus);
+	}catch(err){
+		console.log(err);
+	}
+}
 
 
 //handles grabbing the vote value /STEEM
@@ -540,7 +560,8 @@ function processVotes(query, subsequent) {
 	//track how many queries were ran
 	queryCount += 1;
     if (result && !err) {
-		is_voting = true;
+		//is_voting = true;
+		setIsVoting(true);
       
 		utils.log(result.length + ' posts to process...');      
 		
@@ -555,6 +576,7 @@ function processVotes(query, subsequent) {
 		
 		
 		for(var i = 0; i < result.length; i++) {
+			
 			var post = result[i];
 			
 		
@@ -586,6 +608,7 @@ function processVotes(query, subsequent) {
 			  utils.log('Bot already voted on: ' + post.url);
 			  continue;
 			}
+			
 			
 			//post.json_metadata = JSON.parse(body);
 			
@@ -673,6 +696,8 @@ function processVotes(query, subsequent) {
 			
 			try {
 			
+				console.log('parsing data by post '+post.url);
+			
 				post.json = JSON.parse(post.json_metadata);
 					
 				//we need to fetch the proper json_metadata from our own DB to ensure those have not been changed
@@ -680,7 +705,7 @@ function processVotes(query, subsequent) {
 				if (!config.testing){
 				
 					let ver_url = config.api_url + "fetchVerifiedPost";			
-					let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID'];
+					let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID', 'activityDate'];
 					
 					let incons_detected = false;
 					let incons_field = '';
@@ -693,9 +718,10 @@ function processVotes(query, subsequent) {
 								}
 							});
 						
+						
 						//let's compare mission critical data to find if manipulation was done
 						let auth_meta = verf_res.data.json_metadata;
-						
+						//console.log(auth_meta);
 						//if either stored or current metadata is non-empty we need to investigate further
 						if (auth_meta != '' || post.json_metadata != ''){
 							//check all critical values
@@ -781,7 +807,7 @@ function processVotes(query, subsequent) {
 					continue;
 				}
 					
-				
+				//console.log('still here');
 				//moving this section before the actual token rewards
 				
 				//due to the difference in server times, a user's post might have same date created.
@@ -1432,6 +1458,10 @@ function processVotes(query, subsequent) {
       last_voted++;
     } else {
       utils.log(err, result);
+	  //since we encountered an error, we need to restart the process
+	  //is_voting = false;
+	  setIsVoting(false);
+	  votePosts = Array();
       //errorEmail(err, config.report_emails);
     }
   });
@@ -1496,7 +1526,8 @@ function votingProcess(posts, power_per_vote) {
         utils.log('=======================================================');
         utils.log('Voting Complete!');
         utils.log('=======================================================');
-        is_voting = false;
+        //is_voting = false;
+		setIsVoting(false);
         error_sent = false;
         saveState();
 		
@@ -1517,6 +1548,7 @@ function sendVote(post, retries, power_per_vote) {
 	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
   
 	var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
+	let stdrd_vote_weight = vote_weight * config.partner_comm_vote_mult;
 	console.log('vote weight:'+vote_weight);
 	
 	//if user had paid AFIT for extra STEEM upvotes, add this to their upvote value
@@ -1536,6 +1568,11 @@ function sendVote(post, retries, power_per_vote) {
 	if (vote_weight > config.max_vote_per_post){
 		vote_weight = config.max_vote_per_post;
 	}
+	
+	if (stdrd_vote_weight > config.max_vote_per_post){
+		stdrd_vote_weight = config.max_vote_per_post;
+	}
+	
 	post.vote_weight = vote_weight;
 	last_votes.push(post);
 
