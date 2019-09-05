@@ -1630,6 +1630,34 @@ function sendVote(post, retries, power_per_vote) {
 					utils.log(err);
 				}
 			}
+			
+			//if additional partner accounts enabled, vote using them as well
+			try{
+				if (config.zzan_active){
+					steem.broadcast.vote(config.zzan_pk, config.zzan_account, post.author, post.permlink, stdrd_vote_weight, function (err, result) {
+						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);
+						if (!err && result) {
+							utils.log(err, result);
+						}
+					});
+				}
+			}catch(err){
+				utils.log(err);
+			}
+			
+			try{
+				if (config.sports_active){
+					steem.broadcast.vote(config.sports_pk, config.sports_account, post.author, post.permlink, stdrd_vote_weight, function (err, result) {
+						utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);
+						if (!err && result) {
+							utils.log(err, result);
+						}
+					});
+				}
+			}catch(err){
+				utils.log(err);
+			}
+			
 			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
 				if (!err && result) {
 					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
