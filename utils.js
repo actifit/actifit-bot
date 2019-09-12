@@ -31,6 +31,18 @@ var HOURS = 60 * 60;
  let totalVests
  let totalSteem
  
+ async function getAccountData(account_name){
+	let account = null;
+	//attempt to load account data
+	try{
+		let account_res = await steem.api.getAccountsAsync([config.account]); 
+		account = account_res[0];
+	}catch(err){
+		console.log(err);
+	}
+	return account;
+ }
+ 
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
@@ -78,7 +90,6 @@ var HOURS = 60 * 60;
 
             const currentManaPerc = currentMana * 100 / maxMana;
 			
-			console.log(currentManaPerc);
 		return currentManaPerc;
 	}
 	
@@ -501,6 +512,10 @@ var HOURS = 60 * 60;
 
 function timeTilFullPower(cur_power){
      return (STEEMIT_100_PERCENT - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / STEEMIT_100_PERCENT;
+ }
+ 
+ function timeTilKickOffVoting(cur_power){
+     return (parseInt(config.vp_kickstart) - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / parseInt(config.vp_kickstart);
  }
 
  function getVestingShares(account) {
@@ -1031,6 +1046,7 @@ function sortArrLodash (arrToSort) {
    getVoteValueUSD: getVoteValueUSD,
    getVoteValue: getVoteValue,
    timeTilFullPower: timeTilFullPower,
+   timeTilKickOffVoting: timeTilKickOffVoting,
    getVestingShares: getVestingShares,
    loadUserList: loadUserList,
    getCurrency: getCurrency,
@@ -1054,4 +1070,5 @@ function sortArrLodash (arrToSort) {
    confirmSEAFITReceived: confirmSEAFITReceived,
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
+   getAccountData: getAccountData,
  }

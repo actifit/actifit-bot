@@ -28,6 +28,7 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
+
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
@@ -86,6 +87,16 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
+//initial load
+let account = null;
+loadAccountData();
+
+async function loadAccountData(){
+	//load main account data
+	
+	account = await utils.getAccountData(config.account);
+}
 
 async function fetchAFITXBal(offset){
   try{
@@ -164,7 +175,14 @@ generatePassword = function (multip) {
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
-	res.send(votingStatus);
+	if (!account){
+		account = await utils.getAccountData(config.account);
+	}
+	let vp_res = await utils.getVotingPower(account);
+	
+	let reward_start = utils.toTimer(utils.timeTilKickOffVoting(vp_res * 100));
+
+	res.send({'status': votingStatus, 'vp': vp_res, 'reward_start': reward_start});
 });
 
 /* end point for user total token count display */
