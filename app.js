@@ -180,7 +180,7 @@ app.get('/votingStatus', async function (req, res) {
 	}
 	let vp_res = await utils.getVotingPower(account);
 	
-	let reward_start = utils.toTimer(utils.timeTilKickOffVoting(vp_res * 100));
+	let reward_start = utils.toHrMn(utils.timeTilKickOffVoting(vp_res * 100));
 
 	res.send({'status': votingStatus, 'vp': vp_res, 'reward_start': reward_start});
 });

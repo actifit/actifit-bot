@@ -575,6 +575,12 @@ function format(n, c, d, t) {
    var s = Math.floor((ts % 60));
    return padLeft(h, 2) + ':' + padLeft(m, 2) + ':' + padLeft(s, 2);
  }
+ 
+ function toHrMn(ts) {
+   var h = Math.floor(ts / HOURS);
+   var m = Math.floor((ts % HOURS) / 60);
+   return padLeft(h, 2) + 'hr(s):' + padLeft(m, 2) + 'min(s)';
+ }
 
  function padLeft(v, d) {
    var l = (v + '').length;
@@ -1052,6 +1058,7 @@ function sortArrLodash (arrToSort) {
    getCurrency: getCurrency,
    format: format,
    toTimer: toTimer,
+   toHrMn: toHrMn,
    log: log,
    calcScore: calcScore,
    calculateVotes: calculateVotes,
