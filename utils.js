@@ -515,7 +515,7 @@ function timeTilFullPower(cur_power){
  }
  
  function timeTilKickOffVoting(cur_power){
-     return (config.vp_kickstart - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / config.vp_kickstart;
+     return (parseInt(config.vp_kickstart) - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / parseInt(config.vp_kickstart);
  }
 
  function getVestingShares(account) {
