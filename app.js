@@ -28,6 +28,7 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
+
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
@@ -86,6 +87,16 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
+//initial load
+let account = null;
+loadAccountData();
+
+async function loadAccountData(){
+	//load main account data
+	
+	account = await utils.getAccountData(config.account);
+}
 
 async function fetchAFITXBal(offset){
   try{
@@ -164,7 +175,14 @@ generatePassword = function (multip) {
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
-	res.send(votingStatus);
+	if (!account){
+		account = await utils.getAccountData(config.account);
+	}
+	let vp_res = await utils.getVotingPower(account);
+	
+	let reward_start = utils.toTimer(utils.timeTilKickOffVoting(vp_res * 100));
+
+	res.send({'status': votingStatus, 'vp': vp_res, 'reward_start': reward_start});
 });
 
 /* end point for user total token count display */
@@ -279,7 +297,7 @@ app.get('/topAFITHolders', async function (req, res) {
 		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
 	}
     res.send(tokenHolders);
-	   });
+});
 
 /* end point for user total token count display */
 app.get('/topAFITXHolders', async function (req, res) {
@@ -313,6 +331,7 @@ app.get('/afitxData/:user', async function (req, res) {
     let val = await getAFITXUserData(req.params.user);
 	res.send(val);
 });
+
 
 
 /* end point for returning total delegation payments (number of delegators and amount paid) on a specific date */
@@ -995,6 +1014,8 @@ app.get('/tippedToday/:user', async function (req, res) {
 	res.send(JSON.stringify({total_tip:totalTipAmount}));
 	
 });
+
+
 
 /* end point for counting number of reblogs on a certain date param (default current date) */
 app.get('/reblogCount', async function (req, res) {

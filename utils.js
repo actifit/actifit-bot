@@ -31,6 +31,18 @@ var HOURS = 60 * 60;
  let totalVests
  let totalSteem
  
+ async function getAccountData(account_name){
+	let account = null;
+	//attempt to load account data
+	try{
+		let account_res = await steem.api.getAccountsAsync([config.account]); 
+		account = account_res[0];
+	}catch(err){
+		console.log(err);
+	}
+	return account;
+ }
+ 
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
@@ -78,7 +90,6 @@ var HOURS = 60 * 60;
 
             const currentManaPerc = currentMana * 100 / maxMana;
 			
-			console.log(currentManaPerc);
 		return currentManaPerc;
 	}
 	
@@ -121,32 +132,32 @@ var HOURS = 60 * 60;
 			th_id = setInterval(async function(){
 				if (attempts < max_attempts){
 					attempts += 1;
-				console.log('Check AFIT Power Up');
-				//let's call the service by S-E
-				let url = new URL(config.steem_engine_trans_acct_his);
-				console.log(config.steem_engine_trans_acct_his);
-				//connect with our service to confirm AFIT received to proper wallet
-				try{
-					let se_connector = await fetch(url);
-					let trx_entries = await se_connector.json();
-					
-					let match_trx;
-					
-					//check if we have a proper entry matching user transfer
-					if (match_trx = trx_entries.find(trx => trx.from == targetUser)) {
-						//found match, let's make sure transaction is recent enough
-						console.log('found match');
-						paymentFound = true;
-						if (paymentFound){
-							//need to look again
-							console.log('found');
-							clearInterval(th_id);
-							resolve(match_trx);
+					console.log('Check AFIT Power Up');
+					//let's call the service by S-E
+					let url = new URL(config.steem_engine_trans_acct_his);
+					console.log(config.steem_engine_trans_acct_his);
+					//connect with our service to confirm AFIT received to proper wallet
+					try{
+						let se_connector = await fetch(url);
+						let trx_entries = await se_connector.json();
+						
+						let match_trx;
+						
+						//check if we have a proper entry matching user transfer
+						if (match_trx = trx_entries.find(trx => trx.from == targetUser)) {
+							//found match, let's make sure transaction is recent enough
+							console.log('found match');
+							paymentFound = true;
+							if (paymentFound){
+								//need to look again
+								console.log('found');
+								clearInterval(th_id);
+								resolve(match_trx);
+							}
 						}
+					}catch(err){
+						console.log(err);
 					}
-				}catch(err){
-					console.log(err);
-				}
 				}else{
 					//return error
 					resolve(null);
@@ -502,6 +513,10 @@ var HOURS = 60 * 60;
 function timeTilFullPower(cur_power){
      return (STEEMIT_100_PERCENT - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / STEEMIT_100_PERCENT;
  }
+ 
+ function timeTilKickOffVoting(cur_power){
+     return (config.vp_kickstart - cur_power) * STEEMIT_VOTE_REGENERATION_SECONDS / config.vp_kickstart;
+ }
 
  function getVestingShares(account) {
      var effective_vesting_shares = parseFloat(account.vesting_shares.replace(" VESTS", ""))
@@ -790,7 +805,8 @@ async function lookupAccountPay (){
 	const ONE_MONTH = 30;
 	const ONE_YEAR = 365;
 	
-	let start_days = 1;
+	//when is our start day: 1 is yesterday, 10 is 10 days ago
+	let start_days = 11;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
@@ -1030,6 +1046,7 @@ function sortArrLodash (arrToSort) {
    getVoteValueUSD: getVoteValueUSD,
    getVoteValue: getVoteValue,
    timeTilFullPower: timeTilFullPower,
+   timeTilKickOffVoting: timeTilKickOffVoting,
    getVestingShares: getVestingShares,
    loadUserList: loadUserList,
    getCurrency: getCurrency,
@@ -1053,4 +1070,5 @@ function sortArrLodash (arrToSort) {
    confirmSEAFITReceived: confirmSEAFITReceived,
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
+   getAccountData: getAccountData,
  }
