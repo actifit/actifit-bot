@@ -89,7 +89,8 @@ var HOURS = 60 * 60;
             }
 
             const currentManaPerc = currentMana * 100 / maxMana;
-			
+			console.log(currentManaPerc);
+			console.log(account.name);
 		return currentManaPerc;
 	}
 	
