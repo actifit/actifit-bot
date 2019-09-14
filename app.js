@@ -90,6 +90,8 @@ app.get('/', function (req, res) {
 
 //initial load
 let account = null;
+let accountRefresh = false;
+let accountQueries = 0;
 loadAccountData();
 
 async function loadAccountData(){
@@ -175,8 +177,16 @@ generatePassword = function (multip) {
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
-	if (!account){
+	accountQueries += 1;
+	if (accountQueries > 10){
+		accountQueries = 0;
+		accountRefresh = true;
+	}
+	//fetch anew account data if account is empty or we need to refresh account data
+	if (!account || accountRefresh){
+		console.log('refreshing account data');
 		account = await utils.getAccountData(config.account);
+		accountRefresh = false;
 	}
 	let vp_res = await utils.getVotingPower(account);
 	
