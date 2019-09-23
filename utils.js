@@ -1044,6 +1044,27 @@ function sortArrLodash (arrToSort) {
 	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
 }
 
+async function rewardPost(post_url, vp){
+	//extract author and permalink from full url
+	//check if string ends with /, remove it
+	if (post_url.slice(-1) == '/'){
+		post_url = post_url.slice(0, -1);
+	}
+	//last portion is URL
+	let permalink = post_url.split('/').reverse()[0];
+	//before last portion is author, and remove the starting @
+	let author = post_url.split('/').reverse()[1].replace('@','');
+	//cast vote
+	let result = await steem.broadcast.voteAsync(
+							config.rewards_account_pkey, //postingWIF
+							config.rewards_account, // Voter
+							author, // Author
+							permalink, // Permlink
+							parseFloat(vp)*100, // Weight (10000 = 100%)
+						);
+	return  result;
+}
+
 
  module.exports = {
    updateSteemVariables: updateSteemVariables,
@@ -1079,4 +1100,5 @@ function sortArrLodash (arrToSort) {
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
+   rewardPost: rewardPost,
  }

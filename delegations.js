@@ -60,7 +60,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 }else{
 	
-	//runRewards(true);
+	runRewards(true);
 }
 
 const SSC = require('sscjs');
