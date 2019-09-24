@@ -146,7 +146,7 @@ async function getAFITXUserData(user){
 
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (username){
-	let user = await collection.findOne({_id: username});
+	let user = await db.collection('user_tokens').findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
 	if (typeof user!= "undefined" && user!=null){
