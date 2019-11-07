@@ -35,6 +35,16 @@ MongoClient.connect(url, function(err, client) {
 	  console.log("Connected successfully to server");
 
 	  db = client.db(db_name);
+	  
+	  //print version
+	/*  var adminDb = db.admin();
+    adminDb.serverStatus(function(err, info) {
+        if (err){
+			console.log(err);
+		}else{
+			console.log(info.version);
+		}
+    })*/
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
@@ -153,6 +163,11 @@ grabUserTokensFunc = async function (username){
 		if (typeof user.tokens!= "undefined"){
 			user.tokens = user.tokens.toFixed(3)
 		}
+	}else{
+		user = new Object();
+		user._id=username;
+		user.name=username;
+		user.tokens=0;
 	}
 	return user;
 }
@@ -587,6 +602,365 @@ app.get('/charities', async function (req, res) {
 app.get('/userBadges/:user', async function (req, res) {
 	let user = await db.collection('user_badges').find({user: req.params.user}).toArray();
 	res.send(user);
+});
+
+/* end point for fetching user's friends */
+app.get('/userFriends/:user', async function (req, res) {
+	let friendsA = await db.collection('friends').find({userA: req.params.user}, {fields : {userB:1, _id:0}}).toArray();
+	let friendsB = await db.collection('friends').find({userB: req.params.user}, {fields : {userA:1, _id:0}}).toArray();
+	console.log(friendsA);
+	console.log(friendsB);
+	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
+	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
+	res.send(friendsA.concat(friendsB));
+});
+
+sendNotification = async function (user, action_taker, type, details, url){
+	let notification_entry = {
+		user: user,
+		action_taker: action_taker,
+		type: type,
+		details: details,
+		url: url,
+		date: new Date(),
+		status: 'unread',
+	};
+	try{
+		let transaction = await db.collection('notifications').insert(notification_entry);
+		console.log('success inserting notification data');
+		return true;
+	}catch(err){
+		console.log('error');
+		return false;
+	}
+}
+
+/* end point for marking a notification as read */
+app.get('/markRead/:notif_id', async function (req, res) {
+	let notif_to_update = {
+		_id: new ObjectId(req.params.notif_id),
+	};
+	try{
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		console.log('success updating notification status');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+	
+
+});
+
+/* end point for tracking gadget buy orders */
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//confirmed, register transaction and deduct AFIT tokens
+	
+	let user = req.params.user;
+	let product_id = req.params.gadget;
+	
+	//fetch product info
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	//confirm proper AFIT token balance. Test against product price
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	let price_options = product.price;
+	let price_options_count = price_options.length;
+	let item_price = 0;
+	let item_currency = 'AFIT';
+	let actifit_percent_cut = 10;
+	for (let i=0; i < price_options_count; i++){
+		let entry = price_options[i];
+		item_price = entry.price;
+		item_currency = entry.currency;
+		actifit_percent_cut = entry.actifit_percent_cut;
+	}
+	
+	if (cur_user_token_count < item_price){
+		res.send({'error': 'Account does not have enough AFIT funds'});
+		return;
+	}
+	
+	product.provider = 'actifit';
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		reward_activity: 'Buy Product',
+		buyer: user,
+		seller: product.provider,
+		product_id: product_id,
+		product_type: product.type,
+		product_name: product.name,
+		product_level: product.level,
+		product_price: item_price,
+		token_count: -item_price,
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//store into user_gadgets table as well
+	let userGadgetTrans = {
+		user: user,
+		gadget: new ObjectId(product_id),
+		product_type: product.type,
+		gadget_name: product.name,
+		gadget_level: product.level,
+		status: "bought",
+		span: parseInt(product.benefits.time_span),
+		span_unit: product.benefits.time_unit,
+		consumed: 0,
+		posts_consumed: [],
+		date_bought: new Date(),
+		last_updated: new Date(),
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+	}
+	try{
+		console.log(userGadgetTrans);
+		let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//decrease product available count
+	product.count = parseInt(product.count) - 1;
+	try{
+		let trans = await db.collection('products').save(product);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//store this in escrow
+	/*let productSellTrans = {
+		user: config.null_account,//targetAccount,//product.provider,//config.escrow_account,
+		reward_activity: 'Sell Product',
+		buyer: user,
+		seller: product.provider,
+		product_id: product_id,
+		product_type: product.type,
+		product_price: item_price,
+		token_count: item_price,
+		actifit_percent_cut: actifit_percent_cut,
+		note: 'Sold Product '+product.name+ ' to '+user,
+		date: new Date(),
+	}
+	
+	try{
+		console.log(productSellTrans);
+		let transaction = await db.collection('token_transactions').insert(productSellTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing sell action. DB storing issue'});
+		return;
+	}*/
+		
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count - parseFloat(item_price);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
+});
+
+/* end point for fetching pending user's friend requests */
+app.get('/userFriendRequests/:user', async function (req, res) {
+	let user_requests = await db.collection('user_requests').find({initiator: req.params.user, status:'pending'}).toArray();
+	let user_targets = await db.collection('user_requests').find({target: req.params.user, status:'pending'}).toArray();
+	res.send({sent_pending: user_requests, received_pending: user_targets});
+});
+
+/* end point for adding user's friend */
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let user_friendship = {
+		initiator: req.params.userA,
+		request: 'friendship',
+		target: req.params.userB,
+		date: new Date(),
+		status: 'pending',
+	};
+	try{
+		let transaction = await db.collection('user_requests').insert(user_friendship);
+		console.log('success inserting post data');
+		
+		//notify recipient
+		sendNotification(req.params.userB, req.params.userA, 'friendship_request', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
+	
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+
+});
+
+
+/* end point for cancelling friend request */
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	let friendshipQuery = {
+		initiator: req.params.userA,
+		target: req.params.userB,
+		request: 'friendship',
+		status: 'pending',
+	}
+	let userFriendship = {
+		initiator: req.params.userA,
+		request: 'friendship',
+		target: req.params.userB,
+		date: new Date(),
+		status: 'cancelled',
+	};
+	try{
+		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship, { upsert: true });
+		console.log('success inserting post data');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+
+});
+
+
+
+/* end point for cancelling friend request */
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	//need to update both ways to check which way was the original request
+	let friendshipQuery = {
+		initiator: req.params.userB,
+		target: req.params.userA,
+		request: 'friendship',
+	}
+	let userFriendship = {
+		initiator: req.params.userB,
+		request: 'friendship',
+		target: req.params.userA,
+		date: new Date(),
+		status: 'approved',
+	};
+	let insertSuccess = false;
+	try{
+		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship);
+		console.log('success updating post data');
+		
+		//notify recipient
+		sendNotification(req.params.userB, req.params.userA, 'friendship_acceptance', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
+		
+		insertSuccess = true;
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}
+	
+	if (insertSuccess){
+		
+		//also insert to friendship table
+		
+		let friendshipEntry = {
+			userA: req.params.userB,
+			userB: req.params.userA,
+			date: new Date(),
+		};
+		
+		try{
+			let result = await db.collection('friends').insert(friendshipEntry);
+			res.send({status: 'success'});
+		}catch(err){
+			res.send({status: 'error', details: err});
+		}
+	}
+});
+
+
+/* end point for dropping friendship */
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	try{
+		//remove friendship entry both ways
+		let result = await db.collection('friends').remove({userA: req.params.userA, userB: req.params.userB});
+		console.log(result);
+		result = await db.collection('friends').remove({userA: req.params.userB, userB: req.params.userA});
+		console.log(result);
+		
+		//also remove requests to prevent confusion
+		result = await db.collection('user_requests').remove({initiator: req.params.userA, request: 'friendship', target: req.params.userB});
+		result = await db.collection('user_requests').remove({initiator: req.params.userB, request: 'friendship', target: req.params.userA});
+		
+		res.send({'status': 'success'});
+	}catch(err){
+		console.log(err);
+		res.send({status: 'error'});
+	}
+});
+
+/* end point for fetching all users notifications */
+app.get('/activeNotifications/:user', async function (req, res) {
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'unread'}).toArray();
+	res.send(activeNotifications.reverse());
+});
+
+/* end point for fetching all users notifications */
+app.get('/readNotifications/:user', async function (req, res) {
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).toArray();
+	res.send(activeNotifications.reverse());
 });
 
 /* end point for fetching all users badges */
@@ -1320,170 +1694,172 @@ app.get('/userRewardedPostCount/:user', async function (req, res) {
 	}
 });
 
-/* end point for getting current user's Actifit rank */
-app.get('/getRank/:user', async function (req, res) {
+calcRank = async function (req, res){
+	//delegation calculation matrix
+	var delegation_rules = [
+		[9,0],
+		[499,0.05],
+		[999,0.10],
+		[4999,0.20],
+		[9999,0.30],
+		[19999,0.40],
+		[49999,0.55],
+		[99999,0.65],
+		[499999,0.75],
+		[999999,0.90],
+		[1000000,1]
+	]
 	
-	if (typeof req.params.user!= "undefined" && req.params.user!=null){
+	//AFIT token calculation matrix
+	var afit_token_rules = [
+		[9,0],
+		[999,0.10],
+		[4999,0.20],
+		[9999,0.30],
+		[19999,0.40],
+		[49999,0.50],
+		[99999,0.60],
+		[499999,0.70],
+		[999999,0.80],
+		[4999999,0.90],
+		[5000000,1]
+	]
 	
-		//delegation calculation matrix
-		var delegation_rules = [
-			[9,0],
-			[499,0.05],
-			[999,0.10],
-			[4999,0.20],
-			[9999,0.30],
-			[19999,0.40],
-			[49999,0.55],
-			[99999,0.65],
-			[499999,0.75],
-			[999999,0.90],
-			[1000000,1]
-		]
-		
-		//AFIT token calculation matrix
-		var afit_token_rules = [
-			[9,0],
-			[999,0.10],
-			[4999,0.20],
-			[9999,0.30],
-			[19999,0.40],
-			[49999,0.50],
-			[99999,0.60],
-			[499999,0.70],
-			[999999,0.80],
-			[4999999,0.90],
-			[5000000,1]
-		]
-		
-		//Rewarded Posts calculation matrix
-		var rewarded_posts_rules = [
-			[9,0],
-			[29,0.10],
-			[59,0.20],
-			[89,0.30],
-			[119,0.40],
-			[179,0.50],
-			[359,0.60],
-			[539,0.70],
-			[719,0.80],
-			[1079,0.90],
-			[1080,1]
-		]
-		
-		//Rewarded Posts calculation matrix
-		var recent_reward_posts_rules = [
-			[0,0],
-			[2,0.20],
-			[4,0.40],
-			[6,0.60],
-			[8,0.80],
-			[9,1]
-		]
-		
-		var user_rank = 0;
-		
-		//grab delegation amount
-		var userDelegations = await activeDelegationFunc(req.params.user);
-		
-		let delegSP = 0;
-		//get current delegated SP if any
-		if (userDelegations != null){
-			console.log('already delegated');
-			delegSP = userDelegations.steem_power;
+	//Rewarded Posts calculation matrix
+	var rewarded_posts_rules = [
+		[9,0],
+		[29,0.10],
+		[59,0.20],
+		[89,0.30],
+		[119,0.40],
+		[179,0.50],
+		[359,0.60],
+		[539,0.70],
+		[719,0.80],
+		[1079,0.90],
+		[1080,1]
+	]
+	
+	//Rewarded Posts calculation matrix
+	var recent_reward_posts_rules = [
+		[0,0],
+		[2,0.20],
+		[4,0.40],
+		[6,0.60],
+		[8,0.80],
+		[9,1]
+	]
+	
+	var user_rank = 0;
+	
+	//grab delegation amount
+	var userDelegations = await activeDelegationFunc(req.params.user);
+	
+	let delegSP = 0;
+	//get current delegated SP if any
+	if (userDelegations != null){
+		console.log('already delegated');
+		delegSP = userDelegations.steem_power;
+	}
+	//console.log(userDelegations.steem_power);
+	
+	var delegation_score = 0;
+	
+	//check if the user has an alt account as beneficiary
+	let delegator_info = await getAltAccountStatusFunc(req.params.user);
+	//check if returned object is not empty
+	if (Object.keys(delegator_info).length > 0){
+		if (parseInt(delegator_info.user_rank_benefit) == 1){
+			//consider as no delegations
+			delegSP = 0;
 		}
-		//console.log(userDelegations.steem_power);
-		
-		var delegation_score = 0;
-		
-		//check if the user has an alt account as beneficiary
-		let delegator_info = await getAltAccountStatusFunc(req.params.user);
+	}else{
+		//also check the other case where the account is an alt-account
+		delegator_info = await getAltAccountByNameFunc(req.params.user);
 		//check if returned object is not empty
-		if (Object.keys(delegator_info).length > 0){
-			if (parseInt(delegator_info.user_rank_benefit) == 1){
-				//consider as no delegations
-				delegSP = 0;
-			}
-		}else{
-			//also check the other case where the account is an alt-account
-			delegator_info = await getAltAccountByNameFunc(req.params.user);
-			//check if returned object is not empty
-			if (delegator_info.length > 0){
-				for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
-					if (parseInt(delegator_info[x].user_rank_benefit) == 1){
-						//get original user delegation amount
-						userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
-						if (userDelegations != null){
-							delegSP += userDelegations.steem_power;
-						}
+		if (delegator_info.length > 0){
+			for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
+				if (parseInt(delegator_info[x].user_rank_benefit) == 1){
+					//get original user delegation amount
+					userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
+					if (userDelegations != null){
+						delegSP += userDelegations.steem_power;
 					}
 				}
 			}
 		}
-		
-		
-		if (parseFloat(delegSP) > 0){
-			delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(delegSP));
+	}
+	
+	
+	if (parseFloat(delegSP) > 0){
+		delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(delegSP));
+	}
+	
+	user_rank += delegation_score;
+	
+	//grab user token count
+	var userTokens = await grabUserTokensFunc(req.params.user);
+	//console.log(userTokens.tokens);
+	
+	var afit_tokens_score = 0;
+	if (userTokens != null){
+		afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+	}
+	
+	user_rank += afit_tokens_score;
+	
+	//grab total rewarded posts count
+	var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+	//console.log(tot_rewarded_post_count);
+	
+	var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
+	
+	user_rank += tot_posts_score;
+	
+	//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
+	req.query.period = config.recent_posts_period;
+	
+	//add a 2 day delay to take into consideration late voting rounds
+	req.query.delay = 2;
+	
+	var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+	//console.log(recent_rewarded_post_count);
+	
+	var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
+	
+	user_rank += recent_posts_score;
+	
+	let rank_no_afitx = user_rank;
+	//also append AFITX based rank. for every 1 AFITX, increase 0.1 rank
+	let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
+	let user_rank_afitx = 0;
+	
+	if (userHasAFITX){
+		user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
+		//max increase by holding AFITX is 100
+		if (user_rank_afitx > 100){
+			user_rank_afitx = 100;
 		}
-		
-		user_rank += delegation_score;
-		
-		//grab user token count
-		var userTokens = await grabUserTokensFunc(req.params.user);
-		//console.log(userTokens.tokens);
-		
-		var afit_tokens_score = 0;
-		if (userTokens != null){
-			afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
-		}
-		
-		user_rank += afit_tokens_score;
-		
-		//grab total rewarded posts count
-		var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
-		//console.log(tot_rewarded_post_count);
-		
-		var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
-		
-		user_rank += tot_posts_score;
-		
-		//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
-		req.query.period = config.recent_posts_period;
-		
-		//add a 2 day delay to take into consideration late voting rounds
-		req.query.delay = 2;
-		
-		var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
-		//console.log(recent_rewarded_post_count);
-		
-		var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
-		
-		user_rank += recent_posts_score;
-		
-		let rank_no_afitx = user_rank;
-		//also append AFITX based rank. for every 1 AFITX, increase 0.1 rank
-		let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
-		let user_rank_afitx = 0;
-		
-		if (userHasAFITX){
-			user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
-			//max increase by holding AFITX is 100
-			if (user_rank_afitx > 100){
-				user_rank_afitx = 100;
-			}
-			user_rank += parseFloat(user_rank_afitx);
-		}
-		
-		var score_components = JSON.stringify({
-			user_rank: user_rank.toFixed(2),
-			rank_no_afitx: rank_no_afitx,
-			afitx_rank: parseFloat(user_rank_afitx),
-			delegation_score: delegation_score,
-			afit_tokens_score: afit_tokens_score,
-			tot_posts_score: tot_posts_score,
-			recent_posts_score:recent_posts_score
-		});
-		console.log(score_components)
-		
+		user_rank += parseFloat(user_rank_afitx);
+	}
+	
+	var score_components = JSON.stringify({
+		user_rank: user_rank.toFixed(2),
+		rank_no_afitx: rank_no_afitx,
+		afitx_rank: parseFloat(user_rank_afitx),
+		delegation_score: delegation_score,
+		afit_tokens_score: afit_tokens_score,
+		tot_posts_score: tot_posts_score,
+		recent_posts_score:recent_posts_score
+	});
+	console.log(score_components)
+	return score_components;
+}
+
+/* end point for getting current user's Actifit rank */
+app.get('/getRank/:user', async function (req, res) {
+	if (typeof req.params.user!= "undefined" && req.params.user!=null){
+		let score_components = await calcRank(req, res);
 		res.send(score_components);
 	}else{
 		res.send("");
@@ -2200,6 +2576,144 @@ matchAccessToken = async function (user, product_id, access_token){
   let token_match = await db.collection('user_product_key').findOne({user: user, product_id: product_id, access_token: access_token});
   return token_match;
 }
+
+app.get("/gadgetBoughtName", async function(req, res) {
+	console.log('gadgetBought');
+	console.log(req.query);
+  //check if proper params sent
+  if (!req.query.user || !req.query.gadget_name || !req.query.gadget_level) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let gadget_name = req.query.gadget_name;
+  let gadget_level = req.query.gadget_level;
+  
+  //check if the proper access token is valid for this user/product combination
+  let gadget_match = await db.collection('user_gadgets').find(
+	{ user: user, gadget_name: gadget_name, gadget_level: parseInt(gadget_level)},
+	
+  ).toArray();
+  
+  console.log(gadget_match);
+  
+  //let token_match = await matchProductTrans(user, gadget_id);
+  
+  res.send(gadget_match);
+});
+
+
+
+app.get("/activeGadgets", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+  let gadget_match = await db.collection('user_gadgets').aggregate([
+						{ $match: { status: "active" } },
+						{ $lookup:{
+									from: "products",
+									/*let: { "user_gadget_id": "$gadget" },
+									pipeline: [
+										{ $addFields: {gadgetId: { $toObjectId: "$$user_gadget_id" }}},//not supported in mongodb < 4
+										{ $match: { $expr: { $eq: [ "$_id", "$user_gadget_id" ] } } }
+									],*/
+									localField: "gadget",
+									foreignField: "_id",
+									as: "productdetails"
+								} 
+						},
+						
+					]).toArray();
+  console.log(gadget_match);
+  res.send(gadget_match);
+});
+
+app.get("/gadgetBought", async function(req, res) {
+	console.log('gadgetBought');
+	console.log(req.query);
+  //check if proper params sent
+  if (!req.query.user || !req.query.gadget_id) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let gadget_id = new ObjectId(req.query.gadget_id);
+  
+  //check if the proper access token is valid for this user/product combination
+  let gadget_match = await db.collection('user_gadgets').find(
+	{ user: user, gadget: gadget_id },
+	{ user: 1, date_bought: 1 }
+  ).toArray();
+  
+  console.log(gadget_match);
+  
+  //let token_match = await matchProductTrans(user, gadget_id);
+  
+  res.send(gadget_match);
+});
+
+
+//end point handles activating a bought gadget
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:benefic?', async function (req, res) {
+	let user = req.params.user;
+	let gadget = req.params.gadget;
+	
+	//make sure friend and user are different
+	if (req.params.benefic && req.params.benefic.replace('@','') == user){
+		res.send({'error': 'User & friend cannot be the same account'});
+		return;
+	}
+	
+	console.log('activateGadget');
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID);
+	console.log(ver_trx);
+	//ensure proper transaction
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//find item to activate and proceed activating
+	gadget = new ObjectId(gadget);
+	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
+	if (gadget_match){
+		gadget_match.status="active";
+		if (req.params.benefic){
+			gadget_match.benefic = req.params.benefic;
+		}
+		db.collection('user_gadgets').save(gadget_match);
+		res.send({'status': 'success'});
+	}else{
+		res.send({'error': 'Product not found'});
+		
+	}
+});
+
+//end point handles deactivating a bought gadget
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+	let user = req.params.user;
+	let gadget = req.params.gadget;
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//find item to activate and proceed activating
+	gadget = new ObjectId(gadget);
+	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "active" });
+	if (gadget_match){
+		gadget_match.status="bought";
+		db.collection('user_gadgets').save(gadget_match);
+		res.send({'status': 'success'});
+	}else{
+		res.send({'error': 'Product not found'});
+		
+	}
+});
+
 
 app.get("/productBought", async function(req, res) {
 	console.log('productBought');
@@ -3039,7 +3553,95 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 }
 
 
+/* end point for returning total post count on a specific date */
+app.get('/recentVerifiedPosts', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(2, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	let maxCount = 100;
+	if (req.query.maxCount && !isNaN(req.query.maxCount)){
+		maxCount = parseInt(req.query.maxCount);
+	}
+	
+	await db.collection('verified_posts').aggregate([
+		{$match: 
+			{
+				date: {
+					$lte: new Date(endDate),
+					$gt: new Date(startDate)
+				},
+				author: {
+					$ne: '',
+				}
+			},
+		},
+		{$sort:
+			{
+				date:1
+			},
+		},
+		{$group:
+			{
+			   _id: '$author',
+			}
+		}
+	   ]).limit(maxCount).toArray(function(err, results) {
+		//also append total token count to the grouped display
+		console.log(results.length);
+		res.send(results);
+	   });
 
+});
+
+/* end point for returning total post count on a specific date */
+app.get('/recentAuthorsData', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	let maxCount = 10;
+	if (req.query.maxCount && !isNaN(req.query.maxCount)){
+		maxCount = parseInt(req.query.maxCount);
+	}
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('verified_posts').aggregate([
+		{
+			$match: 
+			{
+				"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+			}
+		}
+	   ]).toArray(async function(err, results) {
+		//also append total token count to the grouped display
+		console.log(results.length);
+		results = results.reverse();
+		let finalSet = [];
+		if (!req.params){
+			req.params = new Object();
+		}
+		for (let i=0;i < maxCount;i++){
+			req.params.user = results[i].author;	
+			let rank = await calcRank (req, res);
+			console.log(results[i].author);
+			console.log(rank);
+			finalSet.push({'author': results[i].author, 'rank': rank});
+		}
+		res.send(finalSet);
+		
+	   });
+
+});
 
 /* end point for returning total post count on a specific date */
 app.get('/totalPostsSubmitted', async function(req, res) {

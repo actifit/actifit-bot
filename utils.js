@@ -5,7 +5,10 @@ const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
 const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
-const client = new dsteem.Client(steem_node);
+
+getConfig();
+
+const client = new dsteem.Client(config.active_node);
 		
 var config;
 
@@ -1065,6 +1068,46 @@ async function rewardPost(post_url, vp){
 	return  result;
 }
 
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id){
+	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+	try{
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+					&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+					return true;
+				}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
+
+async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
+	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+	try{
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+					&& json_data.transaction == tx_type && json_data.target == userB){
+					return true;
+				}
+			
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
 
  module.exports = {
    updateSteemVariables: updateSteemVariables,
@@ -1101,4 +1144,6 @@ async function rewardPost(post_url, vp){
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
    rewardPost: rewardPost,
+   verifyFriendTransaction: verifyFriendTransaction,
+   verifyGadgetTransaction: verifyGadgetTransaction,
  }

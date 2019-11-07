@@ -1,0 +1,50 @@
+{"user":"zoneboy","steem":0.021,"sbd":0},{"user":"zen-art","steem":0.052,"sbd":0},{"user":"yann0975","steem":0.052,"sbd":0},{"user":"yanipetkov","steem":0.031,"sbd":0},{"user":"yandot","steem":0.104,"sbd":0},{"user":"xers","steem":0.155,"sbd":0},{"user":"wolf09","steem":0.828,"sbd":0},{"user":"wayoutwest","steem":0.021,"sbd":0},{"user":"vintherinvest","steem":0.104,"sbd":0},{"user":"velourex","steem":0.517,"sbd":0},{"user":"trumpman","steem":5.206,"sbd":0},{"user":"travelling-two","steem":0.388,"sbd":0},{"user":"torrey.blog","steem":0.103,"sbd":0},{"user":"thing-2","steem":1.041,"sbd":0},{"user":"thereikiforest","steem":0.207,"sbd":0},{"user":"thebluewin","steem":0.259,"sbd":0},{"user":"tbnfl4sun","steem":0.052,"sbd":0},{"user":"yogajill","steem":0.031,"sbd":0},{"user":"tanzy","steem":0.01,"sbd":0},{"user":"tammizzle","steem":0.259,"sbd":0},{"user":"stevelivingston","steem":0.104,"sbd":0},{"user":"stay-active","steem":0.026,"sbd":0},{"user":"soofluffy","steem":0.052,"sbd":0},{"user":"solominer","steem":0.517,"sbd":0},{"user":"trayan","steem":0.052,"sbd":0},{"user":"sirknight","steem":1.036,"sbd":0},{"user":"sodom","steem":0.026,"sbd":0},{"user":"shellyduncan","steem":0.931,"sbd":0},{"user":"shazza","steem":0.052,"sbd":0},{"user":"sharpshot","steem":0.106,"sbd":0},{"user":"selfvotejustice","steem":10.365,"sbd":0},{"user":"self-track","steem":0.108,"sbd":0},{"user":"seareader1","steem":0.468,"sbd":0},{"user":"ruth-girl","steem":1.562,"sbd":0},{"user":"runridefly","steem":1.116,"sbd":0},{"user":"skylinebuds","steem":0.021,"sbd":0},{"user":"tangerinetravels","steem":1.599,"sbd":0},{"user":"runicar","steem":0.207,"sbd":0},{"user":"rosepac","steem":0.016,"sbd":0}
+
+
+to decrease next payout:
+selfvotejustice: -5.366
+trumpman: -2.695
+ruth-girl: -0.809
+sirknight: -0.537
+
+Sent mistakinly
+
+actifit.pay sent 0.021 STEEM to zoneboy
+actifit.pay sent 0.052 STEEM to zen-art
+actifit.pay sent 0.052 STEEM to yann0975
+actifit.pay sent 0.031 STEEM to yanipetkov
+actifit.pay sent 0.104 STEEM to yandot
+actifit.pay sent 0.155 STEEM to xers
+actifit.pay sent 0.828 STEEM to wolf09
+actifit.pay sent 0.021 STEEM to wayoutwest
+actifit.pay sent 0.104 STEEM to vintherinvest
+actifit.pay sent 0.517 STEEM to velourex
+actifit.pay sent 5.206 STEEM to trumpman
+actifit.pay sent 0.388 STEEM to travelling-two
+actifit.pay sent 0.103 STEEM to torrey.blog
+actifit.pay sent 1.041 STEEM to thing-2
+actifit.pay sent 0.207 STEEM to thereikiforest
+actifit.pay sent 0.259 STEEM to thebluewin
+actifit.pay sent 0.052 STEEM to tbnfl4sun
+actifit.pay sent 0.010 STEEM to tanzy
+actifit.pay sent 0.031 STEEM to yogajill
+actifit.pay sent 0.259 STEEM to tammizzle
+actifit.pay sent 0.104 STEEM to stevelivingston
+actifit.pay sent 0.026 STEEM to stay-active
+actifit.pay sent 0.052 STEEM to soofluffy
+actifit.pay sent 0.517 STEEM to solominer
+actifit.pay sent 0.052 STEEM to trayan
+actifit.pay sent 1.036 STEEM to sirknight
+actifit.pay sent 0.026 STEEM to sodom
+actifit.pay sent 0.931 STEEM to shellyduncan
+actifit.pay sent 0.052 STEEM to shazza
+actifit.pay sent 0.106 STEEM to sharpshot
+actifit.pay sent 10.365 STEEM to selfvotejustice
+actifit.pay sent 0.108 STEEM to self-track
+actifit.pay sent 0.468 STEEM to seareader1
+actifit.pay sent 1.562 STEEM to ruth-girl
+actifit.pay sent 1.116 STEEM to runridefly
+actifit.pay sent 0.021 STEEM to skylinebuds
+actifit.pay sent 1.599 STEEM to tangerinetravels
+actifit.pay sent 0.207 STEEM to runicar
+actifit.pay sent 0.016 STEEM to rosepac
