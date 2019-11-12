@@ -751,6 +751,10 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
 	
 	//decrease product available count
 	product.count = parseInt(product.count) - 1;
+	//extreme case
+	if (product.count < 0) {
+		product.count = 0;
+	}
 	try{
 		let trans = await db.collection('products').save(product);
 		console.log('success updating user token count');
@@ -2603,6 +2607,21 @@ app.get("/gadgetBoughtName", async function(req, res) {
   res.send(gadget_match);
 });
 
+
+app.get("/gadgetsBought", async function(req, res){
+	let gadgets = await db.collection('user_gadgets').find().toArray();
+	res.send(gadgets);
+});
+
+app.get("/friendships", async function(req, res){
+	let gadgets = await db.collection('friends').find().toArray();
+	res.send(gadgets);
+});
+
+app.get("/userRequests", async function(req, res){
+	let gadgets = await db.collection('user_requests').find().toArray();
+	res.send(gadgets);
+});
 
 
 app.get("/activeGadgets", async function(req, res) {
