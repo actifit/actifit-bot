@@ -289,6 +289,151 @@ app.get('/user-tokens-info', async function(req, res) {
 });
 
 /* end point for user total token count display */
+app.get('/modAction', async function (req, res) {
+	if (!req.query.moderator || !req.query.fundsPass || !req.query.targetAction){
+		res.send({'error':'Missing Data'});
+	}else{
+		let moderator = req.query.moderator;
+		let fundsPass = req.query.fundsPass;
+		
+		//confirm matching funds password
+		let query = {user: moderator};
+		
+		if (!isModerator(moderator)){
+			res.send({'error': 'Account does not have proper privileges'});
+			return;
+		}
+		
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+
+		if (entryFound == null){
+			res.send({'error': 'Account does not have a recorded funds password'});
+			return;
+		}else if (!entryFound.passVerified){
+			res.send({'error': 'Account\'s funds password not verified'});
+			return;
+		}else{
+		  //create encrypted version of sent password
+		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
+		  encr_pass += cipher.final('hex');
+			if (entryFound.pass !== encr_pass){
+				res.send({'error': 'Incorrect username and/or funds password'});
+				return;
+			}
+		}
+		
+		//reached here, we're fine
+		console.log('reached here, we\'re fine');
+		
+		let result = '';
+		
+		//store every moderator transaction as log
+		let modTrans = {
+			"moderator": req.query.moderator,
+			"action": req.query.targetAction,
+			"date": new Date(),
+		};
+		
+		switch(req.query.targetAction){
+		
+			case 'ban': 			
+						modTrans.user = req.query.banuser.trim().toLowerCase();
+						collection = db.collection('banned_accounts')
+						//var dt = new Date().toJSON()
+						//dt.substring(0,dt.indexOf("."));
+						
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot ban empty user'});
+							return;
+						}
+						result = await collection.insert({   
+							"user": req.query.banuser.trim().toLowerCase(),
+							"ban_date": new Date(),
+							"ban_length": req.query.ban_length,
+							"ban_status": 'active',
+							"ban_reason": req.query.ban_reason
+						});
+						console.log(req.query.banuser+" banned ");
+						result.status='success';
+						break;
+			case 'unban':
+						
+						modTrans.user = req.query.unbanuser.trim().toLowerCase();
+						collection = db.collection('banned_accounts')
+		
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot unban empty user'});
+							return;
+						}
+		
+						result = await collection.update(
+							{   "user": req.query.unbanuser.trim().toLowerCase() }, 
+							{
+								$set: {
+									"ban_status": "inactive",
+									}
+							},
+							{
+								multi: true
+							}
+						);
+						console.log(req.query.unbanuser+" ban removed! ");
+						result.status='success';
+						break;
+						
+			case 'resetpass':
+						modTrans.user = req.query.resetuser.trim().toLowerCase();
+						
+						collection = db.collection('account_funds_pass')
+						
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot resetpass empty user'});
+							return;
+						}
+		
+						let user = req.query.resetuser.trim().toLowerCase();
+						result = 'no change';
+						if (user!=''){
+							result = await collection.remove({
+								"user": user,
+							});
+							console.log(user+" password reset ");
+						}
+						console.log(user+" pass reset! ");
+						result.status='success';
+						break;
+						
+			case 'reward':
+						modTrans.fullurl = req.query.fullurl.trim().toLowerCase();
+						modTrans.vp = req.query.power;
+						if (modTrans.fullurl == ''){
+							res.send({'error': 'Need to send URL to vote'});
+							return;
+						}
+						
+						if (isNaN(modTrans.vp)){
+							res.send({'error': 'VP needs to be numeric'});
+							return;
+						}
+						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp)
+						console.log(result);
+						result.status='success';
+						break;
+		}
+		
+		collection = db.collection('team_transactions');
+		let modTransRes = await collection.insert(modTrans);
+		console.log(modTransRes)
+		
+		res.send(result);
+	}
+});
+
+
+
+
+/* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
 	let tokenHolders = [];
 	if (isNaN(req.query.count)){
