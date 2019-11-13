@@ -3020,7 +3020,95 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 }
 
 
+/* end point for returning total post count on a specific date */
+app.get('/recentVerifiedPosts', async function(req, res) {
 
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(2, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	let maxCount = 100;
+	if (req.query.maxCount && !isNaN(req.query.maxCount)){
+		maxCount = parseInt(req.query.maxCount);
+	}
+	
+	await db.collection('verified_posts').aggregate([
+		{$match: 
+			{
+				date: {
+					$lte: new Date(endDate),
+					$gt: new Date(startDate)
+				},
+				author: {
+					$ne: '',
+				}
+			},
+		},
+		{$sort:
+			{
+				date:1
+			},
+		},
+		{$group:
+			{
+			   _id: '$author',
+			}
+		}
+	   ]).limit(maxCount).toArray(function(err, results) {
+		//also append total token count to the grouped display
+		console.log(results.length);
+		res.send(results);
+	   });
+
+});
+
+/* end point for returning total post count on a specific date */
+app.get('/recentAuthorsData', async function(req, res) {
+	
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+	let maxCount = 10;
+	if (req.query.maxCount && !isNaN(req.query.maxCount)){
+		maxCount = parseInt(req.query.maxCount);
+	}
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('verified_posts').aggregate([
+		{
+			$match: 
+			{
+				"date": {
+					"$lte": new Date(endDate),
+					"$gt": new Date(startDate)
+				}
+			}
+		}
+	   ]).toArray(async function(err, results) {
+		//also append total token count to the grouped display
+		console.log(results.length);
+		results = results.reverse();
+		let finalSet = [];
+		if (!req.params){
+			req.params = new Object();
+		}
+		for (let i=0;i < maxCount;i++){
+			req.params.user = results[i].author;	
+			let rank = await calcRank (req, res);
+			console.log(results[i].author);
+			console.log(rank);
+			finalSet.push({'author': results[i].author, 'rank': rank});
+		}
+		res.send(finalSet);
+		
+	   });
+
+});
 
 /* end point for returning total post count on a specific date */
 app.get('/totalPostsSubmitted', async function(req, res) {
