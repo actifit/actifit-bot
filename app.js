@@ -156,13 +156,18 @@ async function getAFITXUserData(user){
 
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (username){
-	let user = await collection.findOne({_id: username});
+	let user = await db.collection('user_tokens').findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
 	if (typeof user!= "undefined" && user!=null){
 		if (typeof user.tokens!= "undefined"){
 			user.tokens = user.tokens.toFixed(3)
 		}
+	}else{
+		user = new Object();
+		user._id=username;
+		user.name=username;
+		user.tokens=0;
 	}
 	return user;
 }
@@ -187,12 +192,20 @@ generatePassword = function (multip) {
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
-	if (!account){
+	accountQueries += 1;
+	if (accountQueries > 10){
+		accountQueries = 0;
+		accountRefresh = true;
+	}
+	//fetch anew account data if account is empty or we need to refresh account data
+	if (!account || accountRefresh){
+		console.log('refreshing account data');
 		account = await utils.getAccountData(config.account);
+		accountRefresh = false;
 	}
 	let vp_res = await utils.getVotingPower(account);
 	
-	let reward_start = utils.toTimer(utils.timeTilKickOffVoting(vp_res * 100));
+	let reward_start = utils.toHrMn(utils.timeTilKickOffVoting(vp_res * 100));
 
 	res.send({'status': votingStatus, 'vp': vp_res, 'reward_start': reward_start});
 });
