@@ -5,7 +5,10 @@ const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
 const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
-const client = new dsteem.Client(steem_node);
+
+getConfig();
+
+const client = new dsteem.Client(config.active_node);
 		
 var config;
 
@@ -89,7 +92,8 @@ var HOURS = 60 * 60;
             }
 
             const currentManaPerc = currentMana * 100 / maxMana;
-			
+			console.log(currentManaPerc);
+			console.log(account.name);
 		return currentManaPerc;
 	}
 	
@@ -576,6 +580,12 @@ function format(n, c, d, t) {
    return padLeft(h, 2) + ':' + padLeft(m, 2) + ':' + padLeft(s, 2);
  }
 
+ function toHrMn(ts) {
+   var h = Math.floor(ts / HOURS);
+   var m = Math.floor((ts % HOURS) / 60);
+   return padLeft(h, 2) + 'hr(s):' + padLeft(m, 2) + 'min(s)';
+ }
+
  function padLeft(v, d) {
    var l = (v + '').length;
    if (l >= d) return v + '';
@@ -1037,6 +1047,67 @@ function sortArrLodash (arrToSort) {
 	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
 }
 
+async function rewardPost(post_url, vp){
+	//extract author and permalink from full url
+	//check if string ends with /, remove it
+	if (post_url.slice(-1) == '/'){
+		post_url = post_url.slice(0, -1);
+	}
+	//last portion is URL
+	let permalink = post_url.split('/').reverse()[0];
+	//before last portion is author, and remove the starting @
+	let author = post_url.split('/').reverse()[1].replace('@','');
+	//cast vote
+	let result = await steem.broadcast.voteAsync(
+							config.rewards_account_pkey, //postingWIF
+							config.rewards_account, // Voter
+							author, // Author
+							permalink, // Permlink
+							parseFloat(vp)*100, // Weight (10000 = 100%)
+						);
+	return  result;
+}
+
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id){
+	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+	try{
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+					&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+					return true;
+				}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
+
+async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
+	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+	try{
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+					&& json_data.transaction == tx_type && json_data.target == userB){
+					return true;
+				}
+			
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
 
  module.exports = {
    updateSteemVariables: updateSteemVariables,
@@ -1052,6 +1123,7 @@ function sortArrLodash (arrToSort) {
    getCurrency: getCurrency,
    format: format,
    toTimer: toTimer,
+   toHrMn: toHrMn,
    log: log,
    calcScore: calcScore,
    calculateVotes: calculateVotes,
@@ -1071,4 +1143,7 @@ function sortArrLodash (arrToSort) {
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
+   rewardPost: rewardPost,
+   verifyFriendTransaction: verifyFriendTransaction,
+   verifyGadgetTransaction: verifyGadgetTransaction,
  }
