@@ -70,6 +70,108 @@ const ssc = new SSC(config.steem_engine_rpc);
 
 //moveAFITToSE(true);
 
+//testMove();
+
+async function testMove(){
+	
+	
+	//perform transaction, decrease sender amount
+	let moveTrans = {
+		user: 'mcfarhat',
+		reward_activity: 'test transaction',
+		token_count: -100,
+		note: 'User Automated transfer of 100 AFIT to S-E',
+		date: new Date(),
+	}
+	
+	console.log(moveTrans);
+	//update our DB
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ')
+
+		db = dbClient.db(dbName)
+		let transaction = await db.collection('token_transactions').insert(moveTrans);
+	
+	console.log('success inserting move AFIT data');
+	
+	
+	let json_data = {
+		contractName: 'tokens',
+		contractAction: 'transfer',
+		contractPayload: {
+			symbol: 'AFIT',
+			to: 'mcfarhat',
+			quantity: '100',//needs to be string
+			memo: ''
+		}
+	}
+	
+	//broadcast to BC
+	console.log('broadcast to BC');
+	
+	//sign key properly to function with dsteem requirement
+	let privateKey = dsteem.PrivateKey.fromString(
+		//config.token_dist_pkey
+		config.active_key
+	);
+	let entry = new Object();
+	
+	entry.user='mcfarhat';
+	client.broadcast.json({
+		required_auths: [config.account],
+		required_posting_auths: [],
+		id: 'ssc-mainnet1',
+		json: JSON.stringify(json_data),
+	}, privateKey).then(
+		result => { 
+				console.log('success');
+				console.log(result); 
+				updateUserCount(entry);
+			},
+		error => { 
+			console.log('error') 
+			console.error(error) 
+			//roll back transaction
+				rollBackTrans(moveTrans);
+			}
+	)
+	
+	  }
+	})
+
+}
+
+async function rollBackTrans(moveTrans){
+	console.log('roll back')
+	try{
+		let transaction = await db.collection('token_transactions').remove(moveTrans);
+	}catch(err){
+		console.log(err);
+	}
+}
+
+async function updateUserCount(entry){
+	//update user total token count
+	console.log('>>> update user token count');
+	let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
+	let cur_sender_token_count = parseFloat(user_info.tokens);
+	let new_token_count = cur_sender_token_count - parseFloat(entry.daily_afit_transfer);
+	user_info.tokens = new_token_count;
+	console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+}
+
 async function moveAFITToSE(testMode){
 	console.log('*** process moving AFIT to SE ***');
 	
@@ -188,22 +290,6 @@ async function moveAFITToSE(testMode){
 							}
 							console.log('success inserting move AFIT data');
 							
-							//update user total token count
-							console.log('>>> update user token count');
-							let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
-							let cur_sender_token_count = parseFloat(user_info.tokens);
-							let new_token_count = cur_sender_token_count - amount;
-							user_info.tokens = new_token_count;
-							console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
-							if (!testMode){
-								try{
-									let trans = await db.collection('user_tokens').save(user_info);
-									console.log('success updating user token count');
-								}catch(err){
-									console.log(err);
-								}
-							}
-							
 							let json_data = {
 								contractName: 'tokens',
 								contractAction: 'transfer',
@@ -224,8 +310,16 @@ async function moveAFITToSE(testMode){
 									id: 'ssc-mainnet1',
 									json: JSON.stringify(json_data),
 								}, privateKey).then(
-									result => { console.log(result) },
-									error => { console.error(error) }
+									result => { 
+										console.log(result) 
+										//update user total count
+										updateUserCount(entry);
+										},
+									error => { 
+										console.error(error) 
+										//roll back db transaction as there was issue sending to blockchain
+										rollBackTrans(moveTrans);
+										}
 								)
 							}
 						
