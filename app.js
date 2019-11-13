@@ -652,6 +652,156 @@ app.get('/markRead/:notif_id', async function (req, res) {
 	
 
 });
+
+/* end point for tracking gadget buy orders */
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//confirmed, register transaction and deduct AFIT tokens
+	
+	let user = req.params.user;
+	let product_id = req.params.gadget;
+	
+	//fetch product info
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	//confirm proper AFIT token balance. Test against product price
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	let price_options = product.price;
+	let price_options_count = price_options.length;
+	let item_price = 0;
+	let item_currency = 'AFIT';
+	let actifit_percent_cut = 10;
+	for (let i=0; i < price_options_count; i++){
+		let entry = price_options[i];
+		item_price = entry.price;
+		item_currency = entry.currency;
+		actifit_percent_cut = entry.actifit_percent_cut;
+	}
+	
+	if (cur_user_token_count < item_price){
+		res.send({'error': 'Account does not have enough AFIT funds'});
+		return;
+	}
+	
+	product.provider = 'actifit';
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		reward_activity: 'Buy Product',
+		buyer: user,
+		seller: product.provider,
+		product_id: product_id,
+		product_type: product.type,
+		product_name: product.name,
+		product_level: product.level,
+		product_price: item_price,
+		token_count: -item_price,
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//store into user_gadgets table as well
+	let userGadgetTrans = {
+		user: user,
+		gadget: new ObjectId(product_id),
+		product_type: product.type,
+		gadget_name: product.name,
+		gadget_level: product.level,
+		status: "bought",
+		span: parseInt(product.benefits.time_span),
+		span_unit: product.benefits.time_unit,
+		consumed: 0,
+		posts_consumed: [],
+		date_bought: new Date(),
+		last_updated: new Date(),
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+	}
+	try{
+		console.log(userGadgetTrans);
+		let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//decrease product available count
+	product.count = parseInt(product.count) - 1;
+	//extreme case
+	if (product.count < 0) {
+		product.count = 0;
+	}
+	try{
+		let trans = await db.collection('products').save(product);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//store this in escrow
+	/*let productSellTrans = {
+		user: config.null_account,//targetAccount,//product.provider,//config.escrow_account,
+		reward_activity: 'Sell Product',
+		buyer: user,
+		seller: product.provider,
+		product_id: product_id,
+		product_type: product.type,
+		product_price: item_price,
+		token_count: item_price,
+		actifit_percent_cut: actifit_percent_cut,
+		note: 'Sold Product '+product.name+ ' to '+user,
+		date: new Date(),
+	}
+	
+	try{
+		console.log(productSellTrans);
+		let transaction = await db.collection('token_transactions').insert(productSellTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing sell action. DB storing issue'});
+		return;
+	}*/
+		
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count - parseFloat(item_price);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
+});
+
 /* end point for fetching pending user's friend requests */
 app.get('/userFriendRequests/:user', async function (req, res) {
 	let user_requests = await db.collection('user_requests').find({initiator: req.params.user, status:'pending'}).toArray();
@@ -2430,6 +2580,159 @@ matchAccessToken = async function (user, product_id, access_token){
   let token_match = await db.collection('user_product_key').findOne({user: user, product_id: product_id, access_token: access_token});
   return token_match;
 }
+
+app.get("/gadgetBoughtName", async function(req, res) {
+	console.log('gadgetBought');
+	console.log(req.query);
+  //check if proper params sent
+  if (!req.query.user || !req.query.gadget_name || !req.query.gadget_level) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let gadget_name = req.query.gadget_name;
+  let gadget_level = req.query.gadget_level;
+  
+  //check if the proper access token is valid for this user/product combination
+  let gadget_match = await db.collection('user_gadgets').find(
+	{ user: user, gadget_name: gadget_name, gadget_level: parseInt(gadget_level)},
+	
+  ).toArray();
+  
+  console.log(gadget_match);
+  
+  //let token_match = await matchProductTrans(user, gadget_id);
+  
+  res.send(gadget_match);
+});
+
+
+app.get("/gadgetsBought", async function(req, res){
+	let gadgets = await db.collection('user_gadgets').find().toArray();
+	res.send(gadgets);
+});
+
+app.get("/friendships", async function(req, res){
+	let gadgets = await db.collection('friends').find().toArray();
+	res.send(gadgets);
+});
+
+app.get("/userRequests", async function(req, res){
+	let gadgets = await db.collection('user_requests').find().toArray();
+	res.send(gadgets);
+});
+
+
+app.get("/activeGadgets", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+  let gadget_match = await db.collection('user_gadgets').aggregate([
+						{ $match: { status: "active" } },
+						{ $lookup:{
+									from: "products",
+									/*let: { "user_gadget_id": "$gadget" },
+									pipeline: [
+										{ $addFields: {gadgetId: { $toObjectId: "$$user_gadget_id" }}},//not supported in mongodb < 4
+										{ $match: { $expr: { $eq: [ "$_id", "$user_gadget_id" ] } } }
+									],*/
+									localField: "gadget",
+									foreignField: "_id",
+									as: "productdetails"
+								} 
+						},
+						
+					]).toArray();
+  console.log(gadget_match);
+  res.send(gadget_match);
+});
+
+app.get("/gadgetBought", async function(req, res) {
+	console.log('gadgetBought');
+	console.log(req.query);
+  //check if proper params sent
+  if (!req.query.user || !req.query.gadget_id) {
+	//make sure all params are sent
+	res.send({'error':'generic error'});
+  }
+  
+  let user = req.query.user;
+  let gadget_id = new ObjectId(req.query.gadget_id);
+  
+  //check if the proper access token is valid for this user/product combination
+  let gadget_match = await db.collection('user_gadgets').find(
+	{ user: user, gadget: gadget_id },
+	{ user: 1, date_bought: 1 }
+  ).toArray();
+  
+  console.log(gadget_match);
+  
+  //let token_match = await matchProductTrans(user, gadget_id);
+  
+  res.send(gadget_match);
+});
+
+
+//end point handles activating a bought gadget
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:benefic?', async function (req, res) {
+	let user = req.params.user;
+	let gadget = req.params.gadget;
+	
+	//make sure friend and user are different
+	if (req.params.benefic && req.params.benefic.replace('@','') == user){
+		res.send({'error': 'User & friend cannot be the same account'});
+		return;
+	}
+	
+	console.log('activateGadget');
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID);
+	console.log(ver_trx);
+	//ensure proper transaction
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//find item to activate and proceed activating
+	gadget = new ObjectId(gadget);
+	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
+	if (gadget_match){
+		gadget_match.status="active";
+		if (req.params.benefic){
+			gadget_match.benefic = req.params.benefic;
+		}
+		db.collection('user_gadgets').save(gadget_match);
+		res.send({'status': 'success'});
+	}else{
+		res.send({'error': 'Product not found'});
+		
+	}
+});
+
+//end point handles deactivating a bought gadget
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+	let user = req.params.user;
+	let gadget = req.params.gadget;
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//find item to activate and proceed activating
+	gadget = new ObjectId(gadget);
+	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "active" });
+	if (gadget_match){
+		gadget_match.status="bought";
+		db.collection('user_gadgets').save(gadget_match);
+		res.send({'status': 'success'});
+	}else{
+		res.send({'error': 'Product not found'});
+		
+	}
+});
+
 
 app.get("/productBought", async function(req, res) {
 	console.log('productBought');
