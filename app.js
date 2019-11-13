@@ -36,6 +36,16 @@ MongoClient.connect(url, function(err, client) {
 
 	  db = client.db(db_name);
 
+	  //print version
+	/*  var adminDb = db.admin();
+    adminDb.serverStatus(function(err, info) {
+        if (err){
+			console.log(err);
+		}else{
+			console.log(info.version);
+		}
+    })*/
+
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	} else {
@@ -90,6 +100,8 @@ app.get('/', function (req, res) {
 
 //initial load
 let account = null;
+let accountRefresh = false;
+let accountQueries = 0;
 loadAccountData();
 
 async function loadAccountData(){
@@ -579,6 +591,219 @@ app.get('/userBadges/:user', async function (req, res) {
 	res.send(user);
 });
 
+
+/* end point for fetching user's friends */
+app.get('/userFriends/:user', async function (req, res) {
+	let friendsA = await db.collection('friends').find({userA: req.params.user}, {fields : {userB:1, _id:0}}).toArray();
+	let friendsB = await db.collection('friends').find({userB: req.params.user}, {fields : {userA:1, _id:0}}).toArray();
+	console.log(friendsA);
+	console.log(friendsB);
+	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
+	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
+	res.send(friendsA.concat(friendsB));
+});
+
+sendNotification = async function (user, action_taker, type, details, url){
+	let notification_entry = {
+		user: user,
+		action_taker: action_taker,
+		type: type,
+		details: details,
+		url: url,
+		date: new Date(),
+		status: 'unread',
+	};
+	try{
+		let transaction = await db.collection('notifications').insert(notification_entry);
+		console.log('success inserting notification data');
+		return true;
+	}catch(err){
+		console.log('error');
+		return false;
+	}
+}
+
+/* end point for marking a notification as read */
+app.get('/markRead/:notif_id', async function (req, res) {
+	let notif_to_update = {
+		_id: new ObjectId(req.params.notif_id),
+	};
+	try{
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		console.log('success updating notification status');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+	
+
+});
+/* end point for fetching pending user's friend requests */
+app.get('/userFriendRequests/:user', async function (req, res) {
+	let user_requests = await db.collection('user_requests').find({initiator: req.params.user, status:'pending'}).toArray();
+	let user_targets = await db.collection('user_requests').find({target: req.params.user, status:'pending'}).toArray();
+	res.send({sent_pending: user_requests, received_pending: user_targets});
+});
+
+/* end point for adding user's friend */
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let user_friendship = {
+		initiator: req.params.userA,
+		request: 'friendship',
+		target: req.params.userB,
+		date: new Date(),
+		status: 'pending',
+	};
+	try{
+		let transaction = await db.collection('user_requests').insert(user_friendship);
+		console.log('success inserting post data');
+		
+		//notify recipient
+		sendNotification(req.params.userB, req.params.userA, 'friendship_request', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
+	
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+
+});
+
+
+/* end point for cancelling friend request */
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	let friendshipQuery = {
+		initiator: req.params.userA,
+		target: req.params.userB,
+		request: 'friendship',
+		status: 'pending',
+	}
+	let userFriendship = {
+		initiator: req.params.userA,
+		request: 'friendship',
+		target: req.params.userB,
+		date: new Date(),
+		status: 'cancelled',
+	};
+	try{
+		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship, { upsert: true });
+		console.log('success inserting post data');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}	
+
+});
+
+
+
+/* end point for cancelling friend request */
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	//need to update both ways to check which way was the original request
+	let friendshipQuery = {
+		initiator: req.params.userB,
+		target: req.params.userA,
+		request: 'friendship',
+	}
+	let userFriendship = {
+		initiator: req.params.userB,
+		request: 'friendship',
+		target: req.params.userA,
+		date: new Date(),
+		status: 'approved',
+	};
+	let insertSuccess = false;
+	try{
+		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship);
+		console.log('success updating post data');
+		
+		//notify recipient
+		sendNotification(req.params.userB, req.params.userA, 'friendship_acceptance', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
+		
+		insertSuccess = true;
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}
+	
+	if (insertSuccess){
+		
+		//also insert to friendship table
+		
+		let friendshipEntry = {
+			userA: req.params.userB,
+			userB: req.params.userA,
+			date: new Date(),
+		};
+		
+		try{
+			let result = await db.collection('friends').insert(friendshipEntry);
+			res.send({status: 'success'});
+		}catch(err){
+			res.send({status: 'error', details: err});
+		}
+	}
+});
+
+
+/* end point for dropping friendship */
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+	//ensure proper transaction
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	try{
+		//remove friendship entry both ways
+		let result = await db.collection('friends').remove({userA: req.params.userA, userB: req.params.userB});
+		console.log(result);
+		result = await db.collection('friends').remove({userA: req.params.userB, userB: req.params.userA});
+		console.log(result);
+		
+		//also remove requests to prevent confusion
+		result = await db.collection('user_requests').remove({initiator: req.params.userA, request: 'friendship', target: req.params.userB});
+		result = await db.collection('user_requests').remove({initiator: req.params.userB, request: 'friendship', target: req.params.userA});
+		
+		res.send({'status': 'success'});
+	}catch(err){
+		console.log(err);
+		res.send({status: 'error'});
+	}
+});
+
+/* end point for fetching all users notifications */
+app.get('/activeNotifications/:user', async function (req, res) {
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'unread'}).toArray();
+	res.send(activeNotifications.reverse());
+});
+
+/* end point for fetching all users notifications */
+app.get('/readNotifications/:user', async function (req, res) {
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).toArray();
+	res.send(activeNotifications.reverse());
+});
 /* end point for fetching all users badges */
 app.get('/allUserBadges/', async function (req, res) {
 	let badges = await db.collection('user_badges').find().toArray();
@@ -713,6 +938,15 @@ app.get('/delegation/:user', async function (req, res) {
     res.send(user);
 });
 
+
+isModerator = async function(userName){
+	let entryFound = false
+	let moderatorList = await db.collection('team').find({name: userName, title:'moderator', status:'active'}).toArray();
+	if (Array.isArray(moderatorList) && moderatorList.length>0){
+		entryFound = true;
+	}
+	return entryFound;
+}
 moderatorsListFunc = async function () {
 	let moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
 	return moderatorList;
@@ -1301,11 +1535,7 @@ app.get('/userRewardedPostCount/:user', async function (req, res) {
 	}
 });
 
-/* end point for getting current user's Actifit rank */
-app.get('/getRank/:user', async function (req, res) {
-	
-	if (typeof req.params.user!= "undefined" && req.params.user!=null){
-	
+calcRank = async function (req, res){
 		//delegation calculation matrix
 		var delegation_rules = [
 			[9,0],
@@ -1464,7 +1694,13 @@ app.get('/getRank/:user', async function (req, res) {
 			recent_posts_score:recent_posts_score
 		});
 		console.log(score_components)
+	return score_components;
+}
 		
+/* end point for getting current user's Actifit rank */
+app.get('/getRank/:user', async function (req, res) {
+	if (typeof req.params.user!= "undefined" && req.params.user!=null){
+		let score_components = await calcRank(req, res);
 		res.send(score_components);
 	}else{
 		res.send("");
