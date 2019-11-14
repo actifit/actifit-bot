@@ -313,6 +313,32 @@ app.get('/user-tokens-info', async function(req, res) {
 
 });
 
+app.get('/tokensBurnt', async function (req, res) {
+	let agg = await db.collection('token_transactions').aggregate([
+		{
+			$match: {
+				reward_activity: 'Buy Product',
+				seller: 'actifit'
+			}
+		},
+		{
+		   $group:
+			{
+				_id: null,
+			   	tokens_burnt: { $sum: "$token_count" },
+				burn_trx_count: { $sum: 1 }
+
+			}
+		}
+	]).toArray(function(err, results) {
+		if (results.length>0){
+			results[0].tokens_burnt = Math.abs(results[0].tokens_burnt);
+			res.send(results);
+			console.log(results);
+		}
+	});
+});
+
 /* end point for user total token count display */
 app.get('/modAction', async function (req, res) {
 	if (!req.query.moderator || !req.query.fundsPass || !req.query.targetAction){
