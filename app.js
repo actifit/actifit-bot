@@ -2672,6 +2672,18 @@ app.get("/activeGadgets", async function(req, res) {
   res.send(gadget_match);
 });
 
+
+app.get("/activeGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();			
+	let gadget_match_benefic = await db.collection('user_gadgets').find({ benefic: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();					
+	res.send({'own': gadget_match, 'benefic': gadget_match_benefic});
+});
+
+
+
 app.get("/gadgetBought", async function(req, res) {
 	console.log('gadgetBought');
 	console.log(req.query);
