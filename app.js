@@ -35,7 +35,7 @@ MongoClient.connect(url, function(err, client) {
 	  console.log("Connected successfully to server");
 
 	  db = client.db(db_name);
-
+	  
 	  //print version
 	/*  var adminDb = db.admin();
     adminDb.serverStatus(function(err, info) {
@@ -311,6 +311,32 @@ app.get('/user-tokens-info', async function(req, res) {
 		}
 	   });
 
+});
+
+app.get('/tokensBurnt', async function (req, res) {
+	let agg = await db.collection('token_transactions').aggregate([
+		{
+			$match: {
+				reward_activity: 'Buy Product',
+				seller: 'actifit'
+			}
+		},
+		{
+		   $group:
+			{
+				_id: null,
+			   	tokens_burnt: { $sum: "$token_count" },
+				burn_trx_count: { $sum: 1 }
+
+			}
+		}
+	]).toArray(function(err, results) {
+		if (results.length>0){
+			results[0].tokens_burnt = Math.abs(results[0].tokens_burnt);
+			res.send(results);
+			console.log(results);
+		}
+	});
 });
 
 /* end point for user total token count display */
@@ -603,7 +629,6 @@ app.get('/userBadges/:user', async function (req, res) {
 	let user = await db.collection('user_badges').find({user: req.params.user}).toArray();
 	res.send(user);
 });
-
 
 /* end point for fetching user's friends */
 app.get('/userFriends/:user', async function (req, res) {
@@ -967,6 +992,7 @@ app.get('/readNotifications/:user', async function (req, res) {
 	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).toArray();
 	res.send(activeNotifications.reverse());
 });
+
 /* end point for fetching all users badges */
 app.get('/allUserBadges/', async function (req, res) {
 	let badges = await db.collection('user_badges').find().toArray();
@@ -1699,167 +1725,167 @@ app.get('/userRewardedPostCount/:user', async function (req, res) {
 });
 
 calcRank = async function (req, res){
-		//delegation calculation matrix
-		var delegation_rules = [
-			[9,0],
-			[499,0.05],
-			[999,0.10],
-			[4999,0.20],
-			[9999,0.30],
-			[19999,0.40],
-			[49999,0.55],
-			[99999,0.65],
-			[499999,0.75],
-			[999999,0.90],
-			[1000000,1]
-		]
-		
-		//AFIT token calculation matrix
-		var afit_token_rules = [
-			[9,0],
-			[999,0.10],
-			[4999,0.20],
-			[9999,0.30],
-			[19999,0.40],
-			[49999,0.50],
-			[99999,0.60],
-			[499999,0.70],
-			[999999,0.80],
-			[4999999,0.90],
-			[5000000,1]
-		]
-		
-		//Rewarded Posts calculation matrix
-		var rewarded_posts_rules = [
-			[9,0],
-			[29,0.10],
-			[59,0.20],
-			[89,0.30],
-			[119,0.40],
-			[179,0.50],
-			[359,0.60],
-			[539,0.70],
-			[719,0.80],
-			[1079,0.90],
-			[1080,1]
-		]
-		
-		//Rewarded Posts calculation matrix
-		var recent_reward_posts_rules = [
-			[0,0],
-			[2,0.20],
-			[4,0.40],
-			[6,0.60],
-			[8,0.80],
-			[9,1]
-		]
-		
-		var user_rank = 0;
-		
-		//grab delegation amount
-		var userDelegations = await activeDelegationFunc(req.params.user);
-		
-		let delegSP = 0;
-		//get current delegated SP if any
-		if (userDelegations != null){
-			console.log('already delegated');
-			delegSP = userDelegations.steem_power;
+	//delegation calculation matrix
+	var delegation_rules = [
+		[9,0],
+		[499,0.05],
+		[999,0.10],
+		[4999,0.20],
+		[9999,0.30],
+		[19999,0.40],
+		[49999,0.55],
+		[99999,0.65],
+		[499999,0.75],
+		[999999,0.90],
+		[1000000,1]
+	]
+	
+	//AFIT token calculation matrix
+	var afit_token_rules = [
+		[9,0],
+		[999,0.10],
+		[4999,0.20],
+		[9999,0.30],
+		[19999,0.40],
+		[49999,0.50],
+		[99999,0.60],
+		[499999,0.70],
+		[999999,0.80],
+		[4999999,0.90],
+		[5000000,1]
+	]
+	
+	//Rewarded Posts calculation matrix
+	var rewarded_posts_rules = [
+		[9,0],
+		[29,0.10],
+		[59,0.20],
+		[89,0.30],
+		[119,0.40],
+		[179,0.50],
+		[359,0.60],
+		[539,0.70],
+		[719,0.80],
+		[1079,0.90],
+		[1080,1]
+	]
+	
+	//Rewarded Posts calculation matrix
+	var recent_reward_posts_rules = [
+		[0,0],
+		[2,0.20],
+		[4,0.40],
+		[6,0.60],
+		[8,0.80],
+		[9,1]
+	]
+	
+	var user_rank = 0;
+	
+	//grab delegation amount
+	var userDelegations = await activeDelegationFunc(req.params.user);
+	
+	let delegSP = 0;
+	//get current delegated SP if any
+	if (userDelegations != null){
+		console.log('already delegated');
+		delegSP = userDelegations.steem_power;
+	}
+	//console.log(userDelegations.steem_power);
+	
+	var delegation_score = 0;
+	
+	//check if the user has an alt account as beneficiary
+	let delegator_info = await getAltAccountStatusFunc(req.params.user);
+	//check if returned object is not empty
+	if (Object.keys(delegator_info).length > 0){
+		if (parseInt(delegator_info.user_rank_benefit) == 1){
+			//consider as no delegations
+			delegSP = 0;
 		}
-		//console.log(userDelegations.steem_power);
-		
-		var delegation_score = 0;
-		
-		//check if the user has an alt account as beneficiary
-		let delegator_info = await getAltAccountStatusFunc(req.params.user);
+	}else{
+		//also check the other case where the account is an alt-account
+		delegator_info = await getAltAccountByNameFunc(req.params.user);
 		//check if returned object is not empty
-		if (Object.keys(delegator_info).length > 0){
-			if (parseInt(delegator_info.user_rank_benefit) == 1){
-				//consider as no delegations
-				delegSP = 0;
-			}
-		}else{
-			//also check the other case where the account is an alt-account
-			delegator_info = await getAltAccountByNameFunc(req.params.user);
-			//check if returned object is not empty
-			if (delegator_info.length > 0){
-				for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
-					if (parseInt(delegator_info[x].user_rank_benefit) == 1){
-						//get original user delegation amount
-						userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
-						if (userDelegations != null){
-							delegSP += userDelegations.steem_power;
-						}
+		if (delegator_info.length > 0){
+			for (let x=0, max_limit=delegator_info.length;x<max_limit;x++){
+				if (parseInt(delegator_info[x].user_rank_benefit) == 1){
+					//get original user delegation amount
+					userDelegations = await activeDelegationFunc(delegator_info[x].delegator);		
+					if (userDelegations != null){
+						delegSP += userDelegations.steem_power;
 					}
 				}
 			}
 		}
-		
-		
-		if (parseFloat(delegSP) > 0){
-			delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(delegSP));
+	}
+	
+	
+	if (parseFloat(delegSP) > 0){
+		delegation_score = utils.calcScore(delegation_rules, config.delegation_factor, parseFloat(delegSP));
+	}
+	
+	user_rank += delegation_score;
+	
+	//grab user token count
+	var userTokens = await grabUserTokensFunc(req.params.user);
+	//console.log(userTokens.tokens);
+	
+	var afit_tokens_score = 0;
+	if (userTokens != null){
+		afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+	}
+	
+	user_rank += afit_tokens_score;
+	
+	//grab total rewarded posts count
+	var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+	//console.log(tot_rewarded_post_count);
+	
+	var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
+	
+	user_rank += tot_posts_score;
+	
+	//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
+	req.query.period = config.recent_posts_period;
+	
+	//add a 2 day delay to take into consideration late voting rounds
+	req.query.delay = 2;
+	
+	var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
+	//console.log(recent_rewarded_post_count);
+	
+	var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
+	
+	user_rank += recent_posts_score;
+	
+	let rank_no_afitx = user_rank;
+	//also append AFITX based rank. for every 1 AFITX, increase 0.1 rank
+	let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
+	let user_rank_afitx = 0;
+	
+	if (userHasAFITX){
+		user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
+		//max increase by holding AFITX is 100
+		if (user_rank_afitx > 100){
+			user_rank_afitx = 100;
 		}
-		
-		user_rank += delegation_score;
-		
-		//grab user token count
-		var userTokens = await grabUserTokensFunc(req.params.user);
-		//console.log(userTokens.tokens);
-		
-		var afit_tokens_score = 0;
-		if (userTokens != null){
-			afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
-		}
-		
-		user_rank += afit_tokens_score;
-		
-		//grab total rewarded posts count
-		var tot_rewarded_post_count = await userRewardedPostCountFunc(req, res);
-		//console.log(tot_rewarded_post_count);
-		
-		var tot_posts_score = utils.calcScore(rewarded_posts_rules, config.rewarded_posts_factor, parseInt(tot_rewarded_post_count));
-		
-		user_rank += tot_posts_score;
-		
-		//set the check period for config value of days days, and rerun the call to get last rewarded posting activity during this period
-		req.query.period = config.recent_posts_period;
-		
-		//add a 2 day delay to take into consideration late voting rounds
-		req.query.delay = 2;
-		
-		var recent_rewarded_post_count = await userRewardedPostCountFunc(req, res);
-		//console.log(recent_rewarded_post_count);
-		
-		var recent_posts_score = utils.calcScore(recent_reward_posts_rules, config.recent_posts_factor, parseInt(recent_rewarded_post_count));
-		
-		user_rank += recent_posts_score;
-		
-		let rank_no_afitx = user_rank;
-		//also append AFITX based rank. for every 1 AFITX, increase 0.1 rank
-		let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
-		let user_rank_afitx = 0;
-		
-		if (userHasAFITX){
-			user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
-			//max increase by holding AFITX is 100
-			if (user_rank_afitx > 100){
-				user_rank_afitx = 100;
-			}
-			user_rank += parseFloat(user_rank_afitx);
-		}
-		
-		var score_components = JSON.stringify({
-			user_rank: user_rank.toFixed(2),
-			rank_no_afitx: rank_no_afitx,
-			afitx_rank: parseFloat(user_rank_afitx),
-			delegation_score: delegation_score,
-			afit_tokens_score: afit_tokens_score,
-			tot_posts_score: tot_posts_score,
-			recent_posts_score:recent_posts_score
-		});
-		console.log(score_components)
+		user_rank += parseFloat(user_rank_afitx);
+	}
+	
+	var score_components = JSON.stringify({
+		user_rank: user_rank.toFixed(2),
+		rank_no_afitx: rank_no_afitx,
+		afitx_rank: parseFloat(user_rank_afitx),
+		delegation_score: delegation_score,
+		afit_tokens_score: afit_tokens_score,
+		tot_posts_score: tot_posts_score,
+		recent_posts_score:recent_posts_score
+	});
+	console.log(score_components)
 	return score_components;
 }
-		
+
 /* end point for getting current user's Actifit rank */
 app.get('/getRank/:user', async function (req, res) {
 	if (typeof req.params.user!= "undefined" && req.params.user!=null){
@@ -2645,6 +2671,18 @@ app.get("/activeGadgets", async function(req, res) {
   console.log(gadget_match);
   res.send(gadget_match);
 });
+
+
+app.get("/activeGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();			
+	let gadget_match_benefic = await db.collection('user_gadgets').find({ benefic: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();					
+	res.send({'own': gadget_match, 'benefic': gadget_match_benefic});
+});
+
+
 
 app.get("/gadgetBought", async function(req, res) {
 	console.log('gadgetBought');
@@ -3574,7 +3612,7 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 
 /* end point for returning total post count on a specific date */
 app.get('/recentVerifiedPosts', async function(req, res) {
-
+	
 	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	if (req.query.targetDate){
 		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
