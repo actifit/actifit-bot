@@ -2684,6 +2684,25 @@ app.get("/activeGadgetsByUser/:user", async function(req, res) {
 	res.send({'own': gadget_match, 'benefic': gadget_match_benefic});
 });
 
+app.get("/boughtGadgetCountByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+  let targetUser = req.params.user.replace('@','');
+  let aTargetUser = '@'+targetUser;
+  let gadget_match = await db.collection('user_gadgets').aggregate([
+						{ $match: { user: { $in: [targetUser, aTargetUser]} } },
+						{
+						   $group:
+							{
+							   _id: {gadget: "$gadget", status: "$status"},
+							   /*tokens_distributed: { $sum: "$tokens" },*/
+							   /*active_count: { $sum: }*/
+							   count: { $sum: 1 }
+							}
+						}
+					]).toArray();
+  console.log(gadget_match);
+  res.send(gadget_match);
+});
 
 
 app.get("/gadgetBought", async function(req, res) {
