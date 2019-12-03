@@ -2105,6 +2105,67 @@ app.get('/moderatorActivity', async function(req, res) {
 
 });
 
+
+/* end point for capturing moderator activity stats during last week */
+app.get('/moderatorWeeklyStats', async function(req, res) {
+	let moderatorsList = await moderatorsListFunc();
+	
+	//console.log(moment().utc().startOf('date').day());
+	//return;
+	//default today
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	/*if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}*/
+	//make sure stats cover up to 1 week
+	let days = moment().utc().startOf('date').day();
+	
+	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('team').aggregate([
+		{
+			$match: 
+			{
+				title:'moderator', 
+				status:'active'
+			}
+		},
+		{
+			$lookup: 
+			{
+				from: "token_transactions", 
+				localField: "name", 
+				foreignField: "user", 
+				as: "moderatorActivity"
+			}
+		}, 
+		{
+			$project: 
+			{
+				'_id':0,
+				items: 
+				{
+					$filter: {
+						input: "$moderatorActivity",
+						as: "singleEntry",
+						cond: { $and: [
+							//{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+							{ "$gt": ["$$singleEntry.date", new Date(endDate)] },
+							{ "$in": ["$$singleEntry.reward_activity", ["Moderator Comment", "Post Vote"]] } 
+						] }
+					}
+				}
+			}
+		},
+	   ]).toArray(function(err, results) {
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
 /* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
 	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
