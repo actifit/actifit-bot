@@ -2114,11 +2114,15 @@ app.get('/moderatorWeeklyStats', async function(req, res) {
 	//return;
 	//default today
 	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-	/*if (req.query.targetDate){
-		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
-	}*/
+	
 	//make sure stats cover up to 1 week
 	let days = moment().utc().startOf('date').day();
+	
+	//need to fetch last week data if properly set
+	if (req.query.priorWeek){
+		startDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+		days = 7;
+	}
 	
 	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
 	console.log("startDate:"+startDate+" endDate:"+endDate);
@@ -2150,7 +2154,7 @@ app.get('/moderatorWeeklyStats', async function(req, res) {
 						input: "$moderatorActivity",
 						as: "singleEntry",
 						cond: { $and: [
-							//{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+							{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
 							{ "$gt": ["$$singleEntry.date", new Date(endDate)] },
 							{ "$in": ["$$singleEntry.reward_activity", ["Moderator Comment", "Post Vote"]] } 
 						] }
