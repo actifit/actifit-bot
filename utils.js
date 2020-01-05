@@ -579,7 +579,7 @@ function format(n, c, d, t) {
    var s = Math.floor((ts % 60));
    return padLeft(h, 2) + ':' + padLeft(m, 2) + ':' + padLeft(s, 2);
  }
-
+ 
  function toHrMn(ts) {
    var h = Math.floor(ts / HOURS);
    var m = Math.floor((ts % HOURS) / 60);
@@ -816,7 +816,7 @@ async function lookupAccountPay (){
 	const ONE_YEAR = 365;
 	
 	//when is our start day: 1 is yesterday, 10 is 10 days ago
-	let start_days = 11;
+	let start_days = 15;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
@@ -1047,6 +1047,13 @@ function sortArrLodash (arrToSort) {
 	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
 }
 
+function removeArrMatchLodash (arrToClean, arrToMatch, field) {
+	let removedEntries = _.remove(arrToClean, obj => arrToMatch.includes(obj[field]));
+	console.log("removedEntries");
+	console.log(removedEntries);
+	return arrToClean;
+}
+
 async function rewardPost(post_url, vp){
 	//extract author and permalink from full url
 	//check if string ends with /, remove it
@@ -1146,4 +1153,5 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
+   removeArrMatchLodash: removeArrMatchLodash,
  }
