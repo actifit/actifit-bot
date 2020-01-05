@@ -504,9 +504,20 @@ app.get('/topAFITXHolders', async function (req, res) {
 		//set max as 100
 		maxAmount = 100;
 	}
+	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('');
+	
+	afitxSorted = utils.removeArrMatchLodash(afitxSorted, banned_arr, 'account');
+	
 	//always skip top holder as that would be actifit
 	afitxSorted = afitxSorted.slice(1, maxAmount + 1);
+	
 	let output = afitxSorted;
+	
 	if (req.query.pretty){
 		output = '#|Token Holder | AFITX Tokens Held |<br/>';
 		output += '|---|---|---|<br/>';
@@ -1172,10 +1183,17 @@ app.get('/products', async function (req, res) {
 /* end point for returning current top AFIT token holders */
 app.get('/topTokenHolders', async function (req, res) {
 	var tokenHolders; 
+	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('');
+	
 	if (isNaN(req.query.count)){
-		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).toArray();
+		tokenHolders = await db.collection('user_tokens').find({_id:{$nin: banned_arr}}).sort({tokens: -1}).toArray();
 	}else{
-		tokenHolders = await db.collection('user_tokens').find().sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
+		tokenHolders = await db.collection('user_tokens').find({_id:{$nin: banned_arr}}).sort({tokens: -1}).limit(parseInt(req.query.count)).toArray();
 	}
 	let output = tokenHolders;
 	if (req.query.pretty){

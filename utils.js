@@ -1047,6 +1047,13 @@ function sortArrLodash (arrToSort) {
 	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
 }
 
+function removeArrMatchLodash (arrToClean, arrToMatch, field) {
+	let removedEntries = _.remove(arrToClean, obj => arrToMatch.includes(obj[field]));
+	console.log("removedEntries");
+	console.log(removedEntries);
+	return arrToClean;
+}
+
 async function rewardPost(post_url, vp){
 	//extract author and permalink from full url
 	//check if string ends with /, remove it
@@ -1146,4 +1153,5 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
+   removeArrMatchLodash: removeArrMatchLodash,
  }
