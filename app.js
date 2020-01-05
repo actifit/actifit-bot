@@ -2105,6 +2105,71 @@ app.get('/moderatorActivity', async function(req, res) {
 
 });
 
+
+/* end point for capturing moderator activity stats during last week */
+app.get('/moderatorWeeklyStats', async function(req, res) {
+	let moderatorsList = await moderatorsListFunc();
+	
+	//console.log(moment().utc().startOf('date').day());
+	//return;
+	//default today
+	var startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	
+	//make sure stats cover up to 1 week
+	let days = moment().utc().startOf('date').day();
+	
+	//need to fetch last week data if properly set
+	if (req.query.priorWeek){
+		startDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+		days = 7;
+	}
+	
+	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+	console.log("startDate:"+startDate+" endDate:"+endDate);
+	
+	await db.collection('team').aggregate([
+		{
+			$match: 
+			{
+				title:'moderator', 
+				status:'active'
+			}
+		},
+		{
+			$lookup: 
+			{
+				from: "token_transactions", 
+				localField: "name", 
+				foreignField: "user", 
+				as: "moderatorActivity"
+			}
+		}, 
+		{
+			$project: 
+			{
+				'_id':0,
+				items: 
+				{
+					$filter: {
+						input: "$moderatorActivity",
+						as: "singleEntry",
+						cond: { $and: [
+							{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+							{ "$gt": ["$$singleEntry.date", new Date(endDate)] },
+							{ "$in": ["$$singleEntry.reward_activity", ["Moderator Comment", "Post Vote"]] } 
+						] }
+					}
+				}
+			}
+		},
+	   ]).toArray(function(err, results) {
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
+
 /* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
 	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
@@ -2255,54 +2320,56 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
 			let user = entry.from;
-			//query to see if entry already stored
-			let tokenExchangeTransQuery = {
-				user: user,
-				se_trx_ref: entry.txid
-			}
-			//store the transaction to the user's profile
-			let tokenExchangeTrans = {
-				user: user,
-				reward_activity: 'Move AFIT SE to Actifit Wallet',
-				token_count: parseFloat(entry.quantity),
-				se_trx_ref: entry.txid,
-				date: new Date(entry.timestamp)
-			}
-			try{
-				console.log(tokenExchangeTrans);
-				//insert the query ensuring we do not write it twice
-				let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
-				let trans_res = transaction.result;
-				console.log(trans_res);
-				
-				if (trans_res.upserted){
-					//we have a new entry, increase user token count
+			if (user != config.steem_engine_actifit_se){
+				//query to see if entry already stored
+				let tokenExchangeTransQuery = {
+					user: user,
+					se_trx_ref: entry.txid
+				}
+				//store the transaction to the user's profile
+				let tokenExchangeTrans = {
+					user: user,
+					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					token_count: parseFloat(entry.quantity),
+					se_trx_ref: entry.txid,
+					date: new Date(entry.timestamp)
+				}
+				try{
+					console.log(tokenExchangeTrans);
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
+					let trans_res = transaction.result;
+					console.log(trans_res);
 					
-					let user_info = await grabUserTokensFunc (user);
-					
-					let cur_user_token_count = 0;
-					if (user_info){
-						cur_user_token_count = parseFloat(user_info.tokens);
-						//update current user's token balance & store to db
-						afit_amount = parseFloat(entry.quantity);
-						let new_token_count = cur_user_token_count + parseFloat(afit_amount);
-						user_info.tokens = new_token_count;
-						console.log('new_token_count:'+new_token_count);
-						try{
-							let trans = await db.collection('user_tokens').save(user_info);
-							console.log('success adding AFIT tokens to user balance');
-						}catch(err){
-							console.log(err);
-							return;
+					if (trans_res.upserted){
+						//we have a new entry, increase user token count
+						
+						let user_info = await grabUserTokensFunc (user);
+						
+						let cur_user_token_count = 0;
+						if (user_info){
+							cur_user_token_count = parseFloat(user_info.tokens);
+							//update current user's token balance & store to db
+							afit_amount = parseFloat(entry.quantity);
+							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+							user_info.tokens = new_token_count;
+							console.log('new_token_count:'+new_token_count);
+							try{
+								let trans = await db.collection('user_tokens').save(user_info);
+								console.log('success adding AFIT tokens to user balance');
+							}catch(err){
+								console.log(err);
+								return;
+							}
 						}
 					}
+					
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
+					res.end();
+					return;
 				}
-				
-			}catch(err){
-				console.log(err);
-				res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
-				res.end();
-				return;
 			}
 		});
 		
@@ -2682,6 +2749,25 @@ app.get("/activeGadgetsByUser/:user", async function(req, res) {
 	res.send({'own': gadget_match, 'benefic': gadget_match_benefic});
 });
 
+app.get("/boughtGadgetCountByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+  let targetUser = req.params.user.replace('@','');
+  let aTargetUser = '@'+targetUser;
+  let gadget_match = await db.collection('user_gadgets').aggregate([
+						{ $match: { user: { $in: [targetUser, aTargetUser]} } },
+						{
+						   $group:
+							{
+							   _id: {gadget: "$gadget", status: "$status"},
+							   /*tokens_distributed: { $sum: "$tokens" },*/
+							   /*active_count: { $sum: }*/
+							   count: { $sum: 1 }
+							}
+						}
+					]).toArray();
+  console.log(gadget_match);
+  res.send(gadget_match);
+});
 
 
 app.get("/gadgetBought", async function(req, res) {
@@ -3625,6 +3711,13 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 		maxCount = parseInt(req.query.maxCount);
 	}
 	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('');
+	//console.log(banned_arr);
+	
 	await db.collection('verified_posts').aggregate([
 		{$match: 
 			{
@@ -3633,7 +3726,7 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 					$gt: new Date(startDate)
 				},
 				author: {
-					$ne: '',
+					$nin: banned_arr,
 				}
 			},
 		},
