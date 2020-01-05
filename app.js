@@ -3711,6 +3711,13 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 		maxCount = parseInt(req.query.maxCount);
 	}
 	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('');
+	//console.log(banned_arr);
+	
 	await db.collection('verified_posts').aggregate([
 		{$match: 
 			{
@@ -3719,7 +3726,7 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 					$gt: new Date(startDate)
 				},
 				author: {
-					$ne: '',
+					$nin: banned_arr,
 				}
 			},
 		},
