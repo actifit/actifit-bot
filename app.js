@@ -1970,7 +1970,7 @@ getPostRewardFunc = async function(user, url, reward_activity){
 	//fixing token amount display for 3 digits
 	if (typeof post_details!= "undefined" && post_details!=null){
 		if (typeof post_details.token_count!= "undefined"){
-			return post_details.token_count;
+			return parseFloat(post_details.token_count.toFixed(4));
 		}
 	}
 	//otherwise return no tokens
