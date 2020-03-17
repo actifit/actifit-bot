@@ -46,6 +46,47 @@ var HOURS = 60 * 60;
 	return account;
  }
  
+ async function validateAccountLogin(username, priv_pkey){
+	console.log('validateAccountLogin');
+	let account_res = await steem.api.getAccountsAsync([username]);
+	console.log(account_res[0]);
+	let pub_pkey = account_res[0].posting.key_auths[0][0];
+	try{ 
+		let res = await steem.auth.wifIsValid(priv_pkey, pub_pkey);
+		//console.log(res);
+		return {result: res, account: account_res[0]};
+	}catch(err){ 
+		console.log(err);
+		return {result:false};
+	}
+ }
+ 
+ async function processSteemTrx(operation, userKey){
+	console.log('utils processSteemTrx');
+	console.log(operation);
+	const ops = [ operation ];
+
+	let tx = await steem.broadcast.sendAsync( 
+	   { operations: ops, extensions: [] },
+	   { posting: userKey }
+	).catch(err => {
+		console.log(err.message);
+		return {error: err.message};
+	});
+	
+	console.log(tx);
+	return {tx: tx};
+	   /*{ posting: posting_key }, function(err, result){
+			if (!err && result) {
+				console.log("processSteemTrx success");
+				return {success:true};
+			}else{
+				console.log('Error processSteemTrx ' + err);
+				return {error:err};
+			}
+	   }*/
+ }
+ 
  function updateSteemVariables() {
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
@@ -1154,4 +1195,6 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
    removeArrMatchLodash: removeArrMatchLodash,
+   validateAccountLogin: validateAccountLogin,
+   processSteemTrx: processSteemTrx,
  }
