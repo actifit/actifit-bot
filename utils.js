@@ -1,10 +1,15 @@
 var fs = require("fs");
 const steem = require('steem');
+
+const hive = require('steem');
+
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
 const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
+
+const hive_node = 'https://api.hive.blog/';
 
 getConfig();
 
@@ -15,6 +20,8 @@ var config;
 let th_id = -1;
 
 steem.api.setOptions({ url: steem_node });
+
+hive.api.setOptions({ url: hive_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -61,18 +68,30 @@ var HOURS = 60 * 60;
 	}
  }
  
- async function processSteemTrx(operation, userKey){
+ async function processSteemTrx(operation, userKey, bchain){
 	console.log('utils processSteemTrx');
 	console.log(operation);
 	const ops = [ operation ];
-
-	let tx = await steem.broadcast.sendAsync( 
-	   { operations: ops, extensions: [] },
-	   { posting: userKey }
-	).catch(err => {
-		console.log(err.message);
-		return {error: err.message};
-	});
+	console.log('>>>>>>>>>>>> selected bchain');
+	console.log(bchain);
+	let tx 
+	if (bchain == 'STEEM'){
+		tx = await steem.broadcast.sendAsync( 
+		   { operations: ops, extensions: [] },
+		   { posting: userKey }
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	}else{
+		tx = await hive.broadcast.sendAsync( 
+		   { operations: ops, extensions: [] },
+		   { posting: userKey }
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	}
 	
 	console.log(tx);
 	return {tx: tx};

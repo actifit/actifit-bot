@@ -310,6 +310,8 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	
 	const receivedPlaintext = decrypt(req.ppkey);
 	
+	//set HIVE as default
+	let bchain = 'STEEM';
 	
 	let userKey = receivedPlaintext;
 	
@@ -322,6 +324,9 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 		res.send({error: 'operation not supplied'});
 	}
 	
+	if (req.query.bchain){
+		bchain = req.query.bchain;
+	}
 	
 	let match_arr = Object.entries(operation);
 	/*console.log(user);
@@ -331,7 +336,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	console.log(match_arr[0][1]);*/
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey);
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
 	res.send({success: true, trx: performTrx});
 });
