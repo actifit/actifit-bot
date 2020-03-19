@@ -314,6 +314,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	let userKey = receivedPlaintext;
 	
 	let operation;
+	console.log(req.query.operation);
 	if (req.query && req.query.operation){
 		operation = JSON.parse(req.query.operation);
 		//operation = req.query.operation;
@@ -362,15 +363,19 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
-app.get('/loginAuth', async function (req, res) {
-	//console.log(req);
+var bodyParser = require('body-parser');
+app.use(bodyParser.json()); // support json encoded bodies
+app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
+app.post('/loginAuth', async function (req, res) {
+	console.log('login');
 	let username = null;
-	if (req.query && req.query.username){
-		username = req.query.username;
+	if (req.body && req.body.username){
+		username = req.body.username;
 	}
     let ppkey = null;
-	if (req.query && req.query.ppkey){
-		ppkey = req.query.ppkey;
+	if (req.body && req.body.ppkey){
+		ppkey = req.body.ppkey;
 	}
     
 
@@ -378,7 +383,7 @@ app.get('/loginAuth', async function (req, res) {
 		let db_col = db.collection('user_login_token');
 		//find existing login entry in DB to override
 		let user_tkn = await db_col.findOne({user: username});
-		console.log(user_tkn);
+		//console.log(user_tkn);
 		
 		//encode ppkey
 		const ciphertext = encrypt(ppkey);
