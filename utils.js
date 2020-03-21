@@ -1,8 +1,6 @@
 var fs = require("fs");
 const steem = require('steem');
 
-const hive = require('steem');
-
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
@@ -20,8 +18,6 @@ var config;
 let th_id = -1;
 
 steem.api.setOptions({ url: steem_node });
-
-hive.api.setOptions({ url: hive_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -41,8 +37,17 @@ var HOURS = 60 * 60;
  let totalVests
  let totalSteem
  
- async function getAccountData(account_name){
+ function setProperNode(bchain){
+	if (bchain == "STEEM"){
+		steem.api.setOptions({ url: steem_node });
+	}else{
+		steem.api.setOptions({ url: hive_node });
+	}
+ }
+ 
+ async function getAccountData(account_name, bchain){
 	let account = null;
+	setProperNode(bchain);
 	//attempt to load account data
 	try{
 		let account_res = await steem.api.getAccountsAsync([config.account]); 
@@ -53,7 +58,8 @@ var HOURS = 60 * 60;
 	return account;
  }
  
- async function validateAccountLogin(username, priv_pkey){
+ async function validateAccountLogin(username, priv_pkey, bchain){
+	setProperNode(bchain);
 	console.log('validateAccountLogin');
 	let account_res = await steem.api.getAccountsAsync([username]);
 	console.log(account_res[0]);
@@ -74,39 +80,21 @@ var HOURS = 60 * 60;
 	const ops = [ operation ];
 	console.log('>>>>>>>>>>>> selected bchain');
 	console.log(bchain);
-	let tx 
-	if (bchain == 'STEEM'){
-		tx = await steem.broadcast.sendAsync( 
+	setProperNode(bchain);
+	let tx = await steem.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { posting: userKey }
 		).catch(err => {
 			console.log(err.message);
 			return {error: err.message};
 		});
-	}else{
-		tx = await hive.broadcast.sendAsync( 
-		   { operations: ops, extensions: [] },
-		   { posting: userKey }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	}
 	
 	console.log(tx);
 	return {tx: tx};
-	   /*{ posting: posting_key }, function(err, result){
-			if (!err && result) {
-				console.log("processSteemTrx success");
-				return {success:true};
-			}else{
-				console.log('Error processSteemTrx ' + err);
-				return {error:err};
-			}
-	   }*/
  }
  
- function updateSteemVariables() {
+ function updateSteemVariables(bchain) {
+	 setProperNode(bchain);
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
          rewardBalance = parseFloat(t.reward_balance.replace(" STEEM", ""));
@@ -125,7 +113,7 @@ var HOURS = 60 * 60;
 		 console.log(sbd_print_percentage);
      });
 
-     setTimeout(updateSteemVariables, 180 * 1000)
+     setTimeout(updateSteemVariables, 180 * 1000, bchain)
  }
  // updateSteemVariables();
 
@@ -231,10 +219,11 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceived (req) {
+	async function confirmPaymentReceived (req, bchain) {
 		getConfig();
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
+				setProperNode(bchain);
 				console.log('check funds');
 				steem.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
 					let tx_id = '';
@@ -274,12 +263,13 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceivedPassword (req) {
+	async function confirmPaymentReceivedPassword (req, bchain) {
 		getConfig();
 		console.log('confirmPaymentReceivedPassword');
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check funds');
+				setProperNode(bchain);
 				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -318,12 +308,13 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceivedBuy (req) {
+	async function confirmPaymentReceivedBuy (req, bchain) {
 		getConfig();
 		console.log('confirmPaymentReceivedBuy');
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check buy funds');
+				setProperNode(bchain);
 				steem.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -1114,7 +1105,7 @@ function removeArrMatchLodash (arrToClean, arrToMatch, field) {
 	return arrToClean;
 }
 
-async function rewardPost(post_url, vp){
+async function rewardPost(post_url, vp, bchain){
 	//extract author and permalink from full url
 	//check if string ends with /, remove it
 	if (post_url.slice(-1) == '/'){
@@ -1124,6 +1115,7 @@ async function rewardPost(post_url, vp){
 	let permalink = post_url.split('/').reverse()[0];
 	//before last portion is author, and remove the starting @
 	let author = post_url.split('/').reverse()[1].replace('@','');
+	setProperNode(bchain);
 	//cast vote
 	let result = await steem.broadcast.voteAsync(
 							config.rewards_account_pkey, //postingWIF

@@ -121,10 +121,10 @@ async function disableUserLogin(){
 	//console.log(result);
 }
 
-async function loadAccountData(){
+async function loadAccountData(bchain){
 	//load main account data
 	
-	account = await utils.getAccountData(config.account);
+	account = await utils.getAccountData(config.account, bchain);
 }
 
 async function fetchAFITXBal(offset){
@@ -236,10 +236,11 @@ app.get('/votingStatus', async function (req, res) {
 		accountQueries = 0;
 		accountRefresh = true;
 	}
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
 	//fetch anew account data if account is empty or we need to refresh account data
 	if (!account || accountRefresh){
 		console.log('refreshing account data');
-		account = await utils.getAccountData(config.account);
+		account = await utils.getAccountData(config.account, bchain);
 		accountRefresh = false;
 	}
 	let vp_res = await utils.getVotingPower(account);
@@ -311,7 +312,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	const receivedPlaintext = decrypt(req.ppkey);
 	
 	//set HIVE as default
-	let bchain = 'STEEM';
+	let bchain = 'HIVE';
 	
 	let userKey = receivedPlaintext;
 	
@@ -347,10 +348,14 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	if (req.query && req.query.user){
 		username = req.query.user;
 	}
+	let bchain = 'HIVE';
+	if (req.query && req.query.bchain){
+		bchain = req.query.bchain;
+	}
 	//console.log(username);
 	//console.log(req.ppkey);
 	const receivedPlaintext = decrypt(req.ppkey);
-	let isValidUser = await utils.validateAccountLogin(username, receivedPlaintext);
+	let isValidUser = await utils.validateAccountLogin(username, receivedPlaintext, bchain);
 	
 	console.log('isValidUser');
 	console.log(isValidUser);
@@ -393,9 +398,13 @@ app.post('/loginAuth', async function (req, res) {
 		//encode ppkey
 		const ciphertext = encrypt(ppkey);
 		
+		let bchain = 'HIVE';
+		if (req.query && req.query.bchain){
+			bchain = req.query.bchain;
+		}
 		
 		//validate proper data used
-		let isValidUser = await utils.validateAccountLogin(username, ppkey);
+		let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
 		console.log('isValidUser');
 		console.log(isValidUser);
 		//if (username === mockedUsername && ppkey === mockedPpkey) {
@@ -704,7 +713,8 @@ app.get('/modAction', async function (req, res) {
 							res.send({'error': 'VP needs to be numeric'});
 							return;
 						}
-						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp)
+						let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp, bchain)
 						console.log(result);
 						result.status='success';
 						break;
@@ -3298,7 +3308,8 @@ app.get('/confirmPayment', async function(req,res){
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
 				console.log('memo_used:'+memo_used);
 				if (typeof memo_used == "undefined" || memo_used == null){
-					paymentReceivedTx = await utils.confirmPaymentReceived(req);
+					let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain);
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
 						req.query.confirming_tx = paymentReceivedTx;
@@ -3469,7 +3480,8 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 		res.write(' ');
 	},8000);
 	try{
-		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account);
+		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account, bchain);
 		console.log('>>>> got TX '+paymentReceivedTx);
 		if (paymentReceivedTx != ''){
 			try{
@@ -3514,7 +3526,8 @@ app.get('/confirmBuyAction', async function(req,res){
 		res.write(' ');
 	},8000);
 	try{
-		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account);
+		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account, bchain);
 		console.log('>>>> got TX '+match_trx);
 		let targetUser = req.query.from;
 		if (match_trx != ''){
