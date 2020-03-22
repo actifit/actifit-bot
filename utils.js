@@ -7,7 +7,9 @@ const dsteem = require('dsteem');
 const moment = require('moment')
 const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
 
-const hive_node = 'https://api.hive.blog/';
+const hive_node = 'https://api.hivekings.com/';
+
+let alt_hive_nodes = ["https://api.openhive.network", "https://anyx.io", "https://api.hivekings.com"];//'https://api.hive.blog/'
 
 getConfig();
 
@@ -47,7 +49,7 @@ var HOURS = 60 * 60;
  
  async function getAccountData(account_name, bchain){
 	let account = null;
-	setProperNode(bchain);
+	await setProperNode(bchain);
 	//attempt to load account data
 	try{
 		let account_res = await steem.api.getAccountsAsync([config.account]); 
@@ -59,7 +61,7 @@ var HOURS = 60 * 60;
  }
  
  async function validateAccountLogin(username, priv_pkey, bchain){
-	setProperNode(bchain);
+	await setProperNode(bchain);
 	console.log('validateAccountLogin');
 	let account_res = await steem.api.getAccountsAsync([username]);
 	console.log(account_res[0]);
@@ -80,7 +82,7 @@ var HOURS = 60 * 60;
 	const ops = [ operation ];
 	console.log('>>>>>>>>>>>> selected bchain');
 	console.log(bchain);
-	setProperNode(bchain);
+	await setProperNode(bchain);
 	let tx = await steem.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { posting: userKey }
@@ -223,7 +225,7 @@ var HOURS = 60 * 60;
 		getConfig();
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
-				setProperNode(bchain);
+				await setProperNode(bchain);
 				console.log('check funds');
 				steem.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
 					let tx_id = '';
@@ -269,7 +271,8 @@ var HOURS = 60 * 60;
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check funds');
-				setProperNode(bchain);
+				console.log(bchain);
+				await setProperNode(bchain);
 				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -278,6 +281,8 @@ var HOURS = 60 * 60;
 						//check if we received a transfer to our target account
 						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
 						if (op[0] === 'transfer'){
+							//console.log('transfer op ');
+							//console.log(op[1]);
 							let sentAmount = op[1].amount.split(' ')[0];
 							if (op[1].to === config.exchange_account && op[1].from === req.query.from && sentAmount >= 1){  
 								console.log('in');
@@ -314,7 +319,7 @@ var HOURS = 60 * 60;
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check buy funds');
-				setProperNode(bchain);
+				await setProperNode(bchain);
 				steem.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -1115,7 +1120,7 @@ async function rewardPost(post_url, vp, bchain){
 	let permalink = post_url.split('/').reverse()[0];
 	//before last portion is author, and remove the starting @
 	let author = post_url.split('/').reverse()[1].replace('@','');
-	setProperNode(bchain);
+	await setProperNode(bchain);
 	//cast vote
 	let result = await steem.broadcast.voteAsync(
 							config.rewards_account_pkey, //postingWIF

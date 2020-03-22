@@ -114,7 +114,8 @@ async function disableUserLogin(){
 	console.log('check outdated logins');
 	let db_col = db.collection('user_login_token');
 	let dateTarget = new Date();
-	dateTarget.setHours(dateTarget.getHours()-1);
+	//allow logins to remain valid for 4 hours
+	dateTarget.setHours(dateTarget.getHours()-4);
 	console.log(dateTarget);
 	//find existing login entry in DB to override
 	let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
@@ -3481,7 +3482,7 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 	},8000);
 	try{
 		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
-		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account, bchain);
+		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, bchain);
 		console.log('>>>> got TX '+paymentReceivedTx);
 		if (paymentReceivedTx != ''){
 			try{
@@ -3527,7 +3528,7 @@ app.get('/confirmBuyAction', async function(req,res){
 	},8000);
 	try{
 		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
-		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account, bchain);
+		match_trx = await utils.confirmPaymentReceivedBuy(req, bchain);
 		console.log('>>>> got TX '+match_trx);
 		let targetUser = req.query.from;
 		if (match_trx != ''){
