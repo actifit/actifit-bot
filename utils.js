@@ -1105,8 +1105,8 @@ function sortArrLodash (arrToSort) {
 
 function removeArrMatchLodash (arrToClean, arrToMatch, field) {
 	let removedEntries = _.remove(arrToClean, obj => arrToMatch.includes(obj[field]));
-	console.log("removedEntries");
-	console.log(removedEntries);
+	//console.log("removedEntries");
+	//console.log(removedEntries);
 	return arrToClean;
 }
 

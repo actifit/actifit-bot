@@ -353,6 +353,8 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	if (req.query && req.query.bchain){
 		bchain = req.query.bchain;
 	}
+	console.log('>>>>fetchuserdata');
+	console.log(bchain);
 	//console.log(username);
 	//console.log(req.ppkey);
 	const receivedPlaintext = decrypt(req.ppkey);
@@ -400,14 +402,14 @@ app.post('/loginAuth', async function (req, res) {
 		const ciphertext = encrypt(ppkey);
 		
 		let bchain = 'HIVE';
-		if (req.query && req.query.bchain){
-			bchain = req.query.bchain;
+		if (req.body && req.body.bchain){
+			bchain = req.body.bchain;
 		}
 		
 		//validate proper data used
 		let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
 		console.log('isValidUser');
-		console.log(isValidUser);
+		//console.log(isValidUser);
 		//if (username === mockedUsername && ppkey === mockedPpkey) {
 		if (isValidUser.result){
 			let token = jwt.sign({username: username},
