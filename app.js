@@ -208,6 +208,11 @@ generatePassword = function (multip) {
   };
   
 
+
+var bodyParser = require('body-parser');
+app.use(bodyParser.json()); // support json encoded bodies
+app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
 //const key = crypto.randomBytes(32);
 //const iv = crypto.randomBytes(16);
 
@@ -254,7 +259,7 @@ app.get('/votingStatus', async function (req, res) {
 
 let jwt = require('jsonwebtoken');
 
-
+//function ensures user is properly logged in
 let checkHdrs = (req, res, next) => {
 	let token = req.headers['x-acti-token'] || req.headers['authorization']; // Express headers are auto converted to lowercase
 	  
@@ -376,9 +381,30 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
-var bodyParser = require('body-parser');
-app.use(bodyParser.json()); // support json encoded bodies
-app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
+app.get('/updateSettings/', checkHdrs, async function (req, res) {
+	let newSettings;
+	if (req.query && req.query.user && req.query.settings){
+		newSettings = JSON.parse(req.query.settings);
+	}else{
+		res.send({error:'invalid request'})
+	}
+	try{
+		let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: newSettings}, {upsert : true });
+		console.log(setgs);
+		res.send({success: true});
+	}catch(err){
+		res.send({error: true});
+	}
+});
+
+
+app.get('/userSettings/:user', async function (req, res) {
+	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
+	console.log(setgs);
+	res.send(setgs);
+});
+
 
 app.post('/loginAuth', async function (req, res) {
 	console.log('login');
@@ -491,7 +517,7 @@ app.get('/transactionsByType/', async function (req, res) {
 		
 	}
 	if (req.query.datesort){
-		dateSort = req.query.datesort
+		dateSort = parseInt(req.query.datesort)
 		
 	}
 	let startDate = '';
