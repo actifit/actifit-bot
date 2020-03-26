@@ -388,10 +388,12 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 		newSettings = JSON.parse(req.query.settings);
 	}else{
 		res.send({error:'invalid request'})
+		return;
 	}
+	console.log(newSettings);
 	try{
 		let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: newSettings}, {upsert : true });
-		console.log(setgs);
+		//console.log(setgs);
 		res.send({success: true});
 	}catch(err){
 		res.send({error: true});
