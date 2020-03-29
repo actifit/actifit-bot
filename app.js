@@ -2483,7 +2483,7 @@ proceedAccountCreation = async function (req){
 	//let's create the account now
 	let accountCreated = false;
 	let transStored = false;
-	accountCreated = await utils.createAccount(req.query.new_account, req.query.new_pass);
+	accountCreated = await utils.createAccount(req.query.new_account, req.query.new_pass, req.query.cur_bchain);
 	if (accountCreated){
 		transStored = await storeSignupTransaction(req);
 		//proceed only if a proper referrer was sent
@@ -3290,7 +3290,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -3315,7 +3316,7 @@ app.get('/confirmPayment', async function(req,res){
 					accountCreated = await claimAndCreateAccount(req);
 					//only delegate if account created and delegation is enabled
 					if (accountCreated && promo_match.delegation){
-						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.cur_bchain);
 					}
 					
 					//decrease number of permitted entries
@@ -3383,7 +3384,7 @@ claimAndCreateAccount = async function (req){
 		console.log('Current RC: ' + utils.format(results.estimated_pct) + '% ');
 		if (results.estimated_pct>50){
 			//if we reached min threshold, claim more spots for discounted accounts
-			accountClaimed = await utils.claimDiscountedAccount();
+			accountClaimed = await utils.claimDiscountedAccount(req.query.cur_bchain);
 		}
 	}catch(err){
 		console.log('error grabbing RC');

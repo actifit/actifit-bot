@@ -14,6 +14,7 @@ let alt_hive_nodes = ["https://api.openhive.network", "https://anyx.io", "https:
 getConfig();
 
 const client = new dsteem.Client(config.active_node);
+const hiveClient = new dsteem.Client(config.active_hive_node);
 		
 var config;
 
@@ -38,6 +39,9 @@ var HOURS = 60 * 60;
  let properties
  let totalVests
  let totalSteem
+ let hiveProps
+ let totalHive
+ let totalHiveVests
  
  function setProperNode(bchain){
 	if (bchain == "STEEM"){
@@ -361,7 +365,7 @@ var HOURS = 60 * 60;
 	
 	
 	//function handles claiming spots for accounts
-	async function claimDiscountedAccount(){
+	async function claimDiscountedAccount(chain){
 		console.log('claimDiscountedAccount');
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
@@ -379,30 +383,60 @@ var HOURS = 60 * 60;
 							config.active_key
 						);
 		let result = '';
-		try{
-			result = await client.broadcast.sendOperations(ops, privateKey);
-			console.log('success');
-			return true;
-		}catch(err){
-			console.log(err);
-			return false;
+		let outcSteem = false;
+		let outcHive = false;
+		if (!chain || chain == 'STEEM'){
+			
+			try{
+				result = await client.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				outcSteem = true;
+			}catch(err){
+				console.log(err);
+				outcSteem = false;
+			}
 		}
+		if (!chain || chain == 'HIVE'){
+			try{
+				result = await hiveClient.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				outcHive = true;
+			}catch(err){
+				console.log(err);
+				outcHive = false;
+			}
+		}
+		return (outcSteem || outcHive);
 	}
 	
 	//function handles creating accounts via discounted claimed spots or normal paid method
-	async function createAccount (username, password){
+	async function createAccount (username, password, chain){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
-		//check if account exists		
-		const _account = await client.database.call('get_accounts', [[username]]);
-		//account not available to register
-		if (_account.length>0) {
-			console.log('account already exists');
-			console.log(_account);
-			return false;
+		
+		if (!chain || chain == 'STEEM'){
+			//check if account exists		
+			const _account = await client.database.call('get_accounts', [[username]]);
+			//account not available to register
+			if (_account.length>0) {
+				console.log('account already exists');
+				console.log(_account);
+				return false;
+			}
 		}
-
+			
+		if (!chain || chain == 'HIVE'){
+			//check if account exists		
+			const _account = await hiveClient.database.call('get_accounts', [[username]]);
+			//account not available to register
+			if (_account.length>0) {
+				console.log('account already exists');
+				console.log(_account);
+				return false;
+			}
+		}	
+		
 		console.log('account available');
 					
 		//create keys for new account
@@ -430,95 +464,187 @@ var HOURS = 60 * 60;
 		
 		//container for required ops
 		let ops = [];
-		
+		let hiveOps = [];
 		
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
 		
-		const _creator_account = await client.database.call('get_accounts', [
-			[creator],
-		]);
-		console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+		let steemAccountSuccess = false;
+		let hiveAccountSuccess = false;
 		
-		if (_creator_account[0].pending_claimed_accounts > 0) {
-		
-			//the create discounted account operation
-			const create_op = [
-				'create_claimed_account',
-				{
-					creator: creator,
-					new_account_name: username,
-					owner: ownerAuth,
-					active: activeAuth,
-					posting: postingAuth,
-					memo_key: memoKey,
-					json_metadata: '',
-					extensions: [],
-				}
-			];
-			ops.push(create_op);
-		}else{
-		
-			const create_op = [
-				'account_create',
-				{
-					fee: '3.000 STEEM',
-					creator: creator,
-					new_account_name: username,
-					owner: ownerAuth,
-					active: activeAuth,
-					posting: postingAuth,
-					memo_key: memoKey,
-					json_metadata: '',
-					extensions: [],
-				}
-			];
-			ops.push(create_op);
+		if (!chain || chain == 'STEEM'){
+			const _creator_account = await client.database.call('get_accounts', [
+				[creator],
+			]);
+			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {
+			
+				//the create discounted account operation
+				const create_op = [
+					'create_claimed_account',
+					{
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				ops.push(create_op);
+			}else{
+			
+				const create_op = [
+					'account_create',
+					{
+						fee: '3.000 STEEM',
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				ops.push(create_op);
+			}
+			
+			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			//proceed executing the selected operation(s)
+			let result = '';
+			try{
+				result = await client.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				steemAccountSuccess = true;
+			}catch(err){
+				console.log(err);
+				steemAccountSuccess = false;
+			}
 		}
 		
-		const privateKey = dsteem.PrivateKey.fromString(config.active_key);
-		//proceed executing the selected operation(s)
-		let result = '';
-		try{
-			result = await client.broadcast.sendOperations(ops, privateKey);
-			console.log('success');
-			return true;
-		}catch(err){
-			console.log(err);
-			return false;
+		if (!chain || chain == 'HIVE'){
+			const _creator_account = await hiveClient.database.call('get_accounts', [
+				[creator],
+			]);
+			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {
+			
+				//the create discounted account operation
+				const create_op = [
+					'create_claimed_account',
+					{
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				hiveOps.push(create_op);
+			}else{
+			
+				const create_op = [
+					'account_create',
+					{
+						fee: '3.000 STEEM',
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				hiveOps.push(create_op);
+			}
+			
+			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			//proceed executing the selected operation(s)
+			let result = '';
+			try{
+				result = await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
+				console.log('success');
+				hiveAccountSuccess = true;
+			}catch(err){
+				console.log(err);
+				hiveAccountSuccess = false;
+			}
 		}
+		return (steemAccountSuccess || hiveAccountSuccess);
 	}
 
 	//function handles delegating to a specific account
-	async function delegateToAccount (delegatee, steemPowerAmount){
+	async function delegateToAccount (delegatee, steemPowerAmount, chain){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
 		const privateKey = dsteem.PrivateKey.fromString(
 			config.full_pay_ac_key
 		);
-		//grab matching amount of Vests to delegate
-		let matchingVests = await steemPowerToVests(steemPowerAmount);
-		console.log('matchingVests:'+matchingVests);
-		const op = [
-			'delegate_vesting_shares',
-			{
-				delegator: config.full_pay_benef_account,
-				delegatee: delegatee,
-				vesting_shares: matchingVests+' VESTS',
-			},
-		];
+		
 		let result = '';
-		try{
-			result = await client.broadcast.sendOperations([op], privateKey);
-			console.log('Included in block:'+ result.block_num);
-			console.log('returning back');
-			return true;
-		}catch(err){
-			console.log(err);
-			console.log('returning back err');
-			return false;
+		let steemDg = false;
+		let hiveDg = false;
+		if (!chain || chain == 'STEEM'){
+			try{
+				//grab matching amount of Vests to delegate
+				let matchingVests = await steemPowerToVests(steemPowerAmount);
+				console.log('matchingVests:'+matchingVests);
+				const op = [
+					'delegate_vesting_shares',
+					{
+						delegator: config.full_pay_benef_account,
+						delegatee: delegatee,
+						vesting_shares: matchingVests+' VESTS',
+					},
+				];
+				
+				result = await client.broadcast.sendOperations([op], privateKey);
+				console.log('Included in block:'+ result.block_num);
+				console.log('returning back');
+				steemDg = true;
+			}catch(err){
+				console.log(err);
+				console.log('returning back err');
+				steemDg = false;
+			}
 		}
+		if (!chain || chain == 'HIVE'){
+			try{
+				//grab matching amount of Vests to delegate
+				let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
+				console.log('matchingHiveVests:'+matchingHiveVests);
+				const op = [
+					'delegate_vesting_shares',
+					{
+						delegator: config.full_pay_benef_account,
+						delegatee: delegatee,
+						vesting_shares: matchingHiveVests+' VESTS',
+					},
+				];
+				
+				result = await hiveClient.broadcast.sendOperations([op], privateKey);
+				console.log('Included in block:'+ result.block_num);
+				console.log('returning back');
+				hiveDg = true;
+			}catch(err){
+				console.log(err);
+				console.log('returning back err');
+				hiveDg = false;
+			}
+		}
+		return (steemDg || hiveDg);
 	}
 
  function getVoteRShares(voteWeight, account, power) {
@@ -1097,6 +1223,17 @@ async function steemPowerToVests (steemPower) {
 	totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   }
   return parseFloat(steemPower * totalVests / totalSteem).toFixed(6);
+}
+
+//function handles conversting SP to Vests
+async function hivePowerToVests (hivePower) {
+
+  if (isNaN(totalHive) || isNaN(totalHiveVests) ){
+	hiveProps = await hiveClient.database.getDynamicGlobalProperties()
+	totalHive = Number(hiveProps.total_vesting_fund_steem.split(' ')[0])
+	totalHiveVests = Number(hiveProps.total_vesting_shares.split(' ')[0])
+  }
+  return parseFloat(hivePower * totalHiveVests / totalHive).toFixed(6);
 }
 
 function sortArrLodash (arrToSort) {
