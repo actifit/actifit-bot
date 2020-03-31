@@ -5,11 +5,6 @@ var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
-const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
-
-const hive_node = 'https://api.hivekings.com/';
-
-let alt_hive_nodes = ["https://api.openhive.network", "https://anyx.io", "https://api.hivekings.com"];//'https://api.hive.blog/'
 
 getConfig();
 
@@ -20,7 +15,7 @@ var config;
 
 let th_id = -1;
 
-steem.api.setOptions({ url: steem_node });
+steem.api.setOptions({ url: config.active_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -45,9 +40,9 @@ var HOURS = 60 * 60;
  
  function setProperNode(bchain){
 	if (bchain == "STEEM"){
-		steem.api.setOptions({ url: steem_node });
+		steem.api.setOptions({ url: config.active_node });
 	}else{
-		steem.api.setOptions({ url: hive_node });
+		steem.api.setOptions({ url: config.active_hive_node });
 	}
  }
  
@@ -156,7 +151,7 @@ var HOURS = 60 * 60;
 		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
 		//return new Promise(function(fulfill,reject){
 			//var request = require("request");
-			let location = steem_node;
+			let location = config.active_node;
 			var response = await axios.post(location, {"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":[account_name]}});
 			
 			console.log(response.data.result.rc_accounts);
@@ -1293,9 +1288,14 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 	return false;
 }
 
-async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
-	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain){
+	let trx 
 	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else if (bchain == 'HIVE'){
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
 		if (trx && trx.operations
 			&& trx.operations.length > 0){
 				console.log(trx.operations[0][1]);

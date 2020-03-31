@@ -1129,9 +1129,9 @@ app.get('/userFriendRequests/:user', async function (req, res) {
 });
 
 /* end point for adding user's friend */
-app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1161,9 +1161,9 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
 
 
 /* end point for cancelling friend request */
-app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1195,9 +1195,9 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (re
 
 
 /* end point for cancelling friend request */
-app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1250,9 +1250,9 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res)
 
 
 /* end point for dropping friendship */
-app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;

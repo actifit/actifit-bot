@@ -677,7 +677,7 @@ async function startProcess (days, steemOnlyReward) {
 	//console.log(lastTx)
 	//if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	/*if (!testRun){
+	if (!testRun){
 		//update Steem delegations
 		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
 		await processDelegations(client, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
@@ -685,7 +685,7 @@ async function startProcess (days, steemOnlyReward) {
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
 		await processDelegations(hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
-	}*/
+	}
 	//TEMP BREAK
 	//return;
 	
