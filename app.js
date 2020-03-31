@@ -3290,8 +3290,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	if (false){
+	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -3345,7 +3345,15 @@ app.get('/confirmPayment', async function(req,res){
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
 				console.log('memo_used:'+memo_used);
 				if (typeof memo_used == "undefined" || memo_used == null){
+					//check on which blockchain transaction was sent based on currency
 					let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+					if (req.query.sent_cur){
+						if (req.query.sent_cur == 'STEEM' || req.query.sent_cur == 'SBD'){
+							bchain = 'STEEM';
+						}else if (req.query.sent_cur == 'HIVE' || req.query.sent_cur == 'HBD'){
+							bchain = 'HIVE';
+						}
+					}
 					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain);
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
@@ -3354,7 +3362,7 @@ app.get('/confirmPayment', async function(req,res){
 						try{
 							accountCreated = await claimAndCreateAccount(req);
 							if (accountCreated){
-								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.bchain);
 							}
 						}catch(e){
 							console.log(e);

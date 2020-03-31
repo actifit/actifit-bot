@@ -240,7 +240,11 @@ var HOURS = 60 * 60;
 						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
 						if (op[0] === 'transfer'){
 							let sentAmount = op[1].amount.split(' ')[0];
-							if (op[1].to === config.signup_account && op[1].memo === req.query.memo && sentAmount >= (parseFloat(req.query.steem_invest)-0.1)){  
+							let sentCur = op[1].amount.split(' ')[1];
+							if (op[1].to === config.signup_account 
+								&& op[1].memo === req.query.memo 
+								&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
+								&& sentCur === req.query.sent_cur){  
 								console.log('in');
 								console.log(op[1]);
 								

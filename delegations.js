@@ -546,7 +546,7 @@ async function getBenefactorPosts (account, start) {
     let date = moment(txs[1].timestamp).format()
 	
     if (date >= start) {
-	  console.log(txs[0]);
+	  //console.log(txs[0]);
       let op = txs[1].op
       // Look for beneficiary payments
       if (op[0] === 'comment_benefactor_reward') {
@@ -554,7 +554,7 @@ async function getBenefactorPosts (account, start) {
 		console.log('---------------------------------------');
 		//console.log(op);
 		let matchingAFIT = 0;
-		console.log(op[1]);
+		//console.log(op[1]);
         let rewardedSP = parseFloat(vestsToSteemPower(op[1].vesting_payout).toFixed(3)) 
 		console.log("rewardedSP:"+rewardedSP);
 		//calculate dollar value
@@ -677,7 +677,7 @@ async function startProcess (days, steemOnlyReward) {
 	//console.log(lastTx)
 	//if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	if (!testRun){
+	/*if (!testRun){
 		//update Steem delegations
 		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
 		await processDelegations(client, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
@@ -685,7 +685,7 @@ async function startProcess (days, steemOnlyReward) {
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
 		await processDelegations(hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
-	}
+	}*/
 	//TEMP BREAK
 	//return;
 	
@@ -709,7 +709,11 @@ async function startProcess (days, steemOnlyReward) {
 	// Check if today is Monday, to calculate steem rewards
 	if (dayId == 1){
 		//console.log('processSteemRewards');
-		//processSteemRewards(txEnd)
+		//processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
+		let resSt = await processSteemRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
+		//console.log('>>>>>STEEM REWARDS COMPLETE');
+		let resHv = await processSteemRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
+		//console.log('>>>>>HIVE REWARDS COMPLETE');
 	}
 }
 
@@ -776,7 +780,7 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 			note: note,
 			date: end
 		}
-		console.log(reward)
+		//console.log(reward)
 		//only send out funds if not a test run
 		if (!testRun){
 			upsertRewardTransaction(reward)
@@ -784,7 +788,7 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 	}
 }
 
-async function processSteemRewards (start) {
+async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
   if (!start) start = moment().utc().startOf('date').toDate()
   // Get active delegations for the week
   console.log(config.pay_account)
@@ -794,12 +798,17 @@ async function processSteemRewards (start) {
   //load list of alt accounts to reward them instead of actual delegators
   let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
   console.log('loading alt accounts');
-  console.log(altAccounts);
+  //console.log(altAccounts);
   
-  Promise.all([getAcumulatedSteemPower(from, to, config.exclude_enabled), getBenefactorRewards(to, start, -1)]).then(values => {
+  Promise.all(
+		[
+			getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, config.exclude_enabled), //(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
+			getBenefactorRewards(to, start, -1)
+		]
+	).then(values => {
     const activeDelegations = values[0].users
-	console.log('***');
-	console.log(values[1]);
+	//console.log('***');
+	//console.log(values[1]);
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = values[0].totalSteem
@@ -845,7 +854,7 @@ async function processSteemRewards (start) {
       reward.url = url*/
       return reward
     })
-    console.log(rewards)
+    //console.log(rewards)
     console.log("steem total beneficiary reward:"+steemRewards)
 	console.log("SBD total beneficiary reward:"+sbdRewards)
     const data = {
@@ -858,7 +867,7 @@ async function processSteemRewards (start) {
 	var fs = require('fs');
 	
 	var fileName = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
-	fileName = "steemrewards"+fileName+".json";
+	fileName = chain+"rewards"+fileName+".json";
 	console.log("fileName:"+fileName);
 	fs.writeFile(fileName, JSON.stringify(rewards), function(err) {
 		if(err) {
@@ -980,7 +989,7 @@ async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
       let op = txs[1].op
       // Look for delegation operations
       if (op[0] === 'comment_benefactor_reward') {
-		console.log(op[1]);
+		//console.log(op[1]);
 		//SP is the sum of conversting vesting payout to SP, and appending any STEEM payouts
         let newSp = vestsToSteemPower(op[1].vesting_payout) + parseFloat(op[1].steem_payout.split(' ')[0])
         totalSp = totalSp + newSp
@@ -1085,7 +1094,7 @@ async function getCurrentTotalSP(actDelgCol, toDate){
 		]).toArray();
 	//function(err, results) {
 			//var output = 'tokens distributed:'+results[0].totalSP;
-	console.log(results);
+	//console.log(results);
 	return results[0].totalSP;
 		//});	
 }
@@ -1101,7 +1110,7 @@ async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, active
   //console.log(activeDelColLink);
   // Get active delegations for the week
   let activeDelegations = await getActiveDelegations(delTrxCol, from, excludeOn)
-  console.log(activeDelegations);
+  //console.log(activeDelegations);
   // Get transactions of the processed week
   let weekTxs 
   if (excludeOn){
