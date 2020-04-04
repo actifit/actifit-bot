@@ -1969,7 +1969,7 @@ function processVotes(query, subsequent) {
 							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
 							
 							//final upvote value after avoiding deductions
-							let usd_val = usd_val_no_benef / 0.65 
+							let usd_val = usd_val_no_benef / 0.5 
 							
 							//emulate proper voting power to give user matching rewards
 							let user_added_vote_weight = usd_val * 100 / full_vote_value;
@@ -2041,7 +2041,7 @@ function processVotes(query, subsequent) {
 							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
 							
 							//final upvote value after avoiding deductions
-							let usd_val = usd_val_no_benef / 0.65 
+								let usd_val = usd_val_no_benef / 0.5 
 							
 							//emulate proper voting power to give user matching rewards
 							let user_added_vote_weight = usd_val * 100 / full_vote_value;
