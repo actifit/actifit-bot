@@ -5,6 +5,7 @@ var mail = require('./mail');
 var _ = require('lodash');
 var moment = require('moment');
 const MongoClient = require('mongodb').MongoClient;
+let ObjectId = require('mongodb').ObjectId; 
 
 const cheerio = require('cheerio')
 const axios = require('axios');
@@ -39,6 +40,16 @@ var error_sent = false;
 var steem_price = 1;  // This will get overridden with actual prices if a price_feed_url is specified in settings
 var sbd_price = 1;    // This will get overridden with actual prices if a price_feed_url is specified in settings
 
+let hive_price = 1;
+let hbd_price = 1;
+
+// Load the settings from the config file
+loadConfig();
+
+loadHivePrices();
+//kick off loading steem prices in 30 seconds
+setTimeout(loadSteemPrices, 30*1000);
+
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
 var HOURS = 60 * 60;
@@ -65,6 +76,12 @@ setInterval(function() {
 			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
 			//console.log('error: '+ error)
 		});
+		
+		//also load prices & broadcast updates to witness nodes (STEEM & HIVE)
+		loadHivePrices();
+		//in 30 seconds load steem prices
+		setTimeout(loadSteemPrices, 30*1000);
+		
 	}
 	
   }catch(err){
@@ -73,7 +90,8 @@ setInterval(function() {
 
 }, 600000); // every 10 minutes (600000)
 
-var crypto = require('crypto');
+
+let crypto = require('crypto');
 
 const activity_rules = [
 	[4999,0],
@@ -282,8 +300,12 @@ MongoClient.connect(url, function(err, client) {
 	  startProcess();
 	  
 	  // Load updated STEEM and SBD prices every 30 minutes
-	  loadPrices();
-	  setInterval(loadPrices, 30 * 60 * 1000);
+	  /*loadPrices();
+	  setInterval( function (){
+		if (!is_voting){
+			loadPrices()
+		}
+	  }, 30 * 60 * 1000);*/
 	  
 	  //updateUserTokens();
 	} else {
@@ -791,7 +813,50 @@ async function startProcess() {
 }
 
 
-function loadPrices() {
+function setSteemPrice(json){
+	steem_price = parseFloat(json.steem.usd); 
+	console.log('STEEM price:'+steem_price)
+	broadcastFeed('STEEM')
+}
+
+function setSbdPrice(json){
+	sbd_price = parseFloat(json['steem-dollars'].usd);
+	console.log('SBD price:'+sbd_price)
+}
+
+function setHivePrice(json){
+	hive_price = parseFloat(json.hive.usd); 
+	console.log('HIVE price:'+hive_price)
+	broadcastFeed('HIVE')
+}
+
+function setHbdPrice(json){
+	hbd_price = parseFloat(json['hive_dollar'].usd);
+	console.log('HBD price:'+hbd_price)
+}
+
+function loadHivePrices() {
+  fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd').then(
+		res => {res.json().then(json => setHivePrice(json)).catch(e => console.log('Error loading STEEM price: ' + e))
+  }).catch(e => console.log('Error loading HIVE price: ' + e))
+  
+  //grab SBD price
+  fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive_dollar&vs_currencies=usd').then(
+	res => {res.json().then(json => setHbdPrice(json)).catch(e => console.log('Error loading SBD price: ' + e))
+  }).catch(e => console.log('Error loading HBD price: ' + e))
+}
+
+function loadSteemPrices() {
+  fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem&vs_currencies=usd').then(
+		res => {res.json().then(json => setSteemPrice(json)).catch(e => console.log('Error loading STEEM price: ' + e))
+  }).catch(e => console.log('Error loading STEEM price: ' + e))
+  
+  //grab SBD price
+  fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem-dollars&vs_currencies=usd').then(
+	res => {res.json().then(json => setSbdPrice(json)).catch(e => console.log('Error loading SBD price: ' + e))
+  }).catch(e => console.log('Error loading SBD price: ' + e))
+  
+  /*
   if(config.price_source == 'coinmarketcap') {
     // Load the price feed data
     request.get('https://api.coinmarketcap.com/v1/ticker/steem/', function (e, r, data) {
@@ -861,6 +926,11 @@ function processVotes(query, subsequent) {
   //fetchAFITXBal(0);
 	
   
+  steem.api.setOptions({ 
+	url: config.active_hive_node ,
+	//useAppbaseApi: true
+});
+  
   steem.api.getDiscussionsByCreated(query, async function (err, result) {
 	//track how many queries were ran
 	queryCount += 1;
@@ -879,6 +949,9 @@ function processVotes(query, subsequent) {
 		
 		var bulk_posts_skip = db.collection('posts_to_skip').initializeUnorderedBulkOp();
 		
+		let proceed_bulk = false;
+		let proceed_bulk_transactions = false;
+		let proceed_bulk_posts_skip = false;
 		
 		for(var i = 0; i < result.length; i++) {
 			
@@ -1091,7 +1164,7 @@ function processVotes(query, subsequent) {
 						//we've got a problem, skip this post/guy. We might want to report too.
 						continue;
 					}
-				}
+				
 				
 				
 				//check if the post has an encryption key val, and ensure it is the proper one
@@ -1110,6 +1183,8 @@ function processVotes(query, subsequent) {
 				}else{
 					utils.log('post does not contain actiCrVal');
 					continue;
+				}
+					
 				}
 					
 				//console.log('still here');
@@ -1338,7 +1413,7 @@ function processVotes(query, subsequent) {
 				var rank_api_url = config.api_url+'getRank/'+post.author;
 				var user_rank_info = await axios.get(rank_api_url);
 				//utils.log(user_rank_info.user_rank);
-				post.user_rank = user_rank_info.data.user_rank;
+				post.user_rank = parseFloat(user_rank_info.data.user_rank);
 				
 				console.log('old user rank:'+post.user_rank);
 				
@@ -2105,61 +2180,242 @@ async function sendVote(post, retries, power_per_vote) {
 				resolve('');   
 			}
 		}else{
+			
+			let res;
+			
+			
+			if (config.hive_voting_active){
+			
+				//first bchain transactions
+				console.log('set HIVE node');
+				steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
 			//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
 			if (post.additional_vote_weight && post.helperVotes){
 				let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
 				try{
-					steem.broadcast.vote(config.full_pay_posting_key, config.full_pay_benef_account, post.author, post.permlink, vote_percent_add_accounts, function (err, result) {
+											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
-						if (!err && result) {
-							utils.log(err, result);
+						steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.full_pay_benef_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": vote_percent_add_accounts
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.full_pay_posting_key }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
 						}
-					});
+
 				}catch(err){
 					utils.log(err);
 				}
+					
 				try{
-					steem.broadcast.vote(config.pay_account_post_key, config.pay_account, post.author, post.permlink, vote_percent_add_accounts, function (err, result) {
 						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
-						if (!err && result) {
-							utils.log(err, result);
+						steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.pay_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": vote_percent_add_accounts
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.pay_account_post_key }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
 						}
-					});
+
 				}catch(err){
 					utils.log(err);
 				}
+					
 			}
 			
 			//if additional partner accounts enabled, vote using them as well
 			try{
 				if (config.zzan_active){
-					steem.broadcast.vote(config.zzan_pk, config.zzan_account, post.author, post.permlink, stdrd_vote_weight, function (err, result) {
 						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);
-						if (!err && result) {
-							utils.log(err, result);
+						steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.zzan_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": stdrd_vote_weight
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.zzan_pk }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
 						}
+
+						}
+				}catch(err){
+					utils.log(err);
+				}
+				
+				try{
+					if (config.sports_active){
+						utils.log('voting with '+config.sports_active+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
+						steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
 					});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.sports_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": stdrd_vote_weight
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.sports_pk }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
+						}
+						
 				}
 			}catch(err){
 				utils.log(err);
 			}
 			
+				//append appics account gadget-based voting 
+				
+					if (config.appics_active && post.vote_appics){
+						
 			try{
-				if (config.sports_active){
-					steem.broadcast.vote(config.sports_pk, config.sports_account, post.author, post.permlink, stdrd_vote_weight, function (err, result) {
-						utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);
-						if (!err && result) {
-							utils.log(err, result);
+							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);			
+							steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
+							res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.appics_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": post.boost_apx_percent
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.appics_pk }
+						   ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.block_num) {
+								utils.log('success');
+							}
+
+						}catch(err){
+							utils.log(err);
 						}
+					}
+				
+				try{
+					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);			
+					steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
 					});
+					res = await steem.broadcast.sendAsync( 
+						   { 
+							   operations: [ 
+									   ['vote', 
+										 {
+											"voter": config.rewards_account,
+											"author": post.author,
+											"permlink": post.permlink,
+											"weight": net_rewards_vote_weight
 				}
+									   ]
+								   ], 
+							   extensions: [] 
+							}, 
+						   { posting: config.rewards_account_pk }
+					   ).catch(e => console.log(e))
+					console.log(res);
+					if (res && res.block_num) {
+						utils.log('success');
+					}
+					
 			}catch(err){
 				utils.log(err);
 			}
 			
-			steem.broadcast.vote(config.posting_key, account.name, post.author, post.permlink, vote_weight, function (err, result) {
-				if (!err && result) {
-					utils.log(utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);
+				try{
+					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);			
+					steem.api.setOptions({ 
+							url: config.active_hive_node ,
+							//useAppbaseApi: true
+						});
+					res = await steem.broadcast.sendAsync( 
+						   { 
+							   operations: [ 
+									   ['vote', 
+										 {
+											"voter": account.name,
+											"author": post.author,
+											"permlink": post.permlink,
+											"weight": vote_weight
+										  }
+									   ]
+								   ], 
+							   extensions: [] 
+							}, 
+						   { posting: config.posting_key }
+					   ).then(async function(rest, err) {
 					
 					//store exchange transaction as complete
 					if (post.additional_vote_weight){
@@ -2172,9 +2428,50 @@ async function sendVote(post, retries, power_per_vote) {
 						db.collection('exchange_afit_steem').save(cur_upvote_entry);
 					}
 
+							
 					if(config.comment_location && config.comment){
+								await sendComment(post, 0, vote_weight, config.active_hive_node)
+								.then( res => {
+									//resolve(res)
+									
+									
+									console.log(res)
+								}).catch(err => {
+									console.log(err);
+								})
+								
+						   }
+					   }).catch(e => console.log(e))
+					console.log(res);
+					if (res && res.block_num) {
+						utils.log('success');
+						
+						
+						
+						
+							
+							//wait 5 seconds before commenting
+							//await delay(5000);						
+							
+							//setTimeout(function () { 	
+							/*	await sendComment(post, 0, vote_weight, config.active_hive_node)
+									.then( res => {
+										//resolve(res)
+										console.log(res)
+									})
+									.catch(err => {
+										console.log(err);
+									})*/
+							//}, config.voting_posting_delay);
+						/*}else{
+							//resolve(result);   
+						}*/
+					}else{
+						 // Try again one time on error
+						/*if (retries < config.max_vote_comment_retries){
+							//try to vote again
 						setTimeout(function () { 	
-							sendComment(post, 0, vote_weight)
+								sendVote(post, retries + 1, power_per_vote)
 								.then( res => {
 									resolve(res)
 								})
@@ -2183,13 +2480,308 @@ async function sendVote(post, retries, power_per_vote) {
 								})
 						}, config.voting_posting_delay);
 					}else{
-						resolve(result);   
+							var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
+							utils.log(message);
+							reject(err);
+						//errorEmail(message, config.report_emails);
+						}*/
 					}
-				}else{
-					utils.log(err, result);
+					
+					
+				
+				}catch(mainerr){
+					utils.log(mainerr);
+				}
+			}
+		
+			if (config.steem_voting_active){
+				
+				/*************************************************/
+				/*************************************************/
+				/*************************************************/
+				
+				//second blockchain transactions
+				console.log('set STEEM node');
+				steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+				//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
+				if (post.additional_vote_weight && post.helperVotes){
+					let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
+					try{
+											
+						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
+						
+						steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.full_pay_benef_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": vote_percent_add_accounts
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.full_pay_posting_key }
+						  ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
+						}
+						
+					}catch(err){
+						utils.log(err);
+					}
+					
+					try{
+						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);						
+						steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.pay_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": vote_percent_add_accounts
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.pay_account_post_key }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
+						}
+					
+					}catch(err){
+						utils.log(err);
+					}
+					
+				}
+				
+				//if additional partner accounts enabled, vote using them as well
+				try{
+					if (config.zzan_active){
+						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
+						steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.zzan_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": stdrd_vote_weight
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.zzan_pk }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
+						}
+						
+					}
+				}catch(err){
+					utils.log(err);
+				}
+				
+				try{
+					if (config.sports_active){
+						utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
+						steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+						res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.sports_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": stdrd_vote_weight
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.sports_pk }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.block_num) {
+							utils.log('success');
+						}
 
+					}
+				}catch(err){
+					utils.log(err);
+				}
+				
+				//append appics account gadget-based voting 
+				
+					if (config.appics_active && post.vote_appics){
+						
+						try{
+							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);						
+							steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+							res = await steem.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.appics_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": post.boost_apx_percent
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.appics_pk }
+						   ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.block_num) {
+								utils.log('success');
+							}
+						
+						}catch(err){
+							utils.log(err);
+						}
+					}
+				
+				try{
+				utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);						
+					steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+					res = await steem.broadcast.sendAsync( 
+						   { 
+							   operations: [ 
+									   ['vote', 
+										 {
+											"voter": config.rewards_account,
+											"author": post.author,
+											"permlink": post.permlink,
+											"weight": net_rewards_vote_weight
+										  }
+									   ]
+								   ], 
+							   extensions: [] 
+							}, 
+						   { posting: config.rewards_account_pk }
+					   ).catch(e => console.log(e))
+					console.log(res);
+					if (res && res.block_num) {
+						utils.log('success');
+					}
+					
+				}catch(err){
+					utils.log(err);
+				}	
+								
+				try{
+				
+					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
+					steem.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});
+					res = await steem.broadcast.sendAsync( 
+						   { 
+							   operations: [ 
+									   ['vote', 
+										 {
+											"voter": account.name,
+											"author": post.author,
+											"permlink": post.permlink,
+											"weight": vote_weight
+										  }
+									   ]
+								   ], 
+							   extensions: [] 
+							}, 
+						   { posting: config.posting_key }
+					   )
+					   .then(async function(rest, err) {
+							
+							//store exchange transaction as complete
+							if (post.additional_vote_weight){
+								console.log('Exchange vote');
+								let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+												entry.post_permlink === post.permlink && 
+												entry.user === post.author);
+								console.log(cur_upvote_entry);
+								cur_upvote_entry.upvote_processed = true;
+								db.collection('exchange_afit_steem').save(cur_upvote_entry);
+							}
+					  
+							if(config.comment_location && config.comment){
+									
+								//setTimeout(function () { 	
+								
+									//wait 5 seconds before commenting
+									//await delay(5000);
+								
+									await sendComment(post, 0, vote_weight, config.active_node)
+										.then( res => {
+											//resolve(res)
+										}).catch(err => {
+											//reject(err);
+										})
+								//}, config.voting_posting_delay);
+				}else{
+								//resolve('');   
+							} 
+					   }).catch(e => console.log(e))
+					console.log(res);
+					if (res && res.block_num) {
+						utils.log('success');
+						
+						//store exchange transaction as complete
+						/*if (post.additional_vote_weight){
+							console.log('Exchange vote');
+							let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+											entry.post_permlink === post.permlink && 
+											entry.user === post.author);
+							console.log(cur_upvote_entry);
+							cur_upvote_entry.upvote_processed = true;
+							db.collection('exchange_afit_steem').save(cur_upvote_entry);
+						}*/
+
+
+					}else{
 					 // Try again one time on error
-					if (retries < config.max_vote_comment_retries){
+						/*if (retries < config.max_vote_comment_retries){
 						//try to vote again
 						setTimeout(function () { 	
 							sendVote(post, retries + 1, power_per_vote)
@@ -2205,9 +2797,15 @@ async function sendVote(post, retries, power_per_vote) {
 						utils.log(message);
 						reject(err);
 					//errorEmail(message, config.report_emails);
+						}*/
 					}
+				
+				}catch(mainerr){
+					utils.log(mainerr);
+					}
+				
 				}
-			});
+			resolve('');
 		}
 	});
 }
@@ -2248,7 +2846,7 @@ async function updateUserTokens() {
 }
 
 
-function sendComment(post, retries, vote_weight) {
+async function sendComment(post, retries, vote_weight, bchain_node) {
 	var parentAuthor = post.author;
 	var parentPermlink = post.permlink;
 	var rate_multiplier = post.rate_multiplier;
@@ -2256,7 +2854,7 @@ function sendComment(post, retries, vote_weight) {
 	
 	var content = null;
 	// Return promise
-	return new Promise((resolve, reject) => {
+	//return new Promise( async (resolve, reject) => {
 		content = fs.readFileSync(config.comment_location, "utf8");
 
 		// If promotion content is specified in the config then use it to comment on the upvoted post
@@ -2272,8 +2870,59 @@ function sendComment(post, retries, vote_weight) {
 				token_count = config.sponsored_athlete_afit_reward;
 			}
 			
+			token_count = Math.ceil(token_count * 10000) / 10000;
+			
 			// Replace variables in the promotion content
 			content = content.replace(/\{weight\}/g, utils.format(vote_weight / 100)).replace(/\{token_count\}/g,token_count).replace(/\{step_count\}/g,post_step_count);
+			
+			console.log('post.user_post_boosts');
+			console.log(post.user_post_boosts);
+			
+			//create proper display for boosts consumed
+			let boost_content = '';
+			let maxGadgets = post.user_post_boosts.length;
+			boost_content += '<b><div style="display:flex; flex-wrap: wrap;">';
+			for (let i=0;i < maxGadgets;i++){
+				let cur_boost = post.user_post_boosts[i];
+				let prod_info = cur_boost.productdetails[0];
+				boost_content += '<div style="flex-direction: column; padding: 5px;">';
+				boost_content += '<div class="avatar pro-card-av" style="';
+				if (cur_boost.gadget_level > 2){
+					boost_content += 'border-color: red;';
+				}else if (cur_boost.gadget_level > 1){
+					boost_content += 'border-color: orange;';
+				}
+				boost_content += 'background-image: url(https://actifit.io/img/gadgets/' + prod_info.image + '); width: 90px; height: 90px;"></div>';
+				//append standard images to display on the other front-ends
+				boost_content += '<img src="https://actifit.io/img/gadgets/' + prod_info.image + '" class="no-actifit">';
+				
+				boost_content += '<div>';
+				for (let iter=0;iter < cur_boost.gadget_level;iter++){
+					boost_content += '<i class="fas fa-star text-brand"></i>';
+				}				
+				boost_content += '</div>';
+				boost_content += '<div>'+cur_boost.gadget_name + ' - L'+cur_boost.gadget_level+'</div>';
+				console.log('prod_info');
+				console.log(prod_info);
+				let boosts = prod_info.benefits.boosts;
+				if (Array.isArray( boosts) &&  boosts.length > 0){
+					let maxBoosts = boosts.length;
+					for (let j=0;j<maxBoosts;j++){
+						let boost = boosts[j];
+						boost_content += '<div>+ ' + boost.boost_amount + ' ' + boost.boost_type.replace('percent_reward','%').replace('percent','%').replace('unit',' ').replace('range',' ') + ' ' + boost.boost_unit + '</div>';
+						if (cur_boost.benefic && (cur_boost.benefic == post.author || cur_boost.benefic == '@' + post.author)){
+							boost_content += '<div>Thanks to your friend @'+ cur_boost.user + '</div>';
+						}
+					}
+				}
+				boost_content += '</div>';
+			}
+			boost_content += '</div></b>';
+			let reward_diff = parseFloat(token_count) - parseFloat(post.afit_pre_boost);
+			if (reward_diff > 0){
+				boost_content += '<div><i>Boosts increased your AFIT earnings by '+reward_diff.toFixed(4)+' AFIT</i></div>';
+			}
+			content = content.replace(/\{boost_list\}/g, boost_content);
 			
 			//replace(/\{milestone\}/g, milestone_txt).
 			
@@ -2305,7 +2954,44 @@ function sendComment(post, retries, vote_weight) {
 			
 			if (!config.testing){
 				// Broadcast the comment
-				steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
+				
+				try{
+				
+				steem.api.setOptions({ 
+						url: bchain_node ,
+						//useAppbaseApi: true
+					});
+				console.log(jsonMetadata);
+				const operations = [ 
+					   ['comment', 
+						 { 
+						   "parent_author": parentAuthor, 
+						   "parent_permlink": parentPermlink, 
+						   "author": account.name, 
+						   "permlink": permlink, 
+						   "title": '', 
+						   "body": content, 
+						   "json_metadata" : JSON.stringify(jsonMetadata)
+						 } 
+					   ]
+				];
+				
+				console.log(operations);
+				
+				let res = await steem.broadcast.sendAsync( 
+					   { 
+						   operations: operations, 
+						   extensions: [] 
+						}, 
+					   { posting: config.posting_key }
+				   ).catch(e => console.log(e))
+				utils.log(res);
+				if (res && res.block_num) {
+					utils.log('Posted comment: ' + permlink);
+					//resolve(res);
+				}
+
+				/*steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
 					  if (!err && result) {
 						utils.log('Posted comment: ' + permlink);
 						resolve(result);
@@ -2325,17 +3011,22 @@ function sendComment(post, retries, vote_weight) {
 						}
 						//reject(err);
 					  }
-				});
+				});*/
+				
+				}catch(com_err){
+					utils.log(com_err);
+				}
+
 			}else{
 				utils.log('comment');
 				console.log(content);
 				console.log(jsonMetadata);
-				resolve('');
+				//resolve('');
 			}
 		}else{
-			reject('Failed to load content');
+			//reject('Failed to load content');
 		}
-	});
+	//});
   // Check if the bot should resteem this post
   /* if (config.resteem)
     resteem(parentAuthor, parentPermlink); */
