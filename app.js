@@ -48,6 +48,9 @@ MongoClient.connect(url, function(err, client) {
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
+	  
+	  disableUserLogin();
+	  
 	} else {
 		utils.log(err, 'api');
 	}
@@ -71,6 +74,8 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
   //usersAFITXBal = [];
   fetchAFITXBal(0);
+  
+  disableUserLogin();
 });
 
 //allows setting acceptable origins to be included across all function calls
@@ -80,6 +85,7 @@ app.use(function(req, res, next) {
   if(allowedOrigins.indexOf(origin) > -1){
 	   res.setHeader('Access-Control-Allow-Origin', origin);
   }
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
   return next();
 });
 
@@ -104,10 +110,22 @@ let accountRefresh = false;
 let accountQueries = 0;
 loadAccountData();
 
-async function loadAccountData(){
+async function disableUserLogin(){
+	console.log('check outdated logins');
+	let db_col = db.collection('user_login_token');
+	let dateTarget = new Date();
+	//allow logins to remain valid for 4 hours
+	dateTarget.setHours(dateTarget.getHours()-4);
+	console.log(dateTarget);
+	//find existing login entry in DB to override
+	let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
+	//console.log(result);
+}
+
+async function loadAccountData(bchain){
 	//load main account data
 	
-	account = await utils.getAccountData(config.account);
+	account = await utils.getAccountData(config.account, bchain);
 }
 
 async function fetchAFITXBal(offset){
@@ -190,6 +208,33 @@ generatePassword = function (multip) {
   };
   
   
+
+var bodyParser = require('body-parser');
+app.use(bodyParser.json()); // support json encoded bodies
+app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
+//const key = crypto.randomBytes(32);
+//const iv = crypto.randomBytes(16);
+
+function encrypt(text) {
+ let cipher = crypto.createCipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
+ let encrypted = cipher.update(text);
+ encrypted = Buffer.concat([encrypted, cipher.final()]);
+ //return { iv: iv.toString('hex'), encryptedData: encrypted.toString('hex') };
+ return encrypted.toString('hex');
+}
+
+function decrypt(text) {
+ //let iv = Buffer.from(text.iv, 'hex');
+ //let encryptedText = Buffer.from(text.encryptedData, 'hex');
+ let encryptedText = Buffer.from(text, 'hex');
+ let decipher = crypto.createDecipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
+ let decrypted = decipher.update(encryptedText);
+ decrypted = Buffer.concat([decrypted, decipher.final()]);
+ return decrypted.toString();
+}
+
+  
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
 	accountQueries += 1;
@@ -208,6 +253,228 @@ app.get('/votingStatus', async function (req, res) {
 	let reward_start = utils.toHrMn(utils.timeTilKickOffVoting(vp_res * 100));
 
 	res.send({'status': votingStatus, 'vp': vp_res, 'reward_start': reward_start});
+});
+
+
+let jwt = require('jsonwebtoken');
+
+//function ensures user is properly logged in
+let checkHdrs = (req, res, next) => {
+	let token = req.headers['x-acti-token'] || req.headers['authorization']; // Express headers are auto converted to lowercase
+	  
+	  if (token) {
+		if (token.startsWith('Bearer ')) {
+			// Remove Bearer from string
+			token = token.slice(7, token.length);
+		}
+		req.query.token = token;
+		jwt.verify(token, config.secret, async (err, decoded) => {
+		  if (err) {
+			return res.json({
+			  success: false,
+			  message: 'Token is not valid'
+			});
+		  } else {
+			let user;
+	
+			if (req.query && req.query.user){
+				user = req.query.user;
+			}else{
+				res.send({error: 'user not supplied'});
+			}
+			
+			//console.log(operation[1].required_posting_auths);
+			//console.log(req.query.token);
+			
+			//check if user is validated with stored encrypted posting key
+			let db_col = db.collection('user_login_token');
+			//find existing login entry in DB
+			let user_tkn = await db_col.findOne({user: user, token: req.query.token});
+			//console.log(user_tkn);
+			if (!user_tkn || !user_tkn.ppkey){
+				console.error('Authentication failed. Key not found');
+				res.send({error: 'Authentication failed. Key not found'});
+				return;
+			}
+			req.ppkey = user_tkn.ppkey;
+			req.decoded = decoded;
+			next();
+		  }
+		});
+	  } else {
+		return res.json({
+		  success: false,
+		  message: 'Auth token is not supplied'
+		});
+	  }
+};	
+
+
+app.get('/performTrx', checkHdrs, async function (req, res) {
+	console.log('>>performTrx');
+	
+	
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	//set HIVE as default
+	let bchain = 'HIVE';
+	
+	let userKey = receivedPlaintext;
+	
+	let operation;
+	console.log(req.query.operation);
+	if (req.query && req.query.operation){
+		operation = JSON.parse(req.query.operation);
+		//operation = req.query.operation;
+	}else{
+		res.send({error: 'operation not supplied'});
+	}
+	
+	if (req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	
+	let match_arr = Object.entries(operation);
+	/*console.log(user);
+	console.log(operation);
+	console.log((typeof operation));
+	console.log(match_arr);
+	console.log(match_arr[0][1]);*/
+	
+	//perform transaction
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	console.log(performTrx);
+	res.send({success: true, trx: performTrx});
+});
+
+app.get('/fetchUserData', checkHdrs, async function (req, res) {
+	//validate proper data used
+	let username;
+	if (req.query && req.query.user){
+		username = req.query.user;
+	}
+	let bchain = 'HIVE';
+	if (req.query && req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	console.log('>>>>fetchuserdata');
+	console.log(bchain);
+	//console.log(username);
+	//console.log(req.ppkey);
+	const receivedPlaintext = decrypt(req.ppkey);
+	let isValidUser = await utils.validateAccountLogin(username, receivedPlaintext, bchain);
+	
+	console.log('isValidUser');
+	console.log(isValidUser);
+	//if (username === mockedUsername && ppkey === mockedPpkey) {
+	if (isValidUser.result){
+		res.json({
+		  success: true,
+		  userdata: isValidUser.account
+		});
+	} else {
+		res.status(403).send({
+		  success: false,
+		  message: 'Invalid user'
+		});
+	}
+});
+
+
+app.get('/updateSettings/', checkHdrs, async function (req, res) {
+	let newSettings;
+	if (req.query && req.query.user && req.query.settings){
+		newSettings = JSON.parse(req.query.settings);
+	}else{
+		res.send({error:'invalid request'})
+		return;
+	}
+	console.log(newSettings);
+	try{
+		let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: newSettings}, {upsert : true });
+		//console.log(setgs);
+		res.send({success: true});
+	}catch(err){
+		res.send({error: true});
+	}
+});
+
+
+app.get('/userSettings/:user', async function (req, res) {
+	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
+	console.log(setgs);
+	res.send(setgs);
+});
+
+
+app.post('/loginAuth', async function (req, res) {
+	console.log('login');
+	let username = null;
+	if (req.body && req.body.username){
+		username = req.body.username;
+	}
+    let ppkey = null;
+	if (req.body && req.body.ppkey){
+		ppkey = req.body.ppkey;
+	}
+    
+
+    if (username && ppkey) {
+		let db_col = db.collection('user_login_token');
+		//find existing login entry in DB to override
+		let user_tkn = await db_col.findOne({user: username});
+		//console.log(user_tkn);
+		
+		//encode ppkey
+		const ciphertext = encrypt(ppkey);
+		
+		let bchain = 'HIVE';
+		if (req.body && req.body.bchain){
+			bchain = req.body.bchain;
+		}
+		
+		//validate proper data used
+		let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
+		console.log('isValidUser');
+		//console.log(isValidUser);
+		//if (username === mockedUsername && ppkey === mockedPpkey) {
+		if (isValidUser.result){
+			let token = jwt.sign({username: username},
+			  config.secret,
+			  { expiresIn: '24h' // expires in 24 hours
+			  }
+			);
+			//save to DB
+			//save encrypted version + token
+			if (!user_tkn){
+				user_tkn = new Object();
+			}
+			user_tkn.user = username;
+			user_tkn.token = token;
+			user_tkn.ppkey = ciphertext;
+			user_tkn.lastlogin = new Date();
+			
+			let db_save = await db_col.save(user_tkn);
+			
+			// return the JWT token for the future API calls
+			res.json({
+			  success: true,
+			  message: 'Authentication successful!',
+			  token: token,
+			  userdata: isValidUser.account
+			});
+		  } else {
+			res.status(403).send({
+			  success: false,
+			  message: 'Incorrect username or ppkey'
+			});
+		}
+    } else {
+      res.status(400).send({
+        success: false,
+        message: 'Authentication failed! Please check the request'
+      });
+    }
 });
 
 /* end point for user total token count display */
