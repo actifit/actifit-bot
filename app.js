@@ -242,10 +242,11 @@ app.get('/votingStatus', async function (req, res) {
 		accountQueries = 0;
 		accountRefresh = true;
 	}
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
 	//fetch anew account data if account is empty or we need to refresh account data
 	if (!account || accountRefresh){
 		console.log('refreshing account data');
-		account = await utils.getAccountData(config.account);
+		account = await utils.getAccountData(config.account, bchain);
 		accountRefresh = false;
 	}
 	let vp_res = await utils.getVotingPower(account);
@@ -734,7 +735,8 @@ app.get('/modAction', async function (req, res) {
 							res.send({'error': 'VP needs to be numeric'});
 							return;
 						}
-						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp)
+						let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp, bchain)
 						console.log(result);
 						result.status='success';
 						break;
@@ -1113,9 +1115,9 @@ app.get('/userFriendRequests/:user', async function (req, res) {
 });
 
 /* end point for adding user's friend */
-app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1145,9 +1147,9 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
 
 
 /* end point for cancelling friend request */
-app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1179,9 +1181,9 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID', async function (re
 
 
 /* end point for cancelling friend request */
-app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -1234,9 +1236,9 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID', async function (req, res)
 
 
 /* end point for dropping friendship */
-app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID', async function (req, res) {
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2467,7 +2469,7 @@ proceedAccountCreation = async function (req){
 	//let's create the account now
 	let accountCreated = false;
 	let transStored = false;
-	accountCreated = await utils.createAccount(req.query.new_account, req.query.new_pass);
+	accountCreated = await utils.createAccount(req.query.new_account, req.query.new_pass, req.query.cur_bchain);
 	if (accountCreated){
 		transStored = await storeSignupTransaction(req);
 		//proceed only if a proper referrer was sent
@@ -3299,7 +3301,7 @@ app.get('/confirmPayment', async function(req,res){
 					accountCreated = await claimAndCreateAccount(req);
 					//only delegate if account created and delegation is enabled
 					if (accountCreated && promo_match.delegation){
-						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.cur_bchain);
 					}
 					
 					//decrease number of permitted entries
@@ -3328,7 +3330,16 @@ app.get('/confirmPayment', async function(req,res){
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
 				console.log('memo_used:'+memo_used);
 				if (typeof memo_used == "undefined" || memo_used == null){
-					paymentReceivedTx = await utils.confirmPaymentReceived(req);
+					//check on which blockchain transaction was sent based on currency
+					let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+					if (req.query.sent_cur){
+						if (req.query.sent_cur == 'STEEM' || req.query.sent_cur == 'SBD'){
+							bchain = 'STEEM';
+						}else if (req.query.sent_cur == 'HIVE' || req.query.sent_cur == 'HBD'){
+							bchain = 'HIVE';
+						}
+					}
+					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain);
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
 						req.query.confirming_tx = paymentReceivedTx;
@@ -3336,7 +3347,7 @@ app.get('/confirmPayment', async function(req,res){
 						try{
 							accountCreated = await claimAndCreateAccount(req);
 							if (accountCreated){
-								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate);
+								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.bchain);
 							}
 						}catch(e){
 							console.log(e);
@@ -3366,7 +3377,7 @@ claimAndCreateAccount = async function (req){
 		console.log('Current RC: ' + utils.format(results.estimated_pct) + '% ');
 		if (results.estimated_pct>50){
 			//if we reached min threshold, claim more spots for discounted accounts
-			accountClaimed = await utils.claimDiscountedAccount();
+			accountClaimed = await utils.claimDiscountedAccount(req.query.cur_bchain);
 		}
 	}catch(err){
 		console.log('error grabbing RC');
@@ -3499,7 +3510,8 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 		res.write(' ');
 	},8000);
 	try{
-		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, config.signup_account);
+		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, bchain);
 		console.log('>>>> got TX '+paymentReceivedTx);
 		if (paymentReceivedTx != ''){
 			try{
@@ -3544,7 +3556,8 @@ app.get('/confirmBuyAction', async function(req,res){
 		res.write(' ');
 	},8000);
 	try{
-		match_trx = await utils.confirmPaymentReceivedBuy(req, config.signup_account);
+		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+		match_trx = await utils.confirmPaymentReceivedBuy(req, bchain);
 		console.log('>>>> got TX '+match_trx);
 		let targetUser = req.query.from;
 		if (match_trx != ''){
