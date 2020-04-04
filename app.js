@@ -498,14 +498,28 @@ app.get('/transactions/:user?', async function (req, res) {
     res.send(transactions);
 });
 
+app.get('/postsbytag/:tag', async function (req, res) {
+	let posts = {};
+	if(req.params.tag){
+		let query = {"json_metadata.tags": {$all: [req.params.tag]}};
+		posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	}
+	res.send(posts);
+});
+
 /* end point for transactions display by type (limited by 1000) */
 app.get('/transactionsByType/', async function (req, res) {
 	let query = {};
 	let transactions = {};
 	let proceed = false;
+	let dateSort = 1;
 	if (req.query.type){
 		proceed = true;
 		query = {reward_activity: req.query.type}
+		
+	}
+	if (req.query.datesort){
+		dateSort = parseInt(req.query.datesort)
 		
 	}
 	let startDate = '';
@@ -529,7 +543,7 @@ app.get('/transactionsByType/', async function (req, res) {
 	}
 	console.log(query);
 	if (proceed){
-		transactions = await db.collection('token_transactions').find(query).sort({date: 1}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions').find(query).sort({date: dateSort}).limit(1000).toArray();
 	}
     res.send(transactions);
 });
