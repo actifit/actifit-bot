@@ -172,11 +172,12 @@ const actifit_img_urls =  [
 	"https://cdn.steemitimages.com/DQmeBn1PLf6a3QaXjM23EbQcaKtfDckgtGPHE4DApoUeBEJ/A-1.png", "https://cdn.steemitimages.com/DQmV7NRosGCmNLsyHGzmh4Vr1pQJuBPEy2rk3WvnEUDxDFA/A-21.png", "https://cdn.steemitimages.com/DQmdNAWWwv6MAJjiNUWRahmAqbFBPxrX8WLQvoKyVHHqih1/A-19.png","https://cdn.steemitimages.com/DQmVNqM8wQj2TnfwqSPYtfAuPHYjeBXSFekCHGZw9K3B9Gi/A-16.png", "https://cdn.steemitimages.com/DQma7nn1yV2w9iY6qXDBJUoTWkELTYxot7R9eoG1M3Tbtqn/A-7.png"];
 
 
-// Load the settings from the config file
-loadConfig();
+
+
+
 var botNames;
-
-
+//fetchGadgets();
+let tokensBurntLastRound = false;
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
@@ -220,7 +221,7 @@ setInterval(function(){
 }, 1200000); // every 20 minutes (1200000)
 
 steem.api.setOptions({ 
-	url: config.active_node ,
+	url: config.active_hive_node ,
 	//useAppbaseApi: true
 });
 
@@ -670,6 +671,12 @@ async function startProcess() {
   // Load the settings from the config file each time so we can pick up any changes
   loadConfig();
 
+  
+	steem.api.setOptions({ 
+		url: config.active_hive_node ,
+		//useAppbaseApi: true
+	});
+  
   // Load the bot account info
   steem.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
@@ -707,12 +714,59 @@ async function startProcess() {
   console.log('is_voting:'+is_voting);	
   console.log('passedOneDay:'+passedOneDay);	
 
+  
+
+	//BuyAndBurn(true);
+	
+  
+	
   if (account && !skip && !is_voting && passedOneDay) {
     // Load the current voting power of the account
     var vp = utils.getVotingPower(account);
+	let vpRestart = parseFloat(config.vp_kickstart) - 125;
+	let vpRestartLimit = vpRestart + 2;
+	console.log('vpRestart:'+vpRestart);
 
     utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp*100)));
 
+	
+	//disabling buying and burning tokens
+	/*console.log(config.vpTokenBurn);
+	if (vp >= config.vpTokenBurn/100 && vp < (config.vpTokenBurn+10)/100){
+		console.log('Buy AFIT & Burn em Case');
+		if (!tokensBurntLastRound){
+			BuyAndBurn(false);
+			tokensBurntLastRound = true;
+		}
+	}else{
+		tokensBurntLastRound = false;
+	}*/
+	
+	
+	if (vp >= vpRestart/100 && vp < vpRestartLimit/100) {
+		//restart server to avoid voting round breakdown
+		//https://devcenter.heroku.com/articles/platform-api-reference
+		console.log('contacting heroku server');
+
+		request.post(
+			{
+				url: 'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
+				//url: 'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos',
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/vnd.heroku+json; version=3',
+					'Authorization': 'Bearer ' + config.heroku_app_token
+				}
+			},
+			function(error, response, body) {
+				// Do stuff
+				console.log(response);
+				console.log(body);
+			}
+		);
+		/////////////////
+	}
+	
     // We are at voting power kick start - time to vote!
 	//utils.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
@@ -812,6 +866,59 @@ async function startProcess() {
   else utils.log('Voting... or waiting for a day to pass');
 }
 
+function BuyAndBurn(test){
+	console.log('init');
+	//fetch sell book
+	ssc.find('market', 'sellBook', {symbol: 'AFIT'}, 10, 0, [{ index: 'priceDec', descending: false }],  (err, result) => {
+		console.log(result);
+		//fetch enough sell orders to place our own buy order
+		let totalSteemSold = 0;
+		const target = config.targetTokenBurnSteem;
+		let targetPrice = 0;
+		for (let i=0, max=result.length;i<max;i++){
+			totalSteemSold += result[i].price * result[i].quantity;
+			console.log(totalSteemSold);
+			if (totalSteemSold >= target){
+				targetPrice = result[i].price;
+				break;
+			}
+		}
+		console.log('targetPrice:'+targetPrice);
+		//place order for buying tokens
+		//calculate needed AFIT quantity to match target
+		let quantity = Math.ceil(target / targetPrice);
+		console.log('AFIT to buy:'+quantity);
+		if (test){
+			quantity = 0.1;
+		}
+		let json = "{\"contractName\":\"market\",\"contractAction\":\"buy\",\"contractPayload\":{\"symbol\":\"AFIT\",\"quantity\":\"" + quantity + "\",\"price\":\"" + targetPrice + "\"}}";
+		
+		steem.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+		  if (!err && result) {
+			console.log('success buyin');
+			console.log(result);
+			
+			json = "{\"contractName\":\"tokens\",\"contractAction\":\"transfer\",\"contractPayload\":{\"symbol\":\"AFIT\",\"to\":\"null\",\"quantity\":\"" + quantity + "\",\"memo\":\"\"}}";
+			//burn those tokens
+			steem.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+				if (!err && result) {
+					console.log('success burnin');
+					console.log(result);
+				} else {
+					console.log('err');
+					console.log(err);
+				}
+			});
+			
+		  } else {
+			console.log('err');
+			console.log(err);
+		  }
+		});
+		
+		
+	});
+}
 
 function setSteemPrice(json){
 	steem_price = parseFloat(json.steem.usd); 
