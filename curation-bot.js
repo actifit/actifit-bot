@@ -28,6 +28,9 @@ var lucky_winner_id = -1;
 let usersAFITXBal = [];
 let topUsersAFITX = [];
 
+let gadgetsFetched = false;
+let activeGadgets = [];
+
 //version of the reward system
 var reward_sys_version = 'v0.2';
 
@@ -164,6 +167,28 @@ const ssc = new SSC(config.steem_engine_rpc);
 // Top 25 will be stored in topUsersAFITX
 fetchAFITXBal(0);
 
+//grab list of active gadgets
+async function fetchGadgets(){
+	try{
+		console.log('>>>>>>>>>>>>>fetchGadgets');
+		
+		//let fetch_gadgets_res = await axios.get(config.api_url + 'activeGadgets');
+		let gadUrl = config.api_url + 'activeGadgets';
+		if (config.testing){
+			gadUrl = config.api_test_url + 'activeGadgets';
+		}
+		console.log(gadUrl);
+		let fetch_gadgets_res = await axios.get(gadUrl);
+		
+		activeGadgets = fetch_gadgets_res.data;
+		gadgetsFetched = true;
+		console.log(activeGadgets);
+	}catch(err){
+		console.log(err);
+	}
+}
+
+
 setInterval(function(){
 	try{
 	  if (!is_voting){
@@ -244,6 +269,15 @@ MongoClient.connect(url, function(err, client) {
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
+	  
+	  /*let test = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	  console.log(test);*/
+	  
+	  /*let gadgetId = new ObjectId("5db77cb5e279c25040134953")
+	  let test = await db.collection('user_gadgets').findOne({ benefic: {$in: ['silvertop', '@silvertop']}, status: "active", gadget: gadgetId,  })
+	  console.log(test);*/
+	  
+	  //testBoostData();
 	  //only start the process once we connected to the DB
 	  startProcess();
 	  
@@ -265,6 +299,268 @@ if (!config.testing){
 }else{
 	setTimeout(startProcess, 20 * 1000);
 }
+
+
+
+
+async function testBoostData(){
+	await fetchGadgets();
+	
+	let postData = [];
+	
+	let boost_res;
+	
+	/*let boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'SPORTS', 'unit', {author: 'mcfarhat', permlink: 'bingo'}, true);
+	console.log('testBoostData 1');
+	postData = boost_res.user_post_boosts;
+	
+	//check if user has a SPORTS boost as percent increments
+	let appendNetPercTokens = boost_res.extra_boost;
+	console.log(appendNetPercTokens);
+	console.log(postData);
+	
+	//let test = await grabConsumeUserBoostByType('@mcfarhat', 'AFIT', 'percent_reward', {author: 'mcfarhat', 'permlink': 'bingo'}, true);
+	boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'AFIT', 'unit', {author: 'mcfarhat', permlink: 'bingo'}, true);
+	
+	postData = postData.concat(boost_res.user_post_boosts);
+	appendNetPercTokens = boost_res.extra_boost;
+	console.log('testBoostData 2');*/
+	
+	/*
+	let boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'AFIT', 'range', {author: 'mcfarhat', permlink: 'bingo'}, true);
+				
+	postData = postData.concat(boost_res.user_post_boosts);
+	
+	//check if user has a User Rank boost as percent increments
+	let appendTokens = boost_res.extra_boost;
+	console.log('>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<');
+	//console.log(test);
+	//store used boosts to the post
+	//console.log(test.user_post_boosts);
+	console.log(appendTokens);
+	console.log(postData);
+	
+	console.log(boost_res.user_post_boosts[0].productdetails[0].benefits.boosts);
+	*/
+	
+	
+	boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'APX', 'percent', {author: 'mcfarhat', permlink: 'bingo'}, true);
+				
+	postData = postData.concat(boost_res.user_post_boosts);
+	
+	//check if user has a User Rank boost as percent increments
+	appendTokens = boost_res.extra_boost;
+	console.log('>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<');
+	//console.log(test);
+	//store used boosts to the post
+	//console.log(test.user_post_boosts);
+	console.log(appendTokens);
+	console.log(postData);
+	
+	console.log(boost_res.user_post_boosts[0].productdetails[0].benefits.boosts);
+	
+	/*boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'SPORTS', 'percent_reward', {author: 'mcfarhat', permlink: 'bingo'}, true);
+				
+	postData = postData.concat(boost_res.user_post_boosts);
+	
+	//check if user has a User Rank boost as percent increments
+	appendTokens = boost_res.extra_boost;
+	console.log('>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<');
+	//console.log(test);
+	//store used boosts to the post
+	//console.log(test.user_post_boosts);
+	console.log(appendTokens);
+	console.log(postData);
+	
+	console.log(boost_res.user_post_boosts[0].productdetails[0].benefits.boosts);
+	
+	boost_res = await grabConsumeUserBoostByType('@mcfarhat', 'User Rank', 'unit', {author: 'mcfarhat', permlink: 'bingo'}, true);
+				
+	postData = postData.concat(boost_res.user_post_boosts);
+	
+	//check if user has a User Rank boost as percent increments
+	appendTokens = boost_res.extra_boost;
+	console.log('>>>>>>>>>>>>>>>>>>>><<<<<<<<<<<<<<<<<<<<<');
+	//console.log(test);
+	//store used boosts to the post
+	//console.log(test.user_post_boosts);
+	console.log(appendTokens);
+	console.log(postData);
+	
+	console.log(boost_res.user_post_boosts[0].productdetails[0].benefits.boosts);*/
+	
+	//check if user has a User Rank boost as percent increments
+	//console.log(test.extra_boost);
+}
+
+//unit contains values such as SPORTS, AFIT, User Rank
+//type contains values such as unit, percent
+async function grabConsumeUserBoostByType(user, unit, type, post, consume){
+	
+	//console.log(activeGadgets);
+	let extra_boost = 0;
+	user = user.replace('@','');
+	let userSteem = '@' + user;
+	let userNamesVar = [userSteem, user];
+	let user_post_boosts = [];
+	
+	//apply boosts by user
+	if (Array.isArray(activeGadgets) && activeGadgets.length > 0){
+		let matchingGadgets = activeGadgets.filter( gadget => userNamesVar.includes (gadget.user) );
+		let matchingFriendGadgets = activeGadgets.filter( gadget => userNamesVar.includes (gadget.benefic) );
+		//console.log(matchingGadgets);
+		//console.log(matchingFriendGadgets);
+		if (!Array.isArray(matchingGadgets)){
+			matchingGadgets = matchingFriendGadgets;
+		}else if (Array.isArray(matchingFriendGadgets)){
+			matchingGadgets = matchingGadgets.concat(matchingFriendGadgets);
+		}
+		console.log('>>>>matchingGadgets');
+		console.log(matchingGadgets);
+		let maxCount = matchingGadgets.length;
+		//go through each gadget and process its boosts
+		for (let i=0;i<maxCount;i++){
+			if (Array.isArray( matchingGadgets[i].productdetails) &&  matchingGadgets[i].productdetails.length > 0){
+				let boosts = matchingGadgets[i].productdetails[0].benefits.boosts;
+				if (Array.isArray( boosts) &&  boosts.length > 0){
+					let maxBoosts = boosts.length;
+					//to ensure we only consume proper matching boosts
+					let match = false;
+					
+					let is_benefic = false;
+					for (let j=0;j<maxBoosts;j++){
+						if (boosts[j].boost_unit == unit){
+							console.log('unit found '+unit);
+							if (boosts[j].boost_type == type){
+								console.log('type found '+type);
+								if (boosts[j].boost_beneficiary == 'self' && userNamesVar.includes(matchingGadgets[i].user)
+									|| boosts[j].boost_beneficiary == 'friend' && userNamesVar.includes(matchingGadgets[i].benefic)){
+										
+										//condition for range boost
+										if (!boosts[j].boost_amount && boosts[j].boost_min_amount && boosts[j].boost_max_amount){
+											boosts[j].boost_amount = parseInt(Math.random() * (parseInt(boosts[j].boost_max_amount) - parseInt(boosts[j].boost_min_amount) + 1) + parseInt(boosts[j].boost_min_amount));
+										}
+										
+										console.log('extra amount '+boosts[j].boost_amount);
+										extra_boost += parseFloat(boosts[j].boost_amount);
+										match = true;
+										
+										//append this entry to the list of consumed boosts
+										user_post_boosts.push(matchingGadgets[i]);
+										
+										if (boosts[j].boost_beneficiary == 'friend' && userNamesVar.includes(matchingGadgets[i].benefic)){
+											is_benefic = true;
+										}
+										if (consume && !config.testing){
+											let gadgetId = new ObjectId(matchingGadgets[i].gadget)
+											//store transaction
+											let productBoostTrans = {
+												user: user,
+												gadget: gadgetId,
+												gadget_name: matchingGadgets[i].gadget_name,
+												gadget_level: matchingGadgets[i].gadget_level,
+												beneficiary_type: boosts[j].boost_beneficiary,
+												beneficiary_originator: matchingGadgets[i].user,
+												boost_type: boosts[j].boost_type,
+												boost_amount: boosts[j].boost_amount,
+												boost_unit: boosts[j].boost_unit,
+												date: new Date(),
+											}
+											try{
+												console.log(productBoostTrans);
+												let transaction = await db.collection('user_boost_consumed').insert(productBoostTrans);
+												console.log('success inserting post data');
+											}catch(err){
+												console.log(err);
+												console.log('Error performing buy action. DB storing issue');
+												return;
+											}
+										}
+								}
+							}
+						}
+					}
+					
+					//consume gadget
+					if (match && consume){
+						try{
+							let gadgetId = new ObjectId(matchingGadgets[i].gadget);
+							console.log(gadgetId);
+							let gadget_match;
+							console.log('gadget_match');
+							console.log(gadget_match);
+							//this could be a benefic gadget, so we need to check benefic cases as well
+							if (is_benefic){
+								gadget_match = await db.collection('user_gadgets').findOne({ benefic: {$in: [user, userSteem]}, status: "active", gadget: gadgetId });
+							}else{
+								gadget_match = await db.collection('user_gadgets').findOne({ user: {$in: [user, userSteem]}, status: "active", gadget: gadgetId });
+							}
+							if (gadget_match){
+								/*let benefic = user;
+								if (matchingGadgets[i].benefic){
+									benefic = matchingGadgets[i].benefic;
+								}*/
+								let skip = false;
+								let skipConsumption = false;
+								//check if post already registered, if so skip it
+								if (Array.isArray(gadget_match.posts_consumed) && gadget_match.posts_consumed.find(
+									(rwd_post => rwd_post.author == post.author && rwd_post.permlink == post.permlink))){
+									skip = true;	
+								}
+								//check if this is a benefic case and which has multiple boosts, so that we dont consume it more than once.
+								
+								if (maxBoosts > 1 && is_benefic){
+									try{
+										//find its index in the original gadgets array, and make sure it gets only consumed this time
+										let gad_index = activeGadgets.findIndex(gadget => userNamesVar.includes (gadget.benefic) );
+										
+										if (activeGadgets[gad_index].roundConsumed){
+											skipConsumption = true;
+										}
+										activeGadgets[gad_index].roundConsumed = true;
+									}catch(boostErr){
+										console.log(boostErr);
+									}
+								}
+								if (!skip){
+									if (!Array.isArray(gadget_match.posts_consumed)){
+										gadget_match.posts_consumed = [];
+									}
+									let consumed_pst = new Object();
+									consumed_pst.author = post.author;
+									consumed_pst.permlink = post.permlink;
+									//consumed_pst.benefic = post.benefic;
+									
+									gadget_match.posts_consumed.push(consumed_pst);
+									if (!skipConsumption){
+										gadget_match.consumed += 1;
+										if (gadget_match.consumed >= gadget_match.span){
+											gadget_match.status="consumed";
+										}
+									}
+									gadget_match.last_updated = new Date();
+									console.log('updating user gadget');
+									console.log(gadget_match);
+									if (!config.testing){
+										let transaction = db.collection('user_gadgets').save(gadget_match);
+										console.log('success inserting post data');
+									}
+								}
+							}
+						}catch(err){
+							console.log(err);
+							return;
+						}
+					}
+				}
+			}
+		}
+	}
+	console.log('user_post_boosts');
+	console.log(user_post_boosts);
+	return {'extra_boost': extra_boost, 'user_post_boosts':user_post_boosts};
+}
+
 
 
 var votePosts;
@@ -404,6 +700,10 @@ async function startProcess() {
 			claimRewards();
 		}
 		
+		//fetch gadget assignments
+		let fet_res = await fetchGadgets();
+		
+		//console.log(activeGadgets);
 		
 		//reset number of helping votes case
 		helping_accounts_votes = 0;
@@ -456,6 +756,11 @@ async function startProcess() {
 		
 		console.log('skippable_posts');
 		console.log(skippable_posts);
+	  
+		//grab list of active gadgets
+		//fetchGadgets();
+		
+		
 	  
 		var query = {tag: config.main_tag, limit: 100};
 		
@@ -894,6 +1199,8 @@ function processVotes(query, subsequent) {
 						permlink: post.permlink
 					}).upsert().replaceOne(post_entry_skip);
 					
+					proceed_bulk_posts_skip = true;
+					
 				  continue;
 				}
 				
@@ -909,7 +1216,7 @@ function processVotes(query, subsequent) {
 				//console.log('activity score:'+post.activity_score);
 				
 				//skip post if it has less than min activity recorded
-				if (post.activity_score == 0){
+				if (!config.testing && post.activity_score == 0){
 					continue;
 				}
 				
@@ -1015,6 +1322,8 @@ function processVotes(query, subsequent) {
 								url: comment_transaction.url,
 								comment_url: comment_transaction.comment_url
 							}).upsert().replaceOne(comment_transaction);
+							
+							proceed_bulk_transactions = true;
 							utils.log('found comment>>>>');
 							utils.log(comment_transaction);
 						}
@@ -1030,6 +1339,34 @@ function processVotes(query, subsequent) {
 				var user_rank_info = await axios.get(rank_api_url);
 				//utils.log(user_rank_info.user_rank);
 				post.user_rank = user_rank_info.data.user_rank;
+				
+				console.log('old user rank:'+post.user_rank);
+				
+				let boost_res = await grabConsumeUserBoostByType(post.author, 'User Rank', 'percent', post, true);
+				//store used boosts to the post
+				post.user_post_boosts = boost_res.user_post_boosts;
+				
+				//check if user has a User Rank boost as percent increments
+				let appendPercRank = boost_res.extra_boost;
+				
+				//append as percentage
+				post.user_rank += appendPercRank * post.user_rank / 100;
+				post.boost_user_rank_percent = appendPercRank;
+				
+				console.log('new user rank:'+post.user_rank);
+				
+				boost_res = await grabConsumeUserBoostByType(post.author, 'User Rank', 'unit', post, true);
+				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+				
+				//check if user has a User Rank boost as percent increments
+				let appendUnitRank = boost_res.extra_boost;
+				
+				//append as percentage
+				post.user_rank += appendUnitRank;
+				post.boost_user_rank_unit = appendUnitRank;
+				
+				console.log('new user rank:'+post.user_rank);
+				
 				//calculate user rank score relying on positive votes only
 				post.user_rank_score = parseFloat(user_rank_info.data.user_rank)*parseInt(config.rank_factor)/100;
 				//utils.log('rank'+post.user_rank_score);
@@ -1037,6 +1374,55 @@ function processVotes(query, subsequent) {
 				
 				//calculate total post score
 				post.post_score = post.activity_score + post.content_score + post.media_score + post.upvote_score + post.comment_score + post.moderator_score + post.user_rank_score;
+				
+				console.log('old post score:'+post.post_score);
+				
+				post.afit_pre_boost = post.post_score;
+				
+				//check if user has an AFIT boost as percent increments
+				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'percent_reward', post, true);
+				
+				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+				
+				//check if user has a User Rank boost as percent increments
+				let appendPercTokens = boost_res.extra_boost;
+				
+				//append as percentage
+				post.post_score += appendPercTokens * post.post_score / 100;
+				post.boost_afit_percent_reward = appendPercTokens;
+				
+				console.log('new post score:'+post.post_score);
+				
+				//check if user has an AFIT boost as unit entries
+				
+				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'unit', post, true);
+				
+				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+				
+				//check if user has a User Rank boost as percent increments
+				let appendTokens = boost_res.extra_boost;
+				
+				//append tokens
+				post.post_score += appendTokens;
+				post.boost_afit_units = appendTokens;
+				
+				console.log('new post score:'+post.post_score);
+				
+				//check if user has an AFIT boost as range entries
+				
+				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'range', post, true);
+				
+				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+				
+				//check if user has a User Rank boost as percent increments
+				appendTokens = boost_res.extra_boost;
+				
+				//append tokens
+				post.post_score += appendTokens;
+				post.boost_afit_units = appendTokens;
+				
+				console.log('new post score:'+post.post_score);
+				
 				
 				//rate multiplier to allow assigning proper steem upvote value per each post according to its post_score/afit payout
 				post.rate_multiplier = post.post_score / 100;
@@ -1058,7 +1444,7 @@ function processVotes(query, subsequent) {
 				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
 							   post
 							);
-				
+				proceed_bulk = true;
 				//post token rewards DB transaction
 				
 				//by default the reward owner is the author
@@ -1097,6 +1483,7 @@ function processVotes(query, subsequent) {
 					reward_activity: post_transaction.reward_activity,
 					url: post_transaction.url
 				}).upsert().replaceOne(post_transaction); 
+				proceed_bulk_transactions = true;
 				
 				//the proper transaction without reward
 				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
@@ -1119,7 +1506,7 @@ function processVotes(query, subsequent) {
 						reward_activity: charity_trans.reward_activity,
 						url: charity_trans.url
 					}).upsert().replaceOne(charity_trans);
-				
+					proceed_bulk_transactions = true;
 				}
 				
 				//reward upvoters
@@ -1173,7 +1560,7 @@ function processVotes(query, subsequent) {
 								url: vote_transaction.url
 							}).upsert().replaceOne(vote_transaction);
 							//transactions.push(vote_transaction);
-							
+							proceed_bulk_transactions = true;
 							//utils.log(vote_transaction);
 						}
 					});
@@ -1185,27 +1572,36 @@ function processVotes(query, subsequent) {
 		}//end of loop going through posts
 		
 		//properly stored any future skippable posts
+		utils.log(proceed_bulk_posts_skip);
 		try{
+			if (proceed_bulk_posts_skip){
 			await bulk_posts_skip.execute();
+			}
 		}catch(bulkerr){
 			utils.log(bulkerr);
 		}
 		
+		utils.log('votePosts.length:'+votePosts.length);
+		utils.log(proceed_bulk);
+		utils.log(proceed_bulk_transactions);
 		if (votePosts.length>0){
 			try{
 				//store posts
+				if (proceed_bulk){
 				await bulk.execute();
+				}
 			}catch(bulkerr){
 				utils.log(bulkerr);
 			}
 			try{
 				//award transaction tokens
+				if (proceed_bulk_transactions){
 				await bulk_transactions.execute();
+				}
 			}catch(bulkerr){
 				utils.log(bulkerr);
 			}
 		}
-	  
 	  
 		//if this is the first try, or the new count of posts is bigger than the one before, let's try adding again
 		if (!config.testing && (!subsequent || votePosts.length > lastIterationCount || queryCount < config.max_query_count)){
@@ -1309,10 +1705,10 @@ function processVotes(query, subsequent) {
 					//get vote value at 100%
 					let full_vote_value = getVoteValueUSD(100, account, 100, sbd_price);
 					console.log('full_vote_value')
-					console.log(full_vote_value)
+					//console.log(full_vote_value)
 					
 					console.log('topUsersAFITX')
-					console.log(topUsersAFITX);
+					//console.log(topUsersAFITX);
 					
 					//number of found exchanges to perform in coming round
 					let matched_exchanges = 0;
@@ -1518,7 +1914,7 @@ async function fetchAFITXBal(offset){
 			//skip first entry as thats Actifit account
 			topUsersAFITX = usersAFITXBal.slice(1, config.topAFITXCount);
 			
-			console.log(topUsersAFITX);
+			//console.log(topUsersAFITX);
 		}
 	  }
   }catch(err){
@@ -1553,7 +1949,9 @@ function votingProcess(posts, power_per_vote) {
         saveState();
 		
 		//since we're done voting, we need to update all user tokens to reflect new rewards
+		if (!config.testing){
 		updateUserTokens();
+		}
         //reportEmail(config.report_emails)
       }, config.voting_posting_delay);
     }
@@ -1564,9 +1962,13 @@ function votingProcess(posts, power_per_vote) {
 }
 
 
-function sendVote(post, retries, power_per_vote) {
+async function sendVote(post, retries, power_per_vote) {
+
+	
 	utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
 	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
+  
+	console.log(power_per_vote);
   
 	var vote_weight = Math.floor(post.rate_multiplier * power_per_vote);
 	let stdrd_vote_weight = vote_weight * config.partner_comm_vote_mult;
@@ -1594,10 +1996,86 @@ function sendVote(post, retries, power_per_vote) {
 		stdrd_vote_weight = config.max_vote_per_post;
 	}
 	
+	let net_rewards_vote_weight = stdrd_vote_weight;
+	
+	console.log('old sports percent:'+stdrd_vote_weight);
+	
+	/*if (config.testing){
+		console.log('switch author');
+		console.log(post.author);
+		post.author = 'mcfarhat';
+		post.permlink = 'actifit-witness-vote-application-msp';
+	}*/
+	
+	let boost_res = await grabConsumeUserBoostByType(post.author, 'SPORTS', 'percent_reward', post, true);
+				
+	post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+	
+	//check if user has a SPORTS boost as percent increments
+	let appendPercTokens = boost_res.extra_boost;
+	
+	//append as percentage
+	stdrd_vote_weight += appendPercTokens * stdrd_vote_weight / 100;
+	stdrd_vote_weight = Math.floor(stdrd_vote_weight);
+	post.boost_sports_percent_reward = appendPercTokens;
+	
+	console.log('new sports percent:'+stdrd_vote_weight);
+	
+	//check if user has a SPORTS boost as percent increments
+	
+	boost_res = await grabConsumeUserBoostByType(post.author, 'SPORTS', 'percent', post, true);
+				
+	post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+	
+	//check if user has a SPORTS boost as percent increments
+	let appendNetPercTokens = boost_res.extra_boost;
+	
+	//append as percentage
+	stdrd_vote_weight += appendNetPercTokens * 100;
+	stdrd_vote_weight = Math.floor(stdrd_vote_weight);
+	post.boost_sports_percent = appendNetPercTokens;
+	
+	console.log('new sports percent:'+stdrd_vote_weight);
+	
+	
+	//check if user has an APPICS boost as percent 
+	
+	//first need to make sure the post benefits from APX vote (meaning has APX tag)
+	
+	let tags = JSON.parse(post.json_metadata).tags;
+	
+	console.log('checking APX ');
+	//console.log(tags);
+	//console.log(tags.findIndex(item => config.appics_tag.toLowerCase() === item.toLowerCase()));
+	
+	if(tags && tags.length > 0 && tags.findIndex(item => config.appics_tag.toLowerCase() === item.toLowerCase()) != -1) {
+		
+		utils.log('Post contains APX tag for extra vote ' + post.url);
+		
+		let curAuthor = post.author;
+		if (config.testing){
+			curAuthor= 'mcfarhat';
+		}
+		boost_res = await grabConsumeUserBoostByType(curAuthor, 'APX', 'percent', post, true);
+					
+		post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+		
+		let appendApxPercTokens = boost_res.extra_boost;
+		
+		//append as percentage
+		let boost_apx_percent = appendApxPercTokens * 100;
+		boost_apx_percent = Math.floor(boost_apx_percent);
+		post.boost_apx_percent = boost_apx_percent;
+		post.vote_appics = true;
+		
+		console.log('new APX percent:' + post.boost_apx_percent);
+	
+	}
+	
 	post.vote_weight = vote_weight;
 	last_votes.push(post);
 
-	return new Promise((resolve, reject) => {
+	return new Promise(async (resolve, reject) => {
 		if(config.testing){
 			//resolve('');
 			
