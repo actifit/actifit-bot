@@ -1,20 +1,21 @@
 var fs = require("fs");
 const steem = require('steem');
+
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
 const moment = require('moment')
-const steem_node = 'https://api.steemit.com';//'https://steemd.minnowsupportproject.org';//'https://api.steem.house';//
 
 getConfig();
 
 const client = new dsteem.Client(config.active_node);
+const hiveClient = new dsteem.Client(config.active_hive_node);
 		
 var config;
 
 let th_id = -1;
 
-steem.api.setOptions({ url: steem_node });
+steem.api.setOptions({ url: config.active_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -33,9 +34,21 @@ var HOURS = 60 * 60;
  let properties
  let totalVests
  let totalSteem
+ let hiveProps
+ let totalHive
+ let totalHiveVests
  
- async function getAccountData(account_name){
+ function setProperNode(bchain){
+	if (bchain == "STEEM"){
+		steem.api.setOptions({ url: config.active_node });
+	}else{
+		steem.api.setOptions({ url: config.active_hive_node });
+	}
+ }
+ 
+ async function getAccountData(account_name, bchain){
 	let account = null;
+	await setProperNode(bchain);
 	//attempt to load account data
 	try{
 		let account_res = await steem.api.getAccountsAsync([config.account]); 
@@ -46,7 +59,43 @@ var HOURS = 60 * 60;
 	return account;
  }
  
- function updateSteemVariables() {
+ async function validateAccountLogin(username, priv_pkey, bchain){
+	await setProperNode(bchain);
+	console.log('validateAccountLogin');
+	let account_res = await steem.api.getAccountsAsync([username]);
+	console.log(account_res[0]);
+	let pub_pkey = account_res[0].posting.key_auths[0][0];
+	try{ 
+		let res = await steem.auth.wifIsValid(priv_pkey, pub_pkey);
+		//console.log(res);
+		return {result: res, account: account_res[0]};
+	}catch(err){ 
+		console.log(err);
+		return {result:false};
+	}
+ }
+ 
+ async function processSteemTrx(operation, userKey, bchain){
+	console.log('utils processSteemTrx');
+	console.log(operation);
+	const ops = [ operation ];
+	console.log('>>>>>>>>>>>> selected bchain');
+	console.log(bchain);
+	await setProperNode(bchain);
+	let tx = await steem.broadcast.sendAsync( 
+		   { operations: ops, extensions: [] },
+		   { posting: userKey }
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	
+	console.log(tx);
+	return {tx: tx};
+ }
+ 
+ function updateSteemVariables(bchain) {
+	 setProperNode(bchain);
      steem.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
          rewardBalance = parseFloat(t.reward_balance.replace(" STEEM", ""));
@@ -65,7 +114,7 @@ var HOURS = 60 * 60;
 		 console.log(sbd_print_percentage);
      });
 
-     setTimeout(updateSteemVariables, 180 * 1000)
+     setTimeout(updateSteemVariables, 180 * 1000, bchain)
  }
  // updateSteemVariables();
 
@@ -102,7 +151,7 @@ var HOURS = 60 * 60;
 		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
 		//return new Promise(function(fulfill,reject){
 			//var request = require("request");
-			let location = steem_node;
+			let location = config.active_node;
 			var response = await axios.post(location, {"jsonrpc":"2.0","id":1,"method":"rc_api.find_rc_accounts","params":{"accounts":[account_name]}});
 			
 			console.log(response.data.result.rc_accounts);
@@ -171,10 +220,11 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceived (req) {
+	async function confirmPaymentReceived (req, bchain) {
 		getConfig();
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
+				await setProperNode(bchain);
 				console.log('check funds');
 				steem.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
 					let tx_id = '';
@@ -185,7 +235,11 @@ var HOURS = 60 * 60;
 						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
 						if (op[0] === 'transfer'){
 							let sentAmount = op[1].amount.split(' ')[0];
-							if (op[1].to === config.signup_account && op[1].memo === req.query.memo && sentAmount >= (parseFloat(req.query.steem_invest)-0.1)){  
+							let sentCur = op[1].amount.split(' ')[1];
+							if (op[1].to === config.signup_account 
+								&& op[1].memo === req.query.memo 
+								&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
+								&& sentCur === req.query.sent_cur){  
 								console.log('in');
 								console.log(op[1]);
 								
@@ -214,12 +268,14 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceivedPassword (req) {
+	async function confirmPaymentReceivedPassword (req, bchain) {
 		getConfig();
 		console.log('confirmPaymentReceivedPassword');
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check funds');
+				console.log(bchain);
+				await setProperNode(bchain);
 				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -228,6 +284,8 @@ var HOURS = 60 * 60;
 						//check if we received a transfer to our target account
 						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
 						if (op[0] === 'transfer'){
+							//console.log('transfer op ');
+							//console.log(op[1]);
 							let sentAmount = op[1].amount.split(' ')[0];
 							if (op[1].to === config.exchange_account && op[1].from === req.query.from && sentAmount >= 1){  
 								console.log('in');
@@ -258,12 +316,13 @@ var HOURS = 60 * 60;
 	}
 	
 	//function handles confirming if payment was received
-	async function confirmPaymentReceivedBuy (req) {
+	async function confirmPaymentReceivedBuy (req, bchain) {
 		getConfig();
 		console.log('confirmPaymentReceivedBuy');
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check buy funds');
+				await setProperNode(bchain);
 				steem.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
@@ -305,7 +364,7 @@ var HOURS = 60 * 60;
 	
 	
 	//function handles claiming spots for accounts
-	async function claimDiscountedAccount(){
+	async function claimDiscountedAccount(chain){
 		console.log('claimDiscountedAccount');
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
@@ -323,30 +382,60 @@ var HOURS = 60 * 60;
 							config.active_key
 						);
 		let result = '';
-		try{
-			result = await client.broadcast.sendOperations(ops, privateKey);
-			console.log('success');
-			return true;
-		}catch(err){
-			console.log(err);
-			return false;
+		let outcSteem = false;
+		let outcHive = false;
+		if (!chain || chain == 'STEEM'){
+			
+			try{
+				result = await client.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				outcSteem = true;
+			}catch(err){
+				console.log(err);
+				outcSteem = false;
+			}
 		}
+		if (!chain || chain == 'HIVE'){
+			try{
+				result = await hiveClient.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				outcHive = true;
+			}catch(err){
+				console.log(err);
+				outcHive = false;
+			}
+		}
+		return (outcSteem || outcHive);
 	}
 	
 	//function handles creating accounts via discounted claimed spots or normal paid method
-	async function createAccount (username, password){
+	async function createAccount (username, password, chain){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
-		//check if account exists		
-		const _account = await client.database.call('get_accounts', [[username]]);
-		//account not available to register
-		if (_account.length>0) {
-			console.log('account already exists');
-			console.log(_account);
-			return false;
+		
+		if (!chain || chain == 'STEEM'){
+			//check if account exists		
+			const _account = await client.database.call('get_accounts', [[username]]);
+			//account not available to register
+			if (_account.length>0) {
+				console.log('account already exists');
+				console.log(_account);
+				return false;
+			}
 		}
-
+			
+		if (!chain || chain == 'HIVE'){
+			//check if account exists		
+			const _account = await hiveClient.database.call('get_accounts', [[username]]);
+			//account not available to register
+			if (_account.length>0) {
+				console.log('account already exists');
+				console.log(_account);
+				return false;
+			}
+		}	
+		
 		console.log('account available');
 					
 		//create keys for new account
@@ -374,95 +463,187 @@ var HOURS = 60 * 60;
 		
 		//container for required ops
 		let ops = [];
-		
+		let hiveOps = [];
 		
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
 		
-		const _creator_account = await client.database.call('get_accounts', [
-			[creator],
-		]);
-		console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+		let steemAccountSuccess = false;
+		let hiveAccountSuccess = false;
 		
-		if (_creator_account[0].pending_claimed_accounts > 0) {
-		
-			//the create discounted account operation
-			const create_op = [
-				'create_claimed_account',
-				{
-					creator: creator,
-					new_account_name: username,
-					owner: ownerAuth,
-					active: activeAuth,
-					posting: postingAuth,
-					memo_key: memoKey,
-					json_metadata: '',
-					extensions: [],
-				}
-			];
-			ops.push(create_op);
-		}else{
-		
-			const create_op = [
-				'account_create',
-				{
-					fee: '3.000 STEEM',
-					creator: creator,
-					new_account_name: username,
-					owner: ownerAuth,
-					active: activeAuth,
-					posting: postingAuth,
-					memo_key: memoKey,
-					json_metadata: '',
-					extensions: [],
-				}
-			];
-			ops.push(create_op);
+		if (!chain || chain == 'STEEM'){
+			const _creator_account = await client.database.call('get_accounts', [
+				[creator],
+			]);
+			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {
+			
+				//the create discounted account operation
+				const create_op = [
+					'create_claimed_account',
+					{
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				ops.push(create_op);
+			}else{
+			
+				const create_op = [
+					'account_create',
+					{
+						fee: '3.000 STEEM',
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				ops.push(create_op);
+			}
+			
+			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			//proceed executing the selected operation(s)
+			let result = '';
+			try{
+				result = await client.broadcast.sendOperations(ops, privateKey);
+				console.log('success');
+				steemAccountSuccess = true;
+			}catch(err){
+				console.log(err);
+				steemAccountSuccess = false;
+			}
 		}
 		
-		const privateKey = dsteem.PrivateKey.fromString(config.active_key);
-		//proceed executing the selected operation(s)
-		let result = '';
-		try{
-			result = await client.broadcast.sendOperations(ops, privateKey);
-			console.log('success');
-			return true;
-		}catch(err){
-			console.log(err);
-			return false;
+		if (!chain || chain == 'HIVE'){
+			const _creator_account = await hiveClient.database.call('get_accounts', [
+				[creator],
+			]);
+			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {
+			
+				//the create discounted account operation
+				const create_op = [
+					'create_claimed_account',
+					{
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				hiveOps.push(create_op);
+			}else{
+			
+				const create_op = [
+					'account_create',
+					{
+						fee: '3.000 STEEM',
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				hiveOps.push(create_op);
+			}
+			
+			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			//proceed executing the selected operation(s)
+			let result = '';
+			try{
+				result = await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
+				console.log('success');
+				hiveAccountSuccess = true;
+			}catch(err){
+				console.log(err);
+				hiveAccountSuccess = false;
+			}
 		}
+		return (steemAccountSuccess || hiveAccountSuccess);
 	}
 
 	//function handles delegating to a specific account
-	async function delegateToAccount (delegatee, steemPowerAmount){
+	async function delegateToAccount (delegatee, steemPowerAmount, chain){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
 		const privateKey = dsteem.PrivateKey.fromString(
 			config.full_pay_ac_key
 		);
-		//grab matching amount of Vests to delegate
-		let matchingVests = await steemPowerToVests(steemPowerAmount);
-		console.log('matchingVests:'+matchingVests);
-		const op = [
-			'delegate_vesting_shares',
-			{
-				delegator: config.full_pay_benef_account,
-				delegatee: delegatee,
-				vesting_shares: matchingVests+' VESTS',
-			},
-		];
+		
 		let result = '';
-		try{
-			result = await client.broadcast.sendOperations([op], privateKey);
-			console.log('Included in block:'+ result.block_num);
-			console.log('returning back');
-			return true;
-		}catch(err){
-			console.log(err);
-			console.log('returning back err');
-			return false;
+		let steemDg = false;
+		let hiveDg = false;
+		if (!chain || chain == 'STEEM'){
+			try{
+				//grab matching amount of Vests to delegate
+				let matchingVests = await steemPowerToVests(steemPowerAmount);
+				console.log('matchingVests:'+matchingVests);
+				const op = [
+					'delegate_vesting_shares',
+					{
+						delegator: config.full_pay_benef_account,
+						delegatee: delegatee,
+						vesting_shares: matchingVests+' VESTS',
+					},
+				];
+				
+				result = await client.broadcast.sendOperations([op], privateKey);
+				console.log('Included in block:'+ result.block_num);
+				console.log('returning back');
+				steemDg = true;
+			}catch(err){
+				console.log(err);
+				console.log('returning back err');
+				steemDg = false;
+			}
 		}
+		if (!chain || chain == 'HIVE'){
+			try{
+				//grab matching amount of Vests to delegate
+				let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
+				console.log('matchingHiveVests:'+matchingHiveVests);
+				const op = [
+					'delegate_vesting_shares',
+					{
+						delegator: config.full_pay_benef_account,
+						delegatee: delegatee,
+						vesting_shares: matchingHiveVests+' VESTS',
+					},
+				];
+				
+				result = await hiveClient.broadcast.sendOperations([op], privateKey);
+				console.log('Included in block:'+ result.block_num);
+				console.log('returning back');
+				hiveDg = true;
+			}catch(err){
+				console.log(err);
+				console.log('returning back err');
+				hiveDg = false;
+			}
+		}
+		return (steemDg || hiveDg);
 	}
 
  function getVoteRShares(voteWeight, account, power) {
@@ -1043,18 +1224,29 @@ async function steemPowerToVests (steemPower) {
   return parseFloat(steemPower * totalVests / totalSteem).toFixed(6);
 }
 
+//function handles conversting SP to Vests
+async function hivePowerToVests (hivePower) {
+
+  if (isNaN(totalHive) || isNaN(totalHiveVests) ){
+	hiveProps = await hiveClient.database.getDynamicGlobalProperties()
+	totalHive = Number(hiveProps.total_vesting_fund_steem.split(' ')[0])
+	totalHiveVests = Number(hiveProps.total_vesting_shares.split(' ')[0])
+  }
+  return parseFloat(hivePower * totalHiveVests / totalHive).toFixed(6);
+}
+
 function sortArrLodash (arrToSort) {
 	return _.orderBy(arrToSort, function (o) { return new Number(o.balance)},['desc']);
 }
 
 function removeArrMatchLodash (arrToClean, arrToMatch, field) {
 	let removedEntries = _.remove(arrToClean, obj => arrToMatch.includes(obj[field]));
-	console.log("removedEntries");
-	console.log(removedEntries);
+	//console.log("removedEntries");
+	//console.log(removedEntries);
 	return arrToClean;
 }
 
-async function rewardPost(post_url, vp){
+async function rewardPost(post_url, vp, bchain){
 	//extract author and permalink from full url
 	//check if string ends with /, remove it
 	if (post_url.slice(-1) == '/'){
@@ -1064,6 +1256,7 @@ async function rewardPost(post_url, vp){
 	let permalink = post_url.split('/').reverse()[0];
 	//before last portion is author, and remove the starting @
 	let author = post_url.split('/').reverse()[1].replace('@','');
+	await setProperNode(bchain);
 	//cast vote
 	let result = await steem.broadcast.voteAsync(
 							config.rewards_account_pkey, //postingWIF
@@ -1095,9 +1288,14 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 	return false;
 }
 
-async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
-	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain){
+	let trx 
 	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else if (bchain == 'HIVE'){
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
 		if (trx && trx.operations
 			&& trx.operations.length > 0){
 				console.log(trx.operations[0][1]);
@@ -1154,4 +1352,6 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id){
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
    removeArrMatchLodash: removeArrMatchLodash,
+   validateAccountLogin: validateAccountLogin,
+   processSteemTrx: processSteemTrx,
  }
