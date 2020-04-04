@@ -1020,6 +1020,49 @@ function loadSteemPrices() {
       });
     });
   }
+  
+  */
+}
+
+
+//handles sending out price feed for witness nodes
+function broadcastFeed (type) {
+	//STEEM witness
+	let peg_multi = config.peg_multi ? config.peg_multi : 1;
+	let price_val = steem_price;
+	let pegged_cur = ' SBD';
+	let origType = type;
+	if (type == 'HIVE'){
+		price_val = hive_price;
+		//below two lines are hacks since steem-js is not yet accepting HIVE and HBD
+		//pegged_cur = ' HBD';
+		type = 'STEEM';
+		steem.api.setOptions({ 
+			url: config.active_hive_node ,
+			//useAppbaseApi: true
+		});
+	}else{
+		steem.api.setOptions({ 
+			url: config.active_node ,
+			//useAppbaseApi: true
+		});
+	}
+	let exchange_rate = { base: price_val.toFixed(3) + pegged_cur, quote: (1 / peg_multi).toFixed(3) + ' ' + type };
+	utils.log('Broadcasting ' + origType + ' feed_publish transaction: ' + JSON.stringify(exchange_rate));
+	steem.broadcast.feedPublish(config.active_key, config.account, exchange_rate, function (err, result) {
+		if (result && !err) {
+		  console.log(result);
+		  utils.log('Broadcast successful!');
+		} else {
+		  utils.log('Error broadcasting feed_publish transaction: ' + err);
+
+		  /*if (retries == 5)
+			failover();
+
+		  if (retries < 2)
+			setTimeout(function () { publishFeed(price, retries + 1); }, 10 * 1000);*/
+		}
+	});
 }
 
 
