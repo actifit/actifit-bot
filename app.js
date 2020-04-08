@@ -122,6 +122,7 @@ async function disableUserLogin(){
 	//console.log(result);
 }
 
+
 async function loadAccountData(bchain){
 	//load main account data
 	
@@ -305,7 +306,7 @@ let checkHdrs = (req, res, next) => {
 	  } else {
 		return res.json({
 		  success: false,
-		  message: 'Auth token is not supplied'
+		  message: 'Auth token is not provided'
 		});
 	  }
 };	
@@ -381,6 +382,12 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
+
+app.get('/resetLogin', checkHdrs, async function (req, res) {
+	let db_col = db.collection('user_login_token');
+	let result = await db_col.remove({user: req.query.user, token: req.query.token});
+	res.send({success: true});
+});
 
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
