@@ -122,6 +122,7 @@ async function disableUserLogin(){
 	//console.log(result);
 }
 
+
 async function loadAccountData(bchain){
 	//load main account data
 	
@@ -207,7 +208,7 @@ generatePassword = function (multip) {
 	return passString;
   };
   
-  
+
 
 var bodyParser = require('body-parser');
 app.use(bodyParser.json()); // support json encoded bodies
@@ -305,7 +306,7 @@ let checkHdrs = (req, res, next) => {
 	  } else {
 		return res.json({
 		  success: false,
-		  message: 'Auth token is not supplied'
+		  message: 'Auth token is not provided'
 		});
 	  }
 };	
@@ -381,6 +382,12 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
+
+app.get('/resetLogin', checkHdrs, async function (req, res) {
+	let db_col = db.collection('user_login_token');
+	let result = await db_col.remove({user: req.query.user, token: req.query.token});
+	res.send({success: true});
+});
 
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
@@ -3291,6 +3298,7 @@ app.get("/downEbook", async function(req, res) {
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
