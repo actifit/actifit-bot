@@ -521,7 +521,7 @@ async function getBenefactorPosts (account, start) {
   console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
   
   // Query account history for delegations
-  properties = await client.database.getDynamicGlobalProperties()
+  properties = await nodeLink.database.getDynamicGlobalProperties()
   totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   //console.log(properties);
@@ -803,7 +803,7 @@ async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
   Promise.all(
 		[
 			getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, config.exclude_enabled), //(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
-			getBenefactorRewards(to, start, -1)
+			getBenefactorRewards(nodeLink, to, start, -1)
 		]
 	).then(values => {
     const activeDelegations = values[0].users
@@ -969,7 +969,7 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
   }
 }
 
-async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
+async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, totalSBD) {
   if (!totalSBD) totalSBD = 0
   if (!totalSp) totalSp = 0
   let limit = (txStart < 0) ? 10000 : Math.min(txStart, 10000)
@@ -978,10 +978,10 @@ async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
   console.log(start)
   console.log(end)
   // Query account history for delegations
-  properties = await client.database.getDynamicGlobalProperties()
+  properties = await nodeLink.database.getDynamicGlobalProperties()
   totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
-  const transactions = await client.database.call('get_account_history', [config.pay_account, txStart, limit])
+  const transactions = await nodeLink.database.call('get_account_history', [config.pay_account, txStart, limit])
   transactions.reverse()
   for (let txs of transactions) {
     let date = moment(txs[1].timestamp).format()
@@ -1002,7 +1002,7 @@ async function getBenefactorRewards (start, end, txStart, totalSp, totalSBD) {
   let lastTx = transactions[transactions.length - 1]
   let lastDate = moment(lastTx[1].timestamp).format()
   // console.log(lastDate)
-  if (lastDate >= start) return getBenefactorRewards(start, totalSp, lastTx[0])
+  if (lastDate >= start) return getBenefactorRewards(nodeLink, start, totalSp, lastTx[0])
 
   console.log('-- Processed rewards ---')
   // console.log(totalSp.toFixed(3))
