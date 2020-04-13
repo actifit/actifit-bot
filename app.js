@@ -312,6 +312,44 @@ let checkHdrs = (req, res, next) => {
 };	
 
 
+app.post('/performTrxPost', checkHdrs, async function (req, res) {
+	console.log('>>performTrx');
+	
+	
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	//set HIVE as default
+	let bchain = 'HIVE';
+	
+	let userKey = receivedPlaintext;
+	
+	let operation;
+	console.log(req.body);
+	console.log(req.body.operation);
+	if (req.body && req.body.operation){
+		operation = JSON.parse(req.body.operation);
+		//operation = req.query.operation;
+	}else{
+		res.send({error: 'operation not supplied'});
+	}
+	
+	if (req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	
+	let match_arr = Object.entries(operation);
+	/*console.log(user);
+	console.log(operation);
+	console.log((typeof operation));
+	console.log(match_arr);
+	console.log(match_arr[0][1]);*/
+	
+	//perform transaction
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	console.log(performTrx);
+	res.send({success: true, trx: performTrx});
+});
+
 app.get('/performTrx', checkHdrs, async function (req, res) {
 	console.log('>>performTrx');
 	
