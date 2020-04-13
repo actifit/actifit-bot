@@ -1407,13 +1407,16 @@ app.get('/isoParticipantList/', async function (req, res) {
 
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
-	var delegatorList; 
+	let delegatorList; 
+	let hiveDelegatorList; 
 	if (isNaN(req.query.count)){
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).toArray();
+		hiveDelegatorList = await db.collection('hive_active_delegations').find().sort({steem_power: -1}).toArray();
 	}else{
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
+		hiveDelegatorList = await db.collection('hive_active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
 	}
-    res.send(delegatorList);
+    res.send({steem: delegatorList, hive: hiveDelegatorList});
 });
 
 activeDelegationFunc = async function (userName){
