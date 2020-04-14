@@ -1,5 +1,9 @@
 var fs = require("fs");
 const steem = require('steem');
+
+//const hive = require('steem');
+
+
 var utils = require('./utils');
 var mail = require('./mail');
 var _ = require('lodash');
@@ -12,6 +16,7 @@ const axios = require('axios');
 const request = require("request");
 
 var account = null;
+let actSteemAccount = null;
 var last_trans = 0;
 var members = [];
 var whitelist = [];
@@ -201,7 +206,7 @@ async function fetchGadgets(){
 		
 		activeGadgets = fetch_gadgets_res.data;
 		gadgetsFetched = true;
-		console.log(activeGadgets);
+		//console.log(activeGadgets);
 	}catch(err){
 		console.log(err);
 	}
@@ -314,7 +319,6 @@ MongoClient.connect(url, function(err, client) {
 	}
   
 });
-
 
 // Schedule to run every minute
 if (!config.testing){
@@ -670,9 +674,27 @@ async function startProcess() {
     utils.log('Start process');
   // Load the settings from the config file each time so we can pick up any changes
   loadConfig();
-
+	
+	
+	//load steem account data
+	
+	await steem.api.setOptions({ 
+		url: config.active_node ,
+		//useAppbaseApi: true
+	});
+	
+	await steem.api.getAccounts([config.account], function (err, result) {
+    if (err || !result)
+      utils.log(err, result);
+    else {
+      actSteemAccount = result[0];
+	  //console.log(actSteemAccount);
+    }
+	});
   
-	steem.api.setOptions({ 
+	
+  
+	await steem.api.setOptions({ 
 		url: config.active_hive_node ,
 		//useAppbaseApi: true
 	});
@@ -683,7 +705,7 @@ async function startProcess() {
       utils.log(err, result);
     else {
       account = result[0];
-
+	  //console.log(account);
     }
   });
 
@@ -713,7 +735,7 @@ async function startProcess() {
   console.log('skip:'+skip);	
   console.log('is_voting:'+is_voting);	
   console.log('passedOneDay:'+passedOneDay);	
-
+  
   
 
 	//BuyAndBurn(true);
@@ -726,9 +748,9 @@ async function startProcess() {
 	let vpRestart = parseFloat(config.vp_kickstart) - 125;
 	let vpRestartLimit = vpRestart + 2;
 	console.log('vpRestart:'+vpRestart);
-
+	
     utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp*100)));
-
+	
 	
 	//disabling buying and burning tokens
 	/*console.log(config.vpTokenBurn);
@@ -773,7 +795,7 @@ async function startProcess() {
 	
 		// Check if there are any rewards to claim before voting
 		if (!config.testing){
-			claimRewards();
+			await claimRewards();
 		}
 		
 		//fetch gadget assignments
@@ -832,7 +854,7 @@ async function startProcess() {
 		
 		console.log('skippable_posts');
 		console.log(skippable_posts);
-	  
+		
 		//grab list of active gadgets
 		//fetchGadgets();
 		
@@ -923,7 +945,9 @@ function BuyAndBurn(test){
 function setSteemPrice(json){
 	steem_price = parseFloat(json.steem.usd); 
 	console.log('STEEM price:'+steem_price)
-	broadcastFeed('STEEM')
+	if (!config.testing){
+		broadcastFeed('STEEM')
+	}
 }
 
 function setSbdPrice(json){
@@ -934,7 +958,9 @@ function setSbdPrice(json){
 function setHivePrice(json){
 	hive_price = parseFloat(json.hive.usd); 
 	console.log('HIVE price:'+hive_price)
-	broadcastFeed('HIVE')
+	if (!config.testing){
+		broadcastFeed('HIVE')
+	}
 }
 
 function setHbdPrice(json){
@@ -1066,6 +1092,7 @@ function broadcastFeed (type) {
 }
 
 
+
 //var post_scores = [];
 function processVotes(query, subsequent) {
   
@@ -1106,8 +1133,12 @@ function processVotes(query, subsequent) {
 		for(var i = 0; i < result.length; i++) {
 			
 			var post = result[i];
-			
-		
+			if (config.testing && i == 0){
+				console.log('switch author');
+				console.log(post.author);
+				post.author = 'mcfarhat';
+				post.permlink = 'actifit-witness-vote-application-msp';
+			}
 			//if this is a subsequent call, we need to skip first post
 			if (subsequent && i==0){
 				// utils.log('skip post:'+post.title);
@@ -1132,7 +1163,7 @@ function processVotes(query, subsequent) {
 			}
 
 			// Check if the bot already voted on this post
-			if(post.active_votes.find(v => v.voter == 'actifit')) {
+			if (post.active_votes.find(v => v.voter == 'actifit')) {
 			  utils.log('Bot already voted on: ' + post.url);
 			  continue;
 			}
@@ -1223,7 +1254,7 @@ function processVotes(query, subsequent) {
 			if (post_skippable) continue;
 			
 			try {
-			
+				
 				console.log('parsing data by post '+post.url);
 			
 				post.json = JSON.parse(post.json_metadata);
@@ -1317,24 +1348,24 @@ function processVotes(query, subsequent) {
 				
 				
 				
-				//check if the post has an encryption key val, and ensure it is the proper one
-				if (post.json.actiCrVal){
-					var txt_to_encr = post.author + post.permlink + post.json.step_count ;
-					var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
-					let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
-					encr_txt += cipher.final('hex');
-					//test the result to the post's relevant data
-					if (post.json.actiCrVal != encr_txt){
-						//wrong, skip post
-						utils.log('post has incorrect actiCrVal');
+					//check if the post has an encryption key val, and ensure it is the proper one
+					if (post.json.actiCrVal){
+						var txt_to_encr = post.author + post.permlink + post.json.step_count ;
+						var cipher = crypto.createCipher(config.encr_mode, config.encr_key);
+						let encr_txt = cipher.update(txt_to_encr, 'utf8', 'hex');
+						encr_txt += cipher.final('hex');
+						//test the result to the post's relevant data
+						if (post.json.actiCrVal != encr_txt){
+							//wrong, skip post
+							utils.log('post has incorrect actiCrVal');
+							continue;
+						}
+						//utils.log('post is valid');
+					}else{
+						utils.log('post does not contain actiCrVal');
 						continue;
 					}
-					//utils.log('post is valid');
-				}else{
-					utils.log('post does not contain actiCrVal');
-					continue;
-				}
-					
+				
 				}
 					
 				//console.log('still here');
@@ -1368,43 +1399,43 @@ function processVotes(query, subsequent) {
 					}else{
 						if (first_index!=last_index) {
 							utils.log('---- User already has more than 2 posts in 24 hours ------');
-					var last_date = moment(last_voted.created).format('D');
-					let first_voted = votePosts[first_index];
-					var first_date = moment(first_voted.created).format('D');
-					var this_date = moment(post.created).format('D');
-					//if all 3 dates match, skip it
-					if ((last_date == this_date) && (first_date == this_date)) {
-						utils.log('---- Last voted -----');
-						utils.log(new Date (last_voted.created));
-						utils.log('---- First voted -----');
-						utils.log(new Date (first_voted.created));
-						utils.log('---- This voted -----');
-						utils.log(new Date (post.created));
-						utils.log('---- Moment-----');
-						utils.log(last_date);
-						utils.log(first_date);
-						utils.log(this_date);
-						
-						//skip new post
-						skip_date_diff = true;
-					}          
+							var last_date = moment(last_voted.created).format('D');
+							let first_voted = votePosts[first_index];
+							var first_date = moment(first_voted.created).format('D');
+							var this_date = moment(post.created).format('D');
+							//if all 3 dates match, skip it
+							if ((last_date == this_date) && (first_date == this_date)) {
+								utils.log('---- Last voted -----');
+								utils.log(new Date (last_voted.created));
+								utils.log('---- First voted -----');
+								utils.log(new Date (first_voted.created));
+								utils.log('---- This voted -----');
+								utils.log(new Date (post.created));
+								utils.log('---- Moment-----');
+								utils.log(last_date);
+								utils.log(first_date);
+								utils.log(this_date);
+								
+								//skip new post
+								skip_date_diff = true;
+							}          
 						}else{
 							utils.log('reject a post if a prior one exists that is less than 6 hours away');
-					utils.log(post.author+post.url);
-					//adding condition to reject a post if a prior one exists that is less than 6 hours away
-					//utils.log(last_voted.author+last_voted.url);
-					var last_date = moment(last_voted.created).toDate();
-					var this_date = moment(post.created).toDate();
-					//check the hours difference
-					var hours_diff = Math.abs(this_date - last_date) / 36e5;
-					if (hours_diff<parseFloat(config.min_posting_hours_diff)){
-						//skip new post
-						utils.log('hours difference:'+hours_diff+'...skipping');
-						
-						skip_date_diff = true;
-					}
-					
-				}
+							utils.log(post.author+post.url);
+							//adding condition to reject a post if a prior one exists that is less than 6 hours away
+							//utils.log(last_voted.author+last_voted.url);
+							var last_date = moment(last_voted.created).toDate();
+							var this_date = moment(post.created).toDate();
+							//check the hours difference
+							var hours_diff = Math.abs(this_date - last_date) / 36e5;
+							if (hours_diff<parseFloat(config.min_posting_hours_diff)){
+								//skip new post
+								utils.log('hours difference:'+hours_diff+'...skipping');
+								
+								skip_date_diff = true;
+							}
+							
+						}
 					}
 				}
 				
@@ -1800,7 +1831,7 @@ function processVotes(query, subsequent) {
 		utils.log(proceed_bulk_posts_skip);
 		try{
 			if (proceed_bulk_posts_skip){
-			await bulk_posts_skip.execute();
+				await bulk_posts_skip.execute();
 			}
 		}catch(bulkerr){
 			utils.log(bulkerr);
@@ -1813,7 +1844,7 @@ function processVotes(query, subsequent) {
 			try{
 				//store posts
 				if (proceed_bulk){
-				await bulk.execute();
+					await bulk.execute();
 				}
 			}catch(bulkerr){
 				utils.log(bulkerr);
@@ -1821,7 +1852,7 @@ function processVotes(query, subsequent) {
 			try{
 				//award transaction tokens
 				if (proceed_bulk_transactions){
-				await bulk_transactions.execute();
+					await bulk_transactions.execute();
 				}
 			}catch(bulkerr){
 				utils.log(bulkerr);
@@ -1847,7 +1878,7 @@ function processVotes(query, subsequent) {
 				
 				//if (!config.testing){
 				/*	
-					  //Sort posts by reverse score, so as when popping them we get sorted by highest
+					//Sort posts by reverse score, so as when popping them we get sorted by highest
 					votePosts.sort(function(post1, post2) {
 					  
 					  return post1.post_score - post2.post_score;
@@ -2016,7 +2047,7 @@ function processVotes(query, subsequent) {
 					
 					console.log('afit_steem_upvote_list');
 					console.log(afit_steem_upvote_list);
-					
+						
 					//number of entries
 					list_length = afit_steem_upvote_list.length;
 					
@@ -2032,50 +2063,50 @@ function processVotes(query, subsequent) {
 							//if this post has not been recorded yet
 							if (!result.additional_vote_weight){
 								console.log('fresh game');
-							matched_exchanges += 1;
-							//found a match, need to increase rewards according to AFIT pay
-							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
-							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
-							
-							//expand the USD val to take into consideration 75% curation reward
-							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
-							
-							//final upvote value after avoiding deductions
+								matched_exchanges += 1;
+								//found a match, need to increase rewards according to AFIT pay
+								//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
+								let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
+								
+								//expand the USD val to take into consideration 75% curation reward
+								let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
+								
+								//final upvote value after avoiding deductions
 								let usd_val = usd_val_no_benef / 0.5 
-							
-							//emulate proper voting power to give user matching rewards
-							let user_added_vote_weight = usd_val * 100 / full_vote_value;
-							
-							let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
-							
-							//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
-							if (helping_accounts_votes < config.max_helping_votes){
-								user_added_vote_weight -= 1;
 								
-								helping_accounts_votes += 1;
+								//emulate proper voting power to give user matching rewards
+								let user_added_vote_weight = usd_val * 100 / full_vote_value;
 								
-								votePosts[entry_index].helperVotes = true;
-							}
-							
-							user_added_vote_weight = user_added_vote_weight.toFixed(2);
-							
-							votePosts[entry_index].additional_vote_weight = Math.floor(user_added_vote_weight * 100);
-							votePosts[entry_index].afit_swapped = cur_upvote_entry.paid_afit;
-							console.log('Additional Vote Weight for AFIT/STEEM Upvote Exchange: '+votePosts[entry_index].author + ' ' + votePosts[entry_index].url);
-							console.log(votePosts[entry_index].additional_vote_weight);
-							
-							//we need to set params of this transaction
-							cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
-							cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
-							cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
-							cur_upvote_entry.usd_val = +usd_val.toFixed(2);
-							
-							cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
-							
-							cur_upvote_entry.post_author = votePosts[entry_index].author;
-							cur_upvote_entry.post_permlink = votePosts[entry_index].permlink;
-							
-							db.collection('exchange_afit_steem').save(cur_upvote_entry);
+								let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
+								
+								//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
+								if (helping_accounts_votes < config.max_helping_votes){
+									user_added_vote_weight -= 1;
+									
+									helping_accounts_votes += 1;
+									
+									votePosts[entry_index].helperVotes = true;
+								}
+								
+								user_added_vote_weight = user_added_vote_weight.toFixed(2);
+								
+								votePosts[entry_index].additional_vote_weight = Math.floor(user_added_vote_weight * 100);
+								votePosts[entry_index].afit_swapped = cur_upvote_entry.paid_afit;
+								console.log('Additional Vote Weight for AFIT/STEEM Upvote Exchange: '+votePosts[entry_index].author + ' ' + votePosts[entry_index].url);
+								console.log(votePosts[entry_index].additional_vote_weight);
+								
+								//we need to set params of this transaction
+								cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
+								cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
+								cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
+								cur_upvote_entry.usd_val = +usd_val.toFixed(2);
+								
+								cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
+								
+								cur_upvote_entry.post_author = votePosts[entry_index].author;
+								cur_upvote_entry.post_permlink = votePosts[entry_index].permlink;
+								
+								db.collection('exchange_afit_steem').save(cur_upvote_entry);
 							}
 						}
 					}
@@ -2175,7 +2206,7 @@ function votingProcess(posts, power_per_vote) {
 		
 		//since we're done voting, we need to update all user tokens to reflect new rewards
 		if (!config.testing){
-		updateUserTokens();
+			updateUserTokens();
 		}
         //reportEmail(config.report_emails)
       }, config.voting_posting_delay);
@@ -2188,7 +2219,7 @@ function votingProcess(posts, power_per_vote) {
 
 
 async function sendVote(post, retries, power_per_vote) {
-
+	
 	
 	utils.log('Voting on: ' + post.url + ' with count'+post.json.step_count);
 	var token_count = post.post_score;//parseFloat(post.rate_multiplier)*100;
@@ -2342,10 +2373,10 @@ async function sendVote(post, retries, power_per_vote) {
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});
-			//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
-			if (post.additional_vote_weight && post.helperVotes){
-				let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
-				try{
+				//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
+				if (post.additional_vote_weight && post.helperVotes){
+					let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
+					try{
 											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
 						steem.api.setOptions({ 
@@ -2372,13 +2403,13 @@ async function sendVote(post, retries, power_per_vote) {
 						if (res && res.block_num) {
 							utils.log('success');
 						}
-
-				}catch(err){
-					utils.log(err);
-				}
+						
+					}catch(err){
+						utils.log(err);
+					}
 					
-				try{
-						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
+					try{
+						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);			
 						steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
@@ -2403,17 +2434,17 @@ async function sendVote(post, retries, power_per_vote) {
 						if (res && res.block_num) {
 							utils.log('success');
 						}
-
-				}catch(err){
-					utils.log(err);
-				}
 					
-			}
-			
-			//if additional partner accounts enabled, vote using them as well
-			try{
-				if (config.zzan_active){
-						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);
+					}catch(err){
+						utils.log(err);
+					}
+					
+				}
+				
+				//if additional partner accounts enabled, vote using them as well
+				try{
+					if (config.zzan_active){
+						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
 						steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
@@ -2438,8 +2469,8 @@ async function sendVote(post, retries, power_per_vote) {
 						if (res && res.block_num) {
 							utils.log('success');
 						}
-
-						}
+						
+					}
 				}catch(err){
 					utils.log(err);
 				}
@@ -2450,7 +2481,7 @@ async function sendVote(post, retries, power_per_vote) {
 						steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-					});
+						});
 						res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2472,16 +2503,16 @@ async function sendVote(post, retries, power_per_vote) {
 							utils.log('success');
 						}
 						
+					}
+				}catch(err){
+					utils.log(err);
 				}
-			}catch(err){
-				utils.log(err);
-			}
-			
+				
 				//append appics account gadget-based voting 
 				
 					if (config.appics_active && post.vote_appics){
 						
-			try{
+						try{
 							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);			
 							steem.api.setOptions({ 
 							url: config.active_hive_node ,
@@ -2507,7 +2538,7 @@ async function sendVote(post, retries, power_per_vote) {
 							if (res && res.block_num) {
 								utils.log('success');
 							}
-
+						
 						}catch(err){
 							utils.log(err);
 						}
@@ -2518,7 +2549,7 @@ async function sendVote(post, retries, power_per_vote) {
 					steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-					});
+						});
 					res = await steem.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
@@ -2528,7 +2559,7 @@ async function sendVote(post, retries, power_per_vote) {
 											"author": post.author,
 											"permlink": post.permlink,
 											"weight": net_rewards_vote_weight
-				}
+										  }
 									   ]
 								   ], 
 							   extensions: [] 
@@ -2540,10 +2571,10 @@ async function sendVote(post, retries, power_per_vote) {
 						utils.log('success');
 					}
 					
-			}catch(err){
-				utils.log(err);
-			}
-			
+				}catch(err){
+					utils.log(err);
+				}	
+								
 				try{
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);			
 					steem.api.setOptions({ 
@@ -2566,20 +2597,20 @@ async function sendVote(post, retries, power_per_vote) {
 							}, 
 						   { posting: config.posting_key }
 					   ).then(async function(rest, err) {
-					
-					//store exchange transaction as complete
-					if (post.additional_vote_weight){
-						console.log('Exchange vote');
-						let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
-										entry.post_permlink === post.permlink && 
-										entry.user === post.author);
-						console.log(cur_upvote_entry);
-						cur_upvote_entry.upvote_processed = true;
-						db.collection('exchange_afit_steem').save(cur_upvote_entry);
-					}
-
 							
-					if(config.comment_location && config.comment){
+							//store exchange transaction as complete
+							if (post.additional_vote_weight){
+								console.log('Exchange vote');
+								let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+												entry.post_permlink === post.permlink && 
+												entry.user === post.author);
+								console.log(cur_upvote_entry);
+								cur_upvote_entry.upvote_processed = true;
+								db.collection('exchange_afit_steem').save(cur_upvote_entry);
+							}
+							
+							
+							if(config.comment_location && config.comment){
 								await sendComment(post, 0, vote_weight, config.active_hive_node)
 								.then( res => {
 									//resolve(res)
@@ -2620,16 +2651,16 @@ async function sendVote(post, retries, power_per_vote) {
 						 // Try again one time on error
 						/*if (retries < config.max_vote_comment_retries){
 							//try to vote again
-						setTimeout(function () { 	
+							setTimeout(function () { 	
 								sendVote(post, retries + 1, power_per_vote)
-								.then( res => {
-									resolve(res)
-								})
-								.catch(err => {
-									reject(err);
-								})
-						}, config.voting_posting_delay);
-					}else{
+									.then( res => {
+										resolve(res)
+									})
+									.catch(err => {
+										reject(err);
+									})
+							}, config.voting_posting_delay);
+						}else {
 							var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
 							utils.log(message);
 							reject(err);
@@ -2786,7 +2817,7 @@ async function sendVote(post, retries, power_per_vote) {
 						if (res && res.block_num) {
 							utils.log('success');
 						}
-
+						
 					}
 				}catch(err){
 					utils.log(err);
@@ -2909,7 +2940,7 @@ async function sendVote(post, retries, power_per_vote) {
 											//reject(err);
 										})
 								//}, config.voting_posting_delay);
-				}else{
+							}else{
 								//resolve('');   
 							} 
 					   }).catch(e => console.log(e))
@@ -2927,34 +2958,34 @@ async function sendVote(post, retries, power_per_vote) {
 							cur_upvote_entry.upvote_processed = true;
 							db.collection('exchange_afit_steem').save(cur_upvote_entry);
 						}*/
-
-
+						
+						
 					}else{
-					 // Try again one time on error
+						 // Try again one time on error
 						/*if (retries < config.max_vote_comment_retries){
-						//try to vote again
-						setTimeout(function () { 	
-							sendVote(post, retries + 1, power_per_vote)
-								.then( res => {
-									resolve(res)
-								})
-								.catch(err => {
-									reject(err);
-								})
-						}, config.voting_posting_delay);
-					}else {
-						var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
-						utils.log(message);
-						reject(err);
-					//errorEmail(message, config.report_emails);
+							//try to vote again
+							setTimeout(function () { 	
+								sendVote(post, retries + 1, power_per_vote)
+									.then( res => {
+										resolve(res)
+									})
+									.catch(err => {
+										reject(err);
+									})
+							}, config.voting_posting_delay);
+						}else {
+							var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
+							utils.log(message);
+							reject(err);
+						//errorEmail(message, config.report_emails);
 						}*/
 					}
 				
 				}catch(mainerr){
 					utils.log(mainerr);
-					}
-				
 				}
+				
+			}
 			resolve('');
 		}
 	});
@@ -3140,7 +3171,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 					utils.log('Posted comment: ' + permlink);
 					//resolve(res);
 				}
-
+				
 				/*steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
 					  if (!err && result) {
 						utils.log('Posted comment: ' + permlink);
@@ -3166,7 +3197,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				}catch(com_err){
 					utils.log(com_err);
 				}
-
+				
 			}else{
 				utils.log('comment');
 				console.log(content);
@@ -3274,39 +3305,74 @@ function sendPayment(to, amount, currency, reason, retries, data) {
   });
 }
 
-function claimRewards() {
+async function claimRewards(target_chain) {
+	console.log('>>>>> claiming rewards');
 	if (!config.auto_claim_rewards)
 		return;
-
+	
+	let targetAccount = actSteemAccount;
+	
+	let claim_currency = targetAccount.reward_steem_balance
+	let claim_currency_stable = targetAccount.reward_sbd_balance
+	
+	if (target_chain == 'HIVE'){
+		targetAccount = account;
+		claim_currency = targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
+		claim_currency_stable = targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		
+	}
 	// Make api call only if you have actual reward
-	if (parseFloat(account.reward_steem_balance) > 0 || parseFloat(account.reward_sbd_balance) > 0 || parseFloat(account.reward_vesting_balance) > 0) {
-		steem.broadcast.claimRewardBalance(config.posting_key, config.account, account.reward_steem_balance, account.reward_sbd_balance, account.reward_vesting_balance, function (err, result) {
+	if (parseFloat(targetAccount.reward_steem_balance) > 0 || parseFloat(targetAccount.reward_sbd_balance) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
+		if (!target_chain){
+			await steem.api.setOptions({ 
+				url: config.active_node ,
+				//useAppbaseApi: true
+			});
+		}else{
+			await steem.api.setOptions({ 
+				url: config.active_hive_node ,
+				//useAppbaseApi: true
+			});
+		}
+		await steem.broadcast.claimRewardBalance(config.posting_key, config.account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance, function (err, result) {
 			if (err) {
+				console.log('error claiming rewards');
 				utils.log(err);
 			}
 
 			if (result) {
 
 				var rewards_message = "$$$ ==> Rewards Claim";
-				if (parseFloat(account.reward_sbd_balance) > 0) { rewards_message = rewards_message + ' SBD: ' + parseFloat(account.reward_sbd_balance); }
-				if (parseFloat(account.reward_steem_balance) > 0) { rewards_message = rewards_message + ' STEEM: ' + parseFloat(account.reward_steem_balance); }
-				if (parseFloat(account.reward_vesting_balance) > 0) { rewards_message = rewards_message + ' VESTS: ' + parseFloat(account.reward_vesting_balance); }
+				if (parseFloat(targetAccount.reward_sbd_balance) > 0) { rewards_message = rewards_message + ' SBD: ' + parseFloat(targetAccount.reward_sbd_balance); }
+				if (parseFloat(targetAccount.reward_steem_balance) > 0) { rewards_message = rewards_message + ' STEEM: ' + parseFloat(targetAccount.reward_steem_balance); }
+				if (parseFloat(targetAccount.reward_vesting_balance) > 0) { rewards_message = rewards_message + ' VESTS: ' + parseFloat(targetAccount.reward_vesting_balance); }
 
 				utils.log(rewards_message);
+				
+				//now attempt to claim rewards with HIVE
+				if (!target_chain){
+					claimRewards('HIVE');
+				}
 
 				// If there are liquid post rewards, withdraw them to the specified account
-				if (parseFloat(account.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
+				if (parseFloat(targetAccount.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
 
 					// Send liquid post rewards to the specified account
-					steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, account.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
+					steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, targetAccount.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
 						if (err){
 							utils.log(err, response);
 						}else{
-							utils.log('$$$ Auto withdrawal - liquid post rewards: ' + account.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
+							utils.log('$$$ Auto withdrawal - liquid post rewards: ' + targetAccount.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
 						}
 					});
 				}
 			}
 		});
+	}else{
+		console.log('nothing to claim. Try other chain if possible');
+		//now attempt to claim rewards with HIVE
+		if (!target_chain){
+			claimRewards('HIVE');
+		}
 	}
 }
