@@ -347,7 +347,11 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	//perform transaction
 	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
-	res.send({success: true, trx: performTrx});
+	if (!performTrx.tx.block_num){
+		res.send({error: true, trx: performTrx});
+	}else{
+		res.send({success: true, trx: performTrx});
+	}
 });
 
 app.get('/performTrx', checkHdrs, async function (req, res) {
@@ -384,7 +388,11 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	//perform transaction
 	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
-	res.send({success: true, trx: performTrx});
+	if (!performTrx.tx.block_num){
+		res.send({error: true, trx: performTrx});
+	}else{
+		res.send({success: true, trx: performTrx});
+	}
 });
 
 app.get('/fetchUserData', checkHdrs, async function (req, res) {
@@ -4181,6 +4189,26 @@ app.get('/totalPostsSubmitted', async function(req, res) {
 	   });
 
 });
+
+/* end point for fetching user's recorded metrics */
+app.get('/trackedMeasurements/:user', async function(req, res) {
+	let query = {"author": req.params.user,
+					$or: [
+						{ "json_metadata.weight": {$exists: true} },
+						{ "json_metadata.height": {$exists: true} },
+						{ "json_metadata.chest": {$exists: true} },
+						{ "json_metadata.waist": {$exists: true} },
+						{ "json_metadata.thighs": {$exists: true} },
+						{ "json_metadata.bodyfat": {$exists: true} }
+					]
+				}
+	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	res.send(posts);
+});
+
+
+
+
 
 
 function gk_add_commas(nStr) {
