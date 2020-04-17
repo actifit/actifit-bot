@@ -312,6 +312,48 @@ let checkHdrs = (req, res, next) => {
 };	
 
 
+app.post('/performTrxPost', checkHdrs, async function (req, res) {
+	console.log('>>performTrx');
+	
+	
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	//set HIVE as default
+	let bchain = 'HIVE';
+	
+	let userKey = receivedPlaintext;
+	
+	let operation;
+	console.log(req.body);
+	console.log(req.body.operation);
+	if (req.body && req.body.operation){
+		operation = JSON.parse(req.body.operation);
+		//operation = req.query.operation;
+	}else{
+		res.send({error: 'operation not supplied'});
+	}
+	
+	if (req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	
+	let match_arr = Object.entries(operation);
+	/*console.log(user);
+	console.log(operation);
+	console.log((typeof operation));
+	console.log(match_arr);
+	console.log(match_arr[0][1]);*/
+	
+	//perform transaction
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	console.log(performTrx);
+	if (!performTrx.tx.block_num){
+		res.send({error: true, trx: performTrx});
+	}else{
+		res.send({success: true, trx: performTrx});
+	}
+});
+
 app.get('/performTrx', checkHdrs, async function (req, res) {
 	console.log('>>performTrx');
 	
@@ -346,7 +388,11 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	//perform transaction
 	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
-	res.send({success: true, trx: performTrx});
+	if (!performTrx.tx.block_num){
+		res.send({error: true, trx: performTrx});
+	}else{
+		res.send({success: true, trx: performTrx});
+	}
 });
 
 app.get('/fetchUserData', checkHdrs, async function (req, res) {
@@ -1407,13 +1453,16 @@ app.get('/isoParticipantList/', async function (req, res) {
 
 /* end point for returning current active delegator data by actifit */
 app.get('/topDelegators', async function (req, res) {
-	var delegatorList; 
+	let delegatorList; 
+	let hiveDelegatorList; 
 	if (isNaN(req.query.count)){
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).toArray();
+		hiveDelegatorList = await db.collection('hive_active_delegations').find().sort({steem_power: -1}).toArray();
 	}else{
 		delegatorList = await db.collection('active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
+		hiveDelegatorList = await db.collection('hive_active_delegations').find().sort({steem_power: -1}).limit(parseInt(req.query.count)).toArray();
 	}
-    res.send(delegatorList);
+    res.send({steem: delegatorList, hive: hiveDelegatorList});
 });
 
 activeDelegationFunc = async function (userName){
@@ -4140,6 +4189,26 @@ app.get('/totalPostsSubmitted', async function(req, res) {
 	   });
 
 });
+
+/* end point for fetching user's recorded metrics */
+app.get('/trackedMeasurements/:user', async function(req, res) {
+	let query = {"author": req.params.user,
+					$or: [
+						{ "json_metadata.weight": {$exists: true} },
+						{ "json_metadata.height": {$exists: true} },
+						{ "json_metadata.chest": {$exists: true} },
+						{ "json_metadata.waist": {$exists: true} },
+						{ "json_metadata.thighs": {$exists: true} },
+						{ "json_metadata.bodyfat": {$exists: true} }
+					]
+				}
+	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	res.send(posts);
+});
+
+
+
+
 
 
 function gk_add_commas(nStr) {
