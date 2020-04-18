@@ -49,7 +49,7 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
-	  disableUserLogin();
+	  //disableUserLogin();
 	  
 	} else {
 		utils.log(err, 'api');
@@ -75,7 +75,10 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //usersAFITXBal = [];
   fetchAFITXBal(0);
   
-  disableUserLogin();
+  //only run cleanup on secondary thread to avoid duplication of effort and collision
+  if (process.env.BOT_THREAD == 'SECOND_API'){
+	disableUserLogin();
+  }
 });
 
 //allows setting acceptable origins to be included across all function calls
@@ -113,12 +116,24 @@ loadAccountData();
 async function disableUserLogin(){
 	console.log('check outdated logins');
 	let db_col = db.collection('user_login_token');
+	let db_hist_col = db.collection('user_login_history');
 	let dateTarget = new Date();
-	//allow logins to remain valid for 4 hours
-	dateTarget.setHours(dateTarget.getHours()-4);
+	//allow logins to remain valid for 12 hours
+	dateTarget.setHours(dateTarget.getHours()-12);
 	console.log(dateTarget);
-	//find existing login entry in DB to override
-	let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
+	//find existing login entry in DB to move to history and then remove
+	let items_to_move = await db_col.find({lastlogin: {$lt: dateTarget }}).toArray();
+	if (Array.isArray(items_to_move) && items_to_move.length > 0){
+		console.log('moving and deleting '+ items_to_move.length + ' old logins');
+		//cleanup data to prevent keeping keys
+		items_to_move.forEach(function(ent){ delete ent.ppkey; delete ent.token });
+		
+		await db_hist_col.insert(items_to_move);
+		let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
+	}else{
+		console.log('noting to clean');
+	}
+	
 	//console.log(result);
 }
 
