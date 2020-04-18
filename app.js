@@ -114,8 +114,8 @@ async function disableUserLogin(){
 	console.log('check outdated logins');
 	let db_col = db.collection('user_login_token');
 	let dateTarget = new Date();
-	//allow logins to remain valid for 4 hours
-	dateTarget.setHours(dateTarget.getHours()-4);
+	//allow logins to remain valid for 12 hours
+	dateTarget.setHours(dateTarget.getHours()-12);
 	console.log(dateTarget);
 	//find existing login entry in DB to override
 	let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
