@@ -49,7 +49,7 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
-	  disableUserLogin();
+	  //disableUserLogin();
 	  
 	} else {
 		utils.log(err, 'api');
@@ -75,7 +75,10 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //usersAFITXBal = [];
   fetchAFITXBal(0);
   
-  disableUserLogin();
+  //only run cleanup on secondary thread to avoid duplication of effort and collision
+  if (process.env.BOT_THREAD == 'SECOND_API'){
+	disableUserLogin();
+  }
 });
 
 //allows setting acceptable origins to be included across all function calls
