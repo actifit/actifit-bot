@@ -1,0 +1,3 @@
+freedom steem to hive payments:
+2020-04-20: {"user":"freedom","steem":27.823,"sbd":0.439},
+match in hive: 36.1699 HIVE + 0.54875 HBD
