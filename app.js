@@ -121,8 +121,8 @@ async function disableUserLogin(){
 	//allow logins to remain valid for 12 hours
 	dateTarget.setHours(dateTarget.getHours()-12);
 	console.log(dateTarget);
-	//find existing login entry in DB to move to history and then remove
-	let items_to_move = await db_col.find({lastlogin: {$lt: dateTarget }}).toArray();
+	//find existing login entry in DB to move to history and then remove .. only if user wants to get logged out
+	let items_to_move = await db_col.find({lastlogin: {$lt: dateTarget }, keeploggedin: {$ne: true}}).toArray();
 	if (Array.isArray(items_to_move) && items_to_move.length > 0){
 		console.log('moving and deleting '+ items_to_move.length + ' old logins');
 		//cleanup data to prevent keeping keys
@@ -522,7 +522,10 @@ app.post('/loginAuth', async function (req, res) {
 			user_tkn.token = token;
 			user_tkn.ppkey = ciphertext;
 			user_tkn.lastlogin = new Date();
-			
+			//keep record free from deletion on cleanup
+			if (req.body && req.body.keeploggedin){
+				user_tkn.keeploggedin = req.body.keeploggedin;
+			}
 			let db_save = await db_col.save(user_tkn);
 			
 			// return the JWT token for the future API calls
