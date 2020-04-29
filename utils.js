@@ -79,7 +79,7 @@ var HOURS = 60 * 60;
 	console.log('utils processSteemTrx');
 	console.log(operation);
 	const ops = [ operation ];
-	console.log('>>>>>>>>>>>> selected bchain');
+	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
 	console.log(bchain);
 	await setProperNode(bchain);
 	let tx = await steem.broadcast.sendAsync( 
@@ -1268,9 +1268,16 @@ async function rewardPost(post_url, vp, bchain){
 	return  result;
 }
 
-async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id){
-	let trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain){
+	let trx;
+	console.log('verifyGadgetTransaction');
 	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else if (bchain == 'HIVE'){
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
+		console.log(trx);
 		if (trx && trx.operations
 			&& trx.operations.length > 0){
 				console.log(trx.operations[0][1]);
