@@ -3205,7 +3205,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 });
 
 //end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:bchain/:trxID', async function (req, res) {
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
