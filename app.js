@@ -1041,10 +1041,10 @@ app.get('/markRead/:notif_id', async function (req, res) {
 });
 
 /* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -3169,7 +3169,7 @@ app.get("/gadgetBought", async function(req, res) {
 
 
 //end point handles activating a bought gadget
-app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:benefic?', async function (req, res) {
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
@@ -3180,7 +3180,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:benefic?', async functio
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -3205,12 +3205,12 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:benefic?', async functio
 });
 
 //end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID', async function (req, res) {
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:bchain/:trxID', async function (req, res) {
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
