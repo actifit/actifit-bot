@@ -3198,6 +3198,9 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 		gadget_match.status="active";
 		if (req.params.benefic){
 			gadget_match.benefic = req.params.benefic;
+			
+			//also send notification to the beneficiary about being set for this gadget
+			sendNotification(req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
 		}
 		db.collection('user_gadgets').save(gadget_match);
 		res.send({'status': 'success'});
