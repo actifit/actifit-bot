@@ -3604,7 +3604,7 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 		res.write(' ');
 	},8000);
 	try{
-		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+		let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, bchain);
 		console.log('>>>> got TX '+paymentReceivedTx);
 		if (paymentReceivedTx != ''){
