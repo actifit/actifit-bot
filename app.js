@@ -1753,7 +1753,7 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 })
 
 /* function handles the processing of a buy order */
-app.get('/tipAccount', async function(req, res){
+app.get('/tipAccount', async function(req, res){ 
 	if (!req.query.user || !req.query.targetUser || !req.query.amount || !req.query.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
@@ -1865,6 +1865,8 @@ app.get('/tipAccount', async function(req, res){
 			return;
 		}
 		
+		//also send notification to the recipient about tipped amount
+		sendNotification(targetUser, user, 'tip_notification', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
 		
 		//update sending user's token balance & store to db
 		let new_token_count = cur_sender_token_count - amount;
