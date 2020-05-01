@@ -945,9 +945,10 @@ function BuyAndBurn(test){
 function setSteemPrice(json){
 	steem_price = parseFloat(json.steem.usd); 
 	console.log('STEEM price:'+steem_price)
-	if (!config.testing){
+	//witness deactivated. No further need to broadcast
+	/*if (!config.testing){
 		broadcastFeed('STEEM')
-	}
+	}*/
 }
 
 function setSbdPrice(json){
@@ -2609,6 +2610,9 @@ async function sendVote(post, retries, power_per_vote) {
 								db.collection('exchange_afit_steem').save(cur_upvote_entry);
 							}
 							
+							//notify user of voting success
+							utils.sendNotification(db, account.name, post.author, 'post_reward', 'Your post "'+ post.title + '" has been rewarded', 'https://actifit.io/'+post.url);
+							
 							
 							if(config.comment_location && config.comment){
 								await sendComment(post, 0, vote_weight, config.active_hive_node)
@@ -2891,7 +2895,12 @@ async function sendVote(post, retries, power_per_vote) {
 				}	
 								
 				try{
-				
+					
+					if (post.additional_vote_weight && vote_weight > config.min_vote_weight_decrease){
+						//decrease amount by 1% across votes to be able to reward team
+						vote_weight -= config.extra_vote_weight_decrease;//
+					}
+					
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
 					steem.api.setOptions({ 
 							url: config.active_node ,
