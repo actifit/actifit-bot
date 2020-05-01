@@ -1006,26 +1006,6 @@ app.get('/userFriends/:user', async function (req, res) {
 	res.send(friendsA.concat(friendsB));
 });
 
-sendNotification = async function (user, action_taker, type, details, url){
-	let notification_entry = {
-		user: user,
-		action_taker: action_taker,
-		type: type,
-		details: details,
-		url: url,
-		date: new Date(),
-		status: 'unread',
-	};
-	try{
-		let transaction = await db.collection('notifications').insert(notification_entry);
-		console.log('success inserting notification data');
-		return true;
-	}catch(err){
-		console.log('error');
-		return false;
-	}
-}
-
 /* end point for marking a notification as read */
 app.get('/markRead/:notif_id', async function (req, res) {
 	let notif_to_update = {
@@ -1220,7 +1200,7 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 		
 		//notify recipient
-		sendNotification(req.params.userB, req.params.userA, 'friendship_request', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
+		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_request', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
 	
 		res.send({status: 'success'});
 	}catch(err){
@@ -1292,7 +1272,7 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (r
 		console.log('success updating post data');
 		
 		//notify recipient
-		sendNotification(req.params.userB, req.params.userA, 'friendship_acceptance', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
+		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_acceptance', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
 		
 		insertSuccess = true;
 	}catch(err){
@@ -1866,7 +1846,7 @@ app.get('/tipAccount', async function(req, res){
 		}
 		
 		//also send notification to the recipient about tipped amount
-		sendNotification(targetUser, user, 'tip_notification', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
+		utils.sendNotification(db, targetUser, user, 'tip_notification', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
 		
 		//update sending user's token balance & store to db
 		let new_token_count = cur_sender_token_count - amount;
@@ -3202,7 +3182,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 			gadget_match.benefic = req.params.benefic;
 			
 			//also send notification to the beneficiary about being set for this gadget
-			sendNotification(req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+			utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
 		}
 		db.collection('user_gadgets').save(gadget_match);
 		res.send({'status': 'success'});

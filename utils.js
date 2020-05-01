@@ -1321,6 +1321,26 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	return false;
 }
 
+async function sendNotification(db, user, action_taker, type, details, url){
+	let notification_entry = {
+		user: user,
+		action_taker: action_taker,
+		type: type,
+		details: details,
+		url: url,
+		date: new Date(),
+		status: 'unread',
+	};
+	try{
+		let transaction = await db.collection('notifications').insert(notification_entry);
+		console.log('success inserting notification data');
+		return true;
+	}catch(err){
+		console.log('error');
+		return false;
+	}
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -1361,4 +1381,5 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
    removeArrMatchLodash: removeArrMatchLodash,
    validateAccountLogin: validateAccountLogin,
    processSteemTrx: processSteemTrx,
+   sendNotification: sendNotification,
  }
