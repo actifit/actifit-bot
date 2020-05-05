@@ -1464,7 +1464,7 @@ app.get('/topDelegators', async function (req, res) {
 });
 
 activeDelegationFunc = async function (userName){
-	let user = await db.collection('active_delegations').findOne({_id: userName}, {fields : { _id:0} });
+	let user = await db.collection('hive_active_delegations').findOne({_id: userName}, {fields : { _id:0} });
 	console.log(user);
 	return user;
 }
