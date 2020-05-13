@@ -1043,7 +1043,7 @@ app.get('/userFriends/:user', async function (req, res) {
 });
 
 /* end point for marking a notification as read */
-app.get('/markRead/:notif_id', async function (req, res) {
+app.get('/markRead/:notif_id', checkHdrs, async function (req, res) {
 	let notif_to_update = {
 		_id: new ObjectId(req.params.notif_id),
 	};
@@ -1057,17 +1057,32 @@ app.get('/markRead/:notif_id', async function (req, res) {
 	}
 });
 
-/* end point for marking all user's notifications as read */
-app.get('/markAllRead/', async function (req, res) {
-	if (!req.query || !req.query.user){
+/* end point for marking a notification as Unread */
+app.get('/markUnread/:notif_id', checkHdrs, async function (req, res) {
+	let notif_to_update = {
+		_id: new ObjectId(req.params.notif_id),
+	};
+	try{
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'unread'} } );
+		console.log('success updating notification status');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
 		res.send({status: 'error'});
 	}
+});
+
+/* end point for marking all user's notifications as read */
+app.get('/markAllRead/', checkHdrs, async function (req, res) {
 	let notif_to_update = {
 		user: req.query.user,
 	};
+	console.log('markAllRead');
+	console.log(notif_to_update);
 	try{
-		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} }, {multi: true} );
 		console.log('success updating notification status');
+		console.log(transaction);
 		res.send({status: 'success'});
 	}catch(err){
 		console.log('error');
