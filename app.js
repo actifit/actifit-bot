@@ -16,6 +16,8 @@ var config = utils.getConfig();
 
 let ObjectId = require('mongodb').ObjectId; 
 
+const request = require("request");
+
 // Connection URL
 let url = config.mongo_uri;
 if (config.testing){
@@ -106,6 +108,40 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
+
+//schedule restart intervals due to memory drain down
+function restartApiNode() {
+	request.post(
+		{
+			url: 'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
+			headers: {
+				'Content-Type': 'application/json',
+				'Accept': 'application/vnd.heroku+json; version=3',
+				'Authorization': 'Bearer ' + config.heroku_app_token
+			}
+		},
+		function(error, response, body) {
+			console.log(response);
+			console.log(body);
+		}
+	);
+}
+
+if (process.env.BOT_THREAD == 'MAIN'){
+	let j = schedule.scheduleJob({hour: 0, minute: 20}, function(){
+		restartApiNode();
+	});
+	let k = schedule.scheduleJob({hour: 6, minute: 20}, function(){
+		restartApiNode();
+	});
+	let l = schedule.scheduleJob({hour: 12, minute: 20}, function(){
+		restartApiNode();
+	});
+	let m = schedule.scheduleJob({hour: 18, minute: 20}, function(){
+		restartApiNode();
+	});
+}
 
 //initial load
 let account = null;
@@ -3066,6 +3102,11 @@ app.get("/gadgetsBought", async function(req, res){
 app.get("/friendships", async function(req, res){
 	let gadgets = await db.collection('friends').find().toArray();
 	res.send(gadgets);
+});
+
+app.get("/pendingFriendships", async function(req, res){
+	let friendRequests = await db.collection('user_requests').find({status: 'pending'}).toArray();
+	res.send(friendRequests);
 });
 
 app.get("/userRequests", async function(req, res){
