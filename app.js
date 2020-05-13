@@ -1054,9 +1054,25 @@ app.get('/markRead/:notif_id', async function (req, res) {
 	}catch(err){
 		console.log('error');
 		res.send({status: 'error'});
-	}	
-	
+	}
+});
 
+/* end point for marking all user's notifications as read */
+app.get('/markAllRead/', async function (req, res) {
+	if (!req.query || !req.query.user){
+		res.send({status: 'error'});
+	}
+	let notif_to_update = {
+		user: req.query.user,
+	};
+	try{
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		console.log('success updating notification status');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
+		res.send({status: 'error'});
+	}
 });
 
 /* end point for tracking gadget buy orders */
@@ -1362,15 +1378,21 @@ app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function 
 	}
 });
 
-/* end point for fetching all users notifications */
+/* end point for fetching all users unread notifications */
 app.get('/activeNotifications/:user', async function (req, res) {
 	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'unread'}).toArray();
 	res.send(activeNotifications.reverse());
 });
 
-/* end point for fetching all users notifications */
+/* end point for fetching all users read notifications */
 app.get('/readNotifications/:user', async function (req, res) {
 	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).toArray();
+	res.send(activeNotifications.reverse());
+});
+
+/* end point for fetching all users notifications */
+app.get('/allNotifications/:user', async function (req, res) {
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user}).toArray();
 	res.send(activeNotifications.reverse());
 });
 
