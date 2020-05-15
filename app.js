@@ -2751,17 +2751,26 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 			console.log(entry);
 			let user = entry.from;
 			if (user != config.steem_engine_actifit_se){
+				
+				let exchangeType = 'HE';
+				let bchain = 'STEEM';
+				if (bchain == 'STEEM'){
+					exchangeType = 'SE';
+				}
+				
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: user,
+					exchange: exchangeType,
 					se_trx_ref: entry.transactionId
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: user,
-					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					reward_activity: 'Move AFIT ' + exchangeType + ' to Actifit Wallet',
 					token_count: parseFloat(entry.quantity),
 					se_trx_ref: entry.transactionId,
+					exchange: exchangeType,
 					date: new Date(entry.timestamp)
 				}
 				try{
@@ -2828,20 +2837,26 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 			let targetUser = req.query.user;
 			let match_trx = await utils.confirmSEAFITReceived(targetUser, bchain);
 			console.log(match_trx);
+			let exchangeType = 'HE';
+			if (bchain == 'STEEM'){
+				exchangeType = 'SE';
+			}
 			//we found a match
 			if (match_trx){
 				found_entry = true;				
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
+					exchange: exchangeType,
 					se_trx_ref: match_trx.transactionId
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: targetUser,
-					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					reward_activity: 'Move AFIT '+ exchangeType + ' to Actifit Wallet',
 					token_count: parseFloat(match_trx.quantity),
 					se_trx_ref: match_trx.transactionId,
+					exchange: exchangeType,
 					date: new Date(match_trx.timestamp)
 				}
 				try{
