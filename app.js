@@ -2823,24 +2823,25 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 		let afit_amount = 0;
 		let found_entry = false;
 		try{
+			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 			//attempt to find matching transaction
 			let targetUser = req.query.user;
-			let match_trx = await utils.confirmSEAFITReceived(targetUser);
+			let match_trx = await utils.confirmSEAFITReceived(targetUser, bchain);
 			console.log(match_trx);
 			//we found a match
 			if (match_trx){
-				found_entry = true;
+				found_entry = true;				
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
-					se_trx_ref: match_trx.txid
+					se_trx_ref: match_trx.transactionId
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: targetUser,
 					reward_activity: 'Move AFIT SE to Actifit Wallet',
 					token_count: parseFloat(match_trx.quantity),
-					se_trx_ref: match_trx.txid,
+					se_trx_ref: match_trx.transactionId,
 					date: new Date(match_trx.timestamp)
 				}
 				try{
