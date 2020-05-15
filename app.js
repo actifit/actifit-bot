@@ -51,6 +51,8 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
+	  //clearCorruptData();
+	  
 	  //disableUserLogin();
 	  
 	} else {
@@ -58,6 +60,12 @@ MongoClient.connect(url, function(err, client) {
 	}
   
 });
+
+async function clearCorruptData(){
+	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
+	console.log(res);
+	console.log('annnd done');
+}
 
 let schedule = require('node-schedule')
 
@@ -2738,7 +2746,13 @@ storeReferralReward = async function (req){
 
 app.get('/confirmAFITSEBulk', async function(req,res){
 	//let's call the service by S-E
-	let url = new URL(config.steem_engine_trans_acct_his_lrg);
+	
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
+		
+	let url = new URL(config.hive_engine_trans_acct_his);
+	if (bchain == 'STEEM'){
+		url = new URL(config.steem_engine_trans_acct_his);
+	}
 	//console.log(config.steem_engine_trans_acct_his_lrg);
 	//connect with our service to confirm AFIT received to proper wallet
 	try{
@@ -2753,7 +2767,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 			if (user != config.steem_engine_actifit_se){
 				
 				let exchangeType = 'HE';
-				let bchain = 'STEEM';
+				
 				if (bchain == 'STEEM'){
 					exchangeType = 'SE';
 				}
@@ -2761,7 +2775,6 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: user,
-					exchange: exchangeType,
 					se_trx_ref: entry.transactionId
 				}
 				//store the transaction to the user's profile
@@ -2771,7 +2784,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 					token_count: parseFloat(entry.quantity),
 					se_trx_ref: entry.transactionId,
 					exchange: exchangeType,
-					date: new Date(entry.timestamp)
+					date: new Date(entry.timestamp * 1000) //timestamp linux convert to seconds first
 				}
 				try{
 					console.log(tokenExchangeTrans);
@@ -2847,7 +2860,6 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
-					exchange: exchangeType,
 					se_trx_ref: match_trx.transactionId
 				}
 				//store the transaction to the user's profile
@@ -2857,7 +2869,7 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 					token_count: parseFloat(match_trx.quantity),
 					se_trx_ref: match_trx.transactionId,
 					exchange: exchangeType,
-					date: new Date(match_trx.timestamp)
+					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
 				}
 				try{
 					console.log(tokenExchangeTrans);
