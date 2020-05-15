@@ -2754,14 +2754,14 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: user,
-					se_trx_ref: entry.txid
+					se_trx_ref: entry.transactionid
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: user,
 					reward_activity: 'Move AFIT SE to Actifit Wallet',
 					token_count: parseFloat(entry.quantity),
-					se_trx_ref: entry.txid,
+					se_trx_ref: entry.transactionid,
 					date: new Date(entry.timestamp)
 				}
 				try{
