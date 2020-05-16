@@ -51,6 +51,8 @@ MongoClient.connect(url, function(err, client) {
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
 	  
+	  //clearCorruptData();
+	  
 	  //disableUserLogin();
 	  
 	} else {
@@ -58,6 +60,12 @@ MongoClient.connect(url, function(err, client) {
 	}
   
 });
+
+async function clearCorruptData(){
+	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
+	console.log(res);
+	console.log('annnd done');
+}
 
 let schedule = require('node-schedule')
 
@@ -1043,7 +1051,7 @@ app.get('/userFriends/:user', async function (req, res) {
 });
 
 /* end point for marking a notification as read */
-app.get('/markRead/:notif_id', async function (req, res) {
+app.get('/markRead/:notif_id', checkHdrs, async function (req, res) {
 	let notif_to_update = {
 		_id: new ObjectId(req.params.notif_id),
 	};
@@ -1057,17 +1065,32 @@ app.get('/markRead/:notif_id', async function (req, res) {
 	}
 });
 
-/* end point for marking all user's notifications as read */
-app.get('/markAllRead/', async function (req, res) {
-	if (!req.query || !req.query.user){
+/* end point for marking a notification as Unread */
+app.get('/markUnread/:notif_id', checkHdrs, async function (req, res) {
+	let notif_to_update = {
+		_id: new ObjectId(req.params.notif_id),
+	};
+	try{
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'unread'} } );
+		console.log('success updating notification status');
+		res.send({status: 'success'});
+	}catch(err){
+		console.log('error');
 		res.send({status: 'error'});
 	}
+});
+
+/* end point for marking all user's notifications as read */
+app.get('/markAllRead/', checkHdrs, async function (req, res) {
 	let notif_to_update = {
 		user: req.query.user,
 	};
+	console.log('markAllRead');
+	console.log(notif_to_update);
 	try{
-		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} }, {multi: true} );
 		console.log('success updating notification status');
+		console.log(transaction);
 		res.send({status: 'success'});
 	}catch(err){
 		console.log('error');
@@ -2723,7 +2746,13 @@ storeReferralReward = async function (req){
 
 app.get('/confirmAFITSEBulk', async function(req,res){
 	//let's call the service by S-E
-	let url = new URL(config.steem_engine_trans_acct_his_lrg);
+	
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
+		
+	let url = new URL(config.hive_engine_trans_acct_his);
+	if (bchain == 'STEEM'){
+		url = new URL(config.steem_engine_trans_acct_his);
+	}
 	//console.log(config.steem_engine_trans_acct_his_lrg);
 	//connect with our service to confirm AFIT received to proper wallet
 	try{
@@ -2735,19 +2764,27 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
 			let user = entry.from;
-			if (user != config.steem_engine_actifit_se){
+			if (user != config.steem_engine_actifit_se && user != config.hive_engine_actifit_he){
+				
+				let exchangeType = 'HE';
+				
+				if (bchain == 'STEEM'){
+					exchangeType = 'SE';
+				}
+				
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: user,
-					se_trx_ref: entry.txid
+					se_trx_ref: entry.transactionId
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: user,
-					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					reward_activity: 'Move AFIT ' + exchangeType + ' to Actifit Wallet',
 					token_count: parseFloat(entry.quantity),
-					se_trx_ref: entry.txid,
-					date: new Date(entry.timestamp)
+					se_trx_ref: entry.transactionId,
+					exchange: exchangeType,
+					date: new Date(entry.timestamp * 1000) //timestamp linux convert to seconds first
 				}
 				try{
 					console.log(tokenExchangeTrans);
@@ -2808,25 +2845,31 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 		let afit_amount = 0;
 		let found_entry = false;
 		try{
+			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 			//attempt to find matching transaction
 			let targetUser = req.query.user;
-			let match_trx = await utils.confirmSEAFITReceived(targetUser);
+			let match_trx = await utils.confirmSEAFITReceived(targetUser, bchain);
 			console.log(match_trx);
+			let exchangeType = 'HE';
+			if (bchain == 'STEEM'){
+				exchangeType = 'SE';
+			}
 			//we found a match
 			if (match_trx){
-				found_entry = true;
+				found_entry = true;				
 				//query to see if entry already stored
 				let tokenExchangeTransQuery = {
 					user: targetUser,
-					se_trx_ref: match_trx.txid
+					se_trx_ref: match_trx.transactionId
 				}
 				//store the transaction to the user's profile
 				let tokenExchangeTrans = {
 					user: targetUser,
-					reward_activity: 'Move AFIT SE to Actifit Wallet',
+					reward_activity: 'Move AFIT '+ exchangeType + ' to Actifit Wallet',
 					token_count: parseFloat(match_trx.quantity),
-					se_trx_ref: match_trx.txid,
-					date: new Date(match_trx.timestamp)
+					se_trx_ref: match_trx.transactionId,
+					exchange: exchangeType,
+					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
 				}
 				try{
 					console.log(tokenExchangeTrans);

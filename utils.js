@@ -176,7 +176,7 @@ var HOURS = 60 * 60;
 	
 	
 	//function handles confirming if AFIT from SE were received
-	async function confirmSEAFITReceived (targetUser) {
+	async function confirmSEAFITReceived (targetUser, bchain) {
 		getConfig();
 		//track attempts for timeout
 		let attempts = 1;
@@ -187,8 +187,10 @@ var HOURS = 60 * 60;
 					attempts += 1;
 					console.log('Check AFIT Power Up');
 					//let's call the service by S-E
-					let url = new URL(config.steem_engine_trans_acct_his);
-					console.log(config.steem_engine_trans_acct_his);
+					let url = new URL(config.hive_engine_trans_acct_his);
+					if (bchain == 'STEEM'){
+						url = new URL(config.steem_engine_trans_acct_his);
+					}
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
 						let se_connector = await fetch(url);
