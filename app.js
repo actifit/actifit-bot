@@ -2764,7 +2764,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
 			let user = entry.from;
-			if (user != config.steem_engine_actifit_se){
+			if (user != config.steem_engine_actifit_se && user != config.hive_engine_actifit_he){
 				
 				let exchangeType = 'HE';
 				
