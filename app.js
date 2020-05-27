@@ -1644,7 +1644,7 @@ app.get('/is_banned/:user', async function (req, res) {
 
 /* end point for returning if a user is powering down AFIT*/
 app.get('/isPoweringDown/:user', async function (req, res) {
-	let poweringDown = await db.collection('powering_down').findOne({user: req.params.user});
+	let poweringDown = await db.collection('powering_down_he').findOne({user: req.params.user});
     console.log (poweringDown)
 	if (!poweringDown){
 		res.send({});
@@ -1655,7 +1655,7 @@ app.get('/isPoweringDown/:user', async function (req, res) {
 
 /* end point for returning the list of users powering down AFIT*/
 app.get('/poweringDownList/', async function (req, res) {
-	let poweringDown = await db.collection('powering_down').find().toArray();
+	let poweringDown = await db.collection('powering_down_he').find().toArray();
     console.log (poweringDown)
 	res.send(poweringDown);
 });
@@ -1692,7 +1692,7 @@ app.get('/cancelAFITMoveSE', async function(req, res){
 		//reached here, we're fine
 		
 		try{
-			let result = await db.collection('powering_down').remove({user: req.query.user});
+			let result = await db.collection('powering_down_he').remove({user: req.query.user});
 			res.send({'status': 'Success'});
 		}catch(err){
 			console.log(err);
@@ -1801,7 +1801,7 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		
 		try{
 			console.log(tokenPowerDownTrans);
-			let transaction = await db.collection('powering_down').update(tokenPowerDownQuery, tokenPowerDownTrans, { upsert: true });
+			let transaction = await db.collection('powering_down_he').update(tokenPowerDownQuery, tokenPowerDownTrans, { upsert: true });
 			console.log('success inserting power down data');
 		}catch(err){
 			console.log(err);
@@ -2928,6 +2928,162 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 });
 
 
+//function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
+app.get('/proceedAfitxTransition', async function(req,res){
+	if (!req.query.user || !req.query.amount || !req.query.txid){
+		res.send('{}');
+	}else{
+		//keeping request alive to avoid timeouts
+		let intID = setInterval(function(){
+			res.write(' ');
+		}, 6000);
+		let found_entry = false;
+		let afitx_amount = '';
+		let status = '';
+		try{
+			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
+			//attempt to find matching transaction
+			let targetUser = req.query.user;
+			let amount = req.query.amount;
+			let txid = req.query.txid;
+			let match_trx = await utils.confirmAFITXTransition(targetUser, txid, amount, bchain);
+			console.log(match_trx);
+			
+			//we found a match
+			if (match_trx){
+				found_entry = true;				
+				//query to see if entry already stored
+				let tokenExchangeTransQuery = {
+					user: targetUser,
+					token_count: amount,
+					trx: match_trx.transactionId,
+					block: match_trx.blockNumber,
+					chain: bchain,
+				}
+				//store the transaction to the user's profile
+				let tokenExchangeTrans = {
+					user: targetUser,
+					action: 'Move AFITX ',
+					token_count: amount,
+					net_amount: amount * (1-config.trx_burn_rate),//apply 0.5% burn rate
+					trx: match_trx.transactionId,
+					block: match_trx.blockNumber,
+					chain: bchain,
+					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
+				}
+				console.log(tokenExchangeTrans);
+				try{
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('afitx_transitions').find(tokenExchangeTransQuery).toArray();
+					if (Array.isArray(transaction) && transaction.length > 0){
+						//match found, duplicate request, ignore
+						console.log('Existing processed transaction. Ignore');
+						status = 'error';
+					}else{
+						//apply 0.5% burn rate
+						amount = amount * (1-config.trx_burn_rate)
+						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'));
+						let transaction = await db.collection('afitx_transitions').insert(tokenExchangeTrans);
+						console.log('success moving & inserting transaction data');
+						afitx_amount = amount;
+						status = 'success';
+					}
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error moving AFITX tokens to user balance'}));
+					res.end();
+					return;
+				}
+			}
+		}catch(err){
+			console.log(err);
+		}
+		//we're done, let's clear our running interval
+		clearInterval(intID);
+		//send response
+		res.write(JSON.stringify({'afitx_transition': status, 'afitx_amount': afitx_amount}));
+		res.end();
+	}
+});
+
+//function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
+app.get('/proceedAfitTransition', async function(req,res){
+	if (!req.query.user || !req.query.amount || !req.query.txid){
+		res.send('{}');
+	}else{
+		//keeping request alive to avoid timeouts
+		let intID = setInterval(function(){
+			res.write(' ');
+		}, 6000);
+		let found_entry = false;
+		let afitx_amount = '';
+		let status = '';
+		try{
+			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
+			//attempt to find matching transaction
+			let targetUser = req.query.user;
+			let amount = req.query.amount;
+			let txid = req.query.txid;
+			let standardAfit = 1;
+			let match_trx = await utils.confirmAFITXTransition(targetUser, txid, amount, bchain, standardAfit);
+			console.log(match_trx);
+			
+			//we found a match
+			if (match_trx){
+				found_entry = true;				
+				//query to see if entry already stored
+				let tokenExchangeTransQuery = {
+					user: targetUser,
+					token_count: amount,
+					trx: match_trx.transactionId,
+					block: match_trx.blockNumber,
+					chain: bchain,
+				}
+				//store the transaction to the user's profile
+				let tokenExchangeTrans = {
+					user: targetUser,
+					action: 'Move AFIT',
+					token_count: amount,
+					net_amount: amount * (1-config.trx_burn_rate),//apply 0.5% burn rate
+					trx: match_trx.transactionId,
+					block: match_trx.blockNumber,
+					chain: bchain,
+					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
+				}
+				console.log(tokenExchangeTrans);
+				try{
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('afit_transitions').find(tokenExchangeTransQuery).toArray();
+					if (Array.isArray(transaction) && transaction.length > 0){
+						//match found, duplicate request, ignore
+						console.log('Existing processed transaction. Ignore');
+						status = 'error';
+					}else{
+						//apply 0.5% burn rate
+						amount = amount * (1-config.trx_burn_rate)
+						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'), standardAfit);
+						let transaction = await db.collection('afit_transitions').insert(tokenExchangeTrans);
+						console.log('success moving & inserting transaction data');
+						afitx_amount = amount;
+						status = 'success';
+					}
+				}catch(err){
+					console.log(err);
+					res.write(JSON.stringify({'error': 'Error moving AFIT tokens to user balance'}));
+					res.end();
+					return;
+				}
+			}
+		}catch(err){
+			console.log(err);
+		}
+		//we're done, let's clear our running interval
+		clearInterval(intID);
+		//send response
+		res.write(JSON.stringify({'afit_transition': status, 'afit_amount': afitx_amount}));
+		res.end();
+	}
+});
 
 /* function handles the processing of a buy order */
 app.get('/processBuyOrder', async function(req, res){

@@ -193,7 +193,7 @@ async function moveAFITToSE(testMode){
 
 		db = dbClient.db(dbName)
 		// Get the documents collection
-		let poweringDown = await db.collection('powering_down').find().toArray();
+		let poweringDown = await db.collection('powering_down_he').find().toArray();
 		console.log (poweringDown)
 		
 		//sign key properly to function with dsteem requirement
@@ -284,9 +284,9 @@ async function moveAFITToSE(testMode){
 							//perform transaction, decrease sender amount
 							let moveTrans = {
 								user: entry.user,
-								reward_activity: 'Move AFIT to S-E',
+								reward_activity: 'Move AFIT to H-E',
 								token_count: -amount,
-								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to S-E',
+								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to H-E',
 								date: new Date(),
 							}
 							
@@ -311,10 +311,10 @@ async function moveAFITToSE(testMode){
 							//broadcast to BC
 							console.log('broadcast to BC');
 							if (!testMode){
-								client.broadcast.json({
+								hiveClient.broadcast.json({
 									required_auths: [config.account],
 									required_posting_auths: [],
-									id: 'ssc-mainnet1',
+									id: 'ssc-mainnet-hive',//ssc-mainnet1
 									json: JSON.stringify(json_data),
 								}, privateKey).then(
 									result => { 
