@@ -174,6 +174,96 @@ var HOURS = 60 * 60;
 		//});
 	}
 	
+	//function handles confirming if AFIT from SE were received
+	async function confirmAFITXTransition (targetUser, txid, amount, bchain, standardAfit) {
+		getConfig();
+		//track attempts for timeout
+		let attempts = 1;
+		let max_attempts = 15;
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					attempts += 1;
+					console.log('Check Move');
+					//let's call the service by S-E
+					let url = new URL(config.hive_engine_afitx_trx);
+					if (standardAfit == 1){
+						url = new URL(config.hive_engine_afit_trx);
+					}
+					if (bchain == 'STEEM'){
+						url = new URL(config.steem_engine_afitx_trx);
+						if (standardAfit == 1){
+							url = new URL(config.steem_engine_afit_trx);
+						}
+					}
+					//connect with our service to confirm AFIT received to proper wallet
+					try{
+						let se_connector = await fetch(url);
+						let trx_entries = await se_connector.json();
+						console.log(trx_entries);
+						let match_trx;
+						
+						//check if we have a proper entry matching user transfer
+						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && trx.quantity == amount && trx.transactionId == txid))) {
+							//found match, let's make sure transaction is recent enough
+							console.log('found match');
+							paymentFound = true;
+							if (paymentFound){
+								//need to look again
+								console.log('found');
+								clearInterval(th_id);
+								resolve(match_trx);
+							}
+						}
+					}catch(err){
+						console.log(err);
+					}
+				}else{
+					//return error
+					resolve(null);
+				}
+			}, 5000);
+		});
+	}
+	
+	async function proceedAfitxMove (targetAcct, amount, chain, standardAfit){
+
+		let transId = 'ssc-mainnet-hive';
+		//let targetBchain = 'STEEM';
+		//other option is moving tokens from H-E to S-E
+		if (chain == 'STEEM'){
+		//if (this.cur_bchain == 'STEEM'){
+			transId = 'ssc-mainnet1';
+			//targetBchain = 'HIVE';
+		}
+		let tokenSymbol = 'AFITX';
+		if (standardAfit == 1){
+			tokenSymbol = 'AFIT';
+		}
+		
+		let json_data = {
+			contractName: 'tokens',
+			contractAction: 'transfer',
+			contractPayload: {
+				symbol: tokenSymbol,
+				to: targetAcct,
+				quantity: '' + amount,//needs to be string
+				memo: ''
+			}
+		}
+		
+		//send out transaction to blockchain
+		await setProperNode(chain);
+		let tx = await steem.broadcast.customJsonAsync(
+				config.active_key, 
+				[ config.account ] , 
+				[], 
+				transId, 
+				JSON.stringify(json_data)
+			).catch(err => {
+				console.log(err.message);
+		});
+	}
 	
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser, bchain) {
@@ -1384,4 +1474,6 @@ async function sendNotification(db, user, action_taker, type, details, url){
    validateAccountLogin: validateAccountLogin,
    processSteemTrx: processSteemTrx,
    sendNotification: sendNotification,
+   confirmAFITXTransition: confirmAFITXTransition,
+   proceedAfitxMove: proceedAfitxMove
  }
