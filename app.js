@@ -72,9 +72,12 @@ let schedule = require('node-schedule')
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
+const hsc = new SSC(config.hive_engine_rpc);
+
 let rule = new schedule.RecurrenceRule();
 
 let usersAFITXBal = [];
+let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
 //initial fetch
 fetchAFITXBal(0);
@@ -207,11 +210,14 @@ async function fetchAFITXBal(offset){
 	}, 1000);
   }else{
 	//if we were not able to fetch entries, we need to try API again
-	if (offset == 0){
+	if (offset == 0 && tempArr.length < 1){
 		console.log('no AFITX data, fetch again in 30 secs');
 		setTimeout(function(){
 			fetchAFITXBal(0);
 		}, 30000);
+	}else{
+		//done with AFITX SE, proceed with AFITX HE
+		fetchAFITXBalHE(0);
 	}
   }
   }catch(err){
@@ -220,6 +226,66 @@ async function fetchAFITXBal(offset){
 		console.log('no AFITX data, fetch again in 30 secs');
 		setTimeout(function(){
 			fetchAFITXBal(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITXBal);
+}
+
+async function fetchAFITXBalHE(offset){
+  try{
+  console.log('--- Fetch new AFITX token balance ---');
+  console.log(offset);
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITXBalHE = [];
+  }
+  usersAFITXBalHE = usersAFITXBalHE.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITXBalHE(usersAFITXBalHE.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0 && tempArr.length < 1){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBalHE(0);
+		}, 30000);
+	}else{
+		//done, let's merge both SE & HE lists
+		for (let i=0;i<usersAFITXBal.length;i++){
+			usersAFITXBal[i].seholder = true;
+			let match = usersAFITXBalHE.find(entry => entry.account === usersAFITXBal[i].account);
+			if (match){
+				usersAFITXBal[i].sebalance = usersAFITXBal[i].balance;
+				usersAFITXBal[i].hebalance = match.balance;
+				usersAFITXBal[i].balance = parseFloat(usersAFITXBal[i].balance) + parseFloat(match.balance);
+				usersAFITXBal[i].heholder = true;
+			}
+		}
+		//append HE holdings
+		for (let i=0;i<usersAFITXBalHE.length;i++){
+			usersAFITXBalHE[i].heholder = true;
+			let match = usersAFITXBal.find(entry => entry.account === usersAFITXBalHE[i].account);
+			if (!match){
+				usersAFITXBal.push(usersAFITXBalHE[i]);
+				//usersAFITXBal[i].hebalance = match.balance;
+				//usersAFITXBal[i].balance = parseFloat(usersAFITXBal[i].balance) + parseFloat(match.balance);
+			}
+		}
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFITX data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITXBalHE(0);
 		}, 30000);
 	  }
   }
