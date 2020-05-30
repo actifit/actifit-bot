@@ -223,7 +223,9 @@ async function moveAFITToSE(testMode){
 				
 				//let's make sure user still has proper AFITX amount
 				let userHasProperFunds = true;
+				let afitx_tot_bal = 0;
 				let afitx_se_balance = 0;
+				let afitx_he_balance = 0;
 				let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
 				if (bal){
 					afitx_se_balance = bal.balance;
@@ -231,14 +233,22 @@ async function moveAFITToSE(testMode){
 					console.log('error - Unable to fetch AFITX Funds. Try again later.');
 					return;
 				}
+				bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+				if (bal){
+					afitx_he_balance = bal.balance;
+				}else{
+					console.log('error - Unable to fetch AFITX Funds. Try again later.');
+					return;
+				}
+				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
 				//make sure user has at least 0.1 AFITX to move tokens
-				if (afitx_se_balance < 0.1){
+				if (afitx_tot_bal < 0.1){
 					userHasProperFunds = false;
 				}
 				  //console.log(amount_to_powerdown);
 				  //console.log(this.afitx_se_balance);
 				  //calculate amount that can be transferred daily
-				if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_se_balance){
+				if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_tot_bal){
 					userHasProperFunds = false;
 				}
 				
@@ -266,7 +276,7 @@ async function moveAFITToSE(testMode){
 					userHasProperFunds = false;
 				}
 				
-				console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_se_balance+' userHasProperFunds:'+userHasProperFunds);
+				console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_tot_bal+' userHasProperFunds:'+userHasProperFunds);
 				if (userHasProperFunds){
 					setTimeout(async function(){
 										

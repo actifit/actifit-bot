@@ -1828,26 +1828,37 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			res.send({'error': 'Account does not have enough AFIT funds'});
 			return;
 		}
+		let tot_afitx_bal = 0;
 		let afitx_se_balance = 0;
+		let afitx_he_balance = 0;
 		//confirm amount within AFITX conditions
 		let bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		
 		if (bal){
-			afitx_se_balance = bal.balance;
+			afitx_se_balance = parseFloat(bal.balance);
+		}
+		if (bal_he){
+			afitx_he_balance = parseFloat(bal_he.balance);
+		}
+		tot_afitx_bal = afitx_se_balance + afitx_he_balance;
+		/*if (bal || bal_he){
+			
 		}else{
 			res.send({'error': 'Unable to fetch AFITX Funds. Try again later.'});
 			return;
-		}
+		}*/
 		
 		//make sure user has at least 0.1 AFITX to move tokens
-		if (afitx_se_balance < 0.1){
+		if (tot_afitx_bal < 0.1){
 			res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
 			return;
 		}
 		  //console.log(amount_to_powerdown);
 		  //console.log(this.afitx_se_balance);
 		  //calculate amount that can be transferred daily
-		if (amount / 100 > afitx_se_balance){
-			res.send({'error': 'You do not have enough AFITX to move '+afitx_se_balance+ ' AFIT'});
+		if (amount / 100 > tot_afitx_bal){
+			res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
 			return;
 		}
 		
