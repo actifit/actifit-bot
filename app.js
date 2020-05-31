@@ -973,6 +973,8 @@ app.get('/topAFITXHolders', async function (req, res) {
 	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('afitx.s-e');
+	banned_arr.push('afitx.h-e');
 	banned_arr.push('');
 	
 	afitxSorted = utils.removeArrMatchLodash(afitxSorted, banned_arr, 'account');
