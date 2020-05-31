@@ -247,7 +247,7 @@ var HOURS = 60 * 60;
 			contractPayload: {
 				symbol: tokenSymbol,
 				to: targetAcct,
-				quantity: '' + amount,//needs to be string
+				quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
 				memo: ''
 			}
 		}
