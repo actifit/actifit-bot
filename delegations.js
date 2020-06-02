@@ -77,7 +77,7 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 //airdropAFITX();
 
-moveAFITToSE(true);
+//moveAFITToSE(true);
 
 //testMove();
 
