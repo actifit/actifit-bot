@@ -73,6 +73,8 @@ if (process.env.BOT_THREAD == 'MAIN'){
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
+const hsc = new SSC(config.hive_engine_rpc);
+
 //airdropAFITX();
 
 //moveAFITToSE(true);
@@ -230,15 +232,15 @@ async function moveAFITToSE(testMode){
 				if (bal){
 					afitx_se_balance = bal.balance;
 				}else{
-					console.log('error - Unable to fetch AFITX Funds. Try again later.');
-					return;
+					console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
+					//return;
 				}
 				bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
 				if (bal){
 					afitx_he_balance = bal.balance;
 				}else{
-					console.log('error - Unable to fetch AFITX Funds. Try again later.');
-					return;
+					console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
+					//return;
 				}
 				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
 				//make sure user has at least 0.1 AFITX to move tokens
