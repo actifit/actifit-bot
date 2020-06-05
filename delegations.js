@@ -1180,8 +1180,17 @@ async function updateActiveDelegations (delgTrxCol, targetCol) {
       { $match: { 'steem_power': { '$gt': 0 } } }
     ]
   )
+  console.log('collections');
+  console.log(delgTrxCol);
+  console.log(targetCol);
   let activeDelegations = await query.toArray()
-  await db.collection(targetCol).drop()
+  console.log('activeDelegations fetched');
+  try{
+	await db.collection(targetCol).drop()
+  }catch(err){
+	console.log(err);
+  }
+  console.log('activeDelegations dropped');
   await db.collection(targetCol).insert(activeDelegations)
   console.log('done updating delegations '+targetCol);
   return ;
