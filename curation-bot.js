@@ -1,7 +1,7 @@
 var fs = require("fs");
 const steem = require('steem');
 
-//const hive = require('steem');
+const hive = require('@hiveio/hive-js');
 
 
 var utils = require('./utils');
@@ -30,8 +30,6 @@ var skip = false;
 var version = '0.3.4';
 var lucky_winner_id = -1;
 
-
-let usersAFITXBal = [];
 let topUsersAFITX = [];
 
 let gadgetsFetched = false;
@@ -55,6 +53,17 @@ loadHivePrices();
 //kick off loading steem prices in 30 seconds
 setTimeout(loadSteemPrices, 30*1000);
 
+//set proper nodes
+steem.api.setOptions({ 
+	url: config.active_node ,
+	//useAppbaseApi: true
+});
+
+hive.api.setOptions({ 
+	url: config.active_hive_node ,
+	//useAppbaseApi: true
+});
+
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
 var HOURS = 60 * 60;
@@ -75,8 +84,16 @@ setInterval(function() {
 		});
 		
 		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
-		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk', function (error, response, body) {
+		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk?bchain=STEEM', function (error, response, body) {
 			console.log('process any missed AFIT SE to Actifit Wallet');
+			console.log(response);
+			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
+			//console.log('error: '+ error)
+		});
+		
+		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
+		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk?bchain=HIVE', function (error, response, body) {
+			console.log('process any missed AFIT HE to Actifit Wallet');
 			console.log(response);
 			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
 			//console.log('error: '+ error)
@@ -186,10 +203,11 @@ let tokensBurntLastRound = false;
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
+const hsc = new SSC(config.hive_engine_rpc);
 
 // Initial Load of top AFITX token holders
 // Top 25 will be stored in topUsersAFITX
-fetchAFITXBal(0);
+fetchAFITXTopHolders();
 
 //grab list of active gadgets
 async function fetchGadgets(){
@@ -218,17 +236,14 @@ setInterval(function(){
 	  if (!is_voting){
 		// Load updated top AFITX token holders every 10 minutes
 		// Top 25 will be stored in topUsersAFITX
-		fetchAFITXBal(0);
+		fetchAFITXTopHolders();
 	  }
 	}catch(err){
 		console.log(err);
 	}
 }, 1200000); // every 20 minutes (1200000)
 
-steem.api.setOptions({ 
-	url: config.active_hive_node ,
-	//useAppbaseApi: true
-});
+
 
 utils.log("* START - Version: " + version + " *");
 
@@ -300,6 +315,7 @@ MongoClient.connect(url, function(err, client) {
 	  /*let gadgetId = new ObjectId("5db77cb5e279c25040134953")
 	  let test = await db.collection('user_gadgets').findOne({ benefic: {$in: ['silvertop', '@silvertop']}, status: "active", gadget: gadgetId,  })
 	  console.log(test);*/
+	  
 	  
 	  //testBoostData();
 	  //only start the process once we connected to the DB
@@ -678,10 +694,7 @@ async function startProcess() {
 	
 	//load steem account data
 	
-	await steem.api.setOptions({ 
-		url: config.active_node ,
-		//useAppbaseApi: true
-	});
+	
 	
 	await steem.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
@@ -694,13 +707,13 @@ async function startProcess() {
   
 	
   
-	await steem.api.setOptions({ 
+	/*await steem.api.setOptions({ 
 		url: config.active_hive_node ,
 		//useAppbaseApi: true
-	});
+	});*/
   
-  // Load the bot account info
-  steem.api.getAccounts([config.account], function (err, result) {
+  // Load hive account info
+  hive.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
       utils.log(err, result);
     else {
@@ -809,10 +822,10 @@ async function startProcess() {
 		
 		// Load Steem global variables
 
-		properties = await steem.api.getDynamicGlobalPropertiesAsync();
+		properties = await hive.api.getDynamicGlobalPropertiesAsync();
 		  //grab reward fund data
-		rewardFund = await steem.api.getRewardFundAsync("post");
-		rewardBalance = parseFloat(rewardFund.reward_balance.replace(" STEEM", ""));
+		rewardFund = await hive.api.getRewardFundAsync("post");
+		rewardBalance = parseFloat(rewardFund.reward_balance.replace(" STEEM", "").replace(" HIVE", ""));
 		recentClaims = rewardFund.recent_claims;
 		
 		totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0]);
@@ -1064,19 +1077,19 @@ function broadcastFeed (type) {
 		//below two lines are hacks since steem-js is not yet accepting HIVE and HBD
 		//pegged_cur = ' HBD';
 		type = 'STEEM';
-		steem.api.setOptions({ 
+		/*steem.api.setOptions({ 
 			url: config.active_hive_node ,
 			//useAppbaseApi: true
-		});
+		});*/
 	}else{
-		steem.api.setOptions({ 
+		/*steem.api.setOptions({ 
 			url: config.active_node ,
 			//useAppbaseApi: true
-		});
+		});*/
 	}
 	let exchange_rate = { base: price_val.toFixed(3) + pegged_cur, quote: (1 / peg_multi).toFixed(3) + ' ' + type };
 	utils.log('Broadcasting ' + origType + ' feed_publish transaction: ' + JSON.stringify(exchange_rate));
-	steem.broadcast.feedPublish(config.active_key, config.account, exchange_rate, function (err, result) {
+	hive.broadcast.feedPublish(config.active_key, config.account, exchange_rate, function (err, result) {
 		if (result && !err) {
 		  console.log(result);
 		  utils.log('Broadcast successful!');
@@ -1103,13 +1116,13 @@ function processVotes(query, subsequent) {
   //top 25 will be stored in topUsersAFITX
   //fetchAFITXBal(0);
 	
-  
+  /*
   steem.api.setOptions({ 
 	url: config.active_hive_node ,
 	//useAppbaseApi: true
-});
+});*/
   
-  steem.api.getDiscussionsByCreated(query, async function (err, result) {
+  hive.api.getDiscussionsByCreated(query, async function (err, result) {
 	//track how many queries were ran
 	queryCount += 1;
     if (result && !err) {
@@ -1550,7 +1563,7 @@ function processVotes(query, subsequent) {
 				/******************* comments criteria *********************/
 				var matching_comment_count = 0;
 				//if (!config.testing){
-					let comments = await steem.api.getContentRepliesAsync(post.author, post.permlink);
+					let comments = await hive.api.getContentRepliesAsync(post.author, post.permlink);
 					
 					for(var cmt_it = 0; cmt_it < comments.length; cmt_it++) {
 						//utils.log('>>>>>>'+comments[cmt_it].body);
@@ -1960,9 +1973,9 @@ function processVotes(query, subsequent) {
 					
 					//calculate current vote value, and relating voting percentage needed
 					//get vote value at 100%
-					let full_vote_value = getVoteValueUSD(100, account, 100, sbd_price);
+					let full_vote_value = getVoteValueUSD(100, account, 100, hive_price);
 					console.log('full_vote_value')
-					//console.log(full_vote_value)
+					console.log(full_vote_value)
 					
 					console.log('topUsersAFITX')
 					//console.log(topUsersAFITX);
@@ -1995,16 +2008,16 @@ function processVotes(query, subsequent) {
 							matched_exchanges += 1;
 							//found a match, need to increase rewards according to AFIT pay
 							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
-							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
+							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);//20*0.02=0.4
 							
 							//expand the USD val to take into consideration 75% curation reward
-							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65
+							let usd_val_no_curation = usd_val_no_benef * 0.75 / 0.65; //0.4*0.75/0.65=0.4615384615384615
 							
 							//final upvote value after avoiding deductions
-							let usd_val = usd_val_no_benef / 0.5 
+							let usd_val = usd_val_no_benef / 0.5; //0.4/0.5=0.8
 							
 							//emulate proper voting power to give user matching rewards
-							let user_added_vote_weight = usd_val * 100 / full_vote_value;
+							let user_added_vote_weight = usd_val * 100 / full_vote_value; //0.8*100/full_vote_value
 							
 							let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
 							
@@ -2141,49 +2154,12 @@ function processVotes(query, subsequent) {
   });
 }
 
-async function fetchAFITXBal(offset){
-  try{
-	  console.log('--- Fetch AFITX token balance --- '+offset);
-	  console.log(offset);
-	  let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
-	  if (offset == 0 && tempArr.length > 0){
-		  console.log('>>Found new results, reset older ones');
-		  //reset existing data if we have fresh new data
-		  usersAFITXBal = [];
-		  topUsersAFITX = [];
-	  }
-	  usersAFITXBal = usersAFITXBal.concat(tempArr);
-	  if (tempArr.length > 999){
-		//we possibly have more entries, let's call again
-		setTimeout(function(){
-			fetchAFITXBal(usersAFITXBal.length);
-		}, 1000);
-	  }else{
-		//if we were not able to fetch entries, we need to try API again
-		if (offset == 0){
-			console.log('no AFITX data, fetch again in 30 secs');
-			setTimeout(function(){
-				fetchAFITXBal(0);
-			}, 30000);
-		}else{
-			console.log('AFITX list fetching complete');
-			usersAFITXBal = utils.sortArrLodash(usersAFITXBal);
-			//skip first entry as thats Actifit account
-			topUsersAFITX = usersAFITXBal.slice(1, config.topAFITXCount);
-			
-			//console.log(topUsersAFITX);
-		}
-	  }
-  }catch(err){
-	  console.log(err);
-	  if (offset == 0){
-		console.log('no AFITX data, fetch again in 30 secs');
-		setTimeout(function(){
-			fetchAFITXBal(0);
-		}, 30000);
-	  }
-  }
-  //console.log(usersAFITXBal);
+async function fetchAFITXTopHolders(){
+
+	console.log('--- Fetch AFITX top users --- ');
+	let holderList = await fetch('https://actifitbot.herokuapp.com/topAFITXHolders?count='+config.topAFITXCount);
+	topUsersAFITX = await holderList.json();
+	console.log(topUsersAFITX);
 }
 
 var post_rank = 0;
@@ -2370,21 +2346,22 @@ async function sendVote(post, retries, power_per_vote) {
 			
 				//first bchain transactions
 				console.log('set HIVE node');
+				/*
 				steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 				//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
 				if (post.additional_vote_weight && post.helperVotes){
 					let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
 					try{
 											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-						res = await steem.broadcast.sendAsync( 
+						});*/
+						res = await hive.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -2411,11 +2388,11 @@ async function sendVote(post, retries, power_per_vote) {
 					
 					try{
 						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);			
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-						res = await steem.broadcast.sendAsync( 
+						});*/
+						res = await hive.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -2446,11 +2423,11 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.zzan_active){
 						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-						res = await steem.broadcast.sendAsync( 
+						});*/
+						res = await hive.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -2479,11 +2456,11 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.sports_active){
 						utils.log('voting with '+config.sports_active+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-						res = await steem.broadcast.sendAsync( 
+						});*/
+						res = await hive.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -2515,11 +2492,11 @@ async function sendVote(post, retries, power_per_vote) {
 						
 						try{
 							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);			
-							steem.api.setOptions({ 
-							url: config.active_hive_node ,
-							//useAppbaseApi: true
-						});
-							res = await steem.broadcast.sendAsync( 
+							/*steem.api.setOptions({ 
+								url: config.active_hive_node ,
+								//useAppbaseApi: true
+							});*/
+							res = await hive.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -2547,11 +2524,11 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				try{
 					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);			
-					steem.api.setOptions({ 
+					/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-					res = await steem.broadcast.sendAsync( 
+						});*/
+					res = await hive.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
 									   ['vote', 
@@ -2578,11 +2555,11 @@ async function sendVote(post, retries, power_per_vote) {
 								
 				try{
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);			
-					steem.api.setOptions({ 
+					/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
-						});
-					res = await steem.broadcast.sendAsync( 
+						});*/
+					res = await hive.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
 									   ['vote', 
@@ -2611,7 +2588,7 @@ async function sendVote(post, retries, power_per_vote) {
 							}
 							
 							//notify user of voting success
-							utils.sendNotification(db, account.name, post.author, 'post_reward', 'Your post "'+ post.title + '" has been rewarded', 'https://actifit.io/'+post.url);
+							utils.sendNotification(db, post.author, account.name, 'post_reward', 'Your activity report "'+ post.title + '" has been rewarded!', 'https://actifit.io'+post.url);
 							
 							
 							if(config.comment_location && config.comment){
@@ -2687,10 +2664,10 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				//second blockchain transactions
 				console.log('set STEEM node');
-				steem.api.setOptions({ 
+				/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 				//vote first using pay and funds accounts only if we have an AFIT/STEEM exchange operation and we have room to upvote using helping accounts
 				if (post.additional_vote_weight && post.helperVotes){
 					let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
@@ -2698,10 +2675,10 @@ async function sendVote(post, retries, power_per_vote) {
 											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
 						
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 						res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2729,10 +2706,10 @@ async function sendVote(post, retries, power_per_vote) {
 					
 					try{
 						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);						
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 						res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2764,10 +2741,10 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.zzan_active){
 						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 						res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2797,10 +2774,10 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.sports_active){
 						utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
-						steem.api.setOptions({ 
+						/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 						res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2833,10 +2810,10 @@ async function sendVote(post, retries, power_per_vote) {
 						
 						try{
 							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);						
-							steem.api.setOptions({ 
-							url: config.active_node ,
-							//useAppbaseApi: true
-						});
+							/*steem.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
 							res = await steem.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
@@ -2865,10 +2842,10 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				try{
 				utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);						
-					steem.api.setOptions({ 
+					/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 					res = await steem.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
@@ -2902,10 +2879,10 @@ async function sendVote(post, retries, power_per_vote) {
 					}
 					
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
-					steem.api.setOptions({ 
+					/*steem.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
-						});
+						});*/
 					res = await steem.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
@@ -3147,10 +3124,14 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				
 				try{
 				
-				steem.api.setOptions({ 
+				/*steem.api.setOptions({ 
 						url: bchain_node ,
 						//useAppbaseApi: true
-					});
+					});*/
+				let chainLnk = hive;
+				if (bchain_node == 'STEEM'){
+					chainLnk = steem;
+				}
 				console.log(jsonMetadata);
 				const operations = [ 
 					   ['comment', 
@@ -3168,7 +3149,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				
 				console.log(operations);
 				
-				let res = await steem.broadcast.sendAsync( 
+				let res = await chainLnk.broadcast.sendAsync( 
 					   { 
 						   operations: operations, 
 						   extensions: [] 
@@ -3323,27 +3304,19 @@ async function claimRewards(target_chain) {
 	
 	let claim_currency = targetAccount.reward_steem_balance
 	let claim_currency_stable = targetAccount.reward_sbd_balance
-	
+	let chainLnk = steem;
 	if (target_chain == 'HIVE'){
 		targetAccount = account;
 		claim_currency = targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		chainLnk = hive;
 		
 	}
 	// Make api call only if you have actual reward
 	if (parseFloat(targetAccount.reward_steem_balance) > 0 || parseFloat(targetAccount.reward_sbd_balance) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-		if (!target_chain){
-			await steem.api.setOptions({ 
-				url: config.active_node ,
-				//useAppbaseApi: true
-			});
-		}else{
-			await steem.api.setOptions({ 
-				url: config.active_hive_node ,
-				//useAppbaseApi: true
-			});
-		}
-		await steem.broadcast.claimRewardBalance(config.posting_key, config.account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance, function (err, result) {
+		
+		
+		await chainLnk.broadcast.claimRewardBalance(config.posting_key, config.account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance, function (err, result) {
 			if (err) {
 				console.log('error claiming rewards');
 				utils.log(err);
