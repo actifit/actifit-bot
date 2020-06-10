@@ -1,21 +1,28 @@
 var fs = require("fs");
 const steem = require('steem');
 
+const hive = require('@hiveio/hive-js');
+
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
+
+const dhive = require('@hiveio/dhive');
+
 const moment = require('moment')
 
 getConfig();
 
 const client = new dsteem.Client(config.active_node);
-const hiveClient = new dsteem.Client(config.active_hive_node);
+const hiveClient = new dhive.Client(config.alt_hive_nodes);
 		
 var config;
 
 let th_id = -1;
 
 steem.api.setOptions({ url: config.active_node });
+
+hive.api.setOptions({ url: config.active_hive_node });
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -40,18 +47,18 @@ var HOURS = 60 * 60;
  
  function setProperNode(bchain){
 	if (bchain == "STEEM"){
-		steem.api.setOptions({ url: config.active_node });
+		return steem
 	}else{
-		steem.api.setOptions({ url: config.active_hive_node });
+		return hive
 	}
  }
  
  async function getAccountData(account_name, bchain){
 	let account = null;
-	await setProperNode(bchain);
+	let chainLnk = await setProperNode(bchain);
 	//attempt to load account data
 	try{
-		let account_res = await steem.api.getAccountsAsync([config.account]); 
+		let account_res = await chainLnk.api.getAccountsAsync([config.account]); 
 		account = account_res[0];
 	}catch(err){
 		console.log(err);
@@ -60,13 +67,13 @@ var HOURS = 60 * 60;
  }
  
  async function validateAccountLogin(username, priv_pkey, bchain){
-	await setProperNode(bchain);
+	let chainLnk = await setProperNode(bchain);
 	console.log('validateAccountLogin');
-	let account_res = await steem.api.getAccountsAsync([username]);
+	let account_res = await chainLnk.api.getAccountsAsync([username]);
 	console.log(account_res[0]);
 	let pub_pkey = account_res[0].posting.key_auths[0][0];
 	try{ 
-		let res = await steem.auth.wifIsValid(priv_pkey, pub_pkey);
+		let res = await chainLnk.auth.wifIsValid(priv_pkey, pub_pkey);
 		//console.log(res);
 		return {result: res, account: account_res[0]};
 	}catch(err){ 
@@ -81,8 +88,8 @@ var HOURS = 60 * 60;
 	const ops = [ operation ];
 	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
 	console.log(bchain);
-	await setProperNode(bchain);
-	let tx = await steem.broadcast.sendAsync( 
+	let chainLnk = await setProperNode(bchain);
+	let tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { posting: userKey }
 		).catch(err => {
@@ -95,18 +102,18 @@ var HOURS = 60 * 60;
  }
  
  function updateSteemVariables(bchain) {
-	 setProperNode(bchain);
-     steem.api.getRewardFund("post", function (e, t) {
+	 let chainLnk = setProperNode(bchain);
+     chainLnk.api.getRewardFund("post", function (e, t) {
          console.log(e,t);
-         rewardBalance = parseFloat(t.reward_balance.replace(" STEEM", ""));
+         rewardBalance = parseFloat(t.reward_balance.replace(" STEEM", "").replace(" HIVE", ""));
          recentClaims = t.recent_claims;
      });
-     steem.api.getCurrentMedianHistoryPrice(function (e, t) {
-         steemPrice = parseFloat(t.base.replace(" SBD", "")) / parseFloat(t.quote.replace(" STEEM", ""));
+     chainLnk.api.getCurrentMedianHistoryPrice(function (e, t) {
+         steemPrice = parseFloat(t.base.replace(" SBD", "")) / parseFloat(t.quote.replace(" STEEM", "").replace(" HIVE", ""));
      });
-     steem.api.getDynamicGlobalProperties(function (e, t) {
+     chainLnk.api.getDynamicGlobalProperties(function (e, t) {
          votePowerReserveRate = t.vote_power_reserve_rate;
-         totalVestingFund = parseFloat(t.total_vesting_fund_steem.replace(" STEEM", ""));
+         totalVestingFund = parseFloat(t.total_vesting_fund_steem.replace(" STEEM", "").replace(" HIVE", ""));
          totalVestingShares = parseFloat(t.total_vesting_shares.replace(" VESTS", ""));
 		 steem_per_mvests = ((totalVestingFund / totalVestingShares) * 1000000);
 		 sbd_print_percentage = t.sbd_print_rate / 10000
@@ -247,14 +254,14 @@ var HOURS = 60 * 60;
 			contractPayload: {
 				symbol: tokenSymbol,
 				to: targetAcct,
-				quantity: '' + amount,//needs to be string
+				quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
 				memo: ''
 			}
 		}
 		
 		//send out transaction to blockchain
-		await setProperNode(chain);
-		let tx = await steem.broadcast.customJsonAsync(
+		let chainLnk = await setProperNode(chain);
+		let tx = await chainLnk.broadcast.customJsonAsync(
 				config.active_key, 
 				[ config.account ] , 
 				[], 
@@ -316,9 +323,9 @@ var HOURS = 60 * 60;
 		getConfig();
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
-				await setProperNode(bchain);
+				let chainLnk = await setProperNode(bchain);
 				console.log('check funds');
-				steem.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
+				chainLnk.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -367,8 +374,8 @@ var HOURS = 60 * 60;
 			let th_id = setInterval(async function(){
 				console.log('check funds');
 				console.log(bchain);
-				await setProperNode(bchain);
-				steem.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
+				let chainLnk = await setProperNode(bchain);
+				chainLnk.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -414,8 +421,8 @@ var HOURS = 60 * 60;
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check buy funds');
-				await setProperNode(bchain);
-				steem.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
+				let chainLnk = await setProperNode(bchain);
+				chainLnk.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -470,15 +477,16 @@ var HOURS = 60 * 60;
 			}
 		];
 		const ops = [claim_op];
-		const privateKey = dsteem.PrivateKey.fromString(
-							config.active_key
-						);
+		
 		let result = '';
 		let outcSteem = false;
 		let outcHive = false;
 		if (!chain || chain == 'STEEM'){
 			
 			try{
+				const privateKey = dsteem.PrivateKey.fromString(
+							config.active_key
+						);
 				result = await client.broadcast.sendOperations(ops, privateKey);
 				console.log('success');
 				outcSteem = true;
@@ -489,6 +497,9 @@ var HOURS = 60 * 60;
 		}
 		if (!chain || chain == 'HIVE'){
 			try{
+				const privateKey = dhive.PrivateKey.fromString(
+							config.active_key
+						);
 				result = await hiveClient.broadcast.sendOperations(ops, privateKey);
 				console.log('success');
 				outcHive = true;
@@ -531,10 +542,10 @@ var HOURS = 60 * 60;
 		console.log('account available');
 					
 		//create keys for new account
-		const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
-		const activeKey = dsteem.PrivateKey.fromLogin(username, password, 'active');
-		const postingKey = dsteem.PrivateKey.fromLogin(username, password, 'posting');
-		let memoKey = dsteem.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+		const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
+		const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
+		const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
+		let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
 		
 		//create auth values for passing to account creation
 		const ownerAuth = {
@@ -605,7 +616,7 @@ var HOURS = 60 * 60;
 				ops.push(create_op);
 			}
 			
-			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			const privateKey = dhive.PrivateKey.fromString(config.active_key);
 			//proceed executing the selected operation(s)
 			let result = '';
 			try{
@@ -660,7 +671,7 @@ var HOURS = 60 * 60;
 				hiveOps.push(create_op);
 			}
 			
-			const privateKey = dsteem.PrivateKey.fromString(config.active_key);
+			const privateKey = dhive.PrivateKey.fromString(config.active_key);
 			//proceed executing the selected operation(s)
 			let result = '';
 			try{
@@ -680,7 +691,7 @@ var HOURS = 60 * 60;
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
-		const privateKey = dsteem.PrivateKey.fromString(
+		const privateKey = dhive.PrivateKey.fromString(
 			config.full_pay_ac_key
 		);
 		
@@ -1348,9 +1359,9 @@ async function rewardPost(post_url, vp, bchain){
 	let permalink = post_url.split('/').reverse()[0];
 	//before last portion is author, and remove the starting @
 	let author = post_url.split('/').reverse()[1].replace('@','');
-	await setProperNode(bchain);
+	let chainLnk = await setProperNode(bchain);
 	//cast vote
-	let result = await steem.broadcast.voteAsync(
+	let result = await chainLnk.broadcast.voteAsync(
 							config.rewards_account_pkey, //postingWIF
 							config.rewards_account, // Voter
 							author, // Author
