@@ -3690,8 +3690,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	//if (false){
+	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';

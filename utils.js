@@ -541,28 +541,6 @@ var HOURS = 60 * 60;
 		
 		console.log('account available');
 					
-		//create keys for new account
-		const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
-		const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
-		const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
-		let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-		
-		//create auth values for passing to account creation
-		const ownerAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[ownerKey.createPublic(), 1]],
-		};
-		const activeAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[activeKey.createPublic(), 1]],
-		};
-		const postingAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[postingKey.createPublic(), 1]],
-		};
 		
 		//container for required ops
 		let ops = [];
@@ -575,6 +553,31 @@ var HOURS = 60 * 60;
 		let hiveAccountSuccess = false;
 		
 		if (!chain || chain == 'STEEM'){
+			
+			//create keys for new account
+			const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
+			const activeKey = dsteem.PrivateKey.fromLogin(username, password, 'active');
+			const postingKey = dsteem.PrivateKey.fromLogin(username, password, 'posting');
+			let memoKey = dsteem.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+			
+			//create auth values for passing to account creation
+			const ownerAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[ownerKey.createPublic(), 1]],
+			};
+			const activeAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[activeKey.createPublic(), 1]],
+			};
+			const postingAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[postingKey.createPublic(), 1]],
+			};
+			
+			
 			const _creator_account = await client.database.call('get_accounts', [
 				[creator],
 			]);
@@ -635,7 +638,30 @@ var HOURS = 60 * 60;
 			]);
 			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
 			
-			if (_creator_account[0].pending_claimed_accounts > 0) {
+			//create keys for new account
+			const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
+			const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
+			const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
+			let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+			
+			//create auth values for passing to account creation
+			const ownerAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[ownerKey.createPublic(), 1]],
+			};
+			const activeAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[activeKey.createPublic(), 1]],
+			};
+			const postingAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[postingKey.createPublic(), 1]],
+			};
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {		
 			
 				//the create discounted account operation
 				const create_op = [
