@@ -582,7 +582,11 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 app.get('/userSettings/:user', async function (req, res) {
 	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
 	console.log(setgs);
-	res.send(setgs);
+	if (!setgs){
+		res.send({});
+	}else{
+		res.send(setgs);
+	}
 });
 
 
