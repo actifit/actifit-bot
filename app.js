@@ -582,7 +582,11 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 app.get('/userSettings/:user', async function (req, res) {
 	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
 	console.log(setgs);
-	res.send(setgs);
+	if (!setgs){
+		res.send({});
+	}else{
+		res.send(setgs);
+	}
 });
 
 
@@ -729,7 +733,7 @@ app.get('/transactionsByType/', async function (req, res) {
     res.send(transactions);
 });
 
-/* end point for user referrals display (per user or general referrals */
+/* end point for user signup display (per user or general signups */
 app.get('/signups/:user?', async function (req, res) {
 	let query = {account_created: true};
 	var referrals;
@@ -741,6 +745,43 @@ app.get('/signups/:user?', async function (req, res) {
 		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
     res.send(referrals);
+});
+
+app.get('/referrals/:user?', async function (req, res) {
+	let query = {account_created: true, referrer:{$ne:null}};
+	let referrals;
+	if(req.params.user){
+		query['referrer'] = req.params.user;
+		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	}else{
+		//only limit returned referrals in case this is a general query
+		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+	}
+    res.send(referrals);
+});
+
+app.get('/signupInfo/:user', async function (req, res) {
+	let query = {account_name: req.params.user, account_created: true};
+	let referrals = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+    if (!referrals){
+		referrals = {};
+	}
+	res.send(referrals);
+});
+
+app.get('/activeRefReward/:referred', async function (req, res) {
+	//referral rewards are active for up to 30 days
+	let maxSignupDate = moment(moment().utc().subtract(config.ref_rew_act_days, 'days').toDate()).toDate();
+	console.log(maxSignupDate);
+	let query = {account_name: req.params.referred, account_created: true, date: {$gte: maxSignupDate}};
+	let refReward = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+	if (refReward){
+		refReward.ref_rew_act_days = config.ref_rew_act_days;
+		refReward.ref_rew_pct = config.ref_rew_pct;
+	}else{
+		refReward = {};
+	}
+    res.send(refReward);
 });
 
 /* end point for returning number of awarded users and tokens distributed */
@@ -973,6 +1014,8 @@ app.get('/topAFITXHolders', async function (req, res) {
 	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('afitx.s-e');
+	banned_arr.push('afitx.h-e');
 	banned_arr.push('');
 	
 	afitxSorted = utils.removeArrMatchLodash(afitxSorted, banned_arr, 'account');
