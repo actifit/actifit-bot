@@ -749,7 +749,7 @@ app.get('/signups/:user?', async function (req, res) {
 
 app.get('/referrals/:user?', async function (req, res) {
 	let query = {account_created: true, referrer:{$ne:null}};
-	var referrals;
+	let referrals;
 	if(req.params.user){
 		query['referrer'] = req.params.user;
 		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
@@ -762,8 +762,11 @@ app.get('/referrals/:user?', async function (req, res) {
 
 app.get('/signupInfo/:user', async function (req, res) {
 	let query = {account_name: req.params.user, account_created: true};
-	var referrals = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
-    res.send(referrals);
+	let referrals = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+    if (!referrals){
+		referrals = {};
+	}
+	res.send(referrals);
 });
 
 app.get('/activeRefReward/:referred', async function (req, res) {
