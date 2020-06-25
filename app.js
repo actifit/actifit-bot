@@ -278,6 +278,19 @@ async function fetchAFITXBalHE(offset){
 				//usersAFITXBal[i].balance = parseFloat(usersAFITXBal[i].balance) + parseFloat(match.balance);
 			}
 		}
+		
+		/*
+
+		let req = new Object();
+		req.query = new Object();
+		req.query.new_account= 'jumbo';
+		req.query.usd_invest= '1';
+		req.query.steem_invest= '1';
+		req.query.afit_reward= '1';
+		req.query.memo= 'jumdfsfddbo';
+		req.query.referrer= 'mcfarhat';
+		storeSignupTransaction(req);
+		*/
 	}
   }
   }catch(err){
@@ -775,9 +788,11 @@ app.get('/activeRefReward/:referred', async function (req, res) {
 	console.log(maxSignupDate);
 	let query = {account_name: req.params.referred, account_created: true, date: {$gte: maxSignupDate}};
 	let refReward = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+	console.log(refReward);
 	if (refReward){
 		refReward.ref_rew_act_days = config.ref_rew_act_days;
-		refReward.ref_rew_pct = config.ref_rew_pct;
+		//calculate user reward percentage
+		refReward.ref_rew_pct = config.ref_rew_def_pct + (parseFloat(refReward.referrer_cur_rank)>=config.userRankMin?5:0) + (parseFloat(refReward.referrer_cur_afit)>=config.userTokensMin?5:0) + (parseFloat(refReward.referrer_cur_afitx)>=config.afitxMin?5:0);
 	}else{
 		refReward = {};
 	}
@@ -2774,9 +2789,41 @@ storeSignupTransaction = async function (req){
 		date: new Date(),
 	}
 	
+	
+	
+	
 	if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
+		
 		new_transaction['referrer'] = req.query.referrer;
 		new_transaction['referrer_afit_reward'] = parseFloat(req.query.afit_reward * config.referrerBonus);
+		
+		//calculate proper referral reward based on user data
+		
+		//user rank component
+		if (!req.params){
+			req.params = new Object();
+		}
+		req.params.user = req.query.referrer;	
+		let ref_rank_obj = await calcRank(req, '');
+		let ref_rank = JSON.parse(ref_rank_obj);
+		//let ref_rank = await ref_rank_obj.json();
+		if (ref_rank){
+			new_transaction['referrer_cur_rank'] = ref_rank.user_rank;
+		}
+		
+		//afit amount component
+		let user_info = await grabUserTokensFunc(req.query.referrer);
+		if (user_info){
+			new_transaction['referrer_cur_afit'] = user_info.tokens;
+		}
+		
+		//afitx component
+		let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
+			
+		if (userHasAFITX){
+			new_transaction['referrer_cur_afitx'] = userHasAFITX.balance;
+		}
+		
 	}
 	
 	if (typeof req.query.email != 'undefined' && req.query.email != 'undefined' && req.query.email != '' && req.query.email != null){
