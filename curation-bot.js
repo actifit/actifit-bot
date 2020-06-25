@@ -1150,8 +1150,8 @@ function processVotes(query, subsequent) {
 			if (config.testing && i == 0){
 				console.log('switch author');
 				console.log(post.author);
-				post.author = 'mcfarhat';
-				post.permlink = 'actifit-witness-vote-application-msp';
+				//post.author = 'mcfarhat';
+				//post.permlink = 'actifit-witness-vote-application-msp';
 			}
 			//if this is a subsequent call, we need to skip first post
 			if (subsequent && i==0){
@@ -1221,6 +1221,32 @@ function processVotes(query, subsequent) {
 				continue;
 			  }
 			}
+			
+			/*
+				let referrer_reward_acct = '';
+				let reward_pct = 0;
+				let referrer_reward_amt = 0;
+				let activity_afit_reward = 20;
+			for (var x = 0; x < post.beneficiaries.length; x++) {
+					let testAccount = post.beneficiaries[x].account;
+					if (testAccount != config.beneficiaries[0]
+						&& testAccount != config.beneficiaries[1]
+						&& testAccount != config.full_pay_benef_account){
+							referrer_reward_acct = testAccount;
+							reward_pct = parseInt(post.beneficiaries[x].weight)/100;
+							referrer_reward_amt = reward_pct * activity_afit_reward;
+							activity_afit_reward = activity_afit_reward * (100-reward_pct);
+							break;
+				  }
+				}
+				if (referrer_reward_acct){
+					console.log(referrer_reward_acct);
+					console.log(reward_pct);
+					console.log(referrer_reward_amt);
+					console.log(activity_afit_reward);
+					return;
+				}
+			*/
 			
 			// Check if account is beneficiary 
 			var benefit = 0;
@@ -1733,6 +1759,25 @@ function processVotes(query, subsequent) {
 				if (config.sponsored_athletes.includes(reward_user)){
 					activity_afit_reward = config.sponsored_athlete_afit_reward;
 				}
+				
+				//check if the post has other beneficiaries (as a result of referral) so as to give them portion of AFIT rewards
+				let referrer_reward_acct = '';
+				let reward_pct = 0;
+				let referrer_reward_amt = 0;
+				
+				for (var x = 0; x < post.beneficiaries.length; x++) {
+					let testAccount = post.beneficiaries[x].account;
+					if (testAccount != config.beneficiaries[0]
+						&& testAccount != config.beneficiaries[1]
+						&& testAccount != config.full_pay_benef_account){
+							referrer_reward_acct = testAccount;
+							reward_pct = parseInt(post.beneficiaries[x].weight)/100;
+							referrer_reward_amt = parseFloat((reward_pct * activity_afit_reward / 100).toFixed(4));
+							activity_afit_reward = parseFloat((activity_afit_reward * (100-reward_pct) / 100).toFixed(4));
+							break;
+					}
+				}
+				
 				let post_transaction = {
 					user: reward_user,
 					reward_activity: activity_type,
@@ -1754,6 +1799,36 @@ function processVotes(query, subsequent) {
 					url: post_transaction.url
 				}).upsert().replaceOne(post_transaction); 
 				proceed_bulk_transactions = true;
+				
+				//reward back to referrer
+				try{
+				if (referrer_reward_acct){
+					note = "Referral Reward Share From User Activity Report"
+					let ref_trans = {
+						user: referrer_reward_acct,
+						reward_activity: 'Referral Beneficiary',
+						token_count: referrer_reward_amt,
+						referral_percent: reward_pct,
+						post_author: post.author,
+						url: post.url,
+						date: new Date(post.created),
+						note: note,
+						reward_system: reward_sys_version
+					}
+					
+					//we also need to insert another transaction to capture the actual activity/reward by the user
+					bulk_transactions.find(
+					{ 
+						user: ref_trans.user,
+						reward_activity: ref_trans.reward_activity,
+						post_author: ref_trans.post_author,
+						url: ref_trans.url
+					}).upsert().replaceOne(ref_trans);
+					proceed_bulk_transactions = true;
+				}
+				}catch(ref_benef_exc){
+					console.log(ref_benef_exc);
+				}
 				
 				//the proper transaction without reward
 				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
@@ -2592,7 +2667,7 @@ async function sendVote(post, retries, power_per_vote) {
 							
 							
 							if(config.comment_location && config.comment){
-								await sendComment(post, 0, vote_weight, config.active_hive_node)
+								await sendComment(post, 0, vote_weight, 'HIVE')
 								.then( res => {
 									//resolve(res)
 									
@@ -2919,7 +2994,7 @@ async function sendVote(post, retries, power_per_vote) {
 									//wait 5 seconds before commenting
 									//await delay(5000);
 								
-									await sendComment(post, 0, vote_weight, config.active_node)
+									await sendComment(post, 0, vote_weight, 'STEEM')
 										.then( res => {
 											//resolve(res)
 										}).catch(err => {
@@ -3023,6 +3098,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 	// Return promise
 	//return new Promise( async (resolve, reject) => {
 		content = fs.readFileSync(config.comment_location, "utf8");
+		let content_sign = fs.readFileSync(config.comment_sign_location, "utf8");
 
 		// If promotion content is specified in the config then use it to comment on the upvoted post
 		if (content && content != '') {
@@ -3117,6 +3193,15 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				jsonMetadata.lucky_winner = 1;
 			}else{
 				content = content.replace(/\{lucky_reward}/g,'') 
+			}
+			
+			//only add signature if content is not lengthier than 10,000 characters
+			try{
+				if (content.length < 10000){
+					content += content_sign;
+				}
+			}catch(exc_len){
+				console.log('error testing/appending comment signature');
 			}
 			
 			if (!config.testing){
