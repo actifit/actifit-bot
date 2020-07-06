@@ -4640,6 +4640,13 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 
 
 
+/* end point for fetching user's recorded activity records */
+app.get('/trackedActivity/:user', async function(req, res) {
+	let query = {"author": req.params.user,
+				}
+	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	res.send(posts);
+});
 
 
 
