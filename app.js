@@ -905,6 +905,8 @@ app.get('/modAction', async function (req, res) {
 			"date": new Date(),
 		};
 		
+		console.log(req.query.targetAction);
+		
 		switch(req.query.targetAction){
 		
 			case 'ban': 			
@@ -918,7 +920,7 @@ app.get('/modAction', async function (req, res) {
 							return;
 						}
 						result = await collection.insert({   
-							"user": req.query.banuser.trim().toLowerCase(),
+							"user": modTrans.user,
 							"ban_date": new Date(),
 							"ban_length": req.query.ban_length,
 							"ban_status": 'active',
@@ -989,6 +991,26 @@ app.get('/modAction', async function (req, res) {
 						let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
 						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp, bchain)
 						console.log(result);
+						result.status='success';
+						break;
+						
+			case 'verifynewbie': 			
+						modTrans.user = req.query.account.trim().toLowerCase();
+						collection = db.collection('verified_newbie')
+						//var dt = new Date().toJSON()
+						//dt.substring(0,dt.indexOf("."));
+						
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot verify empty user'});
+							return;
+						}
+						result = await collection.insert({   
+							"user": modTrans.user,
+							"verify_date": new Date(),
+							"sm_verif_lnk": req.query.verif_link,
+							"verif_mod": moderator
+						});
+						console.log(modTrans.user+" verified ");
 						result.status='success';
 						break;
 		}
@@ -4640,6 +4662,13 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 
 
 
+/* end point for fetching user's recorded activity records */
+app.get('/trackedActivity/:user', async function(req, res) {
+	let query = {"author": req.params.user,
+				}
+	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	res.send(posts);
+});
 
 
 
