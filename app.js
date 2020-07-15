@@ -782,6 +782,35 @@ app.get('/signupInfo/:user', async function (req, res) {
 	res.send(referrals);
 });
 
+
+/* end point for fetching all verified newbie accounts */
+app.get('/activeVerifiedNewbies/', async function (req, res) {
+	let maxRewardDate = moment(moment().utc().subtract(config.newbie_rewards_days, 'days').toDate()).toDate();
+	console.log(maxRewardDate);
+	let query = {
+					verify_date: {
+						$gte: new Date(maxRewardDate),
+					}
+				};
+	
+	console.log(query);
+	let data = await db.collection('verified_newbie').find(query).sort({date: -1}).toArray();
+	if (!data){
+		data = {};
+	}
+	res.send(data);
+});
+
+
+/* end point for fetching all verified newbie accounts */
+app.get('/verifiedNewbies/', async function (req, res) {
+	let data = await db.collection('verified_newbie').find().sort({date: -1}).toArray();
+	if (!data){
+		data = {};
+	}
+	res.send(data);
+});
+
 app.get('/activeRefReward/:referred', async function (req, res) {
 	//referral rewards are active for up to 30 days
 	let maxSignupDate = moment(moment().utc().subtract(config.ref_rew_act_days, 'days').toDate()).toDate();
