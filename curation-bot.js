@@ -46,6 +46,8 @@ var sbd_price = 1;    // This will get overridden with actual prices if a price_
 let hive_price = 1;
 let hbd_price = 1;
 
+let finalEligNewbieList = []; //contains array of newbies eligible for extra vote in current round
+
 // Load the settings from the config file
 loadConfig();
 
@@ -749,8 +751,69 @@ async function startProcess() {
   console.log('is_voting:'+is_voting);	
   console.log('passedOneDay:'+passedOneDay);	
   
-  
+	/*
+	
+	let newbieList= await fetch('http://localhost:3120/activeVerifiedNewbies/');
+	console.log(newbieList);
+	let newbieEligListRes = await newbieList.json();
+	console.log(newbieEligListRes);
+	let interimEligList = [];
+	
+	let votePosts = [];
+	votePosts.push({author: 'mcfarhat'});
+	votePosts.push({author: 'mcfarhat1'});
+	votePosts.push({author: 'mcfarhat2'});
+	votePosts.push({author: 'mcf'});
+	votePosts.push({author: 'mcfabc'});
+	votePosts.push({author: 'mcf1'});
+	votePosts.push({author: 'mcf2'});
+	votePosts.push({author: 'mcf3'});
+	votePosts.push({author: 'mcf4'});
+	
+	
+	console.log(votePosts);
+	
+	for (let lpr=0;lpr<newbieEligListRes.length;lpr++){
+	//update list to contain users having a post
+		let matchPst = votePosts.find( user_post => user_post.author === newbieEligListRes[lpr].user);
+		if (matchPst){
+			interimEligList.push(newbieEligListRes[lpr].user);
+		}
+		console.log(matchPst);
+	}
+	
+	console.log('current full eligible list');
+	console.log(interimEligList);
+	if (interimEligList.length<=config.max_newbie_reward_count){
+		//we have all our list already
+		finalEligNewbieList = interimEligList;
+	}else{
+		while(finalEligNewbieList.length < config.max_newbie_reward_count){
+			let r = Math.floor(Math.random() * (interimEligList.length)); //generate random number between 0 and array length
+			//only append the item if not already added
+			if (finalEligNewbieList.indexOf(interimEligList[r]) === -1){
+				finalEligNewbieList.push(interimEligList[r]);
+			}
+		}
+	}
+	console.log('final selected list');
+	console.log(finalEligNewbieList);
 
+	if (finalEligNewbieList.length > 0){
+		console.log('we have eligible newbies for extra rewards!');
+		let entryIdx = finalEligNewbieList.indexOf('mcfabc');
+		if (entryIdx !== -1){
+			vote_weight = config.max_newbie_vote_pct;
+			console.log('Newbie user '+'mcfabc'+' eligible for extra vote. Vote weight:'+vote_weight);
+			finalEligNewbieList.splice(entryIdx, 1);
+		}
+	}
+	
+	console.log(finalEligNewbieList);
+
+	return;
+	*/
+	
 	//BuyAndBurn(true);
 	
   
@@ -818,7 +881,6 @@ async function startProcess() {
 		
 		//reset number of helping votes case
 		helping_accounts_votes = 0;
-		
 		
 		// Load Steem global variables
 
@@ -1981,6 +2043,42 @@ function processVotes(query, subsequent) {
 				
 				
 				/************************* winner reward ******************************/
+				
+				
+				//special pick verified newbie rewards
+				
+				//grab list of eligible verified newbie accounts
+				
+				let newbieList= await fetch(config.api_url+'activeVerifiedNewbies/');
+				let newbieEligListRes = await newbieList.json();
+				let interimEligList = [];
+				let finalEligNewbieList = [];
+				
+				for (let lpr=0;lpr<newbieEligListRes.length;lpr++){
+				//update list to contain users having a post
+					let matchPst = votePosts.find( user_post => user_post.author === newbieEligListRes[lpr].user);
+					if (matchPst){
+						interimEligList.push(newbieEligListRes[lpr].user);
+					}
+					console.log(matchPst);
+				}
+				
+				console.log('current full eligible list');
+				console.log(interimEligList);
+				if (interimEligList.length<=config.max_newbie_reward_count){
+					//we have all our list already
+					finalEligNewbieList = interimEligList;
+				}else{
+					while(finalEligNewbieList.length < config.max_newbie_reward_count){
+						let r = Math.floor(Math.random() * (interimEligList.length)); //generate random number between 0 and array length
+						//only append the item if not already added
+						if (finalEligNewbieList.indexOf(interimEligList[r]) === -1){
+							finalEligNewbieList.push(interimEligList[r]);
+						}
+					}
+				}
+				console.log('final selected list');
+				console.log(finalEligNewbieList);
 			
 				//let's pick a random winner to double up his votes and adjust his AFIT reward score
 				
@@ -2287,6 +2385,18 @@ async function sendVote(post, retries, power_per_vote) {
 		vote_weight += post.additional_vote_weight
 		console.log('new vote weight:'+vote_weight);
 	}
+	
+	//check if this user is a newbie eligible for extra rewards
+	if (Array.isArray(finalEligNewbieList) && finalEligNewbieList.length > 0){
+		console.log('we have eligible newbies for extra rewards!');
+		let entryIdx = finalEligNewbieList.indexOf(post.author);
+		if (entryIdx !== -1){
+			vote_weight = config.max_newbie_vote_pct;
+			console.log('Newbie user '+post.author+' eligible for extra vote. Vote weight:'+vote_weight);
+			finalEligNewbieList.splice(entryIdx, 1);
+		}
+	}
+	
 	post_rank += 1;
 	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
   
