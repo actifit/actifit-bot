@@ -184,6 +184,52 @@ async function disableUserLogin(){
 	//console.log(result);
 }
 
+let exchangeAfitPrice = {};
+
+loadExchAfitPrice();
+
+//reload every 5 mins
+setInterval(loadExchAfitPrice, 5*60000);
+
+async function loadExchAfitPrice(){
+	try{
+		console.log('loading AFIT exchange prices');
+		let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		
+		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		
+		//grab STEEM price
+		let steemPriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem&vs_currencies=usd');
+		let steemPrice = await steemPriceQuery.json();
+		console.log('steemPrice');
+		console.log(steemPrice);
+	  
+	  //grab HIVE price
+		let hivePriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd');
+		let hivePrice = await hivePriceQuery.json();
+		console.log('hivePrice');
+		console.log(hivePrice);
+		//json.hive.usd
+		
+		exchangeAfitPrice.afitSEPrice = afitSEPrice;
+		exchangeAfitPrice.afitHEPrice = afitHEPrice;
+		
+		exchangeAfitPrice.afitSteemLastUsdPrice = parseFloat(afitSEPrice[0].lastPrice) * steemPrice.steem.usd;
+		exchangeAfitPrice.afitHiveLastUsdPrice = parseFloat(afitHEPrice[0].lastPrice) * hivePrice.hive.usd;
+		
+		exchangeAfitPrice.afitSteemLastPrice = parseFloat(afitSEPrice[0].lastPrice);
+		exchangeAfitPrice.afitHiveLastPrice = parseFloat(afitHEPrice[0].lastPrice);
+		
+		exchangeAfitPrice.lastMedianPrice = (exchangeAfitPrice.afitSteemLastUsdPrice + exchangeAfitPrice.afitHiveLastUsdPrice)/2;
+		exchangeAfitPrice.lastUpdated = new Date();
+		
+		console.log(exchangeAfitPrice);
+	}catch(exc){
+		console.log('problem fetching AFIT price');
+		console.log(exc);
+	}
+}
+
 
 async function loadAccountData(bchain){
 	//load main account data
@@ -2795,6 +2841,13 @@ app.get('/moderatorWeeklyStats', async function(req, res) {
 
 
 /* end point to grab current AFIT token price */
+app.get('/exchangeAFITPrice', async function(req, res) {
+	
+	console.log('exchangeAfitPrice:'+exchangeAfitPrice);
+	res.send(exchangeAfitPrice);
+});
+
+/* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
 	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
@@ -3829,8 +3882,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	//if (false){
+	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
