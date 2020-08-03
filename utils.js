@@ -541,28 +541,6 @@ var HOURS = 60 * 60;
 		
 		console.log('account available');
 					
-		//create keys for new account
-		const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
-		const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
-		const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
-		let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-		
-		//create auth values for passing to account creation
-		const ownerAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[ownerKey.createPublic(), 1]],
-		};
-		const activeAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[activeKey.createPublic(), 1]],
-		};
-		const postingAuth = {
-			weight_threshold: 1,
-			account_auths: [],
-			key_auths: [[postingKey.createPublic(), 1]],
-		};
 		
 		//container for required ops
 		let ops = [];
@@ -575,6 +553,31 @@ var HOURS = 60 * 60;
 		let hiveAccountSuccess = false;
 		
 		if (!chain || chain == 'STEEM'){
+			
+			//create keys for new account
+			const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
+			const activeKey = dsteem.PrivateKey.fromLogin(username, password, 'active');
+			const postingKey = dsteem.PrivateKey.fromLogin(username, password, 'posting');
+			let memoKey = dsteem.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+			
+			//create auth values for passing to account creation
+			const ownerAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[ownerKey.createPublic(), 1]],
+			};
+			const activeAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[activeKey.createPublic(), 1]],
+			};
+			const postingAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[postingKey.createPublic(), 1]],
+			};
+			
+			
 			const _creator_account = await client.database.call('get_accounts', [
 				[creator],
 			]);
@@ -635,7 +638,30 @@ var HOURS = 60 * 60;
 			]);
 			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
 			
-			if (_creator_account[0].pending_claimed_accounts > 0) {
+			//create keys for new account
+			const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
+			const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
+			const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
+			let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+			
+			//create auth values for passing to account creation
+			const ownerAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[ownerKey.createPublic(), 1]],
+			};
+			const activeAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[activeKey.createPublic(), 1]],
+			};
+			const postingAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[postingKey.createPublic(), 1]],
+			};
+			
+			if (_creator_account[0].pending_claimed_accounts > 0) {		
 			
 				//the create discounted account operation
 				const create_op = [
@@ -1371,6 +1397,34 @@ async function rewardPost(post_url, vp, bchain){
 	return  result;
 }
 
+async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
+	let trx;
+	console.log('verifyGadgetTransaction');
+	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else{
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
+		console.log(trx);
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let amnt = trx_details.amount.split(' ')[0];;
+				//let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.to == config.full_pay_benef_account && trx_details.memo == tx_type + ':' + gadget_id
+					&& (amnt >= item_price || amnt >= item_price_alt)){
+					return {'success': true, 'amount_hive': amnt};
+				}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
+
 async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain){
 	let trx;
 	console.log('verifyGadgetTransaction');
@@ -1486,5 +1540,6 @@ async function sendNotification(db, user, action_taker, type, details, url){
    processSteemTrx: processSteemTrx,
    sendNotification: sendNotification,
    confirmAFITXTransition: confirmAFITXTransition,
-   proceedAfitxMove: proceedAfitxMove
+   proceedAfitxMove: proceedAfitxMove,
+   verifyGadgetPayTransaction: verifyGadgetPayTransaction
  }
