@@ -1397,6 +1397,34 @@ async function rewardPost(post_url, vp, bchain){
 	return  result;
 }
 
+async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
+	let trx;
+	console.log('verifyGadgetTransaction');
+	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else{
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
+		console.log(trx);
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let amnt = trx_details.amount.split(' ')[0];;
+				//let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.to == config.full_pay_benef_account && trx_details.memo == tx_type + ':' + gadget_id
+					&& (amnt >= item_price || amnt >= item_price_alt)){
+					return {'success': true, 'amount_hive': amnt};
+				}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
+
 async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain){
 	let trx;
 	console.log('verifyGadgetTransaction');
@@ -1512,5 +1540,6 @@ async function sendNotification(db, user, action_taker, type, details, url){
    processSteemTrx: processSteemTrx,
    sendNotification: sendNotification,
    confirmAFITXTransition: confirmAFITXTransition,
-   proceedAfitxMove: proceedAfitxMove
+   proceedAfitxMove: proceedAfitxMove,
+   verifyGadgetPayTransaction: verifyGadgetPayTransaction
  }

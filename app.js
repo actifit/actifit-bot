@@ -184,6 +184,62 @@ async function disableUserLogin(){
 	//console.log(result);
 }
 
+let exchangeAfitPrice = {};
+let priorExchangeAfitHivePrice = {};
+
+loadExchAfitPrice();
+
+//reload every 5 mins
+setInterval(loadExchAfitPrice, 5*60000);
+
+async function loadExchAfitPrice(){
+	try{
+		console.log('loading AFIT exchange prices');
+		let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		
+		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		
+		//grab STEEM price
+		let steemPriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem&vs_currencies=usd');
+		let steemPrice = await steemPriceQuery.json();
+		console.log('steemPrice');
+		console.log(steemPrice);
+	  
+	  //grab HIVE price
+		let hivePriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd');
+		let hivePrice = await hivePriceQuery.json();
+		console.log('hivePrice');
+		console.log(hivePrice);
+		//json.hive.usd
+		
+		//set prior hive value for reference and reuse if needed
+		if (exchangeAfitPrice.afitHiveLastPrice){
+			priorExchangeAfitHivePrice = exchangeAfitPrice.afitHiveLastPrice;
+		}else{
+			exchangeAfitPrice.afitHiveLastPrice = parseFloat(afitHEPrice[0].lastPrice);
+		}
+		
+		
+		
+		exchangeAfitPrice.afitSEPrice = afitSEPrice;
+		exchangeAfitPrice.afitHEPrice = afitHEPrice;
+		
+		exchangeAfitPrice.afitSteemLastUsdPrice = parseFloat(afitSEPrice[0].lastPrice) * steemPrice.steem.usd;
+		exchangeAfitPrice.afitHiveLastUsdPrice = parseFloat(afitHEPrice[0].lastPrice) * hivePrice.hive.usd;
+		
+		exchangeAfitPrice.afitSteemLastPrice = parseFloat(afitSEPrice[0].lastPrice);
+		exchangeAfitPrice.afitHiveLastPrice = parseFloat(afitHEPrice[0].lastPrice);
+		
+		exchangeAfitPrice.lastMedianPrice = (exchangeAfitPrice.afitSteemLastUsdPrice + exchangeAfitPrice.afitHiveLastUsdPrice)/2;
+		exchangeAfitPrice.lastUpdated = new Date();
+		
+		console.log(exchangeAfitPrice);
+	}catch(exc){
+		console.log('problem fetching AFIT price');
+		console.log(exc);
+	}
+}
+
 
 async function loadAccountData(bchain){
 	//load main account data
@@ -252,7 +308,7 @@ async function fetchAFITXBalHE(offset){
   }else{
 	//if we were not able to fetch entries, we need to try API again
 	if (offset == 0 && tempArr.length < 1){
-		console.log('no AFITX data, fetch again in 30 secs');
+		console.log('no AFITX data HE, fetch again in 30 secs');
 		setTimeout(function(){
 			fetchAFITXBalHE(0);
 		}, 30000);
@@ -296,7 +352,7 @@ async function fetchAFITXBalHE(offset){
   }catch(err){
 	  console.log(err);
 	  if (offset == 0){
-		console.log('no AFITX data, fetch again in 30 secs');
+		console.log('no AFITX data HE, fetch again in 30 secs');
 		setTimeout(function(){
 			fetchAFITXBalHE(0);
 		}, 30000);
@@ -1271,6 +1327,139 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 		console.log('error');
 		res.send({status: 'error'});
 	}
+});
+
+/* end point for tracking gadget buy orders */
+app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	
+	let user = req.params.user;
+	let product_id = req.params.gadget;
+	
+	//fetch product info
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	//check if query has already been verified
+	let matchingEntries = await db.collection('gadget_transactions_hive').find(
+		{
+			blockNo: req.params.blockNo,
+			trxID: req.params.trxID,
+			bchain: req.params.bchain
+		}).toArray();
+	
+	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
+		res.send({'error': 'Transaction already verified'});
+		return;
+	}
+	
+	let price_options = product.price;
+	let price_options_count = price_options.length;
+	let item_price = 0;
+	let item_price_afit = 0;
+	let item_currency = req.params.bchain;
+	let actifit_percent_cut = 10;
+	for (let i=0; i < price_options_count; i++){
+		let entry = price_options[i];
+		//calculate HIVE price
+		item_price_afit = entry.price;
+		item_price = entry.price * exchangeAfitPrice.afitHiveLastPrice;
+		//alternate price to match if at a time where AFIT price changes
+		item_price_alt = entry.price * priorExchangeAfitHivePrice;
+		item_currency = entry.currency;
+		actifit_percent_cut = entry.actifit_percent_cut;
+	}
+	
+	//round down number
+	console.log('Before rounding');
+	console.log(item_price);
+	item_price = (Math.floor(item_price * 1000) - 1) / 1000;
+	console.log('After rounding');
+	console.log(item_price);
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	if (!ver_trx || !ver_trx.success){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	
+	product.provider = 'actifit';
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		reward_activity: 'Buy Product',
+		buyer: user,
+		seller: product.provider,
+		product_id: product_id,
+		product_type: product.type,
+		product_name: product.name,
+		product_level: product.level,
+		product_price_afit: item_price_afit,
+		product_price_hive: item_price,
+		hive_paid: ver_trx.amount_hive,
+		currency: req.params.bchain,
+		blockNo: req.params.blockNo,
+		trxID: req.params.trxID,
+		bchain: req.params.bchain,
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('gadget_transactions_hive').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//store into user_gadgets table as well
+	let userGadgetTrans = {
+		user: user,
+		gadget: new ObjectId(product_id),
+		product_type: product.type,
+		gadget_name: product.name,
+		gadget_level: product.level,
+		status: "bought",
+		span: parseInt(product.benefits.time_span),
+		span_unit: product.benefits.time_unit,
+		consumed: 0,
+		posts_consumed: [],
+		date_bought: new Date(),
+		last_updated: new Date(),
+		note: 'Bought Product '+product.name+ ' Level '+product.level,
+	}
+	try{
+		console.log(userGadgetTrans);
+		let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//decrease product available count
+	product.count = parseInt(product.count) - 1;
+	//extreme case
+	if (product.count < 0) {
+		product.count = 0;
+	}
+	try{
+		let trans = await db.collection('products').save(product);
+		console.log('success updating product count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	
+	res.send({'status': 'Success'});
 });
 
 /* end point for tracking gadget buy orders */
@@ -2795,6 +2984,13 @@ app.get('/moderatorWeeklyStats', async function(req, res) {
 
 
 /* end point to grab current AFIT token price */
+app.get('/exchangeAFITPrice', async function(req, res) {
+	
+	console.log('exchangeAfitPrice:'+exchangeAfitPrice);
+	res.send(exchangeAfitPrice);
+});
+
+/* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
 	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
@@ -3302,6 +3498,104 @@ app.get('/proceedAfitTransition', async function(req,res){
 		res.end();
 	}
 });
+
+
+/* function handles the processing of a buy order paid in HIVE */
+app.get('/processBuyOrderHive', async function(req, res){
+	if (!req.query.user || !req.query.product_id) {
+		//make sure all params are sent
+		res.send({'error':'generic error'});
+	}else{
+		let user = req.query.user;
+		let product_id = req.query.product_id;
+		//confirm matching funds password
+		let query = {user: user};
+		
+		let access_token;
+		
+		//fetch product info
+		let product = await grabProductInfo (product_id);
+		if (!product){
+			res.send({'error': 'Product not found'});
+			return;
+		}
+		
+		let price_options = product.price;
+		let price_options_count = price_options.length;
+		let item_price = 0;
+		let item_currency = 'HIVE';
+		let actifit_percent_cut = 10;
+		for (let i=0; i < price_options_count; i++){
+			let entry = price_options[i];
+			item_price = entry.price;
+			item_currency = entry.currency;
+			actifit_percent_cut = entry.actifit_percent_cut;
+		}
+		
+	
+		//product.provider = 'actifit.test.provider';
+		
+		//perform transaction
+		let productBuyTrans = {
+			user: user,
+			reward_activity: 'Buy Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_price: item_price,
+			token_count: -item_price,
+			note: 'Bought Product '+product.name+ ' by '+product.provider,
+			date: new Date(),
+		}
+		try{
+			console.log(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+		
+		
+		
+		//store this in escrow
+		let productSellTrans = {
+			user: config.escrow_account,//targetAccount,//product.provider,//config.escrow_account,
+			reward_activity: 'Sell Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_price: item_price,
+			token_count: item_price,
+			actifit_percent_cut: actifit_percent_cut,
+			note: 'Sold Product '+product.name+ ' to '+user,
+			date: new Date(),
+		}
+		
+		//alternatively, send to provider directly
+		if (product.type == 'ebook'){
+			//close the transaction on the fly, no need to put in escrow. Rewards goes to seller
+			productSellTrans.user = product.provider;
+			productSellTrans.token_count = parseFloat(item_price) * (100 - parseFloat(actifit_percent_cut)) / 100;
+		}
+		
+		try{
+			console.log(productSellTrans);
+			let transaction = await db.collection('gadget_transactions_hive').insert(productSellTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing sell action. DB storing issue'});
+			return;
+		}		
+		
+		res.send({'status': 'Success', 'access_token': access_token});
+	}
+})
+
 
 /* function handles the processing of a buy order */
 app.get('/processBuyOrder', async function(req, res){
@@ -3829,8 +4123,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	//if (false){
+	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
