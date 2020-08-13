@@ -1414,7 +1414,7 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 				let amnt = trx_details.amount.split(' ')[0];;
 				//let json_data = JSON.parse(trx_details.json);
 				console.log(trx_details);
-				if (trx_details.to == config.full_pay_benef_account && trx_details.memo == tx_type + ':' + gadget_id
+				if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
 					&& (amnt >= item_price || amnt >= item_price_alt)){
 					return {'success': true, 'amount_hive': amnt};
 				}
