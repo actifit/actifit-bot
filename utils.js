@@ -1498,6 +1498,42 @@ async function sendNotification(db, user, action_taker, type, details, url){
 	}
 }
 
+
+async function grabLastDrawData(db){
+	let lastDraw = await db.collection('gadget_buy_prize_draw').find().sort({'drawDate': -1}).toArray();
+	let drawData = {};
+	if (Array.isArray(lastDraw) && lastDraw.length > 0){
+		let start = moment(lastDraw[0].drawDate).utc().startOf('date').toDate();
+		let nextDrawDate = moment(start).add(config.contestBuyLen, 'days').toDate();
+		lastDraw[0].nextDrawDate = nextDrawDate;
+		drawData = lastDraw[0];
+	}else{
+		let start = moment(config.gadgetPrizeInitDate).utc().startOf('date').toDate();
+		let nextDrawDate = moment(start).add(config.contestBuyLen, 'days').toDate();
+		drawData = {'drawDate': start, 'nextDrawDate': nextDrawDate};
+	}
+	return drawData;
+}
+
+async function getGadgetBuyTickets(db){
+	let drawData = await grabLastDrawData(db);
+	
+	let startDate = moment(drawData.drawDate).format('YYYY-MM-DD');
+	
+	//let endDate = moment(moment(startDate).utc().subtract(config.contestBuyLen, 'days').toDate()).format('YYYY-MM-DD');
+	
+	console.log("startDate:"+startDate);//+" endDate:"+endDate);
+	
+	let query = {
+		date: {
+			$gte: new Date(startDate),	
+		}
+	}
+	
+	let result = await db.collection('gadget_buy_tickets').find(query).toArray();
+	return result;
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -1541,5 +1577,7 @@ async function sendNotification(db, user, action_taker, type, details, url){
    sendNotification: sendNotification,
    confirmAFITXTransition: confirmAFITXTransition,
    proceedAfitxMove: proceedAfitxMove,
-   verifyGadgetPayTransaction: verifyGadgetPayTransaction
+   verifyGadgetPayTransaction: verifyGadgetPayTransaction,
+   getGadgetBuyTickets: getGadgetBuyTickets,
+   grabLastDrawData: grabLastDrawData
  }

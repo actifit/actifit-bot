@@ -1419,21 +1419,27 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		return;
 	}
 	
-	//add a ticket to the user to enter draw
-	//perform transaction
-	let ticketEntry = {
-		user: user,
-		product_id: product_id,
-		product_name: product.name,
-		product_level: product.level,
-		product_price_afit: item_price_afit,
-		product_price_hive: item_price,
-		hive_paid: ver_trx.amount_hive,
-		currency: req.params.bchain,
-		count: 1,
-		date: new Date(),
+	//add a ticket to the user to enter draw if user meets min requirements
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	if (cur_user_token_count >= config.minUserTokensGadgetTicket){
+		//perform transaction
+		let ticketEntry = {
+			user: user,
+			product_id: product_id,
+			product_name: product.name,
+			product_level: product.level,
+			product_price_afit: item_price_afit,
+			product_price_hive: item_price,
+			hive_paid: ver_trx.amount_hive,
+			currency: req.params.bchain,
+			count: 1,
+			date: new Date(),
+		}
+		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
 	}
-	let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
 	
 	//store into user_gadgets table as well
 	let userGadgetTrans = {
@@ -1478,20 +1484,38 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	res.send({'status': 'Success'});
 });
 
+
+
+//end point for returning latest cycle
+app.get("/recentGadgetBuyPrizeCycle", async function(req, res){
+	let drawData = await utils.grabLastDrawData(db);
+	res.send(drawData);
+});
+
+//end point for fetching all current active entry tickets
+app.get('/activeGadgetBuyTickets/', async function (req, res) {
+	let entries = await utils.getGadgetBuyTickets(db);
+	res.send(entries);
+	
+});
+
 //end point for fetching a user's active buy gadget tickets during draw period
 app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
-	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	//fetch last draw date, and start counting tickets since
+	let drawData = await utils.grabLastDrawData(db);
 	
-	let endDate = moment(moment(startDate).utc().subtract(config.contestBuyLen, 'days').toDate()).format('YYYY-MM-DD');
+	let startDate = moment(drawData.drawDate).format('YYYY-MM-DD');
 	
-	console.log("startDate:"+startDate+" endDate:"+endDate);
+	//let endDate = moment(moment(startDate).utc().subtract(config.contestBuyLen, 'days').toDate()).format('YYYY-MM-DD');
+	
+	console.log("startDate:"+startDate);//+" endDate:"+endDate);
 	
 	let result = await db.collection('gadget_buy_tickets').aggregate([
 		{$match: 
 			{
 				user: req.params.user,
 				date: {
-					$gt: new Date(endDate),
+					$gte: new Date(startDate),
 					//$lte: new Date(startDate)
 				},
 			},
