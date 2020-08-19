@@ -121,7 +121,7 @@ async function processGadgetBuyPrize() {
 		console.log(nextDrawDate);
 		
 		//check if this is the proper date to kick off reward
-		//if (today.getTime() == nextDrawDate.getTime()){
+		if (today.getTime() == nextDrawDate.getTime()){
 			console.log('kick off draw reward');
 			//fetch list of ticket holders
 			let entries = await utils.getGadgetBuyTickets(db);
@@ -200,7 +200,7 @@ async function processGadgetBuyPrize() {
 				console.log('no ticket entries to reward');
 			}
 			
-		//}
+		}
 		
 		
 		
