@@ -15,6 +15,9 @@ const MongoClient = require('mongodb').MongoClient
 
 const testRun = false;
 
+const hive = require('@hiveio/hive-js');
+hive.api.setOptions({ url: config.active_hive_node });
+
 let db
 let collection
 let bulk_delegation_entries
@@ -65,8 +68,16 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  console.log('--- Start AFIT to S-E Move ---');
 	  moveAFITToSE(false);//param test
 	});
-}else{
 	
+	//schedule the prize event at 00:00 every X days
+	let prizeJob = schedule.scheduleJob({hour: 00, minute: 01}, function(){
+	  console.log('--- Reward Gadget Buy Contest ---');
+	  processGadgetBuyPrize();//param test
+	});
+	
+	
+}else{
+	//processGadgetBuyPrize();
 	runRewards(true);
 }
 
@@ -80,6 +91,122 @@ const hsc = new SSC(config.hive_engine_rpc);
 //moveAFITToSE(true);
 
 //testMove();
+
+
+async function processGadgetBuyPrize() {
+	console.log('processGadgetBuyPrize');
+	
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ')
+
+		db = dbClient.db(dbName)
+		
+		//fetch data of last reward cycle
+		let lastDraw = await db.collection('gadget_buy_prize_draw').find().sort({'drawDate': -1}).toArray();
+		let lastDrawDate = new Date(config.gadgetPrizeInitDate);
+		if (Array.isArray(lastDraw) && lastDraw.length > 0){
+			lastDrawDate = lastDraw[0].drawDate;
+		}
+		let today = moment().utc().startOf('date').toDate()
+		let start = moment(lastDrawDate).utc().startOf('date').toDate()
+		let nextDrawDate = moment(start).add(config.contestBuyLen, 'days').toDate()
+		//let nextDrawDate = lastDrawDate+
+		console.log(today);
+		console.log(nextDrawDate);
+		console.log((today.getTime() == nextDrawDate.getTime()));
+		//check if this is the proper date to kick off reward
+		if (today.getTime() == nextDrawDate.getTime()){
+			console.log('kick off draw reward');
+			//fetch list of ticket holders
+			let entries = await utils.getGadgetBuyTickets(db);
+			console.log(entries);
+			
+			//randomly pick winner and send rewards
+			if (Array.isArray(entries) && entries.length > 0){
+				
+				//fetch reward pool
+				hive.api.getAccounts([config.gadget_buy_account], async function(err, response){
+					//console.log(err, response);
+					if (!err){
+						let prizePool = response[0].balance;
+						let prizePoolValue = parseFloat(prizePool.split(' ')[0]) * config.userRewardPrizePercent / 100;
+						
+						console.log('prize pool value: '+prizePoolValue);
+						
+						//pick winner
+						let lucky_winner_id = utils.generateRandomNumber(1, entries.length);
+						let winner_name = entries[lucky_winner_id].user;
+						console.log('Winner is ......'+winner_name);
+						let currency = 'HIVE';
+						let memo= 'Congrats on winning Actifit random gadget purchase prize!';
+						
+						//reward winner
+						
+						let res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, winner_name, parseFloat(prizePoolValue).toFixed(3) + ' ' + currency, memo);/*.then(
+						res => {
+							//store last draw results
+							let drawInfo = {
+								drawDate: new Date();
+								winner: [{name: winner_name, position: 1, reward: prizePoolValue, currency: currency}],
+								rewardPool: prizePoolValue,
+								participatingTickets: entries
+							}
+							db.collection('gadget_buy_prize_draw').insert(drawInfo);
+						}).catch(err=>console.log(err));*/
+						
+						let buyBackAmount = parseFloat(prizePool.split(' ')[0]) * config.buyBackPrizePercent / 100;
+						
+						let projectSupportAmount = parseFloat(prizePool.split(' ')[0]) * config.actifitFundPrizePercent / 100;
+						console.log(res);
+						if (res){
+							//store last draw results
+							let drawInfo = {
+								drawDate: new Date(),
+								winner: [{name: winner_name, position: 1, reward: prizePoolValue, currency: currency, buyback: buyBackAmount, projectSupportAmount: projectSupportAmount}],
+								rewardPool: prizePoolValue,
+								participatingTickets: entries
+							}
+							db.collection('gadget_buy_prize_draw').insert(drawInfo);
+						}
+						
+						memo= 'Funds to buy back from Actifit random gadget purchase prize!';
+						
+						//send 25% of funds to buy back tokens
+						
+						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.buy_account, parseFloat(buyBackAmount).toFixed(3) + ' ' + currency, memo);
+						
+						console.log(res);
+						
+						//keep 25% of funds to actifit project
+						memo= 'Funds to keep as 25% based on prize results.';
+						
+						
+						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.full_pay_benef_account, parseFloat(projectSupportAmount).toFixed(3) + ' ' + currency, memo);
+						
+						console.log(res);
+						
+					}
+				});
+				
+				
+				
+			}else{
+				console.log('no ticket entries to reward');
+			}
+			
+		}
+		
+		
+		
+	  }
+	});
+}
 
 async function testMove(){
 	
