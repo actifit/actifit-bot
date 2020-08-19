@@ -1361,6 +1361,7 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	let item_price_afit = 0;
 	let item_currency = req.params.bchain;
 	let actifit_percent_cut = 10;
+	let item_price_alt = 0;
 	for (let i=0; i < price_options_count; i++){
 		let entry = price_options[i];
 		//calculate HIVE price
@@ -1485,6 +1486,194 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 });
 
 
+/* end point for tracking multi-gadget buy orders */
+app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+	
+	let user = req.params.user;
+	let product_ids = req.params.gadgets.split('-');
+	
+	let products_tot_price_afit = 0;
+	let products_tot_hive_price = 0;
+	let products_tot_hive_price_alt = 0;
+	for (let i=0;i<product_ids.length;i++){
+		//fetch product info
+		let product = await grabProductInfo (product_ids[i]);
+		if (!product){
+			res.send({'error': 'Product not found'});
+			return;
+		}
+		let price_options = product.price;
+		let price_options_count = price_options.length;
+		let item_price = 0;
+		let item_price_afit = 0;
+		let item_currency = req.params.bchain;
+		let item_price_alt = 0;
+		for (let i=0; i < price_options_count; i++){
+			let entry = price_options[i];
+			//calculate HIVE price
+			item_price_afit = entry.price;
+			item_price = entry.price * exchangeAfitPrice.afitHiveLastPrice;
+			//alternate price to match if at a time where AFIT price changes
+			item_price_alt = entry.price * priorExchangeAfitHivePrice;
+			item_currency = entry.currency;
+			//total price
+			products_tot_price_afit += product.price;
+			products_tot_hive_price += item_price;
+			products_tot_hive_price_alt += item_price_alt;
+			
+		}
+		
+		
+	}
+	
+	//check if query has already been verified
+	let matchingEntries = await db.collection('gadget_transactions_hive').find(
+		{
+			blockNo: req.params.blockNo,
+			trxID: req.params.trxID,
+			bchain: req.params.bchain
+		}).toArray();
+	
+	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
+		res.send({'error': 'Transaction already verified'});
+		return;
+	}
+	
+	
+	//round down number
+	console.log('Before rounding');
+	console.log(products_tot_hive_price);
+	products_tot_hive_price = (Math.floor(products_tot_hive_price * 1000) - 1) / 1000;
+	console.log('After rounding');
+	console.log(products_tot_hive_price);
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	if (!ver_trx || !ver_trx.success){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	
+	let provider = 'actifit';
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		reward_activity: 'Buy Product',
+		buyer: user,
+		seller: provider,
+		product_ids: product_ids,
+		product_price_afit: products_tot_price_afit,
+		product_price_hive_tot: products_tot_hive_price,
+		hive_paid: ver_trx.amount_hive,
+		currency: req.params.bchain,
+		blockNo: req.params.blockNo,
+		trxID: req.params.trxID,
+		bchain: req.params.bchain,
+		note: 'Bought Products '+req.params.gadgets,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('gadget_transactions_hive').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//add a ticket to the user to enter draw if user meets min requirements
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	if (cur_user_token_count >= config.minUserTokensGadgetTicket){
+		for (let i=0;i<product_ids.length;i++){
+			//fetch product info
+			let product = await grabProductInfo (product_ids[i]);
+			
+			let price_options = product.price;
+			let price_options_count = price_options.length;
+			let item_price = 0;
+			let item_price_afit = 0;
+			let item_currency = req.params.bchain;
+			let item_price_alt = 0;
+			for (let i=0; i < price_options_count; i++){
+				let entry = price_options[i];
+				//calculate HIVE price
+				item_price_afit = entry.price;
+				item_price = entry.price * exchangeAfitPrice.afitHiveLastPrice;
+				//alternate price to match if at a time where AFIT price changes
+				item_price_alt = entry.price * priorExchangeAfitHivePrice;
+				item_currency = entry.currency;
+			}
+			
+			//perform transaction
+			let ticketEntry = {
+				user: user,
+				product_id: product_ids[i],
+				product_name: product.name,
+				product_level: product.level,
+				product_price_afit: item_price_afit,
+				product_price_hive: item_price,
+				hive_paid: ver_trx.amount_hive,
+				multi_transaction: true,
+				currency: req.params.bchain,
+				count: 1,
+				date: new Date(),
+			}
+			let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+		}
+	}
+	
+	for (let i=0;i<product_ids.length;i++){
+		//fetch product info
+		let product = await grabProductInfo (product_ids[i]);
+		//store into user_gadgets table as well
+		let userGadgetTrans = {
+			user: user,
+			gadget: new ObjectId(product_ids[i]),
+			product_type: product.type,
+			gadget_name: product.name,
+			gadget_level: product.level,
+			status: "bought",
+			span: parseInt(product.benefits.time_span),
+			span_unit: product.benefits.time_unit,
+			consumed: 0,
+			posts_consumed: [],
+			date_bought: new Date(),
+			last_updated: new Date(),
+			note: 'Bought Product '+product.name+ ' Level '+product.level,
+		}
+		try{
+			console.log(userGadgetTrans);
+			let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+		
+		//decrease product available count
+		product.count = parseInt(product.count) - 1;
+		//extreme case
+		if (product.count < 0) {
+			product.count = 0;
+		}
+		try{
+			let trans = await db.collection('products').save(product);
+			console.log('success updating product count');
+		}catch(err){
+			console.log(err);
+		}
+		
+	}
+	
+	res.send({'status': 'Success'});
+});
 
 //end point for returning latest cycle
 app.get("/recentGadgetBuyPrizeCycle", async function(req, res){
@@ -1531,6 +1720,159 @@ app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
 
 	res.send(result);
 	
+});
+
+/* end point for tracking multi gadget buy orders */
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//confirmed, register transaction and deduct AFIT tokens
+	
+	let user = req.params.user;
+	let product_id_list = req.params.gadgets.split('-');
+	let user_info;
+	for (let i=0;i<product_id_list.length;i++){
+		//fetch each product info
+		let product_id = product_id_list[i];
+		let product = await grabProductInfo (product_id);
+		if (!product){
+			res.send({'error': 'Product not found'});
+			return;
+		}
+		
+		//confirm proper AFIT token balance. Test against product price
+		user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		let cur_user_token_count = parseFloat(user_info.tokens);
+		
+		let price_options = product.price;
+		let price_options_count = price_options.length;
+		let item_price = 0;
+		let item_currency = 'AFIT';
+		let actifit_percent_cut = 10;
+		for (let i=0; i < price_options_count; i++){
+			let entry = price_options[i];
+			item_price = entry.price;
+			item_currency = entry.currency;
+			actifit_percent_cut = entry.actifit_percent_cut;
+		}
+		
+		if (cur_user_token_count < item_price){
+			res.send({'error': 'Account does not have enough AFIT funds'});
+			return;
+		}
+		
+		product.provider = 'actifit';
+		
+		//perform transaction
+		let productBuyTrans = {
+			user: user,
+			reward_activity: 'Buy Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_name: product.name,
+			product_level: product.level,
+			product_price: item_price,
+			token_count: -item_price,
+			note: 'Bought Product '+product.name+ ' Level '+product.level,
+			date: new Date(),
+		}
+		try{
+			console.log(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+		
+		//store into user_gadgets table as well
+		let userGadgetTrans = {
+			user: user,
+			gadget: new ObjectId(product_id),
+			product_type: product.type,
+			gadget_name: product.name,
+			gadget_level: product.level,
+			status: "bought",
+			span: parseInt(product.benefits.time_span),
+			span_unit: product.benefits.time_unit,
+			consumed: 0,
+			posts_consumed: [],
+			date_bought: new Date(),
+			last_updated: new Date(),
+			note: 'Bought Product '+product.name+ ' Level '+product.level,
+		}
+		try{
+			console.log(userGadgetTrans);
+			let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+		
+		//decrease product available count
+		product.count = parseInt(product.count) - 1;
+		//extreme case
+		if (product.count < 0) {
+			product.count = 0;
+		}
+		try{
+			let trans = await db.collection('products').save(product);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+		
+		//store this in escrow
+		/*let productSellTrans = {
+			user: config.null_account,//targetAccount,//product.provider,//config.escrow_account,
+			reward_activity: 'Sell Product',
+			buyer: user,
+			seller: product.provider,
+			product_id: product_id,
+			product_type: product.type,
+			product_price: item_price,
+			token_count: item_price,
+			actifit_percent_cut: actifit_percent_cut,
+			note: 'Sold Product '+product.name+ ' to '+user,
+			date: new Date(),
+		}
+		
+		try{
+			console.log(productSellTrans);
+			let transaction = await db.collection('token_transactions').insert(productSellTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing sell action. DB storing issue'});
+			return;
+		}*/
+			
+		//update current user's token balance & store to db
+		let new_token_count = cur_user_token_count - parseFloat(item_price);
+		user_info.tokens = new_token_count;
+		console.log('new_token_count:'+new_token_count);
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+		}catch(err){
+			console.log(err);
+		}
+	
+	}
+	
+	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
 });
 
 /* end point for tracking gadget buy orders */
@@ -4020,6 +4362,50 @@ app.get("/gadgetBought", async function(req, res) {
   //let token_match = await matchProductTrans(user, gadget_id);
   
   res.send(gadget_match);
+});
+
+
+//end point handles activating a bought gadget
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+	let user = req.params.user;
+	let gadgets = req.params.gadgets
+	
+	//make sure friend and user are different
+	if (req.params.benefic && req.params.benefic.replace('@','') == user){
+		res.send({'error': 'User & friend cannot be the same account'});
+		return;
+	}
+	
+	console.log('activateGadget');
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	console.log(ver_trx);
+	//ensure proper transaction
+	if (!ver_trx){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let gadget_entries = req.params.gadgets.split('-');
+	
+	for (let i=0;i<gadget_entries.length;i++){
+		//find item to activate and proceed activating
+		let gadget = new ObjectId(gadget_entries[i]);
+		let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
+		if (gadget_match){
+			gadget_match.status="active";
+			if (req.params.benefic){
+				gadget_match.benefic = req.params.benefic;
+				
+				//also send notification to the beneficiary about being set for this gadget
+				utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+			}
+			db.collection('user_gadgets').save(gadget_match);
+			res.send({'status': 'success'});
+		}else{
+			res.send({'error': 'Product not found'});
+			
+		}
+	}
 });
 
 
