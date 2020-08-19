@@ -4368,7 +4368,7 @@ app.get("/gadgetBought", async function(req, res) {
 //end point handles activating a bought gadget
 app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 	let user = req.params.user;
-	let gadgets = req.params.gadgets.split('-');
+	let gadgets = req.params.gadgets
 	
 	//make sure friend and user are different
 	if (req.params.benefic && req.params.benefic.replace('@','') == user){
@@ -4385,9 +4385,11 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 		return;
 	}
 	
-	for (let i=0;i<gadgets.length;i++){
+	let gadget_entries = req.params.gadgets.split('-');
+	
+	for (let i=0;i<gadget_entries.length;i++){
 		//find item to activate and proceed activating
-		let gadget = new ObjectId(gadgets[i]);
+		let gadget = new ObjectId(gadget_entries[i]);
 		let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
 		if (gadget_match){
 			gadget_match.status="active";

@@ -71,7 +71,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 	//schedule the prize event at 00:00 every X days
 	let prizeJob = schedule.scheduleJob({hour: 00, minute: 01}, function(){
-	  console.log('--- Start AFIT to S-E Move ---');
+	  console.log('--- Reward Gadget Buy Contest ---');
 	  processGadgetBuyPrize();//param test
 	});
 	
@@ -119,7 +119,7 @@ async function processGadgetBuyPrize() {
 		//let nextDrawDate = lastDrawDate+
 		console.log(today);
 		console.log(nextDrawDate);
-		
+		console.log((today.getTime() == nextDrawDate.getTime()));
 		//check if this is the proper date to kick off reward
 		if (today.getTime() == nextDrawDate.getTime()){
 			console.log('kick off draw reward');
