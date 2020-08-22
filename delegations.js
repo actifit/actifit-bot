@@ -191,6 +191,9 @@ async function processGadgetBuyPrize() {
 						
 						console.log(res);
 						
+						//send notification to the user about winning
+						utils.sendNotification(db, winner_name, 'actifit', 'prize_pool_draw_winner', 'Congratulations! You have won the prize pool of the gadget buy contest! ' + prizePoolValue + ' HIVE have been sent to your wallet', 'https://actifit.io/'+winner_name);
+						
 					}
 				});
 				
