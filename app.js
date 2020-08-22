@@ -1688,6 +1688,39 @@ app.get('/activeGadgetBuyTickets/', async function (req, res) {
 	
 });
 
+
+//end point for fetching a user's active buy gadget tickets during draw period
+app.get('/userActiveGadgetBuyTicketsByUser/', async function (req, res) {
+	//fetch last draw date, and start counting tickets since
+	let drawData = await utils.grabLastDrawData(db);
+	
+	let startDate = moment(drawData.drawDate).format('YYYY-MM-DD');
+	
+	
+	console.log("startDate:"+startDate);//+" endDate:"+endDate);
+	
+	let result = await db.collection('gadget_buy_tickets').aggregate([
+		{$match: 
+			{
+				date: {
+					$gte: new Date(startDate),
+					//$lte: new Date(startDate)
+				},
+			},
+		},
+		{$group:
+			{
+			   _id: '$user',
+			   tickets_collected: { $sum: "$count" },
+			   /*entries: { $sum: 1 }*/
+			}
+		}
+	   ]).toArray();
+
+	res.send({"userCount": result.length, "result": result});
+	
+});
+
 //end point for fetching a user's active buy gadget tickets during draw period
 app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
 	//fetch last draw date, and start counting tickets since
