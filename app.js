@@ -1716,8 +1716,11 @@ app.get('/userActiveGadgetBuyTicketsByUser/', async function (req, res) {
 			}
 		}
 	   ]).toArray();
-
-	res.send({"userCount": result.length, "result": result});
+	let ticketCount = 0;
+	for (let i=0;i<result.length;i++){
+		ticketCount += result[i].tickets_collected;
+	}
+	res.send({"userCount": result.length, "ticketCount": ticketCount, "result": result});
 	
 });
 
