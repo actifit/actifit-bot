@@ -1625,6 +1625,9 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 				date: new Date(),
 			}
 			let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+			
+			//insert notification to user about new ticket
+			utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'You collected a ticket for purchasing gadget "' + product.name + ' - L'+ product.level + '" to enter Actifit Gadget Prize Draw!', 'https://actifit.io/'+user);
 		}
 	}
 	
@@ -4422,7 +4425,7 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 	}
 	
 	let gadget_entries = req.params.gadgets.split('-');
-	
+	let err = '';
 	for (let i=0;i<gadget_entries.length;i++){
 		//find item to activate and proceed activating
 		let gadget = new ObjectId(gadget_entries[i]);
@@ -4436,11 +4439,15 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 				utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
 			}
 			db.collection('user_gadgets').save(gadget_match);
-			res.send({'status': 'success'});
-		}else{
-			res.send({'error': 'Product not found'});
 			
+		}else{
+			err = 'Product not found';
 		}
+	}
+	if (err != ''){
+		res.send({'error': err});
+	}else{
+		res.send({'status': 'success'});
 	}
 });
 
