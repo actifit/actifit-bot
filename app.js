@@ -732,6 +732,10 @@ app.post('/loginAuth', async function (req, res) {
     }
 });
 
+app.get('/getDailyDelegationPool/', async function(req, res){
+	res.send({'hive_pool': config.weekly_rewards_limit, 'steem_pool': config.weekly_rewards_limit});
+});
+
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await grabUserTokensFunc(req.params.user);
@@ -767,17 +771,28 @@ app.get('/transactionsByType/', async function (req, res) {
 	let transactions = {};
 	let proceed = false;
 	let dateSort = 1;
+	let sortQuery = {};
 	if (req.query.type){
 		proceed = true;
 		query = {reward_activity: req.query.type}
 		
 	}
+	if (req.query.chain){
+		query['chain'] = req.query.chain;
+	}
 	if (req.query.datesort){
 		dateSort = parseInt(req.query.datesort)
-		
+		sortQuery = {date: dateSort};
+	}else if (req.query.sortByToken && !isNaN(req.query.sortByToken)){
+		sortQuery = {token_count: parseInt(req.query.sortByToken)};
 	}
-	let startDate = '';
-	let endDate = '';
+	console.log(sortQuery);
+	//default end date as yesterday
+	let endDate = moment(moment().utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');
+	//default start date as day before
+	let startDate = moment(moment(endDate).utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');;	
+	console.log('startDate:'+startDate);
+	console.log('endDate:'+endDate);
 	if (req.query.startDate){
 		startDate = moment(moment(req.query.startDate).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
 	}
@@ -786,21 +801,22 @@ app.get('/transactionsByType/', async function (req, res) {
 		endDate = moment(moment(req.query.endDate).utc().endOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
 	}
 	if (startDate && endDate){
-		query["date"] = {
+		query['date'] = {
 					"$lt": new Date(endDate),
 					"$gte": new Date(startDate)
 				};
 	}else if (startDate){
-		query["date"] = {
+		query['date'] = {
 					"$gte": new Date(startDate)
 				};
 	}
 	console.log(query);
 	if (proceed){
-		transactions = await db.collection('token_transactions').find(query).sort({date: dateSort}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions').find(query).sort(sortQuery).limit(1000).toArray();
 	}
     res.send(transactions);
 });
+
 
 /* end point for user signup display (per user or general signups */
 app.get('/signups/:user?', async function (req, res) {
