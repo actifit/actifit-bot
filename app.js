@@ -732,6 +732,10 @@ app.post('/loginAuth', async function (req, res) {
     }
 });
 
+app.get('/getDailyDelegationPool/', async function(req, res){
+	res.send({'hive_pool': config.weekly_rewards_limit, 'steem_pool': config.weekly_rewards_limit});
+});
+
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
 	let user = await grabUserTokensFunc(req.params.user);
@@ -767,17 +771,28 @@ app.get('/transactionsByType/', async function (req, res) {
 	let transactions = {};
 	let proceed = false;
 	let dateSort = 1;
+	let sortQuery = {};
 	if (req.query.type){
 		proceed = true;
 		query = {reward_activity: req.query.type}
 		
 	}
+	if (req.query.chain){
+		query['chain'] = req.query.chain;
+	}
 	if (req.query.datesort){
 		dateSort = parseInt(req.query.datesort)
-		
+		sortQuery = {date: dateSort};
+	}else if (req.query.sortByToken && !isNaN(req.query.sortByToken)){
+		sortQuery = {token_count: parseInt(req.query.sortByToken)};
 	}
-	let startDate = '';
-	let endDate = '';
+	console.log(sortQuery);
+	//default end date as yesterday
+	let endDate = moment(moment().utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');
+	//default start date as day before
+	let startDate = moment(moment(endDate).utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');;	
+	console.log('startDate:'+startDate);
+	console.log('endDate:'+endDate);
 	if (req.query.startDate){
 		startDate = moment(moment(req.query.startDate).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
 	}
@@ -786,21 +801,22 @@ app.get('/transactionsByType/', async function (req, res) {
 		endDate = moment(moment(req.query.endDate).utc().endOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
 	}
 	if (startDate && endDate){
-		query["date"] = {
+		query['date'] = {
 					"$lt": new Date(endDate),
 					"$gte": new Date(startDate)
 				};
 	}else if (startDate){
-		query["date"] = {
+		query['date'] = {
 					"$gte": new Date(startDate)
 				};
 	}
 	console.log(query);
 	if (proceed){
-		transactions = await db.collection('token_transactions').find(query).sort({date: dateSort}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions').find(query).sort(sortQuery).limit(1000).toArray();
 	}
     res.send(transactions);
 });
+
 
 /* end point for user signup display (per user or general signups */
 app.get('/signups/:user?', async function (req, res) {
@@ -1270,15 +1286,20 @@ app.get('/userBadges/:user', async function (req, res) {
 	res.send(user);
 });
 
-/* end point for fetching user's friends */
-app.get('/userFriends/:user', async function (req, res) {
-	let friendsA = await db.collection('friends').find({userA: req.params.user}, {fields : {userB:1, _id:0}}).toArray();
-	let friendsB = await db.collection('friends').find({userB: req.params.user}, {fields : {userA:1, _id:0}}).toArray();
+async function getUserFriends(user){
+	let friendsA = await db.collection('friends').find({userA: user}, {fields : {userB:1, _id:0}}).toArray();
+	let friendsB = await db.collection('friends').find({userB: user}, {fields : {userA:1, _id:0}}).toArray();
 	console.log(friendsA);
 	console.log(friendsB);
 	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
 	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
-	res.send(friendsA.concat(friendsB));
+	return friendsA.concat(friendsB);
+}
+
+/* end point for fetching user's friends */
+app.get('/userFriends/:user', async function (req, res) {
+	let friendList = await getUserFriends(req.params.user);
+	res.send(friendList);
 });
 
 /* end point for marking a notification as read */
@@ -4767,6 +4788,31 @@ claimAndCreateAccount = async function (req){
 
 };
 
+//send notification
+app.get('/sendNotification', async function(req,res){
+	let passed_var = eval("req.query."+config.verifyNotifParam);
+	//console.log(passed_var);
+	//make sure needed security var is passed, and with proper value
+	if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+		res.send('{}');
+	}else{
+		if (req.query.notifType == 'new_post'){
+			//first notify post owner
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			
+			//fetch user friends
+			let friends = await getUserFriends(req.query.user);
+			//send out a notification for each friend
+			for (let i=0;i<friends.length;i++){
+				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			}
+			res.send('{status: success}');
+		}else{
+			res.send('{error: not supported}');
+		}
+		//
+	}
+});
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
 app.get('/appendVerifiedPost', async function(req,res){
