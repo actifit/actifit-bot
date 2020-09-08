@@ -1286,15 +1286,20 @@ app.get('/userBadges/:user', async function (req, res) {
 	res.send(user);
 });
 
-/* end point for fetching user's friends */
-app.get('/userFriends/:user', async function (req, res) {
-	let friendsA = await db.collection('friends').find({userA: req.params.user}, {fields : {userB:1, _id:0}}).toArray();
-	let friendsB = await db.collection('friends').find({userB: req.params.user}, {fields : {userA:1, _id:0}}).toArray();
+async function getUserFriends(user){
+	let friendsA = await db.collection('friends').find({userA: user}, {fields : {userB:1, _id:0}}).toArray();
+	let friendsB = await db.collection('friends').find({userB: user}, {fields : {userA:1, _id:0}}).toArray();
 	console.log(friendsA);
 	console.log(friendsB);
 	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
 	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
-	res.send(friendsA.concat(friendsB));
+	return friendsA.concat(friendsB);
+}
+
+/* end point for fetching user's friends */
+app.get('/userFriends/:user', async function (req, res) {
+	let friendList = await getUserFriends(req.params.user);
+	res.send(friendList);
 });
 
 /* end point for marking a notification as read */
@@ -4783,6 +4788,31 @@ claimAndCreateAccount = async function (req){
 
 };
 
+//send notification
+app.get('/sendNotification', async function(req,res){
+	let passed_var = eval("req.query."+config.verifyNotifParam);
+	//console.log(passed_var);
+	//make sure needed security var is passed, and with proper value
+	if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+		res.send('{}');
+	}else{
+		if (req.query.notifType == 'new_post'){
+			//first notify post owner
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			
+			//fetch user friends
+			let friends = await getUserFriends(req.query.user);
+			//send out a notification for each friend
+			for (let i=0;i<friends.length;i++){
+				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			}
+			res.send('{status: success}');
+		}else{
+			res.send('{error: not supported}');
+		}
+		//
+	}
+});
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
 app.get('/appendVerifiedPost', async function(req,res){
