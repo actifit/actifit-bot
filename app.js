@@ -1507,6 +1507,41 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 });
 
 
+app.get('/mintProducts', async function(req,res){
+	if (req.query.secret != config.prodMintSecret){
+		res.send({error: 'error'});
+	}else{
+		let minAmount = 0;
+		let mintedAmount = 50;
+		if (req.query.minAmount){
+			minAmount = parseInt(req.query.minAmount);
+		}
+		console.log('minAmount:'+minAmount);
+		if (req.query.mintedAmount){
+			mintedAmount = parseInt(req.query.mintedAmount);
+		}
+		console.log('mintedAmount:'+mintedAmount);
+		//find products with min amount
+		let trans = await db.collection('products').update(
+			{
+				type: 'ingame',
+				count: {
+					$lte: minAmount
+				}
+			},
+			{
+				$inc: { count: mintedAmount }
+			},
+			{
+				multi: true
+			}
+		);
+		console.log(trans);
+		res.send({status: trans});
+	}
+});
+
+
 /* end point for tracking multi-gadget buy orders */
 app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
 	
@@ -4813,6 +4848,7 @@ app.get('/sendNotification', async function(req,res){
 		//
 	}
 });
+
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
 app.get('/appendVerifiedPost', async function(req,res){
