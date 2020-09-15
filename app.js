@@ -2655,17 +2655,20 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			return;
 		}*/
 		
-		//make sure user has at least 0.1 AFITX to move tokens
-		if (tot_afitx_bal < 0.1){
-			res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
-			return;
-		}
-		  //console.log(amount_to_powerdown);
-		  //console.log(this.afitx_se_balance);
-		  //calculate amount that can be transferred daily
-		if (amount / 100 > tot_afitx_bal){
-			res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
-			return;
+		//conditions only apply if he is requesting more than 300 AFIT move
+		if (amount > config.free_movable_afit_day ){
+			//make sure user has at least 0.1 AFITX to move tokens 
+			if (tot_afitx_bal < 0.1){
+				res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
+				return;
+			}
+			  //console.log(amount_to_powerdown);
+			  //console.log(this.afitx_se_balance);
+			  //calculate amount that can be transferred daily
+			if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > tot_afitx_bal){
+				res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
+				return;
+			}
 		}
 		
 		//register transaction for upcoming powering down cycle
@@ -2678,7 +2681,7 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		let tokenPowerDownTrans = {
 			user: user,
 			daily_afit_transfer: amount,
-			min_afitx: amount / 100,
+			min_afitx: (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio,
 			date: new Date(),
 		}
 		
@@ -3500,7 +3503,12 @@ app.get('/exchangeAFITPrice', async function(req, res) {
 
 /* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
-	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	//let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	let curAFITPrice = {
+		_id: 1,
+		unit_price_usd: exchangeAfitPrice.afitHiveLastUsdPrice,
+		date: exchangeAfitPrice.lastUpdated
+	}
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
 	res.send(curAFITPrice);
 });

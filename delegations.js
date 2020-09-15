@@ -373,15 +373,19 @@ async function moveAFITToSE(testMode){
 					//return;
 				}
 				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
-				//make sure user has at least 0.1 AFITX to move tokens
-				if (afitx_tot_bal < 0.1){
-					userHasProperFunds = false;
-				}
-				  //console.log(amount_to_powerdown);
-				  //console.log(this.afitx_se_balance);
-				  //calculate amount that can be transferred daily
-				if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_tot_bal){
-					userHasProperFunds = false;
+				let amount = parseFloat(entry.daily_afit_transfer);
+				if (amount > config.free_movable_afit_day ){
+					//make sure user has at least 0.1 AFITX to move tokens
+					if (afitx_tot_bal < 0.1){
+						userHasProperFunds = false;
+					}
+					  //console.log(amount_to_powerdown);
+					  //console.log(this.afitx_se_balance);
+					  //calculate amount that can be transferred daily
+					if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > afitx_tot_bal){
+						userHasProperFunds = false;
+					}
+					
 				}
 				
 				//make sure user has enough funds to send to SE
