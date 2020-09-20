@@ -175,21 +175,21 @@ async function processGadgetBuyPrize() {
 							db.collection('gadget_buy_prize_draw').insert(drawInfo);
 						}
 						
-						memo= 'Funds to buy back from Actifit random gadget purchase prize!';
-						
 						//send 25% of funds to buy back tokens
-						
-						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.buy_account, parseFloat(buyBackAmount).toFixed(3) + ' ' + currency, memo);
-						
-						console.log(res);
+						setTimeout(async function(){
+							memo= 'Funds to buy back from Actifit random gadget purchase prize!';
+							res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.buy_account, parseFloat(buyBackAmount).toFixed(3) + ' ' + currency, memo);
+							
+							console.log(res);
+						}, 3000);
 						
 						//keep 25% of funds to actifit project
-						memo= 'Funds to keep as 25% based on prize results.';
+						setTimeout(async function(){
+							memo = 'Funds to keep as 25% based on prize results.';
+							res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.full_pay_benef_account, parseFloat(projectSupportAmount).toFixed(3) + ' ' + currency, memo);
 						
-						
-						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.full_pay_benef_account, parseFloat(projectSupportAmount).toFixed(3) + ' ' + currency, memo);
-						
-						console.log(res);
+							console.log(res);
+						}, 6000);
 						
 						//send notification to the user about winning
 						utils.sendNotification(db, winner_name, 'actifit', 'prize_pool_draw_winner', 'Congratulations! You have won the prize pool of the gadget buy contest! ' + prizePoolValue + ' HIVE have been sent to your wallet', 'https://actifit.io/'+winner_name);
