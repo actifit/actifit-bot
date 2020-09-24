@@ -1506,6 +1506,28 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	res.send({'status': 'Success'});
 });
 
+app.post('/registerUserNotification', async function(req,res){
+	console.log('>>>registerUserNotification');
+	if (!req.body || !req.body.token || !req.body.user || !req.body.app){
+		res.send({error: 'error'});
+		return;
+	}
+	//store user/token combination
+	let userTokenEntry = {
+		token: req.body.token,
+		user: req.body.user,
+		app: req.body.app,
+		date: new Date()
+	};
+	try{
+		db.collection('user_app_notif_token').insert(userTokenEntry);
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
+
 
 app.get('/mintProducts', async function(req,res){
 	if (req.query.secret != config.prodMintSecret){

@@ -1039,6 +1039,58 @@ function vestsToSteemPower (vests) {
   const steemPower = (totalSteem * (vests / totalVests))
   return steemPower
 }
+/*
+alignGadgetTicketEntries();
+
+async function alignGadgetTicketEntries () {
+  console.log('>>>>>>>>alignGadgetTicketEntries<<<<<<<<<<<')
+  let start = -1;
+  let ended = false;
+  let account = config.gadget_buy_account;
+  let limit = 2;//(start < 0) ? 3000 : Math.min(start, 3000)
+  console.log('Account: ' + account + ' - Start: ' + start + ' - Limit: ' + limit)
+  try {
+    // Query account history for delegations
+    const transactions = await hiveClient.database.call('get_account_history', [account, start, limit])
+    transactions.reverse()
+	
+	//let's only fetch a max of 5 days ago delegation transactions
+	
+	//today
+	start = moment().utc().startOf('date').toDate()
+	  
+	let to = moment(start).subtract(5, 'days').toDate()
+	let end = moment(to).format()
+	
+    for (let txs of transactions) {
+	  
+	  let tx_date = moment(txs[1].timestamp).format()
+	  
+      if (txs[0] === end || tx_date < end) {
+        console.log('--- Found last transaction ---')
+        ended = true
+        break
+      }
+      let op = txs[1].op
+      lastTrans = txs[0]
+      // Look for delegation operations
+      if (op[0] === 'transfer' && op[1].to === account) {
+		console.log(txs);
+        //ensure transaction is properly processed
+		let req = new Object();
+		req.params = new Object();
+		req.params.user = op[1].from;
+		req.params.gadgets = op[1].memo;
+		
+		utils.buyMultiGadgetHiveUtls();
+		
+      }
+    }
+    
+  }catch (err) {
+    console.log(err);
+  }
+}*/
 
 
 async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
