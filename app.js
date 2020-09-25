@@ -55,6 +55,8 @@ MongoClient.connect(url, function(err, client) {
 	  
 	  //disableUserLogin();
 	  
+	  //utils.sendFirebaseNotification(db, 'arabpromovault');
+	  
 	} else {
 		utils.log(err, 'api');
 	}
@@ -658,6 +660,10 @@ app.get('/userSettings/:user', async function (req, res) {
 	}
 });
 
+
+app.get('/notificationTypes/', async function (req, res) {
+	res.send(config.notificationTypes);
+});
 
 app.post('/loginAuth', async function (req, res) {
 	console.log('login');

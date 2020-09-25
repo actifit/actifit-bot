@@ -3,6 +3,17 @@ const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
+getConfig();
+
+const fbadmin = require('firebase-admin');
+
+let serviceAccount = require(config.GOOGLE_APPLICATION_CREDENTIALS);
+
+fbadmin.initializeApp({
+  credential: fbadmin.credential.cert(serviceAccount),
+  databaseURL: "https://actifit-io.firebaseio.com"
+});
+
 var _ = require('lodash');
 const axios = require('axios');
 const dsteem = require('dsteem');
@@ -11,7 +22,7 @@ const dhive = require('@hiveio/dhive');
 
 const moment = require('moment')
 
-getConfig();
+
 
 const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
@@ -1478,6 +1489,55 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	return false;
 }
 
+async function findUserMatchingDevice(db, user){
+	
+	let result = await db.collection('user_app_notif_token').find({user: user}).toArray();
+	return result;
+}
+
+async function sendFirebaseNotification(db, user){
+	
+	/****** Reference https://firebase.google.com/docs/cloud-messaging/send-message ***********/
+	console.log('sendFirebaseNotification');
+	//fetch user's device/token
+	let device = await findUserMatchingDevice(db, user);
+	console.log(device);
+	//only send message if device is found
+	if (Array.isArray(device) && device.length>0){
+		
+		let registrationToken = device[0].token;
+
+		var message = {
+		  notification: {
+			title: 'Test Notification',
+			body: 'Test Notification Content Text \n Test more \n More content'
+		  },
+		  /*data: {
+			score: '850',
+			time: '2:45'
+		  },*/
+		  //send specific recipient via fetched token
+		  token: registrationToken
+		  //variation for multi recipients
+		  //tokens: registrationTokens []
+		  //variation for topic based msgs
+		  //topic: topicName,
+		};
+
+	// Send a message to the device corresponding to the provided
+	// registration token.
+		fbadmin.messaging().send(message)
+		  .then((response) => {
+			// Response is a message ID string.
+			console.log('Successfully sent message:', response);
+		  })
+		  .catch((error) => {
+			console.log('Error sending message:', error);
+		  });
+	  
+	}
+}
+
 async function sendNotification(db, user, action_taker, type, details, url){
 	let notification_entry = {
 		user: user,
@@ -1491,6 +1551,10 @@ async function sendNotification(db, user, action_taker, type, details, url){
 	try{
 		let transaction = await db.collection('notifications').insert(notification_entry);
 		console.log('success inserting notification data');
+		
+		//also send out a firebase message
+		
+		
 		return true;
 	}catch(err){
 		console.log('error');
@@ -1579,5 +1643,6 @@ async function getGadgetBuyTickets(db){
    proceedAfitxMove: proceedAfitxMove,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    getGadgetBuyTickets: getGadgetBuyTickets,
-   grabLastDrawData: grabLastDrawData
+   grabLastDrawData: grabLastDrawData,
+   sendFirebaseNotification: sendFirebaseNotification
  }
