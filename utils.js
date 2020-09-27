@@ -1411,6 +1411,8 @@ async function rewardPost(post_url, vp, bchain){
 async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
 	let trx;
 	console.log('verifyGadgetTransaction');
+	console.log('item_price:'+item_price);
+	console.log('item_price_alt:'+item_price_alt);
 	try{
 		if (bchain == 'STEEM'){
 			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
@@ -1422,11 +1424,11 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 			&& trx.operations.length > 0){
 				console.log(trx.operations[0][1]);
 				let trx_details = trx.operations[0][1];
-				let amnt = trx_details.amount.split(' ')[0];;
+				let amnt = parseFloat(trx_details.amount.split(' ')[0]);
 				//let json_data = JSON.parse(trx_details.json);
 				console.log(trx_details);
 				if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
-					&& (amnt >= item_price || amnt >= item_price_alt)){
+					&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
 					return {'success': true, 'amount_hive': amnt};
 				}
 		}

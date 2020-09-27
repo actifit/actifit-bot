@@ -487,9 +487,9 @@ let checkHdrs = (req, res, next) => {
 			//check if user is validated with stored encrypted posting key
 			let db_col = db.collection('user_login_token');
 			//find existing login entry in DB
-			let user_tkn = await db_col.findOne({user: user, token: req.query.token});
-			//console.log(user_tkn);
-			if (!user_tkn || !user_tkn.ppkey){
+			let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
+			console.log(user_tkn);
+			if (!Array.isArray(user_tkn) || user_tkn.length == 0){
 				console.error('Authentication failed. Key not found');
 				res.send({error: 'Authentication failed. Key not found'});
 				return;
@@ -1634,6 +1634,7 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 	//ensure proper transaction
 	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
 	if (!ver_trx || !ver_trx.success){
+		console.log(ver_trx);
 		res.send({status: 'error'});
 		return;
 	}
