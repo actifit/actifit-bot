@@ -1495,7 +1495,7 @@ async function findUserMatchingDevice(db, user){
 	return result;
 }
 
-async function sendFirebaseNotification(db, user){
+async function sendFirebaseNotification(db, user, url){
 	
 	/****** Reference https://firebase.google.com/docs/cloud-messaging/send-message ***********/
 	console.log('sendFirebaseNotification');
@@ -1511,6 +1511,9 @@ async function sendFirebaseNotification(db, user){
 		  notification: {
 			title: 'Test Notification',
 			body: 'Test Notification Content Text \n Test more \n More content'
+		  },
+		  data: {
+			url: url
 		  },
 		  /*data: {
 			score: '850',
