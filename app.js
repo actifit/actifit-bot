@@ -652,6 +652,7 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 
 app.post('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
+	console.log(req.body);
 	if (req.body && req.body.user && req.body.settings){
 		newSettings = JSON.parse(req.body.settings);
 	}else{
