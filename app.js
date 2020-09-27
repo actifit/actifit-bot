@@ -650,26 +650,6 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 });
 
 
-app.post('/updateSettings/', checkHdrs, async function (req, res) {
-	let newSettings;
-	utils.log(req.body);
-	if (req.body && req.body.user && req.body.settings){
-		newSettings = JSON.parse(req.body.settings);
-	}else{
-		res.send({error:'invalid request'})
-		return;
-	}
-	console.log(newSettings);
-	try{
-		let setgs = await db.collection('user_settings').replaceOne({user: req.body.user}, {user: req.body.user, settings: newSettings}, {upsert : true });
-		//console.log(setgs);
-		res.send({success: true});
-	}catch(err){
-		res.send({error: true});
-	}
-});
-
-
 app.get('/userSettings/:user', async function (req, res) {
 	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
 	console.log(setgs);
