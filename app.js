@@ -494,7 +494,7 @@ let checkHdrs = (req, res, next) => {
 				res.send({error: 'Authentication failed. Key not found'});
 				return;
 			}
-			req.ppkey = user_tkn.ppkey;
+			req.ppkey = user_tkn[0].ppkey;
 			req.decoded = decoded;
 			next();
 		  }
