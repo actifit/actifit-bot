@@ -1497,7 +1497,7 @@ async function findUserMatchingDevice(db, user){
 	return result;
 }
 
-async function sendFirebaseNotification(db, user, url){
+async function sendFirebaseNotification(db, user, details, url){
 	
 	/****** Reference https://firebase.google.com/docs/cloud-messaging/send-message ***********/
 	console.log('sendFirebaseNotification');
@@ -1511,16 +1511,12 @@ async function sendFirebaseNotification(db, user, url){
 
 		var message = {
 		  notification: {
-			title: 'Test Notification',
-			body: 'Test Notification Content Text \n Test more \n More content'
+			title: 'Actifit Notification',
+			body: details
 		  },
 		  data: {
 			url: url
 		  },
-		  /*data: {
-			score: '850',
-			time: '2:45'
-		  },*/
 		  //send specific recipient via fetched token
 		  token: registrationToken
 		  //variation for multi recipients
@@ -1543,27 +1539,43 @@ async function sendFirebaseNotification(db, user, url){
 	}
 }
 
-async function sendNotification(db, user, action_taker, type, details, url){
-	let notification_entry = {
-		user: user,
-		action_taker: action_taker,
-		type: type,
-		details: details,
-		url: url,
-		date: new Date(),
-		status: 'unread',
-	};
-	try{
-		let transaction = await db.collection('notifications').insert(notification_entry);
-		console.log('success inserting notification data');
-		
-		//also send out a firebase message
-		
-		
-		return true;
-	}catch(err){
-		console.log('error');
-		return false;
+async function sendNotification(db, user, action_taker, type, category, details, url){
+	//check if user has notifications enabled
+	let setgs = await db.collection('user_settings').findOne({user: user});
+	let proceed = true;
+	if (setgs && setgs.settings){
+		console.log(setgs.settings[config.mainNotificationsControl]);
+		if (setgs.settings[config.mainNotificationsControl] == false){
+			console.log('set false 1');
+			proceed = false;
+		}else if (setgs.settings[category] == false){
+			console.log('set false 2');
+			proceed = false;
+		}
+	}
+	console.log('proceed with notification :'+proceed);
+	if (proceed){
+		let notification_entry = {
+			user: user,
+			action_taker: action_taker,
+			type: type,
+			details: details,
+			url: url,
+			date: new Date(),
+			status: 'unread',
+		};
+		try{
+			let transaction = await db.collection('notifications').insert(notification_entry);
+			console.log('success inserting notification data');
+			
+			//also send out a firebase message
+			sendFirebaseNotification(db, user, details, url);
+			
+			return true;
+		}catch(err){
+			console.log('error');
+			return false;
+		}
 	}
 }
 
