@@ -11,7 +11,7 @@ let serviceAccount = require(config.GOOGLE_APPLICATION_CREDENTIALS);
 
 fbadmin.initializeApp({
   credential: fbadmin.credential.cert(serviceAccount),
-  databaseURL: "https://actifit-io.firebaseio.com"
+  databaseURL: config.databaseURL
 });
 
 var _ = require('lodash');
