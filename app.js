@@ -1531,7 +1531,7 @@ app.post('/registerUserNotification', async function(req,res){
 		date: new Date()
 	};
 	try{
-		db.collection('user_app_notif_token').insert(userTokenEntry);
+		db.collection('user_app_notif_token').update({user: req.body.user}, userTokenEntry, { upsert: true }));
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
