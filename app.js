@@ -720,6 +720,10 @@ app.post('/loginAuth', async function (req, res) {
 			if (req.body && req.body.keeploggedin){
 				user_tkn.keeploggedin = req.body.keeploggedin;
 			}
+			//keep record of login source
+			if (req.body && req.body.login_source){
+				user_tkn.loginsrc = req.body.login_source;
+			}
 			let db_save = await db_col.save(user_tkn);
 			
 			// return the JWT token for the future API calls
@@ -5162,7 +5166,11 @@ app.get('/getPendingTokenSwapTrans/', async function(req, res){
 
 /* end point for getting exchanges processed upvotes  */
 app.get('/getProcessedTokenSwapTrans/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: true}).sort({'date': 1}).toArray();
+	let maxLimit = 300;
+	if (req.query.limit){
+		maxLimit = req.query.limit;
+	}
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: true}).sort({'date': -1}).limit(maxLimit).toArray();
 	//generate total AFIT value as well
 	let afit_count = 0;
 	for (let i=0;i<tokenSwapTrans.length;i++){
