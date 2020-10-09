@@ -721,8 +721,8 @@ app.post('/loginAuth', async function (req, res) {
 				user_tkn.keeploggedin = req.body.keeploggedin;
 			}
 			//keep record of login source
-			if (req.body && req.body.login_source){
-				user_tkn.loginsrc = req.body.login_source;
+			if (req.body && req.body.loginsource){
+				user_tkn.loginsrc = req.body.loginsource;
 			}
 			let db_save = await db_col.save(user_tkn);
 			
