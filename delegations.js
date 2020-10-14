@@ -1,4 +1,5 @@
 const dsteem = require('dsteem')
+const dhive = require('@hiveio/dhive')
 //const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
@@ -9,13 +10,21 @@ const config = utils.getConfig()
 
 const client = new dsteem.Client(config.active_node)
 
-const hiveClient = new dsteem.Client(config.active_hive_node)
+const hiveClient = new dhive.Client(config.active_hive_node)
+
+hiveClient.updateOperations(true);
 
 const MongoClient = require('mongodb').MongoClient
 
 const testRun = false;
 
 const hive = require('@hiveio/hive-js');
+
+const history_limit = 500;
+
+hive.config.set('rebranded_api','true');
+hive.broadcast.updateOperations();
+
 hive.api.setOptions({ url: config.active_hive_node });
 
 let db
@@ -668,7 +677,11 @@ async function getBenefactorPosts (account, start) {
   
   // Query account history for delegations
   properties = await nodeLink.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   //console.log(properties);
   const transactions = await client.database.call('get_account_history', [account, txStart, limit])
@@ -831,6 +844,7 @@ async function startProcess (days, steemOnlyReward) {
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
 		await processDelegations(hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		//await processDelegationsHive(hive, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 	}
 	//TEMP BREAK
 	//return;
@@ -955,6 +969,7 @@ async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
     const activeDelegations = values[0].users
 	//console.log('***');
 	//console.log(values[1]);
+	//console.log(activeDelegations);
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = values[0].totalSteem
@@ -1093,11 +1108,12 @@ async function alignGadgetTicketEntries () {
 }*/
 
 
+
 async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
   let delegationTransactions = []
   let lastTrans = start
   let ended = false
-  let limit = (start < 0) ? 3000 : Math.min(start, 3000)
+  let limit = (start < 0) ? history_limit : Math.min(start, history_limit);
   console.log('Account: ' + account + ' - Start: ' + start + ' - Limit: ' + limit + ' - Last Txs: ' + end)
   try {
     // Query account history for delegations
@@ -1170,14 +1186,18 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
 async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, totalSBD) {
   if (!totalSBD) totalSBD = 0
   if (!totalSp) totalSp = 0
-  let limit = (txStart < 0) ? 10000 : Math.min(txStart, 10000)
+  let limit = (txStart < 0) ? history_limit : Math.min(txStart, history_limit);
   start = moment(start).format()
   end = moment(end).format()
   console.log(start)
   console.log(end)
   // Query account history for delegations
   properties = await nodeLink.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   const transactions = await nodeLink.database.call('get_account_history', [config.pay_account, txStart, limit])
   transactions.reverse()
@@ -1189,10 +1209,21 @@ async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, tot
       if (op[0] === 'comment_benefactor_reward') {
 		//console.log(op[1]);
 		//SP is the sum of conversting vesting payout to SP, and appending any STEEM payouts
-        let newSp = vestsToSteemPower(op[1].vesting_payout) + parseFloat(op[1].steem_payout.split(' ')[0])
+        let newSp = vestsToSteemPower(op[1].vesting_payout);
+		//console.log(op[1]);
+		if (op[1].steem_payout){
+			newSp += parseFloat(op[1].steem_payout.split(' ')[0])
+		}else{
+			newSp += parseFloat(op[1].hive_payout.split(' ')[0])
+		}
         totalSp = totalSp + newSp
-		let newSBD = op[1].sbd_payout.split(' ')[0]
-		totalSBD += parseFloat(newSBD)
+		if (op[1].sbd_payout){
+			let newSBD = op[1].sbd_payout.split(' ')[0]
+			totalSBD += parseFloat(newSBD)
+		}else{
+			let newSBD = op[1].hbd_payout.split(' ')[0]
+			totalSBD += parseFloat(newSBD)
+		}
       }
     } else if (date < start) break
   }
@@ -1200,7 +1231,7 @@ async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, tot
   let lastTx = transactions[transactions.length - 1]
   let lastDate = moment(lastTx[1].timestamp).format()
   // console.log(lastDate)
-  if (lastDate >= start) return getBenefactorRewards(nodeLink, start, totalSp, lastTx[0])
+  if (lastDate >= start) return getBenefactorRewards(nodeLink, start, end, lastTx[0], totalSp, totalSBD)
 
   console.log('-- Processed rewards ---')
   // console.log(totalSp.toFixed(3))
@@ -1307,8 +1338,10 @@ async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, active
   //console.log('get Acc Power');
   //console.log(activeDelColLink);
   // Get active delegations for the week
+  console.log('getAcumulatedSteemPower');
+  //console.log(delTrxCol);
   let activeDelegations = await getActiveDelegations(delTrxCol, from, excludeOn)
-  //console.log(activeDelegations);
+  console.log(activeDelegations);
   // Get transactions of the processed week
   let weekTxs 
   if (excludeOn){
@@ -1394,7 +1427,11 @@ function upsertRewardTransaction (reward) {
 async function updateProperties () {
   // Set STEEM global properties
   properties = await client.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
 }
 

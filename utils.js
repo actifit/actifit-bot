@@ -26,12 +26,17 @@ const moment = require('moment')
 
 const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
+
+hiveClient.updateOperations(true);
 		
 var config;
 
 let th_id = -1;
 
 steem.api.setOptions({ url: config.active_node });
+
+hive.config.set('rebranded_api', true)
+hive.broadcast.updateOperations()
 
 hive.api.setOptions({ url: config.active_hive_node });
 
