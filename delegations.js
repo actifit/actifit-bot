@@ -20,7 +20,7 @@ const testRun = false;
 
 const hive = require('@hiveio/hive-js');
 
-const history_limit = 500;
+const history_limit = 3000;
 
 hive.config.set('rebranded_api','true');
 hive.broadcast.updateOperations();
