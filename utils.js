@@ -1418,6 +1418,7 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 	console.log('verifyGadgetTransaction');
 	console.log('item_price:'+item_price);
 	console.log('item_price_alt:'+item_price_alt);
+	//item_price_alt = 0.001;
 	try{
 		if (bchain == 'STEEM'){
 			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
