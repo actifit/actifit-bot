@@ -20,10 +20,12 @@ const testRun = false;
 
 const hive = require('@hiveio/hive-js');
 
-const history_limit = 3000;
+const history_limit = 1000;
 
-hive.config.set('rebranded_api','true');
-hive.broadcast.updateOperations();
+//hive.config.set('rebranded_api','true');
+//hive.broadcast.updateOperations();
+
+hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node });
 

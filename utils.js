@@ -35,8 +35,11 @@ let th_id = -1;
 
 steem.api.setOptions({ url: config.active_node });
 
-hive.config.set('rebranded_api', true)
-hive.broadcast.updateOperations()
+//useless now with newer version of hive-js
+//hive.config.set('rebranded_api', true)
+//hive.broadcast.updateOperations()
+
+hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node });
 
