@@ -393,8 +393,21 @@ var HOURS = 60 * 60;
 			let th_id = setInterval(async function(){
 				console.log('check funds');
 				console.log(bchain);
-				let chainLnk = await setProperNode(bchain);
-				chainLnk.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
+				//let chainLnk = await setProperNode(bchain);
+				
+				let transactions;
+				//transactions.reverse()
+				  
+				
+				if (bchain == 'STEEM'){
+					transactions = await client.database.call('get_account_history', [config.exchange_account, -1, 300]);
+				}else{
+					transactions = await hiveClient.database.call('get_account_history', [config.exchange_account, -1, 300]);
+				}
+				console.log("newestTxId:"+transactions[0][0]);
+				//  for (let txs of transactions) {
+				
+				//chainLnk.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -428,7 +441,7 @@ var HOURS = 60 * 60;
 						clearInterval(th_id);
 						resolve(tx_id);
 					}
-				});
+				//});
 			}, 5000);
 		});
 	}
@@ -440,8 +453,17 @@ var HOURS = 60 * 60;
 		return new Promise((resolve, reject) => {
 			let th_id = setInterval(async function(){
 				console.log('check buy funds');
-				let chainLnk = await setProperNode(bchain);
-				chainLnk.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
+				//let chainLnk = await setProperNode(bchain);
+				
+				let transactions;
+				if (bchain == 'STEEM'){
+					transactions = await client.database.call('get_account_history', [config.buy_account, -1, 800]);
+				}else{
+					transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
+				}
+				console.log("newestTxId:"+transactions[0][0]);
+				
+				//chainLnk.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -474,7 +496,7 @@ var HOURS = 60 * 60;
 						clearInterval(th_id);
 						resolve(tx_id);
 					}
-				});
+				//});
 			}, 5000);
 		});
 	}

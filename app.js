@@ -3383,6 +3383,17 @@ app.get('/getCharityRewards', async function(req, res) {
 
 
 
+/* end point for returning full payout posts data */
+app.get('/getFullAFITPayPosts', async function(req, res) {
+
+	await db.collection('token_transactions').find(
+		{"reward_activity": "Full AFIT Payout"}).sort({'date': -1}).limit(1000).toArray(function(err, results) {
+		res.send(results);
+		console.log(results);
+	   });
+
+});
+
 /* end point for returning total number of AFIT tokens paid in return for full AFIT pay along with matching STEEM + SBD */
 app.get('/getFullAFITPayStats', async function(req, res) {
 

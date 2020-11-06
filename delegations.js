@@ -734,7 +734,13 @@ async function getBenefactorPosts (account, start) {
 		let steemPureToAFIT = steemPureInUSD / curAFITPrice.unit_price_usd;
 		matchingAFIT += steemPureToAFIT;
 		
-		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		let tgtVal = '';
+		if (op[1].sbd_payout){
+			tgtVal = op[1].sbd_payout;
+		}else{
+			tgtVal = op[1].hbd_payout;
+		}
+		let rewardedSBD = parseFloat(tgtVal.split(' ')[0])
 		
 		console.log("rewardedSBD:"+rewardedSBD);
 		
