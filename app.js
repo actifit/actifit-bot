@@ -5253,7 +5253,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 		//decrease count
 		let tokenExchangeTrans = {
 			user: user,
-			reward_activity: 'Exchange AFIT To STEEM Upvote',
+			reward_activity: 'Exchange AFIT To Upvote',
 			token_count: -paid_tokens,
 			date: new Date(),
 		}
@@ -5333,9 +5333,9 @@ app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
 		//decrease count
 		let tokenExchangeTrans = {
 			user: outdatedTokenSwapTrans[i].user,
-			reward_activity: 'Refund Exchange AFIT To STEEM Upvote',
+			reward_activity: 'Refund Exchange AFIT To Upvote',
 			token_count: outdatedTokenSwapTrans[i].paid_afit,
-			note: 'Refund Exchange AFIT To STEEM Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
+			note: 'Refund Exchange AFIT To Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
 			date: new Date(),
 		}
 		try{

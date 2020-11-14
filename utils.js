@@ -93,7 +93,7 @@ var HOURS = 60 * 60;
 	let pub_pkey = account_res[0].posting.key_auths[0][0];
 	try{ 
 		let res = await chainLnk.auth.wifIsValid(priv_pkey, pub_pkey);
-		//console.log(res);
+		console.log(res);
 		return {result: res, account: account_res[0]};
 	}catch(err){ 
 		console.log(err);
