@@ -1630,6 +1630,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 	let sent_afit_cost = req.body.afit_amount;
 	let sent_hive_cost = req.body.hive_amount;
 	let order_quantity = req.body.order_quantity;
+	let item_color = req.body.color_choice;
 	
 	let price_options = product.price;
 	let price_options_count = price_options.length;
@@ -1668,7 +1669,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 			console.log('HIVE cost found:'+hive_cost+' v/s sent:'+sent_hive_cost + ' HIVE');
 			
 			if (sent_afit_cost < afit_cost || sent_hive_cost < hive_cost){
-				res.send({error: 'pricing may have changed, please try again'});
+				res.send({error: 'pricing may have changed, please refresh page and try again'});
 				return;
 			}
 			
@@ -1677,7 +1678,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 				res.send({error: outcome.error});
 				return;
 			}else if(!outcome.tx || !outcome.tx.block_num || !outcome.tx.id || !outcome.tx.trx_num){
-				res.send({error: outcome.tx});
+				res.send({error: (outcome.tx?outcome.tx.error:'transaction error')});
 				return;
 			}
 			//if this went successfully, also deduct AFIT amount
@@ -1695,6 +1696,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 				product_price: sent_afit_cost,
 				token_count: -sent_afit_cost,
 				order_quantity: order_quantity,
+				item_color: item_color,
 				note: 'Bought Real Product '+product.name,
 				date: new Date(),
 			}
@@ -1714,6 +1716,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 				gadget: new ObjectId(product_id),
 				gadget_name: product.name,
 				quantity: order_quantity,
+				color: item_color,
 				status: "placed",
 				afit_paid: sent_afit_cost,
 				hive_paid: sent_hive_cost,
@@ -1763,8 +1766,17 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 				console.log(err);
 			}
 			
+			//send notification to user
+			utils.sendNotification(db, user, 'actifit', 'real_product_buy', 'market', 'You successfully bought product "' + product.name + '"', 'https://actifit.io/market');
 			
+		
 			
+			res.send({status: 'success', trx: outcome.tx, tokens: new_token_count});
+			
+			//also notify actifit management
+			for (let iter=0;iter<config.management.length;iter++){
+				utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_buy', 'management', 'User '+user+' successfully bought product "' + product.name+'"', 'https://actifitbot.herokuapp.com/realProductsBought');
+			}
 		}else{
 			res.send({error: 'not supported'});
 			return;
