@@ -1578,6 +1578,199 @@ app.get('/mintProducts', async function(req,res){
 	}
 });
 
+/* end point for checking all products bought */
+/* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
+app.get('/realProductsBought/:user?', async function (req, res) {
+	let query = {};
+	var transactions;
+	if(req.params.user){
+		query = {user: req.params.user}
+		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+	}else{
+		//only limit returned transactions in case this is a general query
+		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+	}
+    res.send(transactions);
+});
+
+/* end point for purchasing real products */
+app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
+	console.log(req.body);
+	if (!req.query.user){
+		res.send({'error': 'User not found'});
+		return;
+	}
+	let user = req.query.user;
+	let product_id = req.body.product_id;
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	let user_info = await grabUserTokensFunc (user);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//posting
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	//set HIVE as default
+	let bchain = 'HIVE';
+	
+	req.query.userKey = receivedPlaintext;
+	
+	console.log(product);
+	
+	//make sure proper data sent
+	if (!req.body.buyer_name || !req.body.buyer_phone || !req.body.buyer_address ||
+		!req.body.buyer_country || !req.body.buyer_state || !req.body.buyer_city || !req.body.buyer_zip){
+			res.send({'error': 'Missing data'});
+			return;
+		}
+	let sent_afit_cost = req.body.afit_amount;
+	let sent_hive_cost = req.body.hive_amount;
+	let order_quantity = req.body.order_quantity;
+	
+	let price_options = product.price;
+	let price_options_count = price_options.length;
+	for (let i=0; i < price_options_count; i++){
+		let entry = price_options[i];
+		console.log(entry);
+		if (entry.currency == 'USD'){
+			//USD price
+			let item_usd_price = entry.price * order_quantity;
+			console.log('item price'+item_usd_price);
+			//give 1% flexibility on price change
+			item_usd_price = item_usd_price * 0.99;
+			console.log('flexible item price'+item_usd_price);
+			console.log('exchangeAfitPrice');
+			console.log(exchangeAfitPrice);
+			//verify proper amount to be paid
+			let afit_cost = item_usd_price * entry.percent_afit / 100 / exchangeAfitPrice.afitHiveLastUsdPrice ;
+			afit_cost = Number(afit_cost.toFixed(2));
+			
+			
+	
+			if (cur_user_token_count < afit_cost){
+				res.send({'error': 'Not enough balance'});
+				return;
+			}
+			
+			//HIVE price per USD
+			let calcHiveUsdPrice = exchangeAfitPrice.afitHiveLastUsdPrice / exchangeAfitPrice.afitHiveLastPrice;
+			console.log('HIVE price:'+calcHiveUsdPrice);
+			
+			let hive_cost = item_usd_price * entry.percent_hive / 100 / calcHiveUsdPrice ;
+			hive_cost = Number(hive_cost.toFixed(2));
+			console.log('HIVE extra cost:'+hive_cost);
+			
+			console.log('AFIT cost found:'+afit_cost+' v/s sent:'+sent_afit_cost + ' AFIT');
+			console.log('HIVE cost found:'+hive_cost+' v/s sent:'+sent_hive_cost + ' HIVE');
+			
+			if (sent_afit_cost < afit_cost || sent_hive_cost < hive_cost){
+				res.send({error: 'pricing may have changed, please try again'});
+				return;
+			}
+			
+			let outcome = await utils.purchaseRealProd(req);
+			if (outcome.error){
+				res.send({error: outcome.error});
+				return;
+			}else if(!outcome.tx || !outcome.tx.block_num || !outcome.tx.id || !outcome.tx.trx_num){
+				res.send({error: outcome.tx});
+				return;
+			}
+			//if this went successfully, also deduct AFIT amount
+			
+			product.provider = 'actifit';
+			
+			//perform transaction
+			let productBuyTrans = {
+				user: user,
+				reward_activity: 'Buy Real Product',
+				buyer: user,
+				seller: product.provider,
+				product_id: product_id,
+				product_name: product.name,
+				product_price: sent_afit_cost,
+				token_count: -sent_afit_cost,
+				order_quantity: order_quantity,
+				note: 'Bought Real Product '+product.name,
+				date: new Date(),
+			}
+			try{
+				console.log(productBuyTrans);
+				let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing buy action. DB storing issue'});
+				return;
+			}
+			
+			//store into user_gadgets table as well
+			let userGadgetTrans = {
+				user: user,
+				gadget: new ObjectId(product_id),
+				gadget_name: product.name,
+				quantity: order_quantity,
+				status: "placed",
+				afit_paid: sent_afit_cost,
+				hive_paid: sent_hive_cost,
+				buyer_name: req.body.buyer_name,
+				buyer_phone: req.body.buyer_phone,
+				buyer_address: req.body.buyer_address,
+				buyer_address2: req.body.buyer_address2,
+				buyer_country: req.body.buyer_country,
+				buyer_state: req.body.buyer_state, 
+				buyer_city: req.body.buyer_city,
+				buyer_zip: req.body.buyer_zip,
+				date_bought: new Date(),
+				last_updated: new Date(),
+				note: 'Bought Product '+product.name+ ' x '+order_quantity,
+			}
+			try{
+				console.log(userGadgetTrans);
+				let transaction = await db.collection('products_bought').insert(userGadgetTrans);
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing buy action. DB storing issue'});
+				return;
+			}
+			
+			//decrease product available count
+			product.count = parseInt(product.count) - parseInt(order_quantity);
+			//extreme case
+			if (product.count < 0) {
+				product.count = 0;
+			}
+			try{
+				let trans = await db.collection('products').save(product);
+				console.log('success updating product count');
+			}catch(err){
+				console.log(err);
+			}
+							
+			//update current user's token balance & store to db
+			let new_token_count = cur_user_token_count - parseFloat(sent_afit_cost);
+			user_info.tokens = new_token_count;
+			console.log('new_token_count:'+new_token_count);
+			try{
+				let trans = await db.collection('user_tokens').save(user_info);
+				console.log('success updating user token count');
+			}catch(err){
+				console.log(err);
+			}
+			
+			
+			
+		}else{
+			res.send({error: 'not supported'});
+			return;
+		}
+	}
+});
 
 /* end point for tracking multi-gadget buy orders */
 app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {

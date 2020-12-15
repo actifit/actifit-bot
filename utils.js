@@ -120,6 +120,59 @@ var HOURS = 60 * 60;
 	return {tx: tx};
  }
  
+ async function purchaseRealProd(req){
+	console.log('performing purchase on blockchain');
+	
+	//broadcast trx to blockchain
+	let cstm_params = {
+		required_auths: [],
+		required_posting_auths: [req.query.user],
+		id: 'actifit',
+		json: "{ \"buy_product\": \""+req.body.product_id+"\", \"afit_paid\": "+req.body.afit_amount+", \"hive_paid\": "+req.body.hive_amount+"}"
+	};
+	
+	let keys = { posting: req.query.userKey };
+	
+	let ops = [
+				[ 'custom_json', cstm_params ],
+				
+			  ];
+	let payAmount = parseFloat(req.body.hive_amount).toFixed(3);//
+	if (payAmount > 0){
+		let memo = 'actifit buy_real_product '+req.body.product_id;
+		let trans_params = {
+						from: req.query.user,
+						to: config.escrow_account,
+						amount: payAmount+' HIVE',//"{ \"amount\": \""+ payAmount + " HIVE\", \"precision\": \"3\", \"nai\": \"@@000000021\"}",
+						memo: memo
+					  }
+		//no need for posting key, just auth key, otherwise it would fail
+		cstm_params.required_auths = [req.query.user];
+		cstm_params.required_posting_auths = [];
+		ops = [
+				[ 'custom_json', cstm_params ],
+				[ 'transfer', trans_params]
+			  ];
+		keys = { active: req.body.active_key };
+	}
+	let chainLnk = await setProperNode(req.query.bchain);
+	console.log(keys);
+	let tx = await chainLnk.broadcast.sendAsync( 
+		   { operations: ops, extensions: [] },
+		   keys
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	console.log('result');
+	console.log(tx);
+		
+	/*let transfer_trx = 
+				  */
+	return {tx: tx};
+	 
+ }
+ 
  function updateSteemVariables(bchain) {
 	 let chainLnk = setProperNode(bchain);
      chainLnk.api.getRewardFund("post", function (e, t) {
@@ -1692,5 +1745,6 @@ async function getGadgetBuyTickets(db){
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    getGadgetBuyTickets: getGadgetBuyTickets,
    grabLastDrawData: grabLastDrawData,
-   sendFirebaseNotification: sendFirebaseNotification
+   sendFirebaseNotification: sendFirebaseNotification,
+   purchaseRealProd: purchaseRealProd
  }
