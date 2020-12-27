@@ -4866,8 +4866,7 @@ app.get("/productBoughtToken", async function(req, res) {
   
   //check if the proper access token is valid for this user/product combination
   let token_match = await matchAccessToken(user, product_id, access_token);
-  
-  let token_match = await db.collection('user_product_key').findOne({user: user, access_token: access_token});
+ 
   res.send(token_match);
 });
 
