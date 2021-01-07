@@ -1580,17 +1580,61 @@ app.get('/mintProducts', async function(req,res){
 
 /* end point for checking all products bought */
 /* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
-app.get('/realProductsBought/:user?', async function (req, res) {
+app.get('/realProductsBought/', checkHdrs, async function (req, res) {
+	//if this is user querying different user, bail out
+	if (req.query && req.query.user && req.query.buyer){
+		if (req.query.user != req.query.buyer){
+			res.send({'error': 'Account does not have proper privileges'});
+			return;
+		}
+	}
+	
+	let hasAccess = await isModerator(req.query.user);
+	if (!hasAccess){
+		res.send({'error': 'Account does not have proper privileges'});
+		return;
+	}
 	let query = {};
 	var transactions;
-	if(req.params.user){
-		query = {user: req.params.user}
+	if(req.query.buyer){
+		query = {user: req.query.buyer}
 		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
 		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
 	}
-    res.send(transactions);
+	let output = '';
+	if (req.query.pretty){
+		output = '#|User | Gadget| Gadget Name| quantity| color | Status | afit_paid | hive_paid | buyer_name | buyer_phone | buyer_address | buyer_address2 | buyer_country | buyer_state | buyer_city | buyer_zip | date_bought | last_updated | note|<br/>';
+		output += '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|<br/>';
+		for(var i = 0; i < transactions.length; i++) {
+			let trx = transactions[i];
+			output += (i+1) + '|';
+			output += '@'+trx.user + '|';
+			output += trx.gadget + '|';
+			output += trx.gadget_name + '|';
+			output += trx.quantity + '|';
+			output += trx.color + '|';
+			output += trx.status + '|';
+			output += trx.afit_paid + ' AFIT|';
+			output += trx.hive_paid + ' HIVE|';
+			output += trx.buyer_name + '|';
+			output += trx.buyer_phone + '|';
+			output += trx.buyer_address + '|';
+			output += trx.buyer_address2 + '|';
+			output += trx.buyer_country + '|';
+			output += trx.buyer_state + '|';
+			output += trx.buyer_city + '|';
+			output += trx.buyer_zip + '|';
+			output += trx.date_bought + '|';
+			output += trx.last_updated + '|';
+			output += trx.note + '|';
+			output += '<br/>';
+		}
+	}else{
+		output = transactions;
+	}
+    res.send(output);
 });
 
 /* end point for purchasing real products */
