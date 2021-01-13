@@ -1365,6 +1365,135 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 	}
 });
 
+
+/* end point for tracking AFIT buy orders */
+app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async function (req, res) {
+	
+	let user = req.params.user;
+	//HIVE amount paid
+	let amnt = req.params.amnt;
+	let afitAmnt = req.params.afitAmnt;
+		
+	//check if query has already been verified
+	let matchingEntries = await db.collection('afit_buy_transactions_hive').find(
+		{
+			blockNo: req.params.blockNo,
+			trxID: req.params.trxID,
+			bchain: req.params.bchain
+		}).toArray();
+	
+	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
+		res.send({'error': 'Transaction already verified'});
+		return;
+	}
+	
+	//grab AFIT live conversion rate
+	let matchingAfit = parseFloat(amnt) / exchangeAfitPrice.afitHiveLastPrice;
+	
+	//round down number
+	console.log('Before rounding');
+	console.log(matchingAfit);
+	matchingAfit = (Math.floor(matchingAfit * 1000) - 1) / 1000;
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyAFITBuyTransaction(req.params.user, amnt, afitAmnt, matchingAfit, 'buy-afit', req.params.blockNo, req.params.trxID, req.params.bchain);
+	if (!ver_trx || !ver_trx.success){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		buyer: user,
+		seller: 'actifit',
+		hive_paid: ver_trx.amount_hive,
+		afit_requested: afitAmnt,
+		afit_received: matchingAfit,
+		currency: req.params.bchain,
+		blockNo: req.params.blockNo,
+		trxID: req.params.trxID,
+		bchain: req.params.bchain,
+		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('afit_buy_transactions_hive').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//store as transaction to update user token count
+	
+	//perform transaction
+	let recordTrans = {
+		user: user,
+		reward_activity: 'Buy AFIT',
+		buyer: user,
+		seller: 'actifit',
+		hive_paid: ver_trx.amount_hive,
+		afit_requested: afitAmnt,
+		currency: req.params.bchain,
+		token_count: matchingAfit,
+		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//add a ticket to the user to enter draw if user meets min requirements
+	/*
+	if (cur_user_token_count >= config.minUserTokensGadgetTicket){
+		//perform transaction
+		let ticketEntry = {
+			user: user,
+			product_id: product_id,
+			product_name: product.name,
+			product_level: product.level,
+			product_price_afit: item_price_afit,
+			product_price_hive: item_price,
+			hive_paid: ver_trx.amount_hive,
+			currency: req.params.bchain,
+			count: 1,
+			date: new Date(),
+		}
+		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+	}*/
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count + parseFloat(matchingAfit);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You successfully bought "' + matchingAfit + ' AFIT" for '+'"'+ver_trx.amount_hive+'" '+req.params.bchain, 'https://actifit.io/'+user+'/wallet');
+	
+	res.send({status: 'success', boughtAmnt: matchingAfit, tokens: new_token_count});
+	
+});
+
 /* end point for tracking gadget buy orders */
 app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	
@@ -1819,7 +1948,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 			
 			//also notify actifit management
 			for (let iter=0;iter<config.management.length;iter++){
-				utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_buy', 'management', 'User '+user+' successfully bought product "' + product.name+'"', 'https://actifitbot.herokuapp.com/realProductsBought');
+				utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_buy', 'management', 'User '+user+' successfully bought product "' + product.name+'"', 'https://actifit.io/mods-access/');
 			}
 		}else{
 			res.send({error: 'not supported'});

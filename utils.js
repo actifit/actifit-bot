@@ -1491,6 +1491,37 @@ async function rewardPost(post_url, vp, bchain){
 	return  result;
 }
 
+async function verifyAFITBuyTransaction(userA, amount, afit_amount, matching_afit, tx_type, block_num, tx_id, bchain){
+	let trx;
+	console.log('verifyAFITBuyTransaction');
+	console.log('afit_amount:'+afit_amount);
+	console.log('matching_afit:'+matching_afit);
+	//item_price_alt = 0.001;
+	try{
+		if (bchain == 'STEEM'){
+			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
+		}else{
+			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
+		}
+		console.log(trx);
+		if (trx && trx.operations
+			&& trx.operations.length > 0){
+				console.log(trx.operations[0][1]);
+				let trx_details = trx.operations[0][1];
+				let amnt = parseFloat(trx_details.amount.split(' ')[0]);
+				//let json_data = JSON.parse(trx_details.json);
+				console.log(trx_details);
+				if (trx_details.to == config.afit_buy_account && trx_details.memo == tx_type + ':' + afit_amount
+					&& amnt >= parseFloat(amount)){
+					return {'success': true, 'amount_hive': amnt};
+				}
+		}
+	}catch(err){
+		console.log(err);
+	}
+	return false;
+}
+
 async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
 	let trx;
 	console.log('verifyGadgetTransaction');
@@ -1743,6 +1774,7 @@ async function getGadgetBuyTickets(db){
    confirmAFITXTransition: confirmAFITXTransition,
    proceedAfitxMove: proceedAfitxMove,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
+   verifyAFITBuyTransaction: verifyAFITBuyTransaction,
    getGadgetBuyTickets: getGadgetBuyTickets,
    grabLastDrawData: grabLastDrawData,
    sendFirebaseNotification: sendFirebaseNotification,
