@@ -1475,7 +1475,6 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 		}
 		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
 	}*/
-	
 	//update current user's token balance & store to db
 	let new_token_count = cur_user_token_count + parseFloat(matchingAfit);
 	user_info.tokens = new_token_count;
@@ -1491,6 +1490,132 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You successfully bought "' + matchingAfit + ' AFIT" for '+'"'+ver_trx.amount_hive+'" '+req.params.bchain, 'https://actifit.io/'+user+'/wallet');
 	
 	res.send({status: 'success', boughtAmnt: matchingAfit, tokens: new_token_count});
+	
+});
+
+app.get('/refundPurchase', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let product_id = req.query.product_id;
+	let afit_amnt_refund = req.query.afit_paid;
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Refund Product',
+		product_id: product_id,
+		product_name: product.name,
+		buyer: user,
+		seller: 'actifit',
+		token_count: afit_amnt_refund,
+		note: 'Refunding product '+product.name,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//fetch user current token count
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count + parseFloat(afit_amnt_refund);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({status: 'success'});
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
+	
+});
+
+
+app.get('/updateProdStatus', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass || !req.query.user || !req.query.status || !req.query.trx_id){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let trx_id = new ObjectId(req.query.trx_id);
+	let note = req.query.note;
+	
+	let query = {user: req.query.user, _id: trx_id}
+	let prodTrans = await db.collection('products_bought').findOne(query);
+	
+	if (!prodTrans){
+		res.send({'error': 'Transaction not found'});
+		return;
+	}
+	
+	let old_status = prodTrans.status;
+	let prod_name = prodTrans.gadget_name;
+	prodTrans.last_updated = new Date();
+	prodTrans.status = req.query.status;
+	//perform transaction
+	try{
+		let trans = await db.collection('products_bought').save(prodTrans);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//insert transaction to keep track of product progress
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Product Purchase Update',
+		product_id: prodTrans.gadget,
+		transaction_id: req.query.trx_id,
+		product_name: prod_name,
+		old_status: old_status,
+		new_status: req.query.status,
+		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+req.query.status+'" with note "'+ note+'"' ,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('order_progress').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'real_product_update', 'market', 'Your order for product "' + prod_name + '" has been moved to status "'+req.query.status+'" with note "'+note+'"', 'https://actifit.io/market');
+	
+	res.send({status: 'success'});
+			
+	//also notify actifit management
+	for (let iter=0;iter<config.management.length;iter++){
+		utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_update', 'management', 'User '+user+' order for product "' + prod_name +'" changed to status "'+req.query.status+'"', 'https://actifit.io/mods-access/');
+		
+	}
+	
 	
 });
 
