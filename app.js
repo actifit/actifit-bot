@@ -1493,6 +1493,58 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	
 });
 
+
+app.get('/cancelAFITBuy', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let afit_amnt_refund = req.query.afit;
+	
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'AFIT Buy Cancellation',
+		buyer: user,
+		seller: 'actifit',
+		token_count: -afit_amnt_refund,
+		note: 'Cancellation of AFIT purchase with HIVE refund ',
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//fetch user current token count
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count - parseFloat(afit_amnt_refund);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({status: 'success'});
+	
+	//send notification to user
+	//utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
+	
+});
+
 app.get('/refundPurchase', async function(req, res){
 	if (!req.query.specPass || req.query.specPass != config.specPass){
 		res.send({error:'error'});
@@ -1574,6 +1626,7 @@ app.get('/updateProdStatus', async function(req, res){
 	let prod_name = prodTrans.gadget_name;
 	prodTrans.last_updated = new Date();
 	prodTrans.status = req.query.status;
+	prodTrans.note = note;
 	//perform transaction
 	try{
 		let trans = await db.collection('products_bought').save(prodTrans);
@@ -6027,10 +6080,19 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 		maxCount = parseInt(req.query.maxCount);
 	}
 	
+	
+	
 	//fetch banned accounts
 	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
+	
+	//exclude current user from fetched data
+	if (req.query.exclude){
+		banned_arr.push(req.query.exclude);
+	}
+	
 	banned_arr.push('');
 	//console.log(banned_arr);
 	
