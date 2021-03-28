@@ -596,6 +596,48 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	}
 });
 
+
+app.get('/recalculateUserTokens', async function (req, res){
+	if (req.query && req.query.user){
+	
+	let user = req.query.user;
+	let trx = await db.collection('token_transactions').aggregate([
+		{
+			$match: {user: user}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   token_balance: { $sum: "$token_count" },
+			}
+		}
+	   ]).toArray(async function(err, results) {
+		var output = 'user'+user+ 'tokens:'+results[0].token_balance;
+		
+		
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		//let cur_user_token_count = parseFloat(user_info.tokens);
+		
+		user_info.tokens = parseFloat(results[0].token_balance);
+		
+		//recalculate and store user token count
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+			res.send('success recalculating & updating user token count: '+user_info.tokens);
+			console.log(results);
+		}catch(err){
+			console.log(err);
+		}
+		
+	   });
+	}else{
+		res.send({error: 'error'});
+	}
+});
+
 app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	//validate proper data used
 	let username;
@@ -1567,7 +1609,7 @@ app.get('/refundPurchase', async function(req, res){
 		product_name: product.name,
 		buyer: user,
 		seller: 'actifit',
-		token_count: afit_amnt_refund,
+		token_count: parseFloat(afit_amnt_refund),
 		note: 'Refunding product '+product.name,
 		date: new Date(),
 	}
