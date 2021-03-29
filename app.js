@@ -1714,6 +1714,77 @@ app.get('/updateProdStatus', async function(req, res){
 	
 });
 
+/* end point to confirm product receipt, can only be validated by the user himself */
+
+app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
+	if (!req.query.user || !req.query.trx_id){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let trx_id = new ObjectId(req.query.trx_id);
+	let newStatus = 'delivered';
+	
+	let note = req.query.note;
+	
+	let query = {user: req.query.user, _id: trx_id}
+	let prodTrans = await db.collection('products_bought').findOne(query);
+	
+	if (!prodTrans){
+		res.send({'error': 'Transaction not found'});
+		return;
+	}
+	
+	let old_status = prodTrans.status;
+	let prod_name = prodTrans.gadget_name;
+	prodTrans.last_updated = new Date();
+	prodTrans.status = newStatus;
+	prodTrans.note = note;
+	//perform transaction
+	try{
+		let trans = await db.collection('products_bought').save(prodTrans);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//insert transaction to keep track of product progress
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Product Purchase Update',
+		product_id: prodTrans.gadget,
+		transaction_id: req.query.trx_id,
+		product_name: prod_name,
+		old_status: old_status,
+		new_status: newStatus,
+		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+newStatus+'" with note "'+ note+'"' ,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('order_progress').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error confirming product receipt. DB storing issue'});
+		return;
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'real_product_update', 'market', 'Your order for product "' + prod_name + '" has been moved to status "'+newStatus+'" with note "'+note+'"', 'https://actifit.io/market');
+	
+	res.send({status: 'success'});
+			
+	//also notify actifit management
+	for (let iter=0;iter<config.management.length;iter++){
+		utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_update', 'management', 'User '+user+' order for product "' + prod_name +'" changed to status "'+newStatus+'"', 'https://actifit.io/mods-access/');
+		
+	}
+	
+	
+});
+
 /* end point for tracking gadget buy orders */
 app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	
@@ -1947,10 +2018,10 @@ app.get('/realProductsBought/', checkHdrs, async function (req, res) {
 	var transactions;
 	if(req.query.buyer){
 		query = {user: req.query.buyer}
-		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('products_bought').find(query).sort({date: -1}).limit(1000).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
-		transactions = await db.collection('products_bought').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('products_bought').find(query).sort({date: -1}).limit(1000).toArray();
 	}
 	let output = '';
 	if (req.query.pretty){
