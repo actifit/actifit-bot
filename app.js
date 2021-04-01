@@ -707,6 +707,16 @@ app.get('/userSettings/:user', async function (req, res) {
 	}
 });
 
+app.get('/userSettings/', async function (req, res) {
+	let setgs = await db.collection('user_settings').find().toArray();
+	console.log(setgs);
+	if (!setgs){
+		res.send({});
+	}else{
+		res.send(setgs);
+	}
+});
+
 
 app.get('/notificationTypes/', async function (req, res) {
 	res.send(config.notificationTypes);
@@ -5567,6 +5577,8 @@ app.get('/sendNotification', async function(req,res){
 				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'friendship', 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			}
 			res.send('{status: success}');
+		}else if (req.query.notifType == 'new_comment'){
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
 		}
