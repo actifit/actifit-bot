@@ -2903,7 +2903,7 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async func
 	}catch(err){
 		console.log('error');
 		res.send({status: 'error'});
-	}	
+	}
 
 });
 
