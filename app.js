@@ -5580,8 +5580,11 @@ app.get('/sendNotification', async function(req,res){
 			}
 			res.send('{status: success}');
 		}else if (req.query.notifType == 'new_comment'){
-			console.log(req.query.permlink);
+			//console.log(req.query.permlink);
 			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
+		}else if (req.query.notifType == 'mention'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
 		}
