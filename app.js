@@ -5561,9 +5561,11 @@ claimAndCreateAccount = async function (req){
 //send notification
 app.get('/sendNotification', async function(req,res){
 	let passed_var = eval("req.query."+config.verifyNotifParam);
+	console.log('sendnotification');
 	//console.log(passed_var);
 	//make sure needed security var is passed, and with proper value
 	if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+		console.log('missing');
 		res.send('{}');
 	}else{
 		if (req.query.notifType == 'new_post'){
@@ -5578,7 +5580,8 @@ app.get('/sendNotification', async function(req,res){
 			}
 			res.send('{status: success}');
 		}else if (req.query.notifType == 'new_comment'){
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
 		}
