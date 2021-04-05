@@ -1651,7 +1651,10 @@ async function sendFirebaseNotification(db, user, details, url){
 			console.log('Error sending message:', error);
 		  });
 	  
-	}
+	}/*else{
+		console.log('no msg sent');
+		
+	}*/
 }
 
 async function sendNotification(db, user, action_taker, type, category, details, url){
@@ -1684,8 +1687,8 @@ async function sendNotification(db, user, action_taker, type, category, details,
 			console.log('success inserting notification data');
 			
 			//also send out a firebase message
-			sendFirebaseNotification(db, user, details, url);
-			
+			await sendFirebaseNotification(db, user, details, url);
+			//console.log('done');
 			return true;
 		}catch(err){
 			console.log('error');

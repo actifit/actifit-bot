@@ -5587,8 +5587,10 @@ app.get('/sendNotification', async function(req,res){
 			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
+			return;
 		}
 		//
+		res.send('{status: success}');
 	}
 });
 
