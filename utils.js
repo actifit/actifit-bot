@@ -395,45 +395,65 @@ var HOURS = 60 * 60;
 		getConfig();
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
-				let chainLnk = await setProperNode(bchain);
+				//let chainLnk = await setProperNode(bchain);
 				console.log('check funds');
-				chainLnk.api.getAccountHistory(config.signup_account, -1, 3000, (err, transactions) => {
-					let tx_id = '';
-					let paymentFound = false;
-					for (let txs of transactions) {
-						let op = txs[1].op
-						//check if we received a transfer to our target account
-						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
-						if (op[0] === 'transfer'){
-							let sentAmount = op[1].amount.split(' ')[0];
-							let sentCur = op[1].amount.split(' ')[1];
-							if (op[1].to === config.signup_account 
-								&& op[1].memo === req.query.memo 
-								&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
-								&& sentCur === req.query.sent_cur){  
-								console.log('in');
-								console.log(op[1]);
-								
-								let now = moment(new Date()); //todays date
-								let end = moment(txs[1].timestamp); // last update date
-								let duration = moment.duration(now.diff(end));
-								let hrs = duration.asHours();
-								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 5){
-									tx_id = txs[1].trx_id;
-									paymentFound = true;
-									break;
-								}
+				
+				let transactions;
+				//transactions.reverse()
+				  
+				
+				if (bchain == 'STEEM'){
+					transactions = await client.database.call('get_account_history', [config.signup_account, -1, 20]);
+				}else{
+					transactions = await hiveClient.database.call('get_account_history', [config.signup_account, -1, 20]);
+				}
+				
+				//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
+				let tx_id = '';
+				let paymentFound = false;
+				for (let txs of transactions) {
+					let op = txs[1].op
+					
+					//check if we received a transfer to our target account
+					//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
+					if (op[0] === 'transfer'){
+						let sentAmount = op[1].amount.split(' ')[0];
+						let sentCur = op[1].amount.split(' ')[1];
+						/*if (op[1].to === config.signup_account 
+							&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
+							&& sentCur === req.query.sent_cur){
+								console.log(sentAmount);
+						console.log(op[1].memo);
+						console.log(req.query.memo );
+						console.log('>>>>>');
+						}*/
+						if (op[1].to === config.signup_account 
+							&& op[1].memo === req.query.memo 
+							&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
+							&& sentCur === req.query.sent_cur){  
+							console.log('in');
+							console.log(op[1]);
+							
+							let now = moment(new Date()); //todays date
+							let end = moment(txs[1].timestamp); // last update date
+							let duration = moment.duration(now.diff(end));
+							let hrs = duration.asHours();
+							//transaction needs to have been concluded within 5 hours.
+							if (hrs < 5){
+								tx_id = txs[1].trx_id;
+								paymentFound = true;
+								break;
 							}
 						}
 					}
-					if (paymentFound){
-						//need to look again
-						console.log('found');
-						clearInterval(th_id);
-						resolve(tx_id);
-					}
-				});
+				}
+				if (paymentFound){
+					//need to look again
+					console.log('found');
+					clearInterval(th_id);
+					resolve(tx_id);
+				}
+				//});
 			}, 5000);
 		});
 	}
@@ -1452,7 +1472,7 @@ async function hivePowerToVests (hivePower) {
 
   if (isNaN(totalHive) || isNaN(totalHiveVests) ){
 	hiveProps = await hiveClient.database.getDynamicGlobalProperties()
-	totalHive = Number(hiveProps.total_vesting_fund_steem.split(' ')[0])
+	totalHive = Number(hiveProps.total_vesting_fund_hive.split(' ')[0])
 	totalHiveVests = Number(hiveProps.total_vesting_shares.split(' ')[0])
   }
   return parseFloat(hivePower * totalHiveVests / totalHive).toFixed(6);

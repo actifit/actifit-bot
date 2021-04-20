@@ -5439,8 +5439,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	if (false){
+	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -5492,7 +5492,7 @@ app.get('/confirmPayment', async function(req,res){
 				//first step is to ensure memo has not been tampered with, nor has it been claimed before
 				//to do that, let's try to find if any signup has been done using this memo
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
-				console.log('memo_used:'+memo_used);
+				//console.log('memo_used:'+memo_used);
 				if (typeof memo_used == "undefined" || memo_used == null){
 					//check on which blockchain transaction was sent based on currency
 					let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
