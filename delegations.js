@@ -369,19 +369,27 @@ async function moveAFITToSE(testMode){
 				let afitx_tot_bal = 0;
 				let afitx_se_balance = 0;
 				let afitx_he_balance = 0;
-				let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-				if (bal){
-					afitx_se_balance = bal.balance;
-				}else{
-					console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
-					//return;
+				try{
+					let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+					if (bal){
+						afitx_se_balance = bal.balance;
+					}else{
+						console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
+						//return;
+					}
+				}catch(err){
+					console.log(err);
 				}
-				bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-				if (bal){
-					afitx_he_balance = bal.balance;
-				}else{
-					console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
-					//return;
+				try{
+					let bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+					if (bal){
+						afitx_he_balance = bal.balance;
+					}else{
+						console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
+						//return;
+					}
+				}catch(err){
+					console.log(err);
 				}
 				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
 				let amount = parseFloat(entry.daily_afit_transfer);
