@@ -105,6 +105,9 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 app.use(function(req, res, next) {
   var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
   var origin = req.headers.origin;
+  console.log('>>>origin:');
+  console.log(origin);
+  console.log(req.headers.host);
   if(allowedOrigins.indexOf(origin) > -1){
 	   res.setHeader('Access-Control-Allow-Origin', origin);
   }
