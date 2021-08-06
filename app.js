@@ -24,6 +24,9 @@ if (config.testing){
 	url = config.mongo_local;
 }
 
+//console.log('verify gadget buy');
+
+
 var db;
 var collection;
 // Database Name
@@ -105,9 +108,9 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 app.use(function(req, res, next) {
   var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
   var origin = req.headers.origin;
-  console.log('>>>origin:');
-  console.log(origin);
-  console.log(req.headers.host);
+  //console.log('>>>origin:');
+  //console.log(origin);
+  //console.log(req.headers.host);
   if(allowedOrigins.indexOf(origin) > -1){
 	   res.setHeader('Access-Control-Allow-Origin', origin);
   }
@@ -551,7 +554,7 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	//perform transaction
 	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
-	if (!performTrx.tx.block_num){
+	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
 	}else{
 		res.send({success: true, trx: performTrx});
@@ -592,7 +595,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	//perform transaction
 	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
 	console.log(performTrx);
-	if (!performTrx.tx.block_num){
+	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
 	}else{
 		res.send({success: true, trx: performTrx});
@@ -2154,7 +2157,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 			if (outcome.error){
 				res.send({error: outcome.error});
 				return;
-			}else if(!outcome.tx || !outcome.tx.block_num || !outcome.tx.id || !outcome.tx.trx_num){
+			}else if(!outcome.tx || !outcome.tx.ref_block_num || !outcome.tx.id || !outcome.tx.trx_num){
 				res.send({error: (outcome.tx?outcome.tx.error:'transaction error')});
 				return;
 			}
@@ -5048,8 +5051,8 @@ matchAccessToken = async function (user, product_id, access_token){
 }
 
 app.get("/gadgetBoughtName", async function(req, res) {
-	console.log('gadgetBought');
-	console.log(req.query);
+	//console.log('gadgetBought');
+	//console.log(req.query);
   //check if proper params sent
   if (!req.query.user || !req.query.gadget_name || !req.query.gadget_level) {
 	//make sure all params are sent
@@ -5168,14 +5171,14 @@ app.get("/boughtGadgetCountByUser/:user", async function(req, res) {
 							}
 						}
 					]).toArray();
-  console.log(gadget_match);
+  //console.log(gadget_match);
   res.send(gadget_match);
 });
 
 
 app.get("/gadgetBought", async function(req, res) {
-	console.log('gadgetBought');
-	console.log(req.query);
+	//console.log('gadgetBought');
+	//console.log(req.query);
   //check if proper params sent
   if (!req.query.user || !req.query.gadget_id) {
 	//make sure all params are sent
@@ -5191,7 +5194,7 @@ app.get("/gadgetBought", async function(req, res) {
 	{ user: 1, date_bought: 1 }
   ).toArray();
   
-  console.log(gadget_match);
+  //console.log(gadget_match);
   
   //let token_match = await matchProductTrans(user, gadget_id);
   

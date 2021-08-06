@@ -156,7 +156,7 @@ var HOURS = 60 * 60;
 		keys = { active: req.body.active_key };
 	}
 	let chainLnk = await setProperNode(req.query.bchain);
-	console.log(keys);
+	//console.log(keys);
 	let tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   keys
@@ -1591,6 +1591,7 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 				console.log(trx_details);
 				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 					&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+						//console.log('true..found');
 					return true;
 				}
 		}

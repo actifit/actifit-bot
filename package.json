@@ -5,7 +5,7 @@
   "main": "curation-bot.js",
   "dependencies": {
     "@hiveio/dhive": "^0.14.1",
-    "@hiveio/hive-js": "^0.8.9",
+    "@hiveio/hive-js": "^2.0.1",
     "axios": "^0.18.1",
     "cheerio": "^1.0.0-rc.2",
     "dsteem": "^0.10.1",
