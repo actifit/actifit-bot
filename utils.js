@@ -1543,62 +1543,122 @@ async function verifyAFITBuyTransaction(userA, amount, afit_amount, matching_afi
 }
 
 async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
-	let trx;
+	let trx, th_id;
 	console.log('verifyGadgetTransaction');
 	console.log('item_price:'+item_price);
 	console.log('item_price_alt:'+item_price_alt);
 	//item_price_alt = 0.001;
 	try{
-		if (bchain == 'STEEM'){
-			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
-		}else{
-			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
-		}
-		console.log(trx);
-		if (trx && trx.operations
-			&& trx.operations.length > 0){
-				console.log(trx.operations[0][1]);
-				let trx_details = trx.operations[0][1];
-				let amnt = parseFloat(trx_details.amount.split(' ')[0]);
-				//let json_data = JSON.parse(trx_details.json);
-				console.log(trx_details);
-				if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
-					&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
-					return {'success': true, 'amount_hive': amnt};
+		let attempts = 1;
+		let max_attempts = 15;
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					console.log('finding trx');
+					attempts += 1;
+				
+					if (bchain == 'STEEM'){
+						//trx = await client.database.getTransaction({id: tx_id, ref_block_num: block_num});
+						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}else{
+						//trx = await hiveClient.database.getTransaction({id: tx_id, ref_block_num: block_num});
+						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}
+					console.log(trx);
+					if (trx && trx.operations
+						&& trx.operations.length > 0){
+							console.log('found trx. Verify');
+							clearInterval(th_id);
+							console.log(trx.operations[0][1]);
+							let trx_details = trx.operations[0][1];
+							let amnt = parseFloat(trx_details.amount.split(' ')[0]);
+							//let json_data = JSON.parse(trx_details.json);
+							console.log(trx_details);
+							if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
+								&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
+								console.log('bingo');
+								//return {'success': true, 'amount_hive': amnt};
+								resolve({'success': true, 'amount_hive': amnt});
+							}else{
+								resolve(false);
+							}
+					}
+					
+				}else{
+					//timedout, stop and bail
+					console.log('timed out without finding trx');
+					clearInterval(th_id);
+					//return false;
+					resolve(false);
 				}
-		}
+			}, 5000);
+		});	
 	}catch(err){
 		console.log(err);
 	}
-	return false;
 }
 
 async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain){
-	let trx;
+	let trx, th_id;
 	console.log('verifyGadgetTransaction');
 	try{
-		if (bchain == 'STEEM'){
-			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
-		}else if (bchain == 'HIVE'){
-			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
-		}
-		console.log(trx);
-		if (trx && trx.operations
-			&& trx.operations.length > 0){
-				console.log(trx.operations[0][1]);
-				let trx_details = trx.operations[0][1];
-				let json_data = JSON.parse(trx_details.json);
-				console.log(trx_details);
-				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
-					&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
-						//console.log('true..found');
-					return true;
+		let attempts = 1;
+		let max_attempts = 15;
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					console.log('finding trx');
+					attempts += 1;
+					if (bchain == 'STEEM'){
+						//trx = await client.database.getTransaction({id: tx_id});
+						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}else if (bchain == 'HIVE'){
+						//trx = await hiveClient.database.getTransaction({id: tx_id});
+						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}
+					if (trx && trx.operations){
+						//found trx, resolve and verify
+						console.log('found trx. Verify');
+						clearInterval(th_id);
+						console.log(trx);
+						if (trx && trx.operations
+							&& trx.operations.length > 0){
+								console.log(trx.operations[0][1]);
+								let trx_details = trx.operations[0][1];
+								let json_data = JSON.parse(trx_details.json);
+								console.log(trx_details);
+								if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+									&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+										//console.log('true..found');
+									//return true;
+									resolve(true);
+								}else{
+									resolve(false);
+								}
+						}
+					}
+				}else{
+					//timedout, stop and bail
+					console.log('timed out without finding trx');
+					clearInterval(th_id);
+					//return false;
+					resolve(false);
 				}
-		}
+			}, 5000);
+		});
+		
 	}catch(err){
 		console.log(err);
 	}
-	return false;
+	
 }
 
 async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain){
