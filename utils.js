@@ -1662,29 +1662,60 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 }
 
 async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain){
-	let trx 
+	let trx
 	try{
-		if (bchain == 'STEEM'){
-			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
-		}else if (bchain == 'HIVE'){
-			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
-		}
-		if (trx && trx.operations
-			&& trx.operations.length > 0){
-				console.log(trx.operations[0][1]);
-				let trx_details = trx.operations[0][1];
-				let json_data = JSON.parse(trx_details.json);
-				console.log(trx_details);
-				if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
-					&& json_data.transaction == tx_type && json_data.target == userB){
-					return true;
+		
+		let attempts = 1;
+		let max_attempts = 15;
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					console.log('finding trx');
+					attempts += 1;
+					if (bchain == 'STEEM'){
+						//trx = await client.database.getTransaction({id: tx_id});
+						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}else if (bchain == 'HIVE'){
+						//trx = await hiveClient.database.getTransaction({id: tx_id});
+						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
+							console.log('Error finding trx:', error);
+						});
+					}
+					if (trx && trx.operations
+						&& trx.operations.length > 0){
+							
+							console.log('found trx. Verify');
+							clearInterval(th_id);
+							
+							console.log(trx.operations[0][1]);
+							let trx_details = trx.operations[0][1];
+							let json_data = JSON.parse(trx_details.json);
+							console.log(trx_details);
+							if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+								&& json_data.transaction == tx_type && json_data.target == userB){
+								//return true;
+								resolve(true);
+							}else{
+								resolve(false);
+							}
+					}
+					
+				}else{
+					//timedout, stop and bail
+					console.log('timed out without finding trx');
+					clearInterval(th_id);
+					//return false;
+					resolve(false);
 				}
-			
-		}
+			}, 5000);
+		});	
+						
 	}catch(err){
 		console.log(err);
 	}
-	return false;
+	//return false;
 }
 
 async function findUserMatchingDevice(db, user){
