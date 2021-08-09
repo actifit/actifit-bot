@@ -1547,7 +1547,7 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 	console.log('verifyGadgetTransaction');
 	console.log('item_price:'+item_price);
 	console.log('item_price_alt:'+item_price_alt);
-	//item_price_alt = 0.001;
+	// item_price_alt = 0.001;
 	try{
 		let attempts = 1;
 		let max_attempts = 15;
