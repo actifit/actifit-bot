@@ -101,20 +101,51 @@ var HOURS = 60 * 60;
 	}
  }
  
- async function processSteemTrx(operation, userKey, bchain){
+ async function processSteemTrx(operation, userKey, bchain, db, active){
 	console.log('utils processSteemTrx');
 	console.log(operation);
 	const ops = [ operation ];
 	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
-	console.log(bchain);
+	console.log(ops);
+	
 	let chainLnk = await setProperNode(bchain);
-	let tx = await chainLnk.broadcast.sendAsync( 
+	let tx;
+	
+	if (active){
+		tx = await chainLnk.broadcast.sendAsync( 
+		   { operations: ops, extensions: [] },
+		   { active: active }
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	}else{
+		tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { posting: userKey }
 		).catch(err => {
 			console.log(err.message);
 			return {error: err.message};
 		});
+	}
+	//store the trx also to actifit as verified
+	
+	//console.log(tx);
+	
+	if (tx && tx.ref_block_num){
+		let tx_entry = {
+			tx_id: tx.id,
+			ref_block_num: tx.ref_block_num,
+			tx: tx,
+			date: new Date(),
+		};
+		try{
+			let transaction = await db.collection('verified_tx').insert(tx_entry);
+			console.log('success inserting transaction details');
+		}catch(err){
+			console.log(err);
+		}
+	}
 	
 	console.log(tx);
 	return {tx: tx};
@@ -1542,14 +1573,38 @@ async function verifyAFITBuyTransaction(userA, amount, afit_amount, matching_afi
 	return false;
 }
 
-async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain){
+async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain, db){
 	let trx, th_id;
-	console.log('verifyGadgetTransaction');
+	console.log('verifyGadgetPayTransaction');
 	console.log('item_price:'+item_price);
 	console.log('item_price_alt:'+item_price_alt);
 	// item_price_alt = 0.001;
 	try{
-		let attempts = 1;
+		
+		//query db to find transaction
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
+			
+			let trx_details = trx.tx.operations[0][1];
+			//let json_data = JSON.parse(trx_details);
+			
+			console.log(trx_details);
+			let amnt = parseFloat(trx_details.amount.split(' ')[0]);
+			//let json_data = JSON.parse(trx_details.json);
+			console.log(trx_details);
+			if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
+				&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
+				console.log('match found');
+				return {'success': true, 'amount_hive': amnt};
+			}
+			console.log('count not find trx A');
+			return false;
+		}
+		console.log('count not find trx B');
+		//reached here, bail.
+		return false;
+		
+		/*let attempts = 1;
 		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
@@ -1596,17 +1651,39 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 					resolve(false);
 				}
 			}, 5000);
-		});	
+		});	*/
 	}catch(err){
 		console.log(err);
+		return false;
 	}
 }
 
-async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain){
-	let trx, th_id;
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain, db){
+	//let trx, th_id;
 	console.log('verifyGadgetTransaction');
+	console.log(tx_id);
 	try{
-		let attempts = 1;
+		//query db to find transaction
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
+			
+			let trx_details = trx.tx.operations[0][1];
+			let json_data = JSON.parse(trx_details.json);
+			
+			console.log(trx_details);
+			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+				&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+				console.log('match found');
+				return true
+			}
+			console.log('count not find trx A');
+			return false;
+		}
+		console.log('count not find trx B');
+		//reached here, bail.
+		return false;
+		
+		/*let attempts = 1;
 		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
@@ -1653,10 +1730,11 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 					resolve(false);
 				}
 			}, 5000);
-		});
+		});*/
 		
 	}catch(err){
 		console.log(err);
+		return false;
 	}
 	
 }

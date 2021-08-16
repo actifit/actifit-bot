@@ -550,9 +550,13 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	console.log((typeof operation));
 	console.log(match_arr);
 	console.log(match_arr[0][1]);*/
+	let active = null;
+	if (req.body.active){
+		active = req.body.active;
+	}
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, active);
 	console.log(performTrx);
 	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
@@ -586,14 +590,9 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	}
 	
 	let match_arr = Object.entries(operation);
-	/*console.log(user);
-	console.log(operation);
-	console.log((typeof operation));
-	console.log(match_arr);
-	console.log(match_arr[0][1]);*/
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
 	console.log(performTrx);
 	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
@@ -1853,7 +1852,7 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	console.log(item_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
 		res.send({status: 'error'});
 		return;
@@ -2326,7 +2325,7 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 	console.log(products_tot_hive_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
 		console.log(ver_trx);
 		res.send({status: 'error'});
@@ -2544,7 +2543,7 @@ app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
 app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
 
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2697,7 +2696,7 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -5214,7 +5213,7 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -5262,7 +5261,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -5295,7 +5294,7 @@ app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async functio
 	let gadget = req.params.gadget;
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
