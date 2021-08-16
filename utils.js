@@ -1739,10 +1739,31 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_
 	
 }
 
-async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain){
-	let trx
+async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, bchain, db){
+	//let trx
 	try{
 		
+		//query db to find transaction
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
+			
+			let trx_details = trx.tx.operations[0][1];
+			let json_data = JSON.parse(trx_details.json);
+			
+			console.log(trx_details);
+			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
+								&& json_data.transaction == tx_type && json_data.target == userB){
+				console.log('match found');
+				return true
+			}
+			console.log('count not find trx A');
+			return false;
+		}
+		console.log('count not find trx B');
+		//reached here, bail.
+		return false;
+		
+		/*
 		let attempts = 1;
 		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
@@ -1788,7 +1809,7 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 					resolve(false);
 				}
 			}, 5000);
-		});	
+		});	*/
 						
 	}catch(err){
 		console.log(err);
