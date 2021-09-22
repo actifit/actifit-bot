@@ -350,6 +350,10 @@ async function moveAFITToSE(testMode){
 		//let's fetch banned accounts, to ensure they dont receive an airdrop
 		let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 		
+		//grab actifit current AFIT balance
+			
+		let afit_av_bal = await hsc.findOne('tokens', 'balances', { account: 'actifit', symbol: 'AFIT' });
+		
 		//loop through entries, and send over AFIT
 		poweringDown.forEach(async function(entry){
 			
@@ -362,6 +366,9 @@ async function moveAFITToSE(testMode){
 					break;
 				}
 			}
+			
+			
+			
 			if (!user_banned){
 				
 				//let's make sure user still has proper AFITX amount
@@ -424,7 +431,12 @@ async function moveAFITToSE(testMode){
 				let cur_user_token_count = 0;
 				try{
 					cur_user_token_count = parseFloat(user.tokens);
-					if (cur_user_token_count < entry.daily_afit_transfer){
+					if (cur_user_token_count < amount){
+						userHasProperFunds = false;
+					}
+					
+					//also check if actifit account has enough funds to send out
+					if (afit_av_bal < amount){
 						userHasProperFunds = false;
 					}
 				}catch(err){
@@ -433,6 +445,8 @@ async function moveAFITToSE(testMode){
 				
 				console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_tot_bal+' userHasProperFunds:'+userHasProperFunds);
 				if (userHasProperFunds){
+					//deduct from actifit balance
+					afit_av_bal -= amount;
 					setTimeout(async function(){
 										
 						try{
@@ -444,13 +458,13 @@ async function moveAFITToSE(testMode){
 						
 							console.log(entry);
 											
-							let amount = parseFloat(entry.daily_afit_transfer);
+							let dedc_amount = parseFloat(entry.daily_afit_transfer);
 							
 							//perform transaction, decrease sender amount
 							let moveTrans = {
 								user: entry.user,
 								reward_activity: 'Move AFIT to H-E',
-								token_count: -amount,
+								token_count: -dedc_amount,
 								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to H-E',
 								date: new Date(),
 							}
