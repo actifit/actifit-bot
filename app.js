@@ -1196,8 +1196,41 @@ app.get('/modAction', async function (req, res) {
 	}
 });
 
+app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user || !req.query.wallet){
+		res.send({error:'error'});
+		return;
+	}
+	let username = req.query.user;
+	let wallet = req.query.wallet;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//store user/token combination
+	let userWalletEntry = {
+		user: username,
+		wallet: wallet,
+		chain: walletChain,
+		date: new Date()
+	};
+	try{
+		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
 
-
+app.get('/getUserWalletAddress', async function (req, res){
+	if (!req.query.user){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	let matchAddress = await db.collection('user_wallet_address').find({user: user, chain: walletChain}).sort({tokens: -1}).toArray();
+	res.send(matchAddress);
+});
 
 /* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
