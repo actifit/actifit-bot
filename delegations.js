@@ -99,7 +99,7 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 //airdropAFITX();
 
-//moveAFITToSE(true);
+// moveAFITToSE(true);
 
 //testMove();
 
@@ -337,7 +337,7 @@ async function moveAFITToSE(testMode){
 		db = dbClient.db(dbName)
 		// Get the documents collection
 		let poweringDown = await db.collection('powering_down_he').find().toArray();
-		console.log (poweringDown)
+		//console.log (poweringDown)
 		
 		//sign key properly to function with dsteem requirement
 		let privateKey = dsteem.PrivateKey.fromString(
@@ -366,9 +366,7 @@ async function moveAFITToSE(testMode){
 					break;
 				}
 			}
-			
-			
-			
+						
 			if (!user_banned){
 				
 				//let's make sure user still has proper AFITX amount
@@ -398,6 +396,7 @@ async function moveAFITToSE(testMode){
 				}catch(err){
 					console.log(err);
 				}
+				
 				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
 				let amount = parseFloat(entry.daily_afit_transfer);
 				if (amount > config.free_movable_afit_day ){
