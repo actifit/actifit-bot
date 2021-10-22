@@ -828,7 +828,7 @@ var HOURS = 60 * 60;
 				const create_op = [
 					'account_create',
 					{
-						fee: '3.000 STEEM',
+						fee: '3.000 HIVE',
 						creator: creator,
 						new_account_name: username,
 						owner: ownerAuth,
