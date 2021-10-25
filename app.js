@@ -1231,6 +1231,69 @@ app.get('/getUserWalletAddress', async function (req, res){
 	let matchAddress = await db.collection('user_wallet_address').find({user: user, chain: walletChain}).sort({tokens: -1}).toArray();
 	res.send(matchAddress);
 });
+/*
+app.get('/afitAirdropHive', async function (req, res){
+	let participants = await db.collection('user_wallet_address').find({chain: 'BSC'}).toArray();
+	console.log(participants.length);
+	let delay = 0;
+	for (let entry of participants) {
+		setTimeout(async function(){
+			//grab tokens of the user on actifit wallet
+			let afit_wallet = await grabUserTokensFunc(entry.user);
+			console.log('afit_wallet:'+afit_wallet.tokens);
+			let afit_he_bal_val = 0;
+			try { 
+				let afit_he_bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+				afit_he_bal_val = afit_he_bal.balance;
+			}catch(err){
+				
+			}
+			console.log('afit_he_bal:'+afit_he_bal_val);
+			let afit_se_bal_val = 0;
+			try { 
+				let afit_se_bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+				afit_se_bal_val = afit_se_bal.balance;
+			}catch(err){
+				
+			}
+			console.log('afit_se_bal:'+afit_se_bal_val);
+			let tot_tokens = parseFloat(afit_wallet.tokens) + parseFloat(afit_he_bal_val) + parseFloat(afit_se_bal_val);
+			console.log(tot_tokens);
+			let reward = 0;
+			if (tot_tokens>=2000 && tot_tokens <5000){
+				reward = tot_tokens*0.004;
+			}else if (tot_tokens>=5000 && tot_tokens <10000){
+				reward = tot_tokens*0.005;
+			}else if (tot_tokens>=10000 && tot_tokens <50000){
+				reward = tot_tokens*0.006;
+			}else if (tot_tokens>=50000 && tot_tokens <100000){
+				reward = tot_tokens*0.007;
+			}else if (tot_tokens>=100000){
+				reward = 800;
+			}
+			console.log(reward);
+			//only insert if user is eligible
+			if (reward>0){
+				let airdrop_entry = {
+					user: entry.user,
+					chain: 'BSC',
+					tokens_count: tot_tokens,
+					actifit_wallet_afit_bal: afit_wallet.tokens,
+					afit_he_bal: afit_he_bal_val,
+					afit_se_bal: afit_se_bal_val,
+					afit_bsc_reward: reward, 
+					date: new Date()
+				}
+				//insert into airdrop snapshot
+				let transaction = await db.collection('afit_bsc_hive_airdrop').insert(airdrop_entry);
+				res.write(JSON.stringify(transaction));
+			}
+		}, delay+=1500);
+	}
+	//res.end();
+	//afit_bsc_hive_airdrop
+})
+*/
 
 /* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
