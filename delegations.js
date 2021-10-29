@@ -87,13 +87,13 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 	
 	//run the airdrop once
-	const date = new Date(2021, 9, 26, 9, 00, 00);
+	/*const date = new Date(2021, 9, 26, 9, 00, 00);
 	//const date = new Date(2021, 9, 25, 16, 12, 00);
 	let airdropJob = schedule.scheduleJob(date, function(){
 	  console.log('--- Airdrop AFIT to community ---');
 	  processAfitAirdropHive();//param test
 	});
-	
+	*/
 	
 	
 }else{

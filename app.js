@@ -1295,6 +1295,25 @@ app.get('/afitAirdropHive', async function (req, res){
 })
 */
 
+app.get('/airdropData', async function (req, res){
+	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
+	let totalAirdrop = 0;
+	for (let entry of entries){
+		totalAirdrop += entry.afit_bsc_reward;
+	}
+	res.send({total_airdrop: totalAirdrop});
+})
+
+app.get('/airdropResults', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({error: 'error'});
+		return;
+	}
+	let entry = await db.collection('afit_bsc_hive_airdrop').findOne({user: req.query.user});
+	res.send(entry);
+})
+
+
 /* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
 	let tokenHolders = [];
