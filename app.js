@@ -33,6 +33,25 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
+var Web3 = require('web3');
+
+const web3 = new Web3('https://bsc-dataseed1.binance.org:443');
+
+const minABI = [
+  // balanceOf
+  {
+	constant: true,
+	inputs: [{ name: "_owner", type: "address" }],
+	name: "balanceOf",
+	outputs: [{ name: "balance", type: "uint256" }],
+	type: "function",
+  }];
+
+console.log(config.afitTokenAddress);
+const afitContract = new web3.eth.Contract(minABI, config.afitTokenBSC);
+const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
+const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
+const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
 
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
@@ -1295,13 +1314,49 @@ app.get('/afitAirdropHive', async function (req, res){
 })
 */
 
+/*
+app.get('/airdropDataDisplay', async function (req, res){
+	console.log('airdrop data');
+	let entries = await db.collection('afit_bsc_hive_airdrop_wallets').find().toArray();
+	let display = '';
+	for (let entry of entries){
+		display += entry.wallet+','+entry.reward+'<br/>';
+	}
+	res.send(display);
+})
+*/
+
+app.get('/airdropDataDisplay', async function (req, res){
+	console.log('airdrop data');
+	let entries = await db.collection('afit_bsc_hive_airdrop_wallets').find().toArray();
+	let display = '[';
+	for (let entry of entries){
+		display += '"'+entry.wallet+'",'
+	}
+	display += ']\n\n\n[';
+	for (let entry of entries){
+		display += Math.floor(entry.reward)+','
+	}
+	display += ']';
+	res.send(display);
+})
+
+
+
 app.get('/airdropData', async function (req, res){
+	console.log('airdrop data');
 	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
 	let totalAirdrop = 0;
+	let updated_entries = [];
 	for (let entry of entries){
 		totalAirdrop += entry.afit_bsc_reward;
+		//find matching wallet
+		let wallet_entry = await db.collection('user_wallet_address').findOne({user: entry.user});
+		entry.wallet_address = wallet_entry.wallet;
+		updated_entries.push({'wallet': entry.wallet_address, 'reward': entry.afit_bsc_reward});
+		//let transaction = await db.collection('afit_bsc_hive_airdrop_wallets').insert({'wallet': entry.wallet_address, 'user':entry.user,'reward': entry.afit_bsc_reward});
 	}
-	res.send({total_airdrop: totalAirdrop});
+	res.send(updated_entries);
 })
 
 app.get('/airdropResults', async function (req, res){
@@ -1312,6 +1367,21 @@ app.get('/airdropResults', async function (req, res){
 	let entry = await db.collection('afit_bsc_hive_airdrop').findOne({user: req.query.user});
 	res.send(entry);
 })
+
+app.get('/sendAirdropResultsNotif', async function (req, res){
+	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
+	let delay = 0;
+	for (let entry of entries){
+		setTimeout(async function(){
+		//send notification to user
+			console.log(entry);
+		//res.write(entry);
+			utils.sendNotification(db, entry.user, 'actifit', 'airdrop_results', 'airdrop', 'Congrats! Your snapshot total AFIT amount was '+entry.tokens_count+'. This makes you eligible for '+entry.afit_bsc_reward+' reward! Tokens will be distributed to your BSC wallet address upon actifit DeFi launch. You can check your balance by visiting your wallet on actifit.io', 'https://actifit.io/wallet');
+		}, delay+=3000);
+		//break;
+	}
+	
+});
 
 
 /* end point for user total token count display */
@@ -3902,18 +3972,19 @@ calcRank = async function (req, res){
 	]
 	
 	//AFIT token calculation matrix
+	//[max_afit,factor, base_afit_rank,min_afit,multiplier]
 	var afit_token_rules = [
-		[9,0],
-		[999,0.10],
-		[4999,0.20],
-		[9999,0.30],
-		[19999,0.40],
-		[49999,0.50],
-		[99999,0.60],
-		[499999,0.70],
-		[999999,0.80],
-		[4999999,0.90],
-		[5000000,1]
+		[9,0,0,0,0],
+		[999,10,0,10,0.01],
+		[4999,20,10,1000,0.00375],
+		[9999,30,25,5000,0.004],
+		[19999,40,45,10000,0.0035],
+		[49999,50,70,20000,0.001],
+		[99999,60,100,50000,0.0007],
+		[499999,70,135,100000,0.0001],
+		[999999,80,175,500000,0.00005],
+		[4999999,90,200,1000000,0.00000625],
+		[5000000,100,250,5000000,0]
 	]
 	
 	//Rewarded Posts calculation matrix
@@ -3956,6 +4027,37 @@ calcRank = async function (req, res){
 	
 	var delegation_score = 0;
 	
+	let afitBSC = 0;
+	let afitxBSC = 0;
+	let afitBNBLPBSC = 0;
+	let afitxBNBLPBSC = 0;
+	
+	//check if user has a BSC wallet
+	let wallet_entry = await db.collection('user_wallet_address').findOne({user: req.params.user});
+	if (wallet_entry && wallet_entry.wallet){
+		console.log(wallet_entry.wallet);
+		//fetch wallet balance		
+		let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitBSC = parseFloat(format);
+		console.log(format);
+		
+		result = await afitxContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitxBSC = parseFloat(format);
+		console.log(format);
+		
+		result = await afitBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitBNBLPBSC = parseFloat(format);
+		console.log(format);		
+		
+		result = await afitxBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitxBNBLPBSC = parseFloat(format);
+		console.log(format);
+	}
+	
 	//check if the user has an alt account as beneficiary
 	let delegator_info = await getAltAccountStatusFunc(req.params.user);
 	//check if returned object is not empty
@@ -3993,9 +4095,20 @@ calcRank = async function (req, res){
 	//console.log(userTokens.tokens);
 	
 	var afit_tokens_score = 0;
+	//initialize as the BSC amount value, multiplied by multiplier
+	let full_afit_bal = config.afitBSCMultiplier * afitBSC;
+	
+	//append AFIT LP token balance * multipler
+	full_afit_bal += config.afitLPBSCMultiplier * afitBNBLPBSC;
+	
 	if (userTokens != null){
-		afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+		full_afit_bal += parseFloat(userTokens.tokens);
+		
 	}
+	if (full_afit_bal > 0){
+		afit_tokens_score = utils.calcScoreExtended(afit_token_rules, config.afit_token_factor, parseFloat(full_afit_bal), parseFloat(config.max_afit_rank_val));	
+	}
+	
 	
 	user_rank += afit_tokens_score;
 	
@@ -4025,11 +4138,21 @@ calcRank = async function (req, res){
 	let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
 	let user_rank_afitx = 0;
 	
+	//initialize as the BSC amount value, multiplied by multiplier
+	let full_afitx_bal = config.afitxBSCMultiplier * afitxBSC;
+	
+	//append AFITX LP token balance * multipler
+	full_afitx_bal += config.afitxLPBSCMultiplier * afitxBNBLPBSC;
+	
 	if (userHasAFITX){
-		user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
-		//max increase by holding AFITX is 100
-		if (user_rank_afitx > 100){
-			user_rank_afitx = 100;
+		full_afitx_bal += parseFloat(userHasAFITX.balance);
+	}
+	
+	if (full_afitx_bal > 0){
+		user_rank_afitx = (parseFloat(full_afitx_bal) / 10).toFixed(2);
+		//max increase by holding AFITX is 150(config.max_afitx_rank_increase)
+		if (user_rank_afitx > config.max_afitx_rank_increase){
+			user_rank_afitx = config.max_afitx_rank_increase;
 		}
 		user_rank += parseFloat(user_rank_afitx);
 	}
@@ -4041,7 +4164,13 @@ calcRank = async function (req, res){
 		delegation_score: delegation_score,
 		afit_tokens_score: afit_tokens_score,
 		tot_posts_score: tot_posts_score,
-		recent_posts_score:recent_posts_score
+		recent_posts_score:recent_posts_score,
+		afit_BSC: afitBSC,
+		afitx_BSC: afitxBSC,
+		afit_BNB_LP_BSC: afitBNBLPBSC,
+		afitx_BNB_LP_BSC: afitxBNBLPBSC,
+		full_afit_bal: full_afit_bal,
+		full_afitx_bal: full_afitx_bal
 	});
 	console.log(score_components)
 	return score_components;

@@ -1182,7 +1182,26 @@ function format(n, c, d, t) {
 	}
 	//console.log('result:'+result);
 	return result;
-}
+ }
+ 
+ function calcScoreExtended(rules_array, factor, value, max_val){
+	var result;
+	//console.log("rules_array.length:"+rules_array.length);
+	for (var i=0; i<rules_array.length; i++){
+		var rule = rules_array[i];
+		//console.log(value<=rule[0]);
+		// console.log(value);
+		if (value<=rule[0]){
+			result = factor * (rule[2]+rule[4]*(value-rule[3])) / max_val;//rule[1];
+			break;
+		}else{
+			//default until we find a larger range that fits better
+			result = factor * (rule[2]+rule[4]*(value-rule[3])) / max_val;//rule[1];
+		}
+	}
+	// console.log('extended result:'+result);
+	return result;
+ }
 
  function log(msg, name) { 
   if (!name)
@@ -1992,5 +2011,6 @@ async function getGadgetBuyTickets(db){
    getGadgetBuyTickets: getGadgetBuyTickets,
    grabLastDrawData: grabLastDrawData,
    sendFirebaseNotification: sendFirebaseNotification,
-   purchaseRealProd: purchaseRealProd
+   purchaseRealProd: purchaseRealProd,
+   calcScoreExtended: calcScoreExtended
  }

@@ -112,6 +112,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 
 //processAfitAirdropHive();
 
+/*
 async function processAfitAirdropHive(){
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
@@ -198,6 +199,8 @@ async function processAfitAirdropHive(){
 	  }
 	});
 }
+
+*/
 
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
