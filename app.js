@@ -4034,6 +4034,7 @@ calcRank = async function (req, res){
 	
 	//check if user has a BSC wallet
 	let wallet_entry = await db.collection('user_wallet_address').findOne({user: req.params.user});
+	try{
 	if (wallet_entry && wallet_entry.wallet){
 		console.log(wallet_entry.wallet);
 		//fetch wallet balance		
@@ -4056,6 +4057,9 @@ calcRank = async function (req, res){
 		format = web3.utils.fromWei(result); // 29803630.997051883414242659
 		afitxBNBLPBSC = parseFloat(format);
 		console.log(format);
+	}
+	}catch(err){
+		console.log(err);
 	}
 	
 	//check if the user has an alt account as beneficiary
