@@ -55,7 +55,7 @@ const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenB
 
 connectWithRetry();
 
-setTimeout(connectWithRetry, 5000);
+setInterval(connectWithRetry, 5000);
 
 function connectWithRetry () {
 
