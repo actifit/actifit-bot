@@ -53,42 +53,59 @@ const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
 const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
 const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
 
-// Use connect method to connect to the server
-MongoClient.connect(url, function(err, client) {
-	if(!err) {
-	  console.log("Connected successfully to server");
 
-	  db = client.db(db_name);
-	  
-	  //print version
-	/*  var adminDb = db.admin();
-    adminDb.serverStatus(function(err, info) {
-        if (err){
-			console.log(err);
-		}else{
-			console.log(info.version);
-		}
-    })*/
+//making the connection recursive to avoid connection timeouts
 
-	  // Get the documents collection
-	  collection = db.collection(collection_name);
-	  
-	  //clearCorruptData();
-	  
-	  //disableUserLogin();
-	  /*
-	  let user = 'mcfarhat';
-	  utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget', 'https://actifit.io/'+user);
-	  
-	  utils.sendNotification(db, user, 'actifit', 'friendship_request', 'friendship', 'User ' + 'actifit' + ' has sent you a friendship request', 'https://actifit.io/'+'actifit');
-	  return;*/
-	  //utils.sendFirebaseNotification(db, 'arabpromovault');
-	  
-	} else {
-		utils.log(err, 'api');
-	}
-  
+
+MongoClient.on('serverClosed', (event) => {
+  // eslint-disable-next-line no-console
+  console.log('received serverClosed');
+  // eslint-disable-next-line no-console
+  console.log(JSON.stringify(event, null, 2));
+	connectMongo();
+  // should i call mongoDBConnection() here if connection lost while app running?
 });
+
+connectMongo();
+
+function connectMongo(){
+	// Use connect method to connect to the server
+	MongoClient.connect(url, function(err, client) {
+		if(!err) {
+		  console.log("Connected successfully to server");
+
+		  db = client.db(db_name);
+		  
+		  //print version
+		/*  var adminDb = db.admin();
+		adminDb.serverStatus(function(err, info) {
+			if (err){
+				console.log(err);
+			}else{
+				console.log(info.version);
+			}
+		})*/
+
+		  // Get the documents collection
+		  collection = db.collection(collection_name);
+		  
+		  //clearCorruptData();
+		  
+		  //disableUserLogin();
+		  /*
+		  let user = 'mcfarhat';
+		  utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget', 'https://actifit.io/'+user);
+		  
+		  utils.sendNotification(db, user, 'actifit', 'friendship_request', 'friendship', 'User ' + 'actifit' + ' has sent you a friendship request', 'https://actifit.io/'+'actifit');
+		  return;*/
+		  //utils.sendFirebaseNotification(db, 'arabpromovault');
+		  
+		} else {
+			utils.log(err, 'api');
+		}
+	  
+	});
+}
 
 async function clearCorruptData(){
 	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
