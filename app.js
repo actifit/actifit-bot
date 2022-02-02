@@ -53,6 +53,12 @@ const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
 const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
 const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
 
+
+var connectWithRetry = function () {
+
+
+setTimeout(connectWithRetry, 5000);
+
 // Use connect method to connect to the server
 MongoClient.connect(url, 
 	{	
@@ -94,6 +100,8 @@ MongoClient.connect(url,
 	}
   
 });
+
+}
 
 async function clearCorruptData(){
 	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
