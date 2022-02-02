@@ -53,11 +53,11 @@ const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
 const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
 const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
 
-
-var connectWithRetry = function () {
-
+connectWithRetry();
 
 setTimeout(connectWithRetry, 5000);
+
+var connectWithRetry = function () {
 
 // Use connect method to connect to the server
 MongoClient.connect(url, 
