@@ -57,7 +57,7 @@ connectWithRetry();
 
 setTimeout(connectWithRetry, 5000);
 
-var connectWithRetry = function () {
+function connectWithRetry () {
 
 // Use connect method to connect to the server
 MongoClient.connect(url, 
