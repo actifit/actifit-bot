@@ -8,6 +8,7 @@
     "@hiveio/hive-js": "^2.0.1",
     "axios": "^0.18.1",
     "cheerio": "^1.0.0-rc.2",
+    "dblurt": "^0.1.2",
     "dsteem": "^0.10.1",
     "express": "^4.16.2",
     "firebase-admin": "^9.2.0",

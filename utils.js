@@ -20,12 +20,15 @@ const dsteem = require('dsteem');
 
 const dhive = require('@hiveio/dhive');
 
+const dblurt = require('dblurt');
+
 const moment = require('moment')
 
 
 
 const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
+const blurtClient = new dblurt.Client(config.blurt_node);
 
 hiveClient.updateOperations(true);
 		
@@ -626,7 +629,7 @@ var HOURS = 60 * 60;
 		let result = '';
 		let outcSteem = false;
 		let outcHive = false;
-		if (!chain || chain == 'STEEM'){
+		if (!chain || chain.includes('STEEM')){
 			
 			try{
 				const privateKey = dsteem.PrivateKey.fromString(
@@ -640,7 +643,7 @@ var HOURS = 60 * 60;
 				outcSteem = false;
 			}
 		}
-		if (!chain || chain == 'HIVE'){
+		if (!chain || chain.includes('HIVE')){
 			try{
 				const privateKey = dhive.PrivateKey.fromString(
 							config.active_key
@@ -662,7 +665,7 @@ var HOURS = 60 * 60;
 			getConfig();
 		}
 		
-		if (!chain || chain == 'STEEM'){
+		if (!chain || chain.includes('STEEM')){
 			//check if account exists		
 			const _account = await client.database.call('get_accounts', [[username]]);
 			//account not available to register
@@ -673,9 +676,20 @@ var HOURS = 60 * 60;
 			}
 		}
 			
-		if (!chain || chain == 'HIVE'){
+		if (!chain || chain.includes('HIVE')){
 			//check if account exists		
 			const _account = await hiveClient.database.call('get_accounts', [[username]]);
+			//account not available to register
+			if (_account.length>0) {
+				console.log('account already exists');
+				console.log(_account);
+				return false;
+			}
+		}	
+		
+		if (!chain || chain.includes('BLURT')){
+			//check if account exists		
+			const _account = await blurtClient.database.call('get_accounts', [[username]]);
 			//account not available to register
 			if (_account.length>0) {
 				console.log('account already exists');
@@ -690,6 +704,7 @@ var HOURS = 60 * 60;
 		//container for required ops
 		let ops = [];
 		let hiveOps = [];
+		let blurtOps = [];
 		
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
@@ -697,7 +712,7 @@ var HOURS = 60 * 60;
 		let steemAccountSuccess = false;
 		let hiveAccountSuccess = false;
 		
-		if (!chain || chain == 'STEEM'){
+		if (!chain || chain.includes('STEEM')){
 			
 			//create keys for new account
 			const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
@@ -777,7 +792,7 @@ var HOURS = 60 * 60;
 			}
 		}
 		
-		if (!chain || chain == 'HIVE'){
+		if (!chain || chain.includes('HIVE')){
 			const _creator_account = await hiveClient.database.call('get_accounts', [
 				[creator],
 			]);
@@ -854,7 +869,85 @@ var HOURS = 60 * 60;
 				hiveAccountSuccess = false;
 			}
 		}
-		return (steemAccountSuccess || hiveAccountSuccess);
+		
+		if (!chain || chain.includes('BLURT')){
+			const _creator_account = await blurtClient.database.call('get_accounts', [
+				[creator],
+			]);
+			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+			
+			//create keys for new account
+			const ownerKey = dblurt.PrivateKey.fromLogin(username, password, 'owner');
+			const activeKey = dblurt.PrivateKey.fromLogin(username, password, 'active');
+			const postingKey = dblurt.PrivateKey.fromLogin(username, password, 'posting');
+			let memoKey = dblurt.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+			
+			//create auth values for passing to account creation
+			const ownerAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[ownerKey.createPublic(), 1]],
+			};
+			const activeAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[activeKey.createPublic(), 1]],
+			};
+			const postingAuth = {
+				weight_threshold: 1,
+				account_auths: [],
+				key_auths: [[postingKey.createPublic(), 1]],
+			};
+			
+			/*if (_creator_account[0].pending_claimed_accounts > 0) {		
+			
+				//the create discounted account operation
+				const create_op = [
+					'create_claimed_account',
+					{
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				blurtOps.push(create_op);
+			}else{*/
+			//BLURT only supports fee-based account creation
+				const create_op = [
+					'account_create',
+					{
+						fee: '10.000 BLURT',
+						creator: creator,
+						new_account_name: username,
+						owner: ownerAuth,
+						active: activeAuth,
+						posting: postingAuth,
+						memo_key: memoKey,
+						json_metadata: '',
+						extensions: [],
+					}
+				];
+				blurtOps.push(create_op);
+			//}
+			
+			const privateKey = dblurt.PrivateKey.fromString(config.active_key);
+			//proceed executing the selected operation(s)
+			let result = '';
+			try{
+				result = await blurtClient.broadcast.sendOperations(blurtOps, privateKey);
+				console.log('success');
+				blurtAccountSuccess = true;
+			}catch(err){
+				console.log(err);
+				blurtAccountSuccess = false;
+			}
+		}
+		return (steemAccountSuccess || hiveAccountSuccess || blurtAccountSuccess);
 	}
 
 	//function handles delegating to a specific account
@@ -869,7 +962,7 @@ var HOURS = 60 * 60;
 		let result = '';
 		let steemDg = false;
 		let hiveDg = false;
-		if (!chain || chain == 'STEEM'){
+		if (!chain || chain.includes('STEEM')){
 			try{
 				//grab matching amount of Vests to delegate
 				let matchingVests = await steemPowerToVests(steemPowerAmount);
@@ -893,7 +986,7 @@ var HOURS = 60 * 60;
 				steemDg = false;
 			}
 		}
-		if (!chain || chain == 'HIVE'){
+		if (!chain || chain.includes('HIVE')){
 			try{
 				//grab matching amount of Vests to delegate
 				let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
