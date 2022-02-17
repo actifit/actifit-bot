@@ -846,6 +846,10 @@ app.get('/user/:user', async function (req, res) {
     res.send(user);
 });
 
+app.get('/thread_param/', async function(req, res) {
+	res.send(process.env.BOT_THREAD);
+})
+
 /* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
@@ -5706,7 +5710,7 @@ app.get("/downEbook", async function(req, res) {
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	//if (false){
+	// if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';

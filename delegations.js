@@ -54,6 +54,7 @@ console.log('--- Reward script initialized ---');
 
 let schedule = require('node-schedule')
 
+/*
 if (process.env.BOT_THREAD == 'MAIN'){
 
 	console.log('--- Main Bot Thread Detected ---');
@@ -68,11 +69,18 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//utils.lookupAccountPay();
 
 	//param steemOnlyReward
-	runRewards(true);
+	//runRewards(true);
 	//runRewards(false);
 	
 	
-}else if (process.env.BOT_THREAD == 'SECOND_API'){
+}else */
+if (process.env.BOT_THREAD == 'MAIN'){
+	
+	
+	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
+	  console.log('--- Start delegators reward ---');
+	  runRewards(false);//param steemOnlyReward
+	});
 	
 	//let's schedule the AFIT to S-E token move event at 10:00 
 	let moveJob = schedule.scheduleJob({hour: 10, minute: 00}, function(){
@@ -209,7 +217,8 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 //airdropAFITX();
 
-// moveAFITToSE(true);
+// moveAFITToSE(false);
+// runRewards(false);
 
 //testMove();
 
