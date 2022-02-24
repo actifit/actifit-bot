@@ -4,6 +4,7 @@
   "description": "actifit curation bot",
   "main": "curation-bot.js",
   "dependencies": {
+    "@blurtfoundation/blurtjs": "^1.0.0",
     "@hiveio/dhive": "^0.14.1",
     "@hiveio/hive-js": "^2.0.1",
     "axios": "^0.18.1",

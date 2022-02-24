@@ -3,6 +3,8 @@ const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
+const blurt = require('@blurtfoundation/blurtjs');
+
 getConfig();
 
 const fbadmin = require('firebase-admin');
@@ -46,6 +48,8 @@ hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node });
 
+blurt.api.setOptions({ url: config.blurt_node});
+
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
 var HOURS = 60 * 60;
@@ -70,6 +74,8 @@ var HOURS = 60 * 60;
  function setProperNode(bchain){
 	if (bchain == "STEEM"){
 		return steem
+	}else if (bchain == "BLURT"){
+		return blurt
 	}else{
 		return hive
 	}
