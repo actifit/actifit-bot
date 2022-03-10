@@ -2204,9 +2204,23 @@ async function fetchChainTrx(trxId, chain){
 								let permlnk = action.parent_permlink;
 								let authPermlnk = action.permlink;
 								
-								//only comments
-								if (targetUser != "" && action.body.includes('!AFIT')) { //has a parent post and targets sending AFIT
+								//only comments & matching !AFIT keyword with or without amount
+								let matchingArr = action.body.match(/\!AFIT( *(\d+))?/i);
+								
+								if (targetUser != "" && matchingArr.length > 0) { //has a parent post and targets sending AFIT
 									let amnt = config.default_tip_amnt;
+									try{
+										if (matchingArr.length>2){
+											let tempAmnt = parseInt(matchingArr[2]);
+											if (tempAmnt < config.max_tip_amnt){
+												//set as new amount
+												amnt = tempAmnt;
+											}
+										}
+									}catch(parseErr){
+										console.log(parseErr);
+									}
+									
 									let result = {
 										reqUser: author,
 										reqPermlnk: authPermlnk,
