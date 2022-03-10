@@ -4761,6 +4761,83 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 	}
 })
 
+//function handles fetching recent tip transactions
+app.get('/verifyTipTransactions', async function (req, res){
+	let outcome = await utils.verifyTipTransactions(db);
+	res.send(outcome);
+})
+
+app.get('/processTipRequest', async function (req, res){
+	if (!req.query.trxId){
+		res.send({status: "error", error: "missing data"});
+		return;
+	}
+	
+	//update tip transactions before proceeding
+	utils.verifyTipTransactions(db);
+	
+	//fetch the relevant transaction, and process it
+	let trxId = req.query.trxId;
+	
+	//check if trx has been processed before
+	let matchTrx = await db.collection('tip_trx_processed').findOne({trx_id: trxId});
+	console.log(matchTrx);
+	if (matchTrx && matchTrx.processed==true){
+		//found existing processed trx, bail
+		res.send({status: "error", error: "trx already processed"});
+		return;
+	}
+	
+	let reslt = await utils.fetchChainTrx(trxId, req.query.chain);
+	console.log(reslt);
+	
+	if (reslt && reslt.reqUser && reslt.tgtUser && reslt.amnt){
+		//recalculate tip balances
+		let tipBal = await utils.updateTipBalances(db);
+	
+		//fetch user tip balance
+		let dt = await db.collection('tip_balance').findOne({user: reslt.reqUser});
+		//only send amount if user has enough balance
+		if (dt && dt.tip_balance && dt.tip_balance >= reslt.amnt ){
+			
+			//send out the tip
+			let tx_res = await utils.proceedSendToken(reslt.reqUser, config.tip_account, config.tip_account_active_key, reslt.tgtUser, reslt.amnt, req.query.chain, reslt.symbol);
+			
+			if (tx_res && tx_res.ref_block_num){
+				//update user tip balances
+				tipBal = await utils.updateTipBalances(db);
+				
+				//confirm trx was processed to db, to avoid any future abuse
+				await db.collection('tip_trx_processed').insert({trx_id: trxId, processed: true, pay_trx_id: tx_res.ref_block_num})
+				reslt.content = 'Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
+				reslt.eligible = true;
+				//also write comment on blockchain
+				await utils.commentToChain(reslt);
+				//success
+				res.send({status: "success"});
+			}
+			//update tip balances
+			//console.log(trx);
+		}else{
+			reslt.content = 'Hey @'+reslt.reqUser+', we could not send a tip as your tip balance is below threshold. To tip other users, please send a minimum of '+reslt.amnt+' '+reslt.symbol+' on hive-engine to @actifit.tip account, and then retry. ';
+			reslt.eligible = false;
+			//also write comment on blockchain
+			await utils.commentToChain(reslt);
+			res.send({status: "error", error: "user '+reslt.reqUser+' does not have enough tip balance"});
+			return;
+		}
+	}else{
+		res.send({status: "error", error: "trx not found"});
+		return;
+	}
+});
+
+//function handles updating user tip balances
+app.get('/updateTipBalances', async function (req, res){
+	let outcome = await utils.updateTipBalances(db);
+	res.send(outcome);
+})
+
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
 app.get('/confirmAFITSEReceipt', async function(req,res){
 	if (!req.query.user){

@@ -218,7 +218,7 @@ const hsc = new SSC(config.hive_engine_rpc);
 //airdropAFITX();
 
 // moveAFITToSE(false);
-runRewards(true);
+//runRewards(true);
 
 //testMove();
 

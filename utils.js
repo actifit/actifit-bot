@@ -384,6 +384,101 @@ var HOURS = 60 * 60;
 		});
 	}
 	
+	
+	//function handles fetching tip transactions
+	async function verifyTipTransactions(db){
+		let url = new URL(config.hive_engine_tip_trans_his);
+		//connect with our service to confirm AFIT received to proper wallet
+		try{
+			let he_connector = await fetch(url);
+			let trx_entries = await he_connector.json();
+			
+			for (const entry of trx_entries){
+			//trx_entries.forEach(async function (entry){
+				let quant = parseFloat(entry.quantity);
+				let user = entry.from
+				//if this is a send transaction, need to decrease balance
+				if (entry.from == config.tip_account){
+					quant = -1 * quant;
+					//validate this is a proper tipping transaction
+					if (entry.memo != null){
+						user = entry.memo;
+					}
+				}
+				if (entry.symbol != 'AFIT' ){
+					//skip as currently we only support AFIT tipping
+					continue;
+				}
+				//query to see if entry already stored
+				let tokenTransQuery = {
+					user: user,
+					timestamp: entry.timestamp,
+					operation: "tokens_transfer",
+					symbol: entry.symbol,
+					quantity: quant
+				}
+				//store the transaction to the user's profile
+				let newTokenTrans = {
+					user: user,
+					timestamp: entry.timestamp,
+					operation: "tokens_transfer",
+					symbol: entry.symbol,
+					quantity: quant
+				}
+				try{
+					console.log(newTokenTrans);
+					//insert the query ensuring we do not write it twice
+					let transaction = await db.collection('tip_transfers').update(tokenTransQuery, newTokenTrans, { upsert: true });
+					let trans_res = transaction.result;
+					console.log(trans_res);
+					
+					//transaction inserted
+					if (trans_res.upserted){
+						console.log('success');
+					}
+					
+				}catch(erra){
+					console.log(erra);
+				}
+			};
+			return "{success: true}";
+					
+			//let match_trx;
+		}catch(err){
+			console.log(err);
+			return "{success: false, err:"+err+"}";
+		}
+	}
+	
+	async function updateTipBalances (db){
+	
+		try{
+			//group all token transactions per user, and sum them to generate new total count
+			let query = await db.collection('tip_transfers').aggregate([
+				{ $group: { _id: "$user", tip_balance: { $sum: "$quantity" } } },
+				{ $sort: { tokens: -1 } },
+				{ $project: { 
+					 _id: "$_id",
+					 user: "$_id",
+					 tip_balance: "$tip_balance",
+					 }
+				 }
+				])
+		
+			let user_tokens = await query.toArray();
+			//remove old token count per user
+			await db.collection('tip_balance').remove({});
+			//insert new count per user
+			await db.collection('tip_balance').insert(user_tokens);
+			console.log('---- Updating User Tip Balances Complete ----');
+			return "{success: true}";
+		}catch(err){
+			console.log('>>save data error:'+err.message);
+			return "{success:false, err: "+err+"}";
+		}
+		
+	}
+	
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser, bchain) {
 		getConfig();
@@ -2043,6 +2138,144 @@ async function grabLastDrawData(db){
 	return drawData;
 }
 
+
+async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
+
+	let transId = 'ssc-mainnet-hive';
+	//let targetBchain = 'STEEM';
+	//other option is moving tokens from H-E to S-E
+	if (chain == 'STEEM'){
+	//if (this.cur_bchain == 'STEEM'){
+		transId = 'ssc-mainnet1';
+		//targetBchain = 'HIVE';
+	}
+	
+	
+	let json_data = {
+		contractName: 'tokens',
+		contractAction: 'transfer',
+		contractPayload: {
+			symbol: tokenSymbol,
+			to: targetAcct,
+			quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
+			memo: tipper//'tipped '+amount+ ' ' + tokenSymbol + ' by @'+tipper
+		}
+	}
+	
+	//send out transaction to blockchain
+	let chainLnk = await setProperNode(chain);
+	let tx = await chainLnk.broadcast.customJsonAsync(
+			srcAcctActKey, 
+			[ srcAcct ] , 
+			[], 
+			transId, 
+			JSON.stringify(json_data)
+		).catch(err => {
+			console.log(err.message);
+	});
+	return tx;
+}
+
+async function fetchChainTrx(trxId, chain){
+	let chainLnk = await setProperNode(chain);
+		
+	//track attempts for timeout
+	let attempts = 1;
+	let max_attempts = 20; //20 attempts x 5 seconds = 100 seconds (more than enough time for blockchain to confirm)
+	
+	return new Promise((resolve, reject) => {
+		let fetch_th_id = setInterval(async function(){
+			
+			try{
+				if (attempts < max_attempts){
+					console.log('finding trx');
+					attempts += 1;
+					let trx = await chainLnk.api.getTransactionAsync(trxId);
+					if (trx && trx.operations){
+						let ops = trx.operations;
+						for (const i in ops) {
+							const op = ops[i];
+							
+							if (op[0] === "comment") {
+								
+								let action = op[1];
+								let targetUser = action.parent_author;
+								let author = action.author;
+								let permlnk = action.parent_permlink;
+								let authPermlnk = action.permlink;
+								
+								//only comments
+								if (targetUser != "" && action.body.includes('!AFIT')) { //has a parent post and targets sending AFIT
+									let amnt = config.default_tip_amnt;
+									let result = {
+										reqUser: author,
+										reqPermlnk: authPermlnk,
+										tgtUser: targetUser,
+										cmtPermlnk: permlnk,
+										amnt: amnt,
+										chain: chain,
+										symbol: 'AFIT'
+									}
+									//return result;
+									clearInterval(fetch_th_id);
+									resolve(result);
+								}
+								
+							}
+						}
+					}
+				}else{
+					//return error
+					resolve(null);
+				}
+			}catch(err){
+				console.log(err);
+			}
+		}, 5000);
+	});
+	//return {};
+}
+
+async function commentToChain(reslt){
+	let chainLnk = await setProperNode(reslt.chain);
+	let permalink = 're-' + reslt.tgtUser.replace(/\./g, '') + '-' + reslt.cmtPermlnk + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
+	let jsonMetadata = {};
+	let tgtUser = reslt.tgtUser;
+	let tgtPermlnk = reslt.cmtPermlnk;
+	if (!reslt.eligible){
+		tgtUser = reslt.reqUser;
+		tgtPermlnk = reslt.reqPermlnk;
+	}
+	const operations = [ 
+		   ['comment', 
+			 { 
+			   "parent_author": tgtUser, 
+			   "parent_permlink": tgtPermlnk, 
+			   "author": config.tip_account,
+			   "permlink": permalink, 
+			   "title": reslt.symbol + ' tip ', 
+			   "body": reslt.content, 
+			   "json_metadata" : JSON.stringify(jsonMetadata)
+			 } 
+		   ]
+	];
+	
+	console.log(operations);
+	
+	let res = await chainLnk.broadcast.sendAsync( 
+		   { 
+			   operations: operations, 
+			   extensions: [] 
+			}, 
+		   { posting: config.tip_account_posting_key }
+	   ).catch(e => console.log(e))
+	console.log(res);
+	if (res && res.ref_block_num) {
+		console.log('Posted comment: ' + permalink);
+		//resolve(res);
+	}	
+}
+
 async function getGadgetBuyTickets(db){
 	let drawData = await grabLastDrawData(db);
 	
@@ -2111,5 +2344,10 @@ async function getGadgetBuyTickets(db){
    grabLastDrawData: grabLastDrawData,
    sendFirebaseNotification: sendFirebaseNotification,
    purchaseRealProd: purchaseRealProd,
-   calcScoreExtended: calcScoreExtended
+   calcScoreExtended: calcScoreExtended,
+   verifyTipTransactions: verifyTipTransactions,
+   updateTipBalances: updateTipBalances,
+   fetchChainTrx: fetchChainTrx,
+   commentToChain: commentToChain,
+   proceedSendToken: proceedSendToken
  }
