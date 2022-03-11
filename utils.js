@@ -426,16 +426,16 @@ var HOURS = 60 * 60;
 					quantity: quant
 				}
 				try{
-					console.log(newTokenTrans);
+					//console.log(newTokenTrans);
 					//insert the query ensuring we do not write it twice
 					let transaction = await db.collection('tip_transfers').update(tokenTransQuery, newTokenTrans, { upsert: true });
 					let trans_res = transaction.result;
-					console.log(trans_res);
+					//console.log(trans_res);
 					
 					//transaction inserted
-					if (trans_res.upserted){
-						console.log('success');
-					}
+					//if (trans_res.upserted){
+					//	console.log('success');
+					//}
 					
 				}catch(erra){
 					console.log(erra);
@@ -2176,7 +2176,7 @@ async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amo
 	return tx;
 }
 
-async function fetchChainTrx(trxId, chain){
+async function fetchChainTrx(trxId, blkNo, chain){
 	let chainLnk = await setProperNode(chain);
 		
 	//track attempts for timeout
@@ -2190,7 +2190,15 @@ async function fetchChainTrx(trxId, chain){
 				if (attempts < max_attempts){
 					console.log('finding trx');
 					attempts += 1;
-					let trx = await chainLnk.api.getTransactionAsync(trxId);
+					let trx;
+					if (chain == 'STEEM'){
+						trx = await client.database.getTransaction({id: trxId, block_num: blkNo});
+						//console.log(trx);
+						//resolve(null);
+					}else{
+					
+						trx = await chainLnk.api.getTransactionAsync(trxId);
+					}
 					if (trx && trx.operations){
 						let ops = trx.operations;
 						for (const i in ops) {
@@ -2244,6 +2252,7 @@ async function fetchChainTrx(trxId, chain){
 				}
 			}catch(err){
 				console.log(err);
+				resolve(null);
 			}
 		}, 5000);
 	});

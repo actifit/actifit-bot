@@ -4768,7 +4768,7 @@ app.get('/verifyTipTransactions', async function (req, res){
 })
 
 app.get('/processTipRequest', async function (req, res){
-	if (!req.query.trxId){
+	if (!req.query.trxId || !req.query.blkNo){
 		res.send({status: "error", error: "missing data"});
 		return;
 	}
@@ -4778,9 +4778,17 @@ app.get('/processTipRequest', async function (req, res){
 	
 	//fetch the relevant transaction, and process it
 	let trxId = req.query.trxId;
+	let blkNo = req.query.blkNo;
+	
+	//default chain
+	let chain = 'HIVE';//req.query.chain;
+	if (req.query.chain){
+		chain = req.query.chain;
+	}
 	
 	//check if trx has been processed before
-	let matchTrx = await db.collection('tip_trx_processed').findOne({trx_id: trxId});
+	let matchCriteria = {trx_id: trxId, blk_no: blkNo, chain: chain};
+	let matchTrx = await db.collection('tip_trx_processed').findOne(matchCriteria);
 	console.log(matchTrx);
 	if (matchTrx && matchTrx.processed==true){
 		//found existing processed trx, bail
@@ -4788,7 +4796,7 @@ app.get('/processTipRequest', async function (req, res){
 		return;
 	}
 	
-	let reslt = await utils.fetchChainTrx(trxId, req.query.chain);
+	let reslt = await utils.fetchChainTrx(trxId, blkNo, chain);
 	console.log(reslt);
 	
 	if (reslt && reslt.reqUser && reslt.tgtUser && reslt.amnt){
@@ -4801,14 +4809,14 @@ app.get('/processTipRequest', async function (req, res){
 		if (dt && dt.tip_balance && dt.tip_balance >= reslt.amnt ){
 			
 			//send out the tip
-			let tx_res = await utils.proceedSendToken(reslt.reqUser, config.tip_account, config.tip_account_active_key, reslt.tgtUser, reslt.amnt, req.query.chain, reslt.symbol);
+			let tx_res = await utils.proceedSendToken(reslt.reqUser, config.tip_account, config.tip_account_active_key, reslt.tgtUser, reslt.amnt, chain, reslt.symbol);
 			
 			if (tx_res && tx_res.ref_block_num){
 				//update user tip balances
 				tipBal = await utils.updateTipBalances(db);
 				
 				//confirm trx was processed to db, to avoid any future abuse
-				await db.collection('tip_trx_processed').insert({trx_id: trxId, processed: true, pay_trx_id: tx_res.ref_block_num})
+				await db.collection('tip_trx_processed').insert({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
 				reslt.content = 'Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
 				reslt.eligible = true;
 				//also write comment on blockchain
