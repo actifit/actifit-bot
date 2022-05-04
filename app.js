@@ -474,6 +474,29 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
+//for the purposes of this document
+app.get('/totalSupplyAFIT', async function (req,res){
+	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=8VYN5BUXD6T1X1GAU12UHMQXBT3IJTF68V');
+	
+	try{
+		let connector = await fetch(url);
+		let data = await connector.json();
+		//return back the count as a number
+		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
+		let count= parseFloat(data.result)/Math.pow(10,18);///10**18;
+		res.send(''+count);
+	}catch(exc){
+		res.send('error');
+	}
+	
+})
+//for the purposes of real circulating supply
+app.get('/circulatingSupplyAFIT', async function (req,res){
+	//TODO: make it dynamic
+	res.send('898400.45');
+	
+})
+
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
@@ -4817,7 +4840,10 @@ app.get('/processTipRequest', async function (req, res){
 				
 				//confirm trx was processed to db, to avoid any future abuse
 				await db.collection('tip_trx_processed').insert({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
-				reslt.content = 'Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
+				reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
+				reslt.content += '<br/>Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
+				reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
+				reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
 				reslt.eligible = true;
 				//also write comment on blockchain
 				await utils.commentToChain(reslt);
@@ -4827,7 +4853,10 @@ app.get('/processTipRequest', async function (req, res){
 			//update tip balances
 			//console.log(trx);
 		}else{
-			reslt.content = 'Hey @'+reslt.reqUser+', we could not send a tip as your tip balance is below threshold. To tip other users, please send a minimum of '+reslt.amnt+' '+reslt.symbol+' on hive-engine to @actifit.tip account, and then retry. ';
+			reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
+			reslt.content += 'Hey @'+reslt.reqUser+', we could not send a tip as your tip balance is below threshold. To tip other users, please send a minimum of '+reslt.amnt+' '+reslt.symbol+' on hive-engine to @actifit.tip account, and then retry. ';
+			reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
+			reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
 			reslt.eligible = false;
 			//also write comment on blockchain
 			await utils.commentToChain(reslt);
@@ -5795,7 +5824,7 @@ app.get("/downEbook", async function(req, res) {
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	// if (false){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -5933,7 +5962,8 @@ app.get('/sendNotification', async function(req,res){
 			for (let i=0;i<friends.length;i++){
 				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'friendship', 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			}
-			res.send('{status: success}');
+			//res.send('{status: success}');
+			//return;
 		}else if (req.query.notifType == 'new_comment'){
 			//console.log(req.query.permlink);
 			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);

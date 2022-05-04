@@ -2042,7 +2042,7 @@ async function sendFirebaseNotification(db, user, details, url){
 	console.log('sendFirebaseNotification');
 	//fetch user's device/token
 	let device = await findUserMatchingDevice(db, user);
-	console.log(device);
+	//console.log(device);
 	//only send message if device is found
 	if (Array.isArray(device) && device.length>0){
 		
@@ -2086,16 +2086,16 @@ async function sendNotification(db, user, action_taker, type, category, details,
 	let setgs = await db.collection('user_settings').findOne({user: user});
 	let proceed = true;
 	if (setgs && setgs.settings){
-		console.log(setgs.settings[config.mainNotificationsControl]);
+		//console.log(setgs.settings[config.mainNotificationsControl]);
 		if (setgs.settings[config.mainNotificationsControl] == false){
-			console.log('set false 1');
+			//console.log('set false 1');
 			proceed = false;
 		}else if (setgs.settings[category] == false){
-			console.log('set false 2');
+			//console.log('set false 2');
 			proceed = false;
 		}
 	}
-	console.log('proceed with notification :'+proceed);
+	//console.log('proceed with notification :'+proceed);
 	if (proceed){
 		let notification_entry = {
 			user: user,
@@ -2108,14 +2108,14 @@ async function sendNotification(db, user, action_taker, type, category, details,
 		};
 		try{
 			let transaction = await db.collection('notifications').insert(notification_entry);
-			console.log('success inserting notification data');
+			//console.log('success inserting notification data');
 			
 			//also send out a firebase message
 			await sendFirebaseNotification(db, user, details, url);
-			//console.log('done');
+			console.log('notification done');
 			return true;
 		}catch(err){
-			console.log('error');
+			console.log('notification error');
 			return false;
 		}
 	}
@@ -2144,11 +2144,11 @@ async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amo
 	let transId = 'ssc-mainnet-hive';
 	//let targetBchain = 'STEEM';
 	//other option is moving tokens from H-E to S-E
-	if (chain == 'STEEM'){
+	/*if (chain == 'STEEM'){
 	//if (this.cur_bchain == 'STEEM'){
 		transId = 'ssc-mainnet1';
 		//targetBchain = 'HIVE';
-	}
+	}*/
 	
 	
 	let json_data = {
@@ -2163,8 +2163,9 @@ async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amo
 	}
 	
 	//send out transaction to blockchain
-	let chainLnk = await setProperNode(chain);
-	let tx = await chainLnk.broadcast.customJsonAsync(
+	//let chainLnk = await setProperNode(chain);
+	let tx = await hive.broadcast.customJsonAsync(
+	//let tx = await chainLnk.broadcast.customJsonAsync(
 			srcAcctActKey, 
 			[ srcAcct ] , 
 			[], 
@@ -2181,14 +2182,14 @@ async function fetchChainTrx(trxId, blkNo, chain){
 		
 	//track attempts for timeout
 	let attempts = 1;
-	let max_attempts = 20; //20 attempts x 5 seconds = 100 seconds (more than enough time for blockchain to confirm)
+	let max_attempts = 30; //30 attempts x 8 seconds = 160 seconds (more than enough time for blockchain to confirm)
 	
 	return new Promise((resolve, reject) => {
 		let fetch_th_id = setInterval(async function(){
 			
 			try{
 				if (attempts < max_attempts){
-					console.log('finding trx');
+					console.log('finding trx ' + attempts);
 					attempts += 1;
 					let trx;
 					if (chain == 'STEEM'){
@@ -2238,6 +2239,7 @@ async function fetchChainTrx(trxId, blkNo, chain){
 										chain: chain,
 										symbol: 'AFIT'
 									}
+									console.log('stop spinning. Get back');
 									//return result;
 									clearInterval(fetch_th_id);
 									resolve(result);
@@ -2254,12 +2256,13 @@ async function fetchChainTrx(trxId, blkNo, chain){
 				console.log(err);
 				resolve(null);
 			}
-		}, 5000);
+		}, 8000);
 	});
 	//return {};
 }
 
 async function commentToChain(reslt){
+	console.log('commenting to chain ' + reslt.chain);
 	let chainLnk = await setProperNode(reslt.chain);
 	let permalink = 're-' + reslt.tgtUser.replace(/\./g, '') + '-' + reslt.cmtPermlnk + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
 	let jsonMetadata = {};
