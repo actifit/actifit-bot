@@ -22,6 +22,44 @@ const hive = require('@hiveio/hive-js');
 
 const history_limit = 1000;
 
+function rewardCap(){
+	
+	let startDecreaseDate = new Date(config.first_decrease_date);
+	
+	let decDateInitiation = moment(startDecreaseDate).utc().startOf('date');//.toDate()
+	
+	let today = moment().utc().startOf('date');//.toDate()
+	
+	//difference in days
+	let interDates = today.diff(decDateInitiation,'days');
+	console.log(interDates);
+	let maxDuration = config.decrease_duration;
+	if (interDates > maxDuration){
+		interDates = maxDuration;//max decrease on delegation rewards
+	}
+	console.log(interDates);
+	let decreasePct = config.delg_decr_pct;
+	let weekly_rewd_cap = config.weekly_rewards_limit;
+	let decAmount = 0;
+	let priorCap = weekly_rewd_cap;
+	for (let i=0;i<interDates;i++){
+		decAmount += parseFloat(priorCap * decreasePct * 0.01);
+		priorCap -= (priorCap * decreasePct * 0.01);
+		//console.log('decAmount:'+decAmount);
+		//console.log('priorCap:'+priorCap);
+	}
+	console.log(decAmount);
+	weekly_rewd_cap -= decAmount;
+	/*if (interDates > 0){
+		decAmount = weekly_rewd_cap * (decreasePct * interDates) * 0.01;
+		console.log(decAmount);
+		weekly_rewd_cap -= decAmount;
+	}*/
+	console.log(weekly_rewd_cap);
+	
+	return weekly_rewd_cap;
+}
+
 //hive.config.set('rebranded_api','true');
 //hive.broadcast.updateOperations();
 
@@ -1039,10 +1077,13 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 
 	let currentSteemPower = await getCurrentTotalSP(activeDelColLink, end);
 	console.log("currentSteemPower:"+currentSteemPower);
-		
+	
+	let weekly_rewd_cap = await rewardCap();
+	console.log('main weeklyrewcap'+weekly_rewd_cap );
+	
 	//check if max CAP is reached, and apply multplier accordingly
-	if (currentSteemPower > config.weekly_rewards_limit) {
-		multiplier = config.weekly_rewards_limit / currentSteemPower;
+	if (currentSteemPower > weekly_rewd_cap) {
+		multiplier = weekly_rewd_cap / currentSteemPower;
 		console.log(">>>>went beyond rewards limit. Apply multiplier");
 	}
 	console.log(">>>>multiplier:"+multiplier);
