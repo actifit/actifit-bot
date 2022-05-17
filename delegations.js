@@ -250,6 +250,7 @@ async function processBSCTransfers(){
 					//console.log(transactions);
 					
 					let soughtHBDAmount = config.hbdAFITTransferRate * afitAmnt;
+					soughtHBDAmount = parseFloat(soughtHBDAmount.toFixed(2));
 					console.log(soughtHBDAmount);
 					let tx_id = '';
 					let paymentFound = false;

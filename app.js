@@ -1281,6 +1281,7 @@ async function isUserBridgeEligible (user, customDate){
 	}
 	console.log(query);
 	let entries = await db.collection('bsc_bridge_queue').find(query).toArray();
+	console.log(entries);
 	if (entries.length > 0){
 		return false;
 	}
