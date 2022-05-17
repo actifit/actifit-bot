@@ -327,7 +327,7 @@ async function updateTrxDetails(entry, trxHash, afitAmnt, hbdAmnt){
 	entry.status = "complete";
 	entry.afitLockedAmount = afitAmnt;
 	entry.origHbdAmount = hbdAmnt;
-	let hbdFees = (hbdAmnt > 50? hbdAmnt / 50 : 1);
+	let hbdFees = (hbdAmnt > 100? hbdAmnt / 100 : 1);
 	console.log(hbdFees);
 	entry.hbdFees = hbdFees;
 	let pendingHbd = hbdAmnt - hbdFees;
