@@ -22,6 +22,34 @@ const hive = require('@hiveio/hive-js');
 
 const history_limit = 1000;
 
+//prepare BSC work
+const Web3 = require('web3');
+const targetToken = 'AFIT';
+
+let fs = require('fs');
+let jsonFile = "./AFIT_abi.json";
+
+let parsed= JSON.parse(fs.readFileSync(jsonFile));
+let tokenAbi = parsed;
+
+const web3 = new Web3(config.bscProvider);
+//append proper wallet
+web3.eth.accounts.wallet.add({
+    privateKey: config.bridgeWallet,
+    address: config.bridgeWalletAdd
+});
+
+// Get BEP20 Token contract instance
+let contract = new web3.eth.Contract(tokenAbi, config.afitAddress);
+
+
+//get balance of BEP20 token 
+/*contract.methods.balanceOf(config.bridgeWalletAdd).call().then(function (bal) {
+        console.log(bal);
+     })*/
+
+//return;
+
 function rewardCap(){
 	
 	let startDecreaseDate = new Date(config.first_decrease_date);
@@ -132,6 +160,8 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  processGadgetBuyPrize();//param test
 	});
 	
+	
+	
 	//run the airdrop once
 	/*const date = new Date(2021, 9, 26, 9, 00, 00);
 	//const date = new Date(2021, 9, 25, 16, 12, 00);
@@ -141,10 +171,174 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 	*/
 	
+	//schedule recurring checks for BSC bridge transfer execution
+	const rule = new schedule.RecurrenceRule();
+	//rule.minute = 
+	let runMinTimes = [];
+	for (let i=1; i< 20; i++){
+		runMinTimes.push(i*3);
+	}
+	rule.minute = runMinTimes;
+	//rule.second = runMinTimes;
+	let bscTransferJob = schedule.scheduleJob(rule, function(){
+	  console.log('--- BSC transfer ---');
+	  processBSCTransfers();
+	  //processGadgetBuyPrize();//param test
+	});
 	
 }else{
 	//processGadgetBuyPrize();
 	runRewards(true);
+	
+	
+	
+	
+	//processBSCTransfers();
+	
+	
+}
+
+async function processBSCTransfers(){
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ')
+
+		db = dbClient.db(dbName)
+		
+		//fetch data of pending bridge items
+		let pendingBridgeEntries = await db.collection('bsc_bridge_queue').find({status: 'pending'}).sort({'date': 1}).toArray();
+		console.log('found entries');
+		console.log(pendingBridgeEntries.length);
+		
+		//grab transactions
+		let url = new URL(config.hive_engine_bsc_bridge_afit_acct_his);
+		let se_connector = await fetch(url);
+		let bridge_afit_trx_entries = await se_connector.json();
+		
+		
+		//grab HBD transactions
+		let transactions = await hiveClient.database.call('get_account_history', [config.bsc_bridge_account, -1, 300]);
+		//let hbdUrl = 
+		
+		//loop through entries, and send over AFIT
+		pendingBridgeEntries.forEach(async function(entry){
+			//verify if the entry is valid by count of AFIT and HBD stored
+			//ID of the AFIT transfer
+			let afitTrx = entry.afitTrx;
+			//ID of HBD transfer
+			let hbdTrx = entry.hbdTrx;
+			let targetWallet = entry.wallet;
+			let matchingTrx = bridge_afit_trx_entries.find(item => {
+				return (item.transactionId == afitTrx && item.from == entry.user && item.symbol == 'AFIT')
+			});
+			console.log(matchingTrx);
+			//found AFIT payment
+			if (matchingTrx){
+				let afitAmnt = parseFloat(matchingTrx.quantity);
+				console.log('afitAmnt:'+afitAmnt);
+				if (afitAmnt < config.minAFITTransfer){
+					console.log('less than min amount');
+				}else if (afitAmnt > config.maxAFITTransfer){
+					console.log('greater than max amount');
+				}else{
+					//find matching HBD transaction
+					//console.log(transactions);
+					
+					let soughtHBDAmount = config.hbdAFITTransferRate * afitAmnt;
+					console.log(soughtHBDAmount);
+					let tx_id = '';
+					let paymentFound = false;
+					for (let txs of transactions) {
+						let op = txs[1].op
+						//check if we received a transfer to our target account
+						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
+						if (op[0] === 'transfer'){
+							//console.log('transfer op ');
+							//console.log(op[1]);
+							let sentAmount = op[1].amount.split(' ')[0];
+							//the correct amount to find
+							console.log(sentAmount);
+							if (op[1].to === config.bsc_bridge_account && op[1].from === entry.user && txs[1].trx_id == hbdTrx && sentAmount == soughtHBDAmount){  
+								console.log('found match');
+								console.log(op[1]);
+								//console.log(txs);
+								/*let now = moment(new Date()); //todays date
+								let end = moment(txs[1].timestamp); // last update date
+								let duration = moment.duration(now.diff(end));
+								let hrs = duration.asHours();
+								//transaction needs to have been concluded within 5 hours.
+								if (hrs < 24){*/
+									/*tx_id = txs[1].trx_id;*/
+									paymentFound = true;
+									break;
+								
+								//}
+							}
+						}
+					}	
+					if (paymentFound){
+						let txHash = await sendAfitBSC(afitAmnt,targetWallet);
+						await updateTrxDetails(entry, txHash, afitAmnt, soughtHBDAmount);
+					}
+				}
+			}
+			//{transactionId: afitTrx});
+			//console.log(match);
+			//the ID of HBD transfer
+			//let hbdTrx = entry.hbdTrx;
+			
+		});
+		
+	  }
+	});
+}
+//send corresponding amount on BSC, while updating user balances on actifit and taking off 1 HBD as trx fee (0r 1%, whichever is bigger)
+async function sendAfitBSC(amnt, tgtAddress){	
+	console.log('sendAfitBSC');
+	let outc = await contract.methods.transfer(tgtAddress, web3.utils.toWei( amnt.toString() )).send({ 
+		from: config.bridgeWalletAdd,
+		gasPrice: 10000000000, // 10 gwei //0.000000005
+		gas: 100000,
+	});
+	console.log(outc.transactionHash);
+	return outc.transactionHash;
+	/*web3.eth.sendTransaction({
+		from: config.bridgeWalletAdd,//web3.eth.accounts[0],
+		to: tgtAddress,
+		data: contract.methods.transfer(tgtAddress, web3.utils.toWei( amnt.toString() ) ).encodeABI(),
+		//value: _addr[1]* 10 ** 18,//20000000000000000, 
+		gasPrice: 10000000000, // 10 gwei //0.000000005
+		gas: 100000, 
+		//gas: maxGas,
+		
+	}, 
+	(err, txHash) => {
+		console.log(!err ? txHash : err);
+	})*/
+}
+
+async function updateTrxDetails(entry, trxHash, afitAmnt, hbdAmnt){
+	entry.txHash = trxHash;
+	entry.status = "complete";
+	entry.afitLockedAmount = afitAmnt;
+	entry.origHbdAmount = hbdAmnt;
+	let hbdFees = (hbdAmnt > 50? hbdAmnt / 50 : 1);
+	console.log(hbdFees);
+	entry.hbdFees = hbdFees;
+	let pendingHbd = hbdAmnt - hbdFees;
+	entry.hbdLockedAmount = pendingHbd;
+	entry.trfDate = new Date();
+	try{
+		let trans = await db.collection('bsc_bridge_queue').save(entry);
+		console.log('success updating BSC transfer trx');
+	}catch(err){
+		console.log(err);
+	}
 }
 
 //run the airdrop once

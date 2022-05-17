@@ -493,7 +493,21 @@ app.get('/totalSupplyAFIT', async function (req,res){
 //for the purposes of real circulating supply
 app.get('/circulatingSupplyAFIT', async function (req,res){
 	//TODO: make it dynamic
-	res.send('898400.45');
+	res.send('1036231');
+	
+})
+
+//for dex-trade price action
+app.get('/dex-trade/afit-usdt', async function (req,res){
+	//TODO: make it dynamic
+	let jsonData = {
+	  "AFIT/USDT": {  // pair name
+		"price": 0.122, // central price
+		"up": 0.1, // percent deviation top line 15% = 0.15
+		"down": 0.05  // percent deviation bottom line 10% = 0.1
+	  }
+	}
+	res.send(jsonData);
 	
 })
 
@@ -1253,6 +1267,110 @@ app.get('/modAction', async function (req, res) {
 		
 		res.send(result);
 	}
+});
+
+async function isUserBridgeEligible (user, customDate){
+	let query = {user: user}
+	let targetDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	console.log(targetDate);
+	if (customDate){
+		targetDate = customDate;
+	}
+	query.date = {
+				"$gte": new Date(targetDate)
+	}
+	console.log(query);
+	let entries = await db.collection('bsc_bridge_queue').find(query).toArray();
+	if (entries.length > 0){
+		return false;
+	}
+	return true;
+}
+
+//confirms whether user can still use bridge today or certain date (if he already scheduled a transaction or one is complete)
+app.get('/userBridgeEligible', async function (req, res) {
+	if (!req.query || !req.query.user){
+		res.send({});
+		return;
+	}
+	let targetDate;
+	if (req.query.date){
+		targetDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');;
+	}
+	let userStatus = await isUserBridgeEligible(req.query.user, targetDate);
+	
+	res.send ({'eligible': userStatus});
+	
+})
+
+//query user bridge transactions by req.query.user and optional status and starting date
+app.get('/userBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	if (!req.query || !req.query.user){
+		res.send({});
+		return;
+	}
+	let query = {user: req.query.user}
+	if (req.query.status){
+		query.status = req.query.status;
+	}
+	if (req.query.date){
+		let targetDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');;
+		query.date = {
+					"$gt": new Date(targetDate)
+		}
+	}
+	let entries = await db.collection('bsc_bridge_queue').find(query).sort({date: 1}).toArray();
+	res.send(entries);
+});
+
+
+app.get('/completedBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	let entries = await db.collection('bsc_bridge_queue').find({status: 'completed'}).sort({date: 1}).toArray();
+	res.send(entries);
+});
+
+app.get('/pendingBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	let entries = await db.collection('bsc_bridge_queue').find({status: 'pending'}).sort({date: 1}).toArray();
+	res.send(entries);
+});
+
+app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user || !req.query.afitTrx || !req.query.hbdTrx){
+		res.send({error:'missing data'});
+		return;
+	}
+	//check eligibility for another transaction
+	let isUserEligible = isUserBridgeEligible(req.query.user);
+	if (!isUserEligible){
+		res.send({error:'You have already sent out a transaction today. You can only transact once per day.'});
+		return;
+	}
+	let username = req.query.user;
+	let wallet = req.query.wallet;
+	let afitTrx = req.query.afitTrx;
+	let hbdTrx = req.query.hbdTrx;
+	//let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//store user/token combination
+	let bridgeEntry = {
+		user: username,
+		wallet: wallet,
+		afitTrx: afitTrx,
+		hbdTrx: hbdTrx,
+		status: 'pending',
+		date: new Date()
+	};
+	try{
+		let transaction = await db.collection('bsc_bridge_queue').insert(bridgeEntry);
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+	
 });
 
 app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
