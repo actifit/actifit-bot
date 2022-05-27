@@ -47,7 +47,7 @@ const minABI = [
 	type: "function",
   }];
 
-console.log(config.afitTokenAddress);
+//console.log(config.afitTokenAddress);
 const afitContract = new web3.eth.Contract(minABI, config.afitTokenBSC);
 const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
 const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
@@ -118,17 +118,28 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 let rule = new schedule.RecurrenceRule();
 
+//tracking AFITX data
 let usersAFITXBal = [];
 let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
+
 //initial fetch
 fetchAFITXBal(0);
+
+fetchAFITBal(0);
+
+//similarly fetch AFIT data
+let usersAFITBal = [];
+let usersAFITBalHE = [];
+let fullSortedAFITList = [];
   
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
   //usersAFITXBal = [];
   fetchAFITXBal(0);
+  
+  fetchAFITBal(0);
   
   //only run cleanup on secondary thread to avoid duplication of effort and collision
   if (process.env.BOT_THREAD == 'SECOND_API'){
@@ -412,6 +423,112 @@ async function getAFITXUserData(user){
 	return {ind: ind, entry: entry}
 }
 
+
+async function fetchAFITBal(offset){
+  try{
+  console.log('--- Fetch new AFIT token balance ---');
+  console.log(offset);
+  let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITBal = [];
+  }
+  usersAFITBal = usersAFITBal.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITBal(usersAFITBal.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0 && tempArr.length < 1){
+		console.log('no AFIT data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBal(0);
+		}, 30000);
+	}else{
+		//done with AFIT SE, proceed with AFIT HE
+		fetchAFITBalHE(0);
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFIT data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBal(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITBal);
+}
+
+async function fetchAFITBalHE(offset){
+  try{
+  console.log('--- Fetch new AFIT token balance ---');
+  console.log(offset);
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITBalHE = [];
+  }
+  usersAFITBalHE = usersAFITBalHE.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITBalHE(usersAFITBalHE.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0 && tempArr.length < 1){
+		console.log('no AFIT data HE, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBalHE(0);
+		}, 30000);
+	}else{
+		//done, let's merge both SE & HE lists
+		for (let i=0;i<usersAFITBal.length;i++){
+			usersAFITBal[i].seholder = true;
+			let match = usersAFITBalHE.find(entry => entry.account === usersAFITBal[i].account);
+			if (match){
+				usersAFITBal[i].sebalance = usersAFITBal[i].balance;
+				usersAFITBal[i].hebalance = match.balance;
+				usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
+				usersAFITBal[i].heholder = true;
+			}
+		}
+		//append HE holdings
+		for (let i=0;i<usersAFITBalHE.length;i++){
+			usersAFITBalHE[i].heholder = true;
+			let match = usersAFITBal.find(entry => entry.account === usersAFITBalHE[i].account);
+			if (!match){
+				usersAFITBal.push(usersAFITBalHE[i]);
+				//usersAFITBal[i].hebalance = match.balance;
+				//usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
+			}
+		}
+		
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFIT data HE, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBalHE(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITBal);
+}
+
+
+
+
 /* function handles calculating and returning user token count */
 grabUserTokensFunc = async function (username){
 	let user = await db.collection('user_tokens').findOne({_id: username});
@@ -474,8 +591,7 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
-//for the purposes of this document
-app.get('/totalSupplyAFIT', async function (req,res){
+getTotalSupplyAFIT = async function (){
 	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=8VYN5BUXD6T1X1GAU12UHMQXBT3IJTF68V');
 	
 	try{
@@ -484,25 +600,62 @@ app.get('/totalSupplyAFIT', async function (req,res){
 		//return back the count as a number
 		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
 		let count= parseFloat(data.result)/Math.pow(10,18);///10**18;
-		res.send(''+count);
+		return ''+count;
 	}catch(exc){
-		res.send('error');
+		return 'error';
 	}
+}
+
+getAFITPCSPrice = async function (){
+	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/0x4516bb582f59befcbc945d8c2dac63ef21fba9f6');
+	
+	try{
+		let connector = await fetch(url);
+		let data = await connector.json();
+		console.log(data);
+		//return back the count as a number
+		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
+		let price= parseFloat(data.data.price);
+		return price;
+	}catch(exc){
+		return 'error';
+	}
+}
+
+//for the purposes of this document
+app.get('/totalSupplyAFIT', async function (req,res){
+	let outcome = await getTotalSupplyAFIT();
+	res.send(outcome);
 	
 })
 //for the purposes of real circulating supply
 app.get('/circulatingSupplyAFIT', async function (req,res){
-	//TODO: make it dynamic
-	res.send('1036231');
-	
+	let totSupply = await getTotalSupplyAFIT();
+	let cirSupply = 0;
+	if (!isNaN(totSupply)){
+		totSupply = parseFloat(totSupply);
+		cirSupply = totSupply;
+		//grab balances of well-known actifit wallets, and deduct balance from total supply
+		for (let i=0;i<config.actifitSpWallets.length;i++){
+			let result = await afitContract.methods.balanceOf(config.actifitSpWallets[i]).call(); // 29803630997051883414242659
+			let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+			afitBSC = parseFloat(format);
+			cirSupply -= afitBSC;
+		}
+		res.send(''+Math.round(cirSupply))
+	}else{
+		res.send('1036231');
+	}	
 })
 
 //for dex-trade price action
 app.get('/dex-trade/afit-usdt', async function (req,res){
-	//TODO: make it dynamic
+	//grab price from PCS
+	//https://api.pancakeswap.info/api/v2/tokens/0x4516bb582f59befcbc945d8c2dac63ef21fba9f6
+	let price = await getAFITPCSPrice();
 	let jsonData = {
 	  "AFIT/USDT": {  // pair name
-		"price": 0.122, // central price
+		"price": parseFloat(price.toFixed(4)),//0.122, // central price
 		"up": 0.1, // percent deviation top line 15% = 0.15
 		"down": 0.05  // percent deviation bottom line 10% = 0.1
 	  }
@@ -1259,6 +1412,29 @@ app.get('/modAction', async function (req, res) {
 						console.log(modTrans.user+" verified ");
 						result.status='success';
 						break;
+						
+			case 'freesignup': 			
+						collection = db.collection('signup_promo_codes')
+						//var dt = new Date().toJSON()
+						//dt.substring(0,dt.indexOf("."));
+						
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot verify empty user'});
+							return;
+						}
+						modTrans.signusername = req.query.signusername;
+						modTrans.txlink = req.query.txlink;
+						let randomCode = generatePassword(1);
+						result = await collection.insert({   
+							"code": randomCode,
+							"entries": 1,
+							"delegation": true,
+							"signup_reward": true,
+							"referrer_reward": true
+						});
+						console.log(modTrans.user+" verified ");
+						result.status='https://actifit.io/signup?promo='+randomCode;
+						break;
 		}
 		
 		collection = db.collection('team_transactions');
@@ -1328,7 +1504,7 @@ app.get('/userBridgeTransactions', async function (req, res) {
 
 app.get('/completedBridgeTransactions', async function (req, res) {
 	//fetch queue by oldest
-	let entries = await db.collection('bsc_bridge_queue').find({status: 'completed'}).sort({date: 1}).toArray();
+	let entries = await db.collection('bsc_bridge_queue').find({status: 'complete'}).sort({date: 1}).toArray();
 	res.send(entries);
 });
 
@@ -1553,6 +1729,49 @@ app.get('/topAFITHolders', async function (req, res) {
 	}
     res.send(tokenHolders);
 });
+
+/* end point for user total token count display */
+app.get('/topAFITHEHolders', async function (req, res) {
+	let afitSorted = utils.sortArrLodash(usersAFITBal);
+	fullSortedAFITList = afitSorted;
+	/*let maxAmount = parseInt(req.query.count);
+	if (isNaN(maxAmount)){
+		//set max as 100
+		maxAmount = 100;
+	}
+	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('afitx.s-e');
+	banned_arr.push('afitx.h-e');
+	banned_arr.push('');
+	
+	afitSorted = utils.removeArrMatchLodash(afitSorted, banned_arr, 'account');
+	*/
+	//always skip top holder as that would be actifit
+	//afitxSorted = afitxSorted.slice(1, maxAmount + 1);
+	
+	let output = afitSorted;
+	
+	/*
+	if (req.query.pretty){
+		output = '#|Token Holder | AFITX Tokens Held |<br/>';
+		output += '|---|---|---|<br/>';
+		for(var i = 0; i < afitxSorted.length; i++) {
+			let tokenHolder = afitxSorted[i];
+			output += (i+1) + '|';
+			output += '@'+tokenHolder.account + '|';
+			output += gk_add_commas(parseFloat(tokenHolder.balance).toFixed(3)) + '|';
+			output += '<br/>';
+		}
+	}
+	*/
+    res.send(output);
+});
+
+
 
 /* end point for user total token count display */
 app.get('/topAFITXHolders', async function (req, res) {
