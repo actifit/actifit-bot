@@ -2138,6 +2138,44 @@ async function grabLastDrawData(db){
 	return drawData;
 }
 
+async function fetchChainRewards(user, bchain){
+	let posts = await bchain.api.getDiscussionsByBlogAsync({tag: user, limit: 100, start_author: '', start_permlink: ''})
+	let pendingRewards = 0;
+	let cur = '';
+	//console.log(posts);
+	let postCount = 0;
+	for (let i=0;i<posts.length;i++){
+		if (posts[i].author == user){
+			let pstRew = parseFloat(posts[i].pending_payout_value.split(' ')[0]);
+			pendingRewards += pstRew;
+			cur = posts[i].pending_payout_value.split(' ')[1];
+			if (pstRew > 0) postCount ++;
+			//console.log(pendingRewards + cur);
+			//pendingRewards+= 
+		}
+	}
+	console.log('rew:'+pendingRewards + cur);
+	return {amount: pendingRewards, currency:cur, postCount: postCount};
+}
+
+async function fetchPendingRewards(user, bchain){
+	let rewards = {};
+	if (!bchain || bchain == ''){
+		//fetch rewards from all
+		rewards.HIVE = await fetchChainRewards(user, hive);
+		console.log('big rew:'+rewards);
+		rewards.STEEM = await fetchChainRewards(user, steem);
+		console.log('big rew:'+rewards);
+		rewards.BLURT = await fetchChainRewards(user, blurt);
+		console.log('big rew:'+rewards);
+	}else{
+		let chainLnk = await setProperNode(bchain)
+		rewards.bchain = await fetchChainRewards(user, chainLnk);
+		console.log('big rew:'+rewards);
+	}
+	return rewards;
+	
+}
 
 async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
 
@@ -2375,5 +2413,6 @@ async function getGadgetBuyTickets(db){
    updateTipBalances: updateTipBalances,
    fetchChainTrx: fetchChainTrx,
    commentToChain: commentToChain,
-   proceedSendToken: proceedSendToken
+   proceedSendToken: proceedSendToken,
+   fetchPendingRewards: fetchPendingRewards
  }

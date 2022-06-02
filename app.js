@@ -664,6 +664,16 @@ app.get('/dex-trade/afit-usdt', async function (req,res){
 	
 })
 
+app.get('/pendingRewards', async function (req, res){
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let outc = await utils.fetchPendingRewards(req.query.user, req.query.bchain);
+	res.send({pendingRewards: outc});
+})
+  
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
