@@ -5138,6 +5138,15 @@ app.get('/verifyTipTransactions', async function (req, res){
 	res.send(outcome);
 })
 
+app.get('/availableTipBalance', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let dt = await db.collection('tip_balance').findOne({user: req.query.user});
+	res.send(dt);
+})
+
 app.get('/processTipRequest', async function (req, res){
 	if (!req.query.trxId || !req.query.blkNo){
 		res.send({status: "error", error: "missing data"});
