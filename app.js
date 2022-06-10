@@ -175,7 +175,14 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
-
+app.get('/queryPost', async function (req, res){
+	if (!req.query || !req.query.permlink){
+		res.send({error:''});
+		return;
+	}
+	let outc = await db.collection('posts').find({permlink: req.query.permlink}).toArray();
+	res.send(outc);
+})
 
 //schedule restart intervals due to memory drain down
 function restartApiNode() {
@@ -530,7 +537,7 @@ async function fetchAFITBalHE(offset){
 
 
 /* function handles calculating and returning user token count */
-grabUserTokensFunc = async function (username){
+grabUserTokensFunc = async function (username, fullBal){
 	let user = await db.collection('user_tokens').findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
@@ -543,6 +550,35 @@ grabUserTokensFunc = async function (username){
 		user._id=username;
 		user.name=username;
 		user.tokens=0;
+	}
+	
+	if (fullBal){
+		//also append tokens on hive-engine & steem-engine
+		let heEntry = fullSortedAFITList.find(entry => entry.account === username);
+		if (heEntry && !isNaN(heEntry.balance) && heEntry.balance>0){
+			user.tokens = parseFloat(user.tokens) + parseFloat(heEntry.balance);
+			//console.log(user.tokens);
+		}
+		
+		//also append tokens on BSC
+			//check if user has a BSC wallet
+		let wallet_entry = await db.collection('user_wallet_address').findOne({user: username});
+		try{
+			if (wallet_entry && wallet_entry.wallet){
+				//console.log(wallet_entry.wallet);
+				//fetch wallet balance		
+				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+				afitBSC = parseFloat(format);
+				//console.log(format);
+				user.tokens = parseFloat(user.tokens) + afitBSC;
+			}
+		}catch(exc){
+			console.log('error fetching wallet balance / BSC')
+		}
+		console.log(user.tokens);
+		
+		
 	}
 	return user;
 }
@@ -662,6 +698,15 @@ app.get('/dex-trade/afit-usdt', async function (req,res){
 	}
 	res.send(jsonData);
 	
+})
+
+app.get('/getAccountData', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let outc = await utils.getAccountData(req.query.user, req.query.bchain);
+	res.send(outc);
 })
 
 app.get('/pendingRewards', async function (req, res){
@@ -1042,10 +1087,19 @@ app.get('/getDailyDelegationPool/', async function(req, res){
 
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
-	let user = await grabUserTokensFunc(req.params.user);
+	let user; 
+	if (req.query && req.query.fullBalance){
+		user = await grabUserTokensFunc(req.params.user, true);
+	}else{
+		user = await grabUserTokensFunc(req.params.user);
+	}
     res.send(user);
 });
 
+app.get('/userFullBal/:user', async function (req, res) {
+	let user = await grabUserTokensFunc(req.params.user, true);
+	res.send(user);
+});
 app.get('/thread_param/', async function(req, res) {
 	res.send(process.env.BOT_THREAD);
 })

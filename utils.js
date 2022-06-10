@@ -81,15 +81,25 @@ var HOURS = 60 * 60;
 	}
  }
  
+  
  async function getAccountData(account_name, bchain){
-	let account = null;
-	let chainLnk = await setProperNode(bchain);
-	//attempt to load account data
-	try{
-		let account_res = await chainLnk.api.getAccountsAsync([config.account]); 
-		account = account_res[0];
-	}catch(err){
-		console.log(err);
+	let account = {};
+	if (!bchain || bchain == ''){
+		let account_res = await hive.api.getAccountsAsync([config.account]); 
+		account['HIVE']=account_res[0];
+		account_res = await steem.api.getAccountsAsync([config.account]); 
+		account['STEEM']=account_res[0];
+		account_res = await blurt.api.getAccountsAsync([config.account]); 
+		account['BLURT']=account_res[0];
+	}else{
+		let chainLnk = await setProperNode(bchain);
+		//attempt to load account data
+		try{
+			let account_res = await chainLnk.api.getAccountsAsync([config.account]); 
+			account[bchain]=account_res[0];
+		}catch(err){
+			console.log(err);
+		}
 	}
 	return account;
  }
@@ -2177,6 +2187,7 @@ async function fetchPendingRewards(user, bchain){
 	
 }
 
+
 async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
 
 	let transId = 'ssc-mainnet-hive';
@@ -2339,6 +2350,7 @@ async function commentToChain(reslt){
 		//resolve(res);
 	}	
 }
+
 
 async function getGadgetBuyTickets(db){
 	let drawData = await grabLastDrawData(db);
