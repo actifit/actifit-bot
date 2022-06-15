@@ -6,7 +6,7 @@
   "dependencies": {
     "@blurtfoundation/blurtjs": "^1.0.0",
     "@hiveio/dhive": "^1.2.0",
-    "@hiveio/hive-js": "^2.0.1",
+    "@hiveio/hive-js": ">=2.0.4",
     "axios": "^0.18.1",
     "cheerio": "^1.0.0-rc.2",
     "dblurt": "^0.1.2",
@@ -38,7 +38,7 @@
     "start": "node app.js | node delegations.js "
   },
   "engines": {
-    "node": "10.3.0"
+    
   },
   "author": "cryptouru",
   "license": "MIT"

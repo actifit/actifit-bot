@@ -81,6 +81,22 @@ var HOURS = 60 * 60;
 	}
  }
  
+ async function getChainInfo(bchain){
+	let data = {};
+	if (!bchain || bchain == ''){
+		let chain_info = await hive.api.getDynamicGlobalPropertiesAsync();
+		data['HIVE']=chain_info;
+		chain_info = await steem.api.getDynamicGlobalPropertiesAsync();
+		data['STEEM']=chain_info;
+		chain_info = await blurt.api.getDynamicGlobalPropertiesAsync();
+		data['BLURT']=chain_info;
+	}else{
+		let chainLnk = await setProperNode(bchain);
+		let chain_info = await chainLnk.api.getDynamicGlobalPropertiesAsync();
+		data[bchain]=chain_info;
+	}
+	return data;
+ }
   
  async function getAccountData(account_name, bchain){
 	let account = {};
@@ -2187,6 +2203,105 @@ async function fetchPendingRewards(user, bchain){
 	
 }
 
+//claimRewards('actifit', config.posting_key, 'HIVE');
+
+async function claimRewards(target_account, p_key, target_chain) {
+	console.log('>>>>> claiming rewards');
+	
+	let targetAccount = null;
+	
+	let claim_currency
+	let claim_currency_stable
+	let chainLnk
+	if (target_chain == 'STEEM'){
+		chainLnk = steem;
+		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		if (!targetAccount){
+			return {error: 'account not found'};
+		}
+		targetAccount = targetAccount[0];
+		//console.log(targetAccount);
+		claim_currency = targetAccount.reward_steem_balance
+		claim_currency_stable = targetAccount.reward_sbd_balance
+		
+	}else if (target_chain == 'HIVE'){
+		chainLnk = hive;
+		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		if (!targetAccount){
+			return {error: 'account not found'};
+		}
+		targetAccount = targetAccount[0];
+		//console.log(targetAccount);
+		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
+		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		console.log('pending HBD'+claim_currency_stable);
+	}else if (target_chain == 'BLURT'){
+		chainLnk = blurt;
+		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		if (!targetAccount){
+			return {error: 'account not found'};
+		}
+		targetAccount = targetAccount[0];
+		//console.log(targetAccount);
+		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
+		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
+			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance).catch(err => {return err;});//, function (err, result) {
+				/*if (err) {
+					console.log('error claiming rewards');
+					
+					return {error: err};
+				}
+				else{
+					return {success: true};
+				}
+			});*/
+			//return outc;
+			//console.log(outc);
+			if (outc.ref_block_num){
+				console.log('success');
+				return {success: true};
+			}else{
+				console.log('error')
+				return {error: 'n/a'}
+			}
+		}else{
+			console.log('nothing to claim')
+			return {error: 'nothing to claim'};
+		}
+	}
+	
+	// Make api call only if you have actual reward
+	if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
+		
+		console.log('>>CLAIMING<<')
+		
+		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance).catch(err => {return err;});
+		//console.log(outc);
+		if (outc.ref_block_num){
+			console.log('success');
+			return {success: true};
+		}else{
+			console.log('error')
+			return {error: 'n/a'}
+		}
+			/*if (err) {
+				console.log('error claiming rewards');
+				
+				return {error: err};
+			}
+
+			if (result) {
+				return {success: true};
+				//now attempt to claim rewards with HIVE
+				
+			}*/
+	}else{
+		console.log('nothing to claim.');
+		return {error: 'nothing to claim'};
+	}
+}
+
 
 async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
 
@@ -2405,6 +2520,7 @@ async function getGadgetBuyTickets(db){
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
+   getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
@@ -2426,5 +2542,6 @@ async function getGadgetBuyTickets(db){
    fetchChainTrx: fetchChainTrx,
    commentToChain: commentToChain,
    proceedSendToken: proceedSendToken,
-   fetchPendingRewards: fetchPendingRewards
+   fetchPendingRewards: fetchPendingRewards,
+   claimRewards: claimRewards
  }

@@ -700,6 +700,11 @@ app.get('/dex-trade/afit-usdt', async function (req,res){
 	
 })
 
+app.get('/getChainInfo', async function (req, res){
+	let outc = await utils.getChainInfo(req.query.bchain);
+	res.send(outc);
+});
+
 app.get('/getAccountData', async function (req, res){
 	if (!req.query || !req.query.user){
 		res.send({})
@@ -727,14 +732,15 @@ app.get('/votingStatus', async function (req, res) {
 		accountQueries = 0;
 		accountRefresh = true;
 	}
-	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 	//fetch anew account data if account is empty or we need to refresh account data
 	if (!account || accountRefresh){
 		console.log('refreshing account data');
 		account = await utils.getAccountData(config.account, bchain);
 		accountRefresh = false;
 	}
-	let vp_res = await utils.getVotingPower(account);
+	//console.log(account);
+	let vp_res = await utils.getVotingPower(account[bchain]);
 	
 	let reward_start = utils.toHrMn(utils.timeTilKickOffVoting(vp_res * 100));
 
@@ -876,6 +882,84 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	}else{
 		res.send({success: true, trx: performTrx});
 	}
+});
+
+
+app.get('/claimRewards', checkHdrs, async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({'error':''})
+		return
+	}
+	
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	let userKey = receivedPlaintext;
+	
+	/*res.send({'hive': {'success': true}, 'steem': {'success': true}, 'blurt': {'success': true}});*/
+	let outcHive = await utils.claimRewards(req.query.user, userKey, 'HIVE');
+	let outcSteem = await utils.claimRewards(req.query.user, userKey, 'STEEM');
+	let outcBlurt = await utils.claimRewards(req.query.user, userKey, 'BLURT');
+	res.send({'hive': outcHive, 'steem': outcSteem, 'blurt': outcBlurt});
+});
+
+
+app.get('/afitMarkets', async function (req, res){
+	let markets = [
+		{
+				'chain': 'BSC',
+				'exchange': 'Digifinex',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+						}
+					]
+			},
+		{
+				'chain': 'BSC',
+				'exchange': 'Dex-trade',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+						},
+						{
+							'name': 'AFIT/BTC',
+							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+						}
+					],
+					
+		},
+		{
+				'chain': 'BSC',
+				'exchange': 'PCS',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://pancakeswap.finance/swap?inputCurrency=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&outputCurrency=BNB'
+						}
+					]
+			},
+		{
+				'chain': 'Hive',
+				'exchange': 'Hive-Engine',
+				'link': 'https://hive-engine.com',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/HIVE',
+							'link': 'https://tribaldex.com/trade/AFIT'
+						}
+					]
+		},
+	];
+	res.send(markets);
 });
 
 
