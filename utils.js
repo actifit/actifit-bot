@@ -101,17 +101,17 @@ var HOURS = 60 * 60;
  async function getAccountData(account_name, bchain){
 	let account = {};
 	if (!bchain || bchain == ''){
-		let account_res = await hive.api.getAccountsAsync([config.account]); 
+		let account_res = await hive.api.getAccountsAsync([account_name]); 
 		account['HIVE']=account_res[0];
-		account_res = await steem.api.getAccountsAsync([config.account]); 
+		account_res = await steem.api.getAccountsAsync([account_name]); 
 		account['STEEM']=account_res[0];
-		account_res = await blurt.api.getAccountsAsync([config.account]); 
+		account_res = await blurt.api.getAccountsAsync([account_name]); 
 		account['BLURT']=account_res[0];
 	}else{
 		let chainLnk = await setProperNode(bchain);
 		//attempt to load account data
 		try{
-			let account_res = await chainLnk.api.getAccountsAsync([config.account]); 
+			let account_res = await chainLnk.api.getAccountsAsync([account_name]); 
 			account[bchain]=account_res[0];
 		}catch(err){
 			console.log(err);
