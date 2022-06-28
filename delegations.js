@@ -190,9 +190,6 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//processGadgetBuyPrize();
 	runRewards(true);
 	
-	
-	
-	
 	//processBSCTransfers();
 	
 	
@@ -482,9 +479,9 @@ async function processGadgetBuyPrize() {
 		//let nextDrawDate = lastDrawDate+
 		console.log(today);
 		console.log(nextDrawDate);
-		console.log((today.getTime() == nextDrawDate.getTime()));
+		console.log((today.getTime() >= nextDrawDate.getTime()));
 		//check if this is the proper date to kick off reward
-		if (today.getTime() == nextDrawDate.getTime()){
+		if (today.getTime() >= nextDrawDate.getTime()){
 			console.log('kick off draw reward');
 			//fetch list of ticket holders
 			let entries = await utils.getGadgetBuyTickets(db);

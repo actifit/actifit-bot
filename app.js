@@ -6018,6 +6018,21 @@ app.get("/activeGadgets", async function(req, res) {
   res.send(gadget_match);
 });
 
+app.get("/nonConsumedGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status : {$ne:'consumed'} }).toArray();		
+	res.send(gadget_match);
+});
+
+app.get("/consumedGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "consumed" }).toArray();		
+	res.send(gadget_match);
+});
 
 app.get("/activeGadgetsByUser/:user", async function(req, res) {
   //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
@@ -6047,6 +6062,8 @@ app.get("/boughtGadgetCountByUser/:user", async function(req, res) {
   //console.log(gadget_match);
   res.send(gadget_match);
 });
+
+
 
 
 app.get("/gadgetBought", async function(req, res) {
@@ -6474,6 +6491,38 @@ app.get('/sendNotification', async function(req,res){
 	}
 });
 
+
+//query our unique user count across a range - default 30 days
+app.get('/findUniqueUsers', async function(req,res){
+	let passedDays = 30;
+	if (req.query && req.query.days){
+		if(isNaN(req.query.days)){
+			res.send({})
+		}
+		try{
+			passedDays = parseInt(req.query.days);
+		}catch(excp){
+			res.send({error: 'error'});
+		}
+	}
+	//today is start date
+	
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	//go back in date according to param
+	
+	let days = passedDays>30?30:passedDays;
+	let endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+	let transQuery = {
+		date: {
+				$gte: new Date(endDate)
+			}
+	}
+	let postContent = await db.collection('verified_posts').distinct('author', transQuery);
+	console.log(postContent.length);
+	console.log(postContent);
+	res.send({uniqueUserCount: postContent.length, dayRange: days});
+	
+});
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
 app.get('/appendVerifiedPost', async function(req,res){
