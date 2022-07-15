@@ -32,7 +32,7 @@ const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
 const blurtClient = new dblurt.Client(config.blurt_node);
 
-hiveClient.updateOperations(true);
+//hiveClient.updateOperations(true);
 		
 var config;
 
@@ -78,6 +78,16 @@ var HOURS = 60 * 60;
 		return blurt
 	}else{
 		return hive
+	}
+ }
+ 
+ function setProperDNode(bchain){
+	if (bchain == "STEEM"){
+		return client
+	}else if (bchain == "BLURT"){
+		return blurtClient
+	}else{
+		return hiveClient
 	}
  }
  
@@ -291,8 +301,18 @@ var HOURS = 60 * 60;
 		return currentManaPerc;
 	}
 	
+	async function getNewRC(account_name, chain){
+		let chainLnk = await setProperDNode(chain);
+		console.log(chainLnk);
+		let rcComponent = await chainLnk.rc.getRCMana(account_name);
+		let currentRC = rcComponent.percentage/100;
+		let currentRCPercent = currentRC + '%';
+		return {account: account_name, currentRC: currentRC, currentRCPercent: currentRCPercent}
+	}
+	
 	//implement a get current Resource Credits function for normal operations consumption
 	async function getRC(account_name){
+		
 		var data={"jsonrpc":"2.0","id":1,"method":"condenser_api.get_account_count","params":{}};
 		//return new Promise(function(fulfill,reject){
 			//var request = require("request");
@@ -1474,7 +1494,7 @@ let accountSBDTransfer = 0;
 let accountSTEEMTransferIn = 0
 let accountSBDTransferIn = 0
 
-let limit = 5000;
+let limit = 1000;
 let txStart = -1;
 let opsArr = [];
 
@@ -1500,9 +1520,9 @@ function resetVals(){
 	accountSTEEMTransferIn = 0
 }
 
-//lookupAccountPay();
+//lookupAccountPay('BLURT');
 
-async function lookupAccountPay (){
+async function lookupAccountPay (chain){
 	
 	const ONE_DAY = 1;
 	const ONE_WEEK = 7;
@@ -1510,7 +1530,7 @@ async function lookupAccountPay (){
 	const ONE_YEAR = 365;
 	
 	//when is our start day: 1 is yesterday, 10 is 10 days ago
-	let start_days = 15;
+	let start_days = 96;
 	let lookup_days = ONE_MONTH;
 	
 	let today = moment().utc().startOf('date').toDate()
@@ -1520,42 +1540,52 @@ async function lookupAccountPay (){
 	//bring the action
 	console.log('start date:'+start)
 	console.log('************actifit rewards***************')
-	await getAccountPayTransactions('actifit', start, to, lookup_days);
+	txStart = -1;
+	await getAccountPayTransactions('actifit', start, to, lookup_days, chain);
 	//console.log('append actifit.pay rewards:'+start)
 	//await getAccountPayTransactions('actifit.pay', start, to);
 	
 	txStart = -1;
 	console.log('***********append actifit.funds rewards**********')
-	await getAccountPayTransactions('actifit.funds', start, to, lookup_days);
+	await getAccountPayTransactions('actifit.funds', start, to, lookup_days, chain);
 	
 	txStart = -1;
 	console.log('***********append actifit.pay rewards**********')
-	await getAccountPayTransactions('actifit.pay', start, to, lookup_days);
+	await getAccountPayTransactions('actifit.pay', start, to, lookup_days, chain);
 	
 	txStart = -1;
 	console.log('***********append actifit.exchange rewards**********')
-	await getAccountPayTransactions('actifit.exchange', start, to, lookup_days);
+	await getAccountPayTransactions('actifit.exchange', start, to, lookup_days, chain);
 	
 	txStart = -1;
 	console.log('***********append actifit.signup rewards**********')
-	await getAccountPayTransactions('actifit.signup', start, to, lookup_days);	
+	await getAccountPayTransactions('actifit.signup', start, to, lookup_days, chain);
+
 }
 
-async function getAccountPayTransactions (account, start, end, period) {
+async function getAccountPayTransactions (account, start, end, period, chain) {
   
   start = moment(start).format()
   end = moment(end).format()
+  
+  let chainLnk = setProperDNode(chain);
     
   // Query account history for delegations
-  properties = await client.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  properties = await chainLnk.database.getDynamicGlobalProperties()
+  if (chain == 'STEEM'){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else if (chain == 'HIVE'){
+	  totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }else if (chain == 'BLURT'){
+	  totalSteem = Number(properties.total_vesting_fund_blurt.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   
   //console.log(properties);
   if (txStart != -1 && txStart < limit){
 	limit = txStart;
   }
-  const transactions = await client.database.call('get_account_history', [account, txStart, limit])
+  const transactions = await chainLnk.database.call('get_account_history', [account, txStart, limit])
   transactions.reverse()
   
   console.log("newestTxId:"+transactions[0][0]);
@@ -1585,14 +1615,26 @@ async function getAccountPayTransactions (account, start, end, period) {
 		//let steemInUSD = rewardedSP * steemPrice;
 		//console.log("steemInUSD:"+steemInUSD);
 				
-		let rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
+		let rewardedSTEEM = 0;
+		if (chain == 'STEEM'){
+			rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
+		}else if (chain == 'HIVE'){
+			rewardedSTEEM = parseFloat(op[1].hive_payout.split(' ')[0])
+		}else if (chain == 'BLURT'){
+			rewardedSTEEM = parseFloat(op[1].blurt_payout.split(' ')[0])
+		}
 		total_STEEM += rewardedSTEEM ;
 		//console.log("rewardedSTEEM:"+rewardedSTEEM);
 		
 		//let steemPureInUSD = rewardedSTEEM * steemPrice;
 
 		
-		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		let rewardedSBD = 0;
+		if (chain == 'STEEM'){
+			rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		}else if (chain == 'HIVE'){
+			rewardedSBD = parseFloat(op[1].hbd_payout.split(' ')[0])
+		}
 		
 		//console.log("rewardedSBD:"+rewardedSBD);
 		
@@ -1623,12 +1665,24 @@ async function getAccountPayTransactions (account, start, end, period) {
 	    //console.log('caught one author_reward');
 		//console.log(op);
 		
-		authorRewardedSBD += parseFloat(op[1].sbd_payout.split(' ')[0])
-		authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
-		authorRewardedSTEEM += parseFloat((op[1].steem_payout.split(' ')[0]))
+		if (chain=='STEEM'){
+			authorRewardedSBD += parseFloat(op[1].sbd_payout.split(' ')[0])
+			authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
+			authorRewardedSTEEM += parseFloat((op[1].steem_payout.split(' ')[0]))
+		}else if (chain == 'HIVE'){
+			authorRewardedSBD += parseFloat(op[1].hbd_payout.split(' ')[0])
+			authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
+			authorRewardedSTEEM += parseFloat((op[1].hive_payout.split(' ')[0]))			
+		}else if (chain == 'BLURT'){
+			//authorRewardedSBD += parseFloat(op[1].sbd_payout.split(' ')[0])
+			authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
+			authorRewardedSTEEM += parseFloat((op[1].blurt_payout.split(' ')[0]))
+			
+		}
 	  }else if (op[0] === 'comment_reward') {
 	    console.log('comment_reward FOUND');
 		console.log(op);
+		authorRewardedSBD += parseFloat(op[1].payout.split(' ')[0])
 	  }else if (op[0] === 'transfer' && op[1].from === account && 
 		(op[1].to !== 'bittrex' && !op[1].to.includes('actifit'))){//skip bittrex and actifit account transfers
 		let amountWithCur = op[1].amount;
@@ -1660,8 +1714,9 @@ async function getAccountPayTransactions (account, start, end, period) {
   let lastDate = moment(lastTx[1].timestamp).format()
   // console.log(lastDate)
   if (lastDate >= end && (txStart == -1 || txStart > limit)){ 
+	console.log('load more');
 	txStart = lastTx[0];
-	return getAccountPayTransactions(account, start, end, period)
+	return getAccountPayTransactions(account, start, end, period, chain)
   }
   console.log ('querying complete');
   console.log ('>>period: '+period + ' days')
@@ -2490,6 +2545,7 @@ async function getGadgetBuyTickets(db){
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
    getRC: getRC,
+   getNewRC: getNewRC,
    claimDiscountedAccount: claimDiscountedAccount,
    getVoteValueUSD: getVoteValueUSD,
    getVoteValue: getVoteValue,

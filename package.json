@@ -5,13 +5,16 @@
   "main": "curation-bot.js",
   "dependencies": {
     "@blurtfoundation/blurtjs": "^1.0.0",
+    "@exoshtw/admob-ssv": "^0.1.0-rc1",
     "@hiveio/dhive": "^1.2.0",
     "@hiveio/hive-js": ">=2.0.4",
+    "admob-rewarded-ads-ssv": "^1.0.1",
     "axios": "^0.18.1",
     "cheerio": "^1.0.0-rc.2",
     "dblurt": "^0.1.2",
     "dsteem": "^0.11.3",
     "express": "^4.16.2",
+    "express-admob-ssv": "^1.0.3",
     "firebase-admin": "^9.2.0",
     "jquery": "^3.4.1",
     "jsonwebtoken": "^8.5.1",
@@ -37,9 +40,7 @@
     "all": "node app.js | node delegations.js ",
     "start": "node app.js | node delegations.js "
   },
-  "engines": {
-    
-  },
+  "engines": {},
   "author": "cryptouru",
   "license": "MIT"
 }

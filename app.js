@@ -175,12 +175,205 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
+
+
+/*
+const verifier = require('@exoshtw/admob-ssv').Verifier;
+
+//const verifier = new Verifier();
+
+
+app.get('/ssvcallback', (req, res, next) => {
+    verifier.verify(req.query)
+        .then((isValid) => {
+            if (!isValid) {
+				console.log('not valid');
+                res.status(500);
+                res.json({
+                    error: 'Invalid signature',
+                });
+            }else{
+				console.log('success');
+			}
+
+            // ...
+        })
+        .catch((e) => {
+			console.log('crash');
+            return next(e);
+        });
+});
+*/
+
+/*
+const admobSSV = require('admob-rewarded-ads-ssv');
+
+//Add callback to your rewarded ads in your admob account.
+//Make sure you listen to 'get' request.
+
+app.get('/ssv-verify', (req, res, next) => {
+    // If you want to debug then send second param as true
+    // admobSSV.verify(req.url, true);
+    admobSSV.verify(req.url, true)
+        .then((response) => {
+          //Verification Successful
+		  console.log(response);
+		  res.send({status:'success'});
+        })
+        .catch((e) => {
+          //Verification Failed
+          console.error(e.message);
+		  res.send({error:e.message});
+        });
+});
+*/
+
+
+/*
+const AdMobSSV = require('express-admob-ssv');
+
+app.get('/ssv-verify',
+  AdMobSSV.middleware(),
+  (req, res, next) => {
+	  console.log('success');
+    // SSV Valid
+    // here goes Your logic
+  });
+  */
+  
+  const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
+
+/*
+
+sample query data
+1|app  |       ad_network: '5450213213286189855',
+1|app  |       ad_unit: '1234567890',
+1|app  |       custom_data: 'tier-1',
+1|app  |       reward_amount: '1',
+1|app  |       reward_item: 'Reward',
+1|app  |       timestamp: '1656954784154',
+1|app  |       transaction_id: '123456789',
+1|app  |       user_id: '123',
+1|app  |       signature: 'WEFWRG#$%#$T##$%#TR#%GG%$$%3453543FGDFG',
+1|app  |       key_id: '3335741209'
+
+*/
+
+app.get('/ssv-verify',
+  async (req, res, next) => {
+    try {
+      const url = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
+      await verifyAdMobSSV(url, true); // true for throwing errors
+	  console.log('success');
+    }
+    catch(error) {
+      // Do something
+      // or log somethings
+	  console.log(error);
+      return res.status(400).end(error.message);
+    }
+    next();
+  },
+  async (req, res, next) => {
+    // SSV Valid
+	if (req.query && req.query.custom_data){
+		let data = req.query.custom_data.split('_');
+		console.log(data);
+		console.log('storing successful ad reward');
+		if (data.length < 4 || isNaN(data[1])){
+			res.send({'error': 'Error performing action'});
+			return;
+		}
+		//send out AFIT reward to our user
+		let recordTrans = {
+			user: data[0],
+			reward_activity: 'Ad Reward',
+			token_count: parseFloat(data[1]),
+			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+			custom_data: req.query.custom_data,
+			ad_network: req.query.ad_network,
+			ad_unit: req.query.ad_unit,
+			transaction_id: req.query.transaction_id,
+			date: new Date(),
+		}
+		try{
+			console.log(recordTrans);
+			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+	}
+	//
+	//console.log('double success');
+	res.send({status:'success'});
+  });
+
+
+app.get('/getDailyDelegationPool/', async function(req, res){
+	
+//app.get('/afitDailyDelegatorRewards', async function (req, res){
+	
+	let startDecreaseDate = new Date(config.first_decrease_date);
+	
+	let decDateInitiation = moment(startDecreaseDate).utc().startOf('date');//.toDate()
+	
+	let today = moment().utc().startOf('date');//.toDate()
+	
+	//difference in days
+	let interDates = today.diff(decDateInitiation,'days');
+	console.log(interDates);
+	let maxDuration = config.decrease_duration;
+	if (interDates > maxDuration){
+		interDates = maxDuration;//max decrease on delegation rewards
+	}
+	console.log(interDates);
+	let decreasePct = config.delg_decr_pct;
+	let weekly_rewd_cap = config.weekly_rewards_limit;
+	let decAmount = 0;
+	let priorCap = weekly_rewd_cap;
+	for (let i=0;i<interDates;i++){
+		decAmount += parseFloat(priorCap * decreasePct * 0.01);
+		priorCap -= (priorCap * decreasePct * 0.01);
+		//console.log('decAmount:'+decAmount);
+		//console.log('priorCap:'+priorCap);
+	}
+	console.log(decAmount);
+	weekly_rewd_cap -= decAmount;
+	/*if (interDates > 0){
+		decAmount = weekly_rewd_cap * (decreasePct * interDates) * 0.01;
+		console.log(decAmount);
+		weekly_rewd_cap -= decAmount;
+	}*/
+	weekly_rewd_cap = Math.floor(weekly_rewd_cap);
+	console.log(weekly_rewd_cap);
+	
+	//res.send({'hive': weekly_rewd_cap, 'steem': weekly_rewd_cap});
+	res.send({'hive_pool': weekly_rewd_cap, 'steem_pool': weekly_rewd_cap});
+})
+
+app.get('/dailyTip', async function (req, res){
+	let tipEntry = await db.collection('daily_tip').find().toArray();
+	res.send(tipEntry);
+})
+
+app.get('/loginImg', async function (req, res){
+	res.send({'imgUrl':'https://raw.githubusercontent.com/actifit/actifit-landingpage/master/static/img/insta_achive_earn.png'});
+})
+
 app.get('/queryPost', async function (req, res){
 	if (!req.query || !req.query.permlink){
 		res.send({error:''});
 		return;
 	}
 	let outc = await db.collection('posts').find({permlink: req.query.permlink}).toArray();
+	res.send(outc);
+})
+
+app.get('/news', async function (req, res){
+	let outc = await db.collection('news').find({enabled: true}).toArray();
 	res.send(outc);
 })
 
@@ -1165,9 +1358,6 @@ app.post('/loginAuth', async function (req, res) {
     }
 });
 
-app.get('/getDailyDelegationPool/', async function(req, res){
-	res.send({'hive_pool': config.weekly_rewards_limit, 'steem_pool': config.weekly_rewards_limit});
-});
 
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
@@ -6034,6 +6224,15 @@ app.get("/consumedGadgetsByUser/:user", async function(req, res) {
 	res.send(gadget_match);
 });
 
+app.get("/activeGadgetsByUserApp/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();			
+	let gadget_match_benefic = await db.collection('user_gadgets').find({ benefic: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();					
+	res.send({'own': gadget_match});
+});
+
 app.get("/activeGadgetsByUser/:user", async function(req, res) {
   //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
 	let targetUser = req.params.user.replace('@','');
@@ -6453,6 +6652,19 @@ claimAndCreateAccount = async function (req){
 	return accountCreated;
 
 };
+
+//grab account RC
+app.get('/getRC', async function (req, res){
+	let result = {};
+	try{
+		if (req.query && req.query.user){
+			result = await utils.getNewRC(req.query.user, req.query.chain);
+		}
+	}catch(err){
+		console.log(err);
+	}
+	res.send(result);
+})
 
 //send notification
 app.get('/sendNotification', async function(req,res){
