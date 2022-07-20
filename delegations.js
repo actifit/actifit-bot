@@ -20,7 +20,9 @@ const testRun = false;
 
 const hive = require('@hiveio/hive-js');
 
-const history_limit = 1000;
+const steem = require('steem');
+
+const history_limit = 100;
 
 //prepare BSC work
 const Web3 = require('web3');
@@ -189,11 +191,19 @@ if (process.env.BOT_THREAD == 'MAIN'){
 }else{
 	//processGadgetBuyPrize();
 	runRewards(true);
-	
+	//testFetchHistory();
 	//processBSCTransfers();
 	
 	
 }
+/*
+async function testFetchHistory(){
+	let from = -1
+	let limit = 100;
+	let histTrans = await steem.api.getAccountHistoryAsync(config.account, from, limit);
+	//[account, txStart, limit]
+	console.log(histTrans);
+}*/
 
 async function processBSCTransfers(){
 	let mongo_conn = config.mongo_uri
@@ -1548,8 +1558,8 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
       await updateActiveDelegations(delTrxCol, activeDelColLink)
 	  
     } else {
-      console.log('--- No new delegations ---')
-		return;
+      console.log('--- No new delegations within current range---')
+		//return;
     }
     // If more pending delegations call process againg with new index
     if (start !== limit && !ended){ 

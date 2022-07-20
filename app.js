@@ -114,7 +114,7 @@ let schedule = require('node-schedule')
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
-const hsc = new SSC(config.hive_engine_rpc);
+const hsc = new SSC(config.hive_engine_core_rpc);
 
 let rule = new schedule.RecurrenceRule();
 
@@ -373,7 +373,7 @@ app.get('/queryPost', async function (req, res){
 })
 
 app.get('/news', async function (req, res){
-	let outc = await db.collection('news').find({enabled: true}).toArray();
+	let outc = await db.collection('news').find({enabled: true}).sort({date: -1}).toArray();
 	res.send(outc);
 })
 
@@ -748,9 +748,12 @@ grabUserTokensFunc = async function (username, fullBal){
 	if (fullBal){
 		//also append tokens on hive-engine & steem-engine
 		let heEntry = fullSortedAFITList.find(entry => entry.account === username);
+		console.log('AFIT entry list');
+		console.log(fullSortedAFITList.length);
 		if (heEntry && !isNaN(heEntry.balance) && heEntry.balance>0){
 			user.tokens = parseFloat(user.tokens) + parseFloat(heEntry.balance);
-			//console.log(user.tokens);
+			console.log('HE');
+			console.log(user.tokens);
 		}
 		
 		//also append tokens on BSC
