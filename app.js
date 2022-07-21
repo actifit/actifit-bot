@@ -316,42 +316,11 @@ app.get('/getDailyDelegationPool/', async function(req, res){
 	
 //app.get('/afitDailyDelegatorRewards', async function (req, res){
 	
-	let startDecreaseDate = new Date(config.first_decrease_date);
-	
-	let decDateInitiation = moment(startDecreaseDate).utc().startOf('date');//.toDate()
-	
-	let today = moment().utc().startOf('date');//.toDate()
-	
-	//difference in days
-	let interDates = today.diff(decDateInitiation,'days');
-	console.log(interDates);
-	let maxDuration = config.decrease_duration;
-	if (interDates > maxDuration){
-		interDates = maxDuration;//max decrease on delegation rewards
-	}
-	console.log(interDates);
-	let decreasePct = config.delg_decr_pct;
-	let weekly_rewd_cap = config.weekly_rewards_limit;
-	let decAmount = 0;
-	let priorCap = weekly_rewd_cap;
-	for (let i=0;i<interDates;i++){
-		decAmount += parseFloat(priorCap * decreasePct * 0.01);
-		priorCap -= (priorCap * decreasePct * 0.01);
-		//console.log('decAmount:'+decAmount);
-		//console.log('priorCap:'+priorCap);
-	}
-	console.log(decAmount);
-	weekly_rewd_cap -= decAmount;
-	/*if (interDates > 0){
-		decAmount = weekly_rewd_cap * (decreasePct * interDates) * 0.01;
-		console.log(decAmount);
-		weekly_rewd_cap -= decAmount;
-	}*/
-	weekly_rewd_cap = Math.floor(weekly_rewd_cap);
-	console.log(weekly_rewd_cap);
+	let hive_pool = await utils.rewardCap('HIVE'); 
+	let steem_pool = await utils.rewardCap('STEEM'); 
 	
 	//res.send({'hive': weekly_rewd_cap, 'steem': weekly_rewd_cap});
-	res.send({'hive_pool': weekly_rewd_cap, 'steem_pool': weekly_rewd_cap});
+	res.send({'hive_pool': hive_pool, 'steem_pool': steem_pool});
 })
 
 app.get('/dailyTip', async function (req, res){

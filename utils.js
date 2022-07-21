@@ -2541,6 +2541,47 @@ async function getGadgetBuyTickets(db){
 	return result;
 }
 
+function rewardCap(chain){
+	let idx = 0;
+	if (chain=='STEEM'){
+		idx = 1;
+	}
+	let startDecreaseDate = new Date(config.first_decrease_date);
+	
+	let decDateInitiation = moment(startDecreaseDate).utc().startOf('date');//.toDate()
+	
+	let today = moment().utc().startOf('date');//.toDate()
+	
+	//difference in days
+	let interDates = today.diff(decDateInitiation,'days');
+	//console.log(interDates);
+	let maxDuration = config.decrease_duration;
+	if (interDates > maxDuration){
+		interDates = maxDuration;//max decrease on delegation rewards
+	}
+	console.log(interDates);
+	let decreasePct = config.delg_decr_pct[idx];
+	let weekly_rewd_cap = config.weekly_rewards_limit[idx];
+	let decAmount = 0;
+	let priorCap = weekly_rewd_cap;
+	for (let i=0;i<interDates;i++){
+		decAmount += parseFloat(priorCap * decreasePct * 0.01);
+		priorCap -= (priorCap * decreasePct * 0.01);
+		//console.log('decAmount:'+decAmount);
+		//console.log('priorCap:'+priorCap);
+	}
+	console.log(decAmount);
+	weekly_rewd_cap -= decAmount;
+	/*if (interDates > 0){
+		decAmount = weekly_rewd_cap * (decreasePct * interDates) * 0.01;
+		console.log(decAmount);
+		weekly_rewd_cap -= decAmount;
+	}*/
+	console.log(weekly_rewd_cap);
+	
+	return weekly_rewd_cap;
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -2599,5 +2640,6 @@ async function getGadgetBuyTickets(db){
    commentToChain: commentToChain,
    proceedSendToken: proceedSendToken,
    fetchPendingRewards: fetchPendingRewards,
-   claimRewards: claimRewards
+   claimRewards: claimRewards,
+   rewardCap: rewardCap
  }
