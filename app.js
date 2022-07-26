@@ -55,6 +55,8 @@ const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenB
 
 connectDB();
 
+let rewardBanList = ['gelvirglenn12', 'yasirgujrati'];
+
 //setInterval(connectWithRetry, 5000);
 
 function connectDB () {
@@ -70,6 +72,7 @@ MongoClient.connect(url,
 	  console.log("Connected successfully to server");
 
 	  db = client.db(db_name);
+	  
 	  
 	  //print version
 	/*  var adminDb = db.admin();
@@ -175,7 +178,14 @@ app.get('/', function (req, res) {
     res.send('Hello there!');
 });
 
-
+/*
+app.get('/sendWarning', async function (req, res){
+	
+	  console.log('send warning');
+		await utils.sendNotification(db, 'yasirgujrati', 'actifit', 'abuse_notice', 'airdrop', 'Your account has been unfortunately identified to be abusing the actifit bonus reward system. Your rewards since abuse detection, dating back to 24 July 2022, have been nullified. Your account has been banned from receiving rewards temporarily. Please consult with actifit team on discord for further clarification.', 'https://links.actifit.io/discord');
+		console.log('done');
+		res.send('done');
+})*/
 
 /*
 const verifier = require('@exoshtw/admob-ssv').Verifier;
@@ -259,6 +269,78 @@ sample query data
 
 */
 
+
+
+app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
+	res.send({});
+	return;
+	let startDate = moment(moment(req.params.date).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	console.log(startDate);
+	//res.send(startDate);
+	//return;
+	let query = {
+					user: req.params.user,
+					reward_activity:'Ad Reward',
+					date:{
+						$gte: new Date(startDate)
+					}
+				}
+	let results = await db.collection('token_transactions').find(query).toArray();
+	//loop through entries, removing rewards
+	for (let i=0;i<results.length;i++){
+		if (parseFloat(results[i].token_count)>0){
+			//console.log(results[i]);
+			results[i].old_reward = results[i].token_count;
+			results[i].token_count = 0;
+			results[i].old_note = results[i].note;
+			results[i].note = 'Cancelled reward due to system abuse.';
+			results[i].old_date = results[i].date;
+			results[i].date = new Date();
+			db.collection('token_transactions').save(results[i]);
+		}
+	}
+	
+	//console.log(results);
+	res.send(results);
+});
+
+
+app.get('/adRewardsReview/', async function (req, res) {
+	let queryType = {
+		reward_activity: 'Ad Reward',
+		token_count: {
+			$gt: 0
+		}
+		/*date: {
+			$gte: new Date(startDate),
+			//$lte: new Date(startDate)
+		},*/
+	}
+	
+	let results = await db.collection('token_transactions').aggregate([
+		{
+			$match: queryType
+		},
+		{
+			$group:{
+				   _id: '$user',
+				   /*reward_entries: { $sum: "$count" },*/
+				   reward_entries: { $sum: 1 }
+				}
+		},
+		{
+		  $sort: {
+			"reward_entries": -1,
+		  }
+		}
+	   ]).toArray();
+	res.send(results);
+	console.log(results);
+})
+
+/*http://localhost:3120/ssv-verify?ad_network=54...55&ad_unit=12345678&reward_amount=10&reward_item=coins&timestamp=150777823&custom_data=mcfarhat_1_1_free&transaction_id=12...DEF&user_id=1234567&signature=ME...Z1c&key_id=1268887
+*/
+
 app.get('/ssv-verify',
   async (req, res, next) => {
     try {
@@ -284,21 +366,44 @@ app.get('/ssv-verify',
 			res.send({'error': 'Error performing action'});
 			return;
 		}
+		if (rewardBanList!=null && rewardBanList.includes(data[0])){
+			res.send({'error': 'Account banned from rewards'});
+			return;
+		}
 		//send out AFIT reward to our user
 		let recordTrans = {
 			user: data[0],
 			reward_activity: 'Ad Reward',
 			token_count: parseFloat(data[1]),
 			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+			tier: data[2],
 			custom_data: req.query.custom_data,
 			ad_network: req.query.ad_network,
 			ad_unit: req.query.ad_unit,
 			transaction_id: req.query.transaction_id,
 			date: new Date(),
 		}
+		let startDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		console.log(startDate);
+		let matchQuery = {
+							user: data[0], 
+							tier: data[2], 
+							date: {
+								$gte: new Date(startDate)
+							}
+						}
+		console.log(matchQuery);
+		//check if user already has more than 1 entry for today for this same tier, if so disregard this new reward
+		let existingReward = await db.collection('token_transactions').find(matchQuery).toArray();
+		console.log(existingReward);
+		if (existingReward!=null && existingReward.length > 1){
+			res.send({'error': 'Account already rewarded today for this tier'});
+			return;
+		}
 		try{
 			console.log(recordTrans);
 			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -310,7 +415,6 @@ app.get('/ssv-verify',
 	//console.log('double success');
 	res.send({status:'success'});
   });
-
 
 app.get('/getDailyDelegationPool/', async function(req, res){
 	
@@ -1152,7 +1256,9 @@ app.get('/recalculateUserTokens', async function (req, res){
 		//let cur_user_token_count = parseFloat(user_info.tokens);
 		
 		user_info.tokens = parseFloat(results[0].token_balance);
-		
+		if (user_info.tokens < 0){
+			user_info.tokens = 0;
+		}
 		//recalculate and store user token count
 		try{
 			let trans = await db.collection('user_tokens').save(user_info);
@@ -1202,6 +1308,22 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
+app.get('/resetFundsPass', checkHdrs, async function (req, res) {
+	let collection = db.collection('account_funds_pass')
+
+	let user = req.query.user.trim().toLowerCase();
+	let result = 'no change';
+	if (user!=''){
+		result = await collection.remove({
+			"user": user,
+		});
+		console.log(user+" password reset ");
+		res.send({status:'success'});
+		return;
+	}
+	res.send({error:'no user found'});
+	
+})
 
 app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let db_col = db.collection('user_login_token');

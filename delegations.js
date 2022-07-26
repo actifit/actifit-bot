@@ -22,7 +22,8 @@ const hive = require('@hiveio/hive-js');
 
 const steem = require('steem');
 
-const history_limit = 100;
+const steem_history_limit = 100;
+const hive_history_limit = 5000;
 
 //prepare BSC work
 const Web3 = require('web3');
@@ -1193,11 +1194,11 @@ async function startProcess (days, steemOnlyReward) {
 	if (!testRun){
 		//update Steem delegations
 		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
-		await processDelegations(client, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
+		await processDelegations(client, steem_history_limit, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
 		
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
-		await processDelegations(hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		await processDelegations(hiveClient, hive_history_limit, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 		//await processDelegationsHive(hive, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 	}
 	//TEMP BREAK
@@ -1468,7 +1469,7 @@ async function alignGadgetTicketEntries () {
 
 
 
-async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
+async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
   let delegationTransactions = []
   let lastTrans = start
   let ended = false
@@ -1529,7 +1530,7 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
     }
     // If more pending delegations call process againg with new index
     if (start !== limit && !ended){ 
-		return processDelegations(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, lastTrans, end)
+		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, lastTrans, end)
 	}
     // console.log(transactions)
 	return;
@@ -1537,7 +1538,7 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
     if (err.type === 'request-timeout' || err.type === 'body-timeout'){ 
-		return processDelegations(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end);
+		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end);
 	}
   }
 }
