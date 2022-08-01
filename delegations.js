@@ -23,7 +23,7 @@ const hive = require('@hiveio/hive-js');
 const steem = require('steem');
 
 const steem_history_limit = 100;
-const hive_history_limit = 5000;
+const hive_history_limit = 1000;
 
 //prepare BSC work
 const Web3 = require('web3');
@@ -1227,9 +1227,9 @@ async function startProcess (days, steemOnlyReward) {
 	if (dayId == 1){
 		//console.log('processSteemRewards');
 		//processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
-		let resSt = await processSteemRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
+		let resSt = await processSteemRewards('STEEM', steem_history_limit, client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
 		//console.log('>>>>>STEEM REWARDS COMPLETE');
-		let resHv = await processSteemRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
+		let resHv = await processSteemRewards('HIVE', hive_history_limit, hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
 		//console.log('>>>>>HIVE REWARDS COMPLETE');
 	}
 }
@@ -1308,7 +1308,7 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 	}
 }
 
-async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
+async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
   if (!start) start = moment().utc().startOf('date').toDate()
   // Get active delegations for the week
   console.log(config.pay_account)
@@ -1323,7 +1323,7 @@ async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
   Promise.all(
 		[
 			getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, config.exclude_enabled), //(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
-			getBenefactorRewards(nodeLink, to, start, -1)
+			getBenefactorRewards(nodeLink, history_limit, to, start, -1)
 		]
 	).then(values => {
     const activeDelegations = values[0].users
@@ -1543,7 +1543,7 @@ async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxC
   }
 }
 
-async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, totalSBD) {
+async function getBenefactorRewards (nodeLink, history_limit, start, end, txStart, totalSp, totalSBD) {
   if (!totalSBD) totalSBD = 0
   if (!totalSp) totalSp = 0
   let limit = (txStart < 0) ? history_limit : Math.min(txStart, history_limit);
@@ -1591,7 +1591,7 @@ async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, tot
   let lastTx = transactions[transactions.length - 1]
   let lastDate = moment(lastTx[1].timestamp).format()
   // console.log(lastDate)
-  if (lastDate >= start) return getBenefactorRewards(nodeLink, start, end, lastTx[0], totalSp, totalSBD)
+  if (lastDate >= start) return getBenefactorRewards(nodeLink, history_limit, start, end, lastTx[0], totalSp, totalSBD)
 
   console.log('-- Processed rewards ---')
   // console.log(totalSp.toFixed(3))
