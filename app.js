@@ -5827,7 +5827,7 @@ app.get('/proceedAfitxTransition', async function(req,res){
 	}
 });
 
-//function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
+//function handles the process of confirming AFIT S-E receipt into proper account, and then duplicating to new exchange
 app.get('/proceedAfitTransition', async function(req,res){
 	if (!req.query.user || !req.query.amount || !req.query.txid){
 		res.send('{}');

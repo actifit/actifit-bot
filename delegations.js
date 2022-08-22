@@ -154,6 +154,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 }else{
 	//processGadgetBuyPrize();
 	runRewards(true);
+	//moveAFITToSE(true);
 	/*let val = utils.rewardCap('HIVE');
 	console.log(val);
 	val = utils.rewardCap('STEEM');
@@ -692,7 +693,10 @@ async function moveAFITToSE(testMode){
 					break;
 				}
 			}
-						
+			/*
+			if (entry.user!='mcfarhat'){
+				user_banned = true;
+			}*/
 			if (!user_banned){
 				
 				//let's make sure user still has proper AFITX amount
@@ -825,14 +829,17 @@ async function moveAFITToSE(testMode){
 										console.log(result) 
 										//update user total count
 										updateUserCount(entry);
+										deactivateDailyAFITPowerDown(entry, testMode);
 										},
 									error => { 
 										console.error(error) 
 										//roll back db transaction as there was issue sending to blockchain
 										rollBackTrans(moveTrans);
+										deactivateDailyAFITPowerDown(entry, testMode);
 										}
 								)
 							}
+							//deactivateDailyAFITPowerDown(entry, testMode);
 						
 						}catch(err){
 							console.log(err);
@@ -843,17 +850,47 @@ async function moveAFITToSE(testMode){
 					}, delay+=4500);
 				}else{
 					console.log('error - user does not have enough funds');
+					await deactivateDailyAFITPowerDown(entry, testMode);
 					return;
 				}
 			}else{
 				console.log('user ' + entry.user + ' is banned. Skip');
+				await deactivateDailyAFITPowerDown(entry, testMode);
 			}
+			//check if user has this request for over a week, and cancel it accordingly
+			
 		});
 	  } else {
 		utils.log(err, 'delegations')
 		process.exit()
 	  }
 	})
+}
+
+
+async function deactivateDailyAFITPowerDown(entry, testMode){
+	//today
+	let start = moment().utc().startOf('date').toDate()
+	
+	//7 days running timeframe
+	let to = moment(start).subtract(7, 'days').toDate()
+	
+	let maxDate = moment(to).format()
+	
+	let transDate = moment(new Date(entry.date)).format();
+	/*console.log('request date:')
+	console.log(entry.date);
+	console.log('7 days max date:');
+	console.log(maxDate);
+	console.log('due???');
+	console.log((transDate < maxDate));*/
+    if (transDate < maxDate) {// || entry.user=='mcfarhat'
+		console.log('need to cancel out transaction')
+		if (!testMode){// || entry.user=='mcfarhat'
+			let stts = await db.collection('powering_down_he').remove(entry);
+		}
+	}
+	
 }
 
 /*
