@@ -126,7 +126,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 	
 	//schedule the delegation cancellation event at 11:00 every day
-	let prizeJob = schedule.scheduleJob({hour: 11, minute: 00}, function(){
+	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 00}, function(){
 	  console.log('--- Cancel outdated delegations ---');
 	  utils.redeemDelegations();
 	});
