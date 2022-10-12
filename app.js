@@ -127,9 +127,11 @@ let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
 
 //initial fetch
+
 fetchAFITXBal(0);
 
 fetchAFITBal(0);
+
 
 //similarly fetch AFIT data
 let usersAFITBal = [];
@@ -158,9 +160,12 @@ app.use(function(req, res, next) {
   //console.log(origin);
   //console.log(req.headers.host);
   if(allowedOrigins.indexOf(origin) > -1){
-	   res.setHeader('Access-Control-Allow-Origin', origin);
+	  //console.log('goooood');
+	  res.setHeader('Access-Control-Allow-Origin', origin);
+	  res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
   }
-  res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
+  //res.setHeader('Access-Control-Allow-Origin', '*');
+  //res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
   return next();
 });
 
@@ -177,6 +182,10 @@ app.get('/', function (req, res) {
     // res.render('home', data);
     res.send('Hello there!');
 });
+
+
+
+/*************************** DIGIFINEX API *************************/
 
 /*
 app.get('/sendWarning', async function (req, res){
@@ -1117,6 +1126,19 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	}
 });
 
+app.get('/delegateRC', checkHdrs, async function (req, res) {
+	console.log('>>performTrx');
+	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
+		res.send({});
+	}
+	let prm = req.query;
+	const receivedPlaintext = decrypt(req.ppkey);
+	let userKey = receivedPlaintext;
+	let outc = await utils.delegateRC(prm.user, userKey, [prm.delegatees], prm.max_rc);
+	console.log(outc);
+	res.send(outc)
+});
+
 app.get('/performTrx', checkHdrs, async function (req, res) {
 	console.log('>>performTrx');
 	
@@ -1194,11 +1216,11 @@ app.get('/afitMarkets', async function (req, res){
 				'pairs': [
 						{
 							'name': 'AFIT/USDT',
-							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+							'link': 'https://dex-trade.com/spot/trading/AFITUSDT'
 						},
 						{
 							'name': 'AFIT/BTC',
-							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+							'link': 'https://dex-trade.com/spot/trading/AFITBTC'
 						}
 					],
 					

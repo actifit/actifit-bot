@@ -32,6 +32,14 @@ const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
 const blurtClient = new dblurt.Client(config.blurt_node);
 
+/*
+testHistory();
+
+async function testHistory(){
+let transactions = await hiveClient.database.call('get_account_history', [config.signup_account, -1, 200]);
+console.log(transactions);
+}
+*/
 //hiveClient.updateOperations(true);
 		
 var config;
@@ -45,8 +53,9 @@ steem.api.setOptions({ url: config.active_node });
 //hive.broadcast.updateOperations()
 
 hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
+//hive.config.set('chain_id', '4200000000000000000000000000000000000000000000000000000000000000');
 
-hive.api.setOptions({ url: config.active_hive_node });
+hive.api.setOptions({ url: config.active_hive_node});
 
 blurt.api.setOptions({ url: config.blurt_node});
 
@@ -1098,7 +1107,7 @@ var HOURS = 60 * 60;
 	}
 
 	//function handles delegating to a specific account
-	async function delegateToAccount (delegatee, steemPowerAmount, chain){
+	async function delegateToAccount (delegatee, steemPowerAmount, chain, hiveHP){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
@@ -1134,28 +1143,44 @@ var HOURS = 60 * 60;
 			}
 		}
 		if (!chain || chain.includes('HIVE')){
-			try{
-				//grab matching amount of Vests to delegate
-				let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
-				console.log('matchingHiveVests:'+matchingHiveVests);
-				const op = [
-					'delegate_vesting_shares',
-					{
-						delegator: config.full_pay_benef_account,
-						delegatee: delegatee,
-						vesting_shares: matchingHiveVests+' VESTS',
-					},
-				];
-				
-				result = await hiveClient.broadcast.sendOperations([op], privateKey);
-				console.log('Included in block:'+ result.block_num);
-				console.log('returning back');
-				hiveDg = true;
-			}catch(err){
-				console.log(err);
-				console.log('returning back err');
-				hiveDg = false;
+			
+			if (hiveHP == 1){
+				try{
+					//grab matching amount of Vests to delegate
+					let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
+					console.log('matchingHiveVests:'+matchingHiveVests);
+					const op = [
+						'delegate_vesting_shares',
+						{
+							delegator: config.full_pay_benef_account,
+							delegatee: delegatee,
+							vesting_shares: matchingHiveVests+' VESTS',
+						},
+					];
+					
+					result = await hiveClient.broadcast.sendOperations([op], privateKey);
+					console.log('Included in block:'+ result.block_num);
+					console.log('returning back');
+					hiveDg = true;
+				}catch(err){
+					console.log(err);
+					console.log('returning back err');
+					hiveDg = false;
+				}
+			}else{
+				//delegate RC instead of HP now:
+				try{
+					result = await delegateRC(config.pay_account, config.pay_account_posting_key, [delegatee], config.rc_delegation_new_signup);
+					console.log(result);
+					console.log('returning back');
+					hiveDg = true;
+				}catch(err){
+					console.log(err);
+					console.log('returning back err');
+					hiveDg = false;
+				}
 			}
+			
 		}
 		return (steemDg || hiveDg);
 	}
@@ -2582,6 +2607,169 @@ function rewardCap(chain){
 	return weekly_rewd_cap;
 }
 
+
+async function launch(){
+	console.log('launch function');
+	
+	let rc = await getRCHF26(["arabsteem"]);
+	console.log(rc.rc_accounts[0]);
+	return;
+	await delegateRC('actifit.pay', 'xxxxx', ['mcfarhat', 'actifit', 'actifit.funds'], 600000000);
+		//1800000000
+	//await getRCHF26(["actifit.pay"]);
+}
+
+//redeemDelegations();
+
+async function redeemDelegations(){
+	await delegationRedeemer('HIVE');
+	await delegationRedeemer('STEEM');
+}
+
+async function delegationRedeemer(bchain){
+	//go through delegations by funds account, and cancel outdated ones (3 months and beyond)
+	const max_limit = 1000;
+	let i = 0;
+	let today = new Date();
+	try{
+		let chainLnk = await setProperNode(bchain);
+		let delg = await chainLnk.api.getVestingDelegationsAsync(config.full_pay_benef_account, '', max_limit);
+		for (i=0;i<delg.length;i++){
+			//skip this user
+			if (config.perpetDelgList.includes(delg[i].delegatee)){
+				console.log('skipping '+delg[i].delegatee);
+				continue;
+			}
+			console.log('checking '+delg[i].delegatee)
+			let del_date = new Date(delg[i].min_delegation_time);
+			let dates_diff = today.getTime() - del_date.getTime();
+			let diff_in_days = Math.ceil(dates_diff / (1000 * 3600 * 24));
+
+			console.log(delg[i].min_delegation_time); 
+			console.log(diff_in_days);
+			if (diff_in_days > 3*30){
+				console.log('cancel out delegation to'+delg[i].delegatee);
+				//cancel out delegation
+				if (bchain == 'HIVE'){
+					//cancel HP delegation
+					await delegateToAccount(delg[i].delegatee, 0, bchain, 1);
+				}else{
+					await delegateToAccount(delg[i].delegatee, 0, bchain);
+				}
+			}
+		}
+		//console.log(delg);
+	}catch(err){
+		console.log(err);
+	}
+	
+}
+
+//launch();
+
+/****** PART COVERING HF26 RC delegations ****/
+//reference: https://peakd.com/rc/@howo/direct-rc-delegation-documentation
+function fetchRCDelegations(from, to, limit){
+	if (!limit){
+		limit = 1000;
+	}
+	return new Promise(resolve => {
+        hive.api.call('rc_api.list_rc_direct_delegations', {start:[from, to], limit: limit}, function (err, result) {
+            return resolve(result)
+        })
+    });
+}
+
+function listRCAccounts(start, limit) {
+    return new Promise(resolve => {
+        hive.api.call('rc_api.list_rc_accounts', {start:start, limit: limit}, function (err, result) {
+            return resolve(result)
+        })
+    });
+}
+
+
+async function getRCHF26(accounts){
+	//return new Promise(resolve => {
+        let res = await hive.api.callAsync('rc_api.find_rc_accounts', {accounts: accounts});
+		return res;
+    //});
+}
+
+async function delegateRC(delegator, posting_key, delegatees, max_rc) {
+	/**** below works *****/
+	console.log('delegateRC')
+	const op_name = 'custom_json';
+	//['delegate_rc', {
+	const json_data = JSON.stringify(['delegate_rc', { 
+            from: delegator,
+            delegatees: delegatees,
+            max_rc: max_rc
+		}]);
+        //}]);
+	const transId = 'rc';
+	const cstm_params = {
+		required_auths: [],
+		required_posting_auths: [delegator],
+		id: transId,
+		json: json_data
+	}
+	
+	let operation = [ 
+	   [op_name, cstm_params]
+	];
+	console.log('broadcasting');
+	console.log(operation);
+	
+	/*
+	//// uncomment this part to go back to old sendasync approach for RC delegation. WORKS
+	let tx = await hive.broadcast.sendAsync( 
+		   { operations: operation, extensions: [] },
+		   { posting: posting_key }
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+	console.log(tx);
+	return tx;*/
+	
+	/***** end of works *********/
+	
+	/***** alt implementation ****/
+	
+	let tx
+    tx = await hive.broadcast.customJsonAsync(
+			posting_key,
+			[], 
+			[delegator], 
+			transId, 
+			json_data
+		).catch(err => {
+			console.log(err.message);
+			return err;
+	});
+	
+	//console.log(tx);
+	//5000000000000000
+	/*if (!tx){
+		tx = {};
+	}*/
+	return tx;
+	
+	/*return new Promise(resolve => {
+        const json = JSON.stringify(['delegate_rc', {
+            from: delegator,
+            delegatees: delegatees,
+            max_rc: max_rc,
+        }]);
+
+        hive.broadcast.customJson(posting_key, [], [delegator], 'rc', json, function (err, result) {
+			console.log(err, result);
+            resolve(err)
+        });
+    });*/
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -2641,5 +2829,9 @@ function rewardCap(chain){
    proceedSendToken: proceedSendToken,
    fetchPendingRewards: fetchPendingRewards,
    claimRewards: claimRewards,
-   rewardCap: rewardCap
+   rewardCap: rewardCap,
+   delegateRC: delegateRC,
+   fetchRCDelegations: fetchRCDelegations,
+   getRCHF26: getRCHF26,
+   listRCAccounts: listRCAccounts
  }

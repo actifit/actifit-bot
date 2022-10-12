@@ -125,7 +125,11 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  processGadgetBuyPrize();//param test
 	});
 	
-	
+	//schedule the delegation cancellation event at 11:00 every day
+	let prizeJob = schedule.scheduleJob({hour: 11, minute: 00}, function(){
+	  console.log('--- Cancel outdated delegations ---');
+	  utils.redeemDelegations();
+	});
 	
 	//run the airdrop once
 	/*const date = new Date(2021, 9, 26, 9, 00, 00);
@@ -1244,8 +1248,8 @@ async function startProcess (days, steemOnlyReward) {
 	
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
-	//let start = moment().utc().startOf('date').subtract(3, 'days').toDate()
-	//let txEnd = moment().utc().startOf('date').subtract(2, 'days').toDate()
+	//let start = moment().utc().startOf('date').subtract(2, 'days').toDate()
+	//let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		//steem based rewards
