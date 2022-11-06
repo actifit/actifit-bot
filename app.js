@@ -120,7 +120,7 @@ let schedule = require('node-schedule')
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
 
-const hsc = new SSC(config.hive_engine_core_rpc);
+const hsc = new SSC(config.hive_engine_rpc);
 
 let rule = new schedule.RecurrenceRule();
 
@@ -128,6 +128,13 @@ let rule = new schedule.RecurrenceRule();
 let usersAFITXBal = [];
 let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
+
+
+
+//similarly fetch AFIT data
+let usersAFITBal = [];
+let usersAFITBalHE = [];
+let fullSortedAFITList = [];
 
 //initial fetch
 
@@ -140,10 +147,6 @@ fetchAFITXBalHE(0);
 fetchAFITBalHE(0);
 
 
-//similarly fetch AFIT data
-let usersAFITBal = [];
-let usersAFITBalHE = [];
-let fullSortedAFITList = [];
   
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
@@ -152,6 +155,10 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //fetchAFITXBal(0);
   
   //fetchAFITBal(0);
+  
+  //reset to zero, might need to revisit this when reputting SE to action
+  usersAFITBal = [];
+  usersAFITXBal = [];
   
   fetchAFITXBalHE(0);
 
