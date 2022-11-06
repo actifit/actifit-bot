@@ -35,7 +35,10 @@ const collection_name = 'user_tokens';
 
 var Web3 = require('web3');
 
-const web3 = new Web3('https://bsc-dataseed1.binance.org:443');
+const bscrpc = 'https://bsc-dataseed1.binance.org:443';
+//const bscrpc = 'https://rpc.ankr.com/bsc/6910e0510261f4593d3d10cf40688da308da788de3e3b8924b88fb0ce2a51602';
+
+const web3 = new Web3(bscrpc);
 
 const minABI = [
   // balanceOf
@@ -128,9 +131,13 @@ let fullSortedAFITXList = [];
 
 //initial fetch
 
-fetchAFITXBal(0);
+//fetchAFITXBal(0);
 
-fetchAFITBal(0);
+//fetchAFITBal(0);
+
+fetchAFITXBalHE(0);
+
+fetchAFITBalHE(0);
 
 
 //similarly fetch AFIT data
@@ -142,9 +149,13 @@ let fullSortedAFITList = [];
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
   //usersAFITXBal = [];
-  fetchAFITXBal(0);
+  //fetchAFITXBal(0);
   
-  fetchAFITBal(0);
+  //fetchAFITBal(0);
+  
+  fetchAFITXBalHE(0);
+
+  fetchAFITBalHE(0);
   
   //only run cleanup on secondary thread to avoid duplication of effort and collision
   if (process.env.BOT_THREAD == 'SECOND_API'){
@@ -533,7 +544,8 @@ setInterval(loadExchAfitPrice, 5*60000);
 async function loadExchAfitPrice(){
 	try{
 		console.log('loading AFIT exchange prices');
-		let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		//let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		let afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
 		
 		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
 		
@@ -845,13 +857,15 @@ grabUserTokensFunc = async function (username, fullBal){
 			if (wallet_entry && wallet_entry.wallet){
 				//console.log(wallet_entry.wallet);
 				//fetch wallet balance		
-				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+				//let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+				let result = await afitContract.methods.balanceOf('0xBc0d46F3F43E21a391cAb8e1A3059a8df9213a44').call(); // 29803630997051883414242659
 				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
 				afitBSC = parseFloat(format);
 				//console.log(format);
 				user.tokens = parseFloat(user.tokens) + afitBSC;
 			}
 		}catch(exc){
+			console.log(exc);
 			console.log('error fetching wallet balance / BSC')
 		}
 		console.log(user.tokens);
