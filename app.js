@@ -145,19 +145,28 @@ fetchAFITXBal(0);
 
 fetchAFITBal(0);
 
-//fetchAFITXBalHE(0);
+setTimeout(launchHEFetch, 10000);
 
-//fetchAFITBalHE(0);
+async function launchHEFetch(){
+	console.log('looking up HE data')
+	fetchAFITXBalHE(0);
+
+	fetchAFITBalHE(0);	
+}
+
 
 
   
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
-  //usersAFITXBal = [];
+  usersAFITBal = [];
+  usersAFITXBal = [];
   fetchAFITXBal(0);
   
   fetchAFITBal(0);
+  
+  setTimeout(launchHEFetch, 10000);
   
   //reset to zero, might need to revisit this when reputting SE to action
   /*usersAFITBal = [];
@@ -167,6 +176,7 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 
   fetchAFITBalHE(0);
   */
+  
   //only run cleanup on secondary thread to avoid duplication of effort and collision
   if (process.env.BOT_THREAD == 'SECOND_API'){
 	disableUserLogin();
@@ -637,10 +647,10 @@ async function fetchAFITXBal(offset){
 		setTimeout(function(){
 			fetchAFITXBal(0);
 		}, 30000);
-	}else{
+	}/*else{
 		//done with AFITX SE, proceed with AFITX HE
 		fetchAFITXBalHE(0);
-	}
+	}*/
   }
   }catch(err){
 	  console.log(err);
@@ -650,6 +660,8 @@ async function fetchAFITXBal(offset){
 			fetchAFITXBal(0);
 		}, 30000);
 	  }
+	  //either way, call HE version
+	  //fetchAFITXBalHE(0);
   }
   //console.log(usersAFITXBal);
 }
@@ -728,8 +740,10 @@ async function fetchAFITXBalHE(offset){
 }
 
 async function getAFITXUserData(user){
-	let ind = fullSortedAFITXList.findIndex(v => v.account == user)
-	let entry = fullSortedAFITXList.find(v => v.account == user)
+	
+	//using usersAFITXBal instead of fullSortedAFITXList
+	let ind = usersAFITXBal.findIndex(v => v.account == user)
+	let entry = usersAFITXBal.find(v => v.account == user)
 	return {ind: ind, entry: entry}
 }
 
@@ -760,7 +774,7 @@ async function fetchAFITBal(offset){
 		}, 30000);
 	}else{
 		//done with AFIT SE, proceed with AFIT HE
-		fetchAFITBalHE(0);
+		//fetchAFITBalHE(0);
 	}
   }
   }catch(err){
@@ -771,6 +785,8 @@ async function fetchAFITBal(offset){
 			fetchAFITBal(0);
 		}, 30000);
 	  }
+	   //either way, call HE version
+	  //fetchAFITBalHE(0);
   }
   //console.log(usersAFITBal);
 }
@@ -857,7 +873,8 @@ grabUserTokensFunc = async function (username, fullBal){
 	
 	if (fullBal){
 		//also append tokens on hive-engine & steem-engine
-		let heEntry = fullSortedAFITList.find(entry => entry.account === username);
+		let heEntry = usersAFITBal.find(entry => entry.account === username);
+		//let heEntry = fullSortedAFITList.find(entry => entry.account === username);
 		console.log('AFIT entry list');
 		console.log(fullSortedAFITList.length);
 		if (heEntry && !isNaN(heEntry.balance) && heEntry.balance>0){

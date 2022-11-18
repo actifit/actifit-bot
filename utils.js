@@ -2260,7 +2260,7 @@ async function fetchChainRewards(user, bchain){
 			//pendingRewards+= 
 		}
 	}
-	console.log('rew:'+pendingRewards + cur);
+	//console.log('rew:'+pendingRewards + cur);
 	return {amount: pendingRewards, currency:cur, postCount: postCount};
 }
 
@@ -2269,15 +2269,15 @@ async function fetchPendingRewards(user, bchain){
 	if (!bchain || bchain == ''){
 		//fetch rewards from all
 		rewards.HIVE = await fetchChainRewards(user, hive);
-		console.log('big rew:'+rewards);
+		//console.log('big rew:'+rewards);
 		rewards.STEEM = await fetchChainRewards(user, steem);
-		console.log('big rew:'+rewards);
+		//console.log('big rew:'+rewards);
 		rewards.BLURT = await fetchChainRewards(user, blurt);
-		console.log('big rew:'+rewards);
+		//console.log('big rew:'+rewards);
 	}else{
 		let chainLnk = await setProperNode(bchain)
 		rewards.bchain = await fetchChainRewards(user, chainLnk);
-		console.log('big rew:'+rewards);
+		//console.log('big rew:'+rewards);
 	}
 	return rewards;
 	
