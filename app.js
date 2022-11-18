@@ -18,6 +18,9 @@ let ObjectId = require('mongodb').ObjectId;
 
 const request = require("request");
 
+const ethutil = require('ethereumjs-util');
+
+
 // Connection URL
 let url = config.mongo_uri;
 if (config.testing){
@@ -138,13 +141,13 @@ let fullSortedAFITList = [];
 
 //initial fetch
 
-//fetchAFITXBal(0);
+fetchAFITXBal(0);
 
-//fetchAFITBal(0);
+fetchAFITBal(0);
 
-fetchAFITXBalHE(0);
+//fetchAFITXBalHE(0);
 
-fetchAFITBalHE(0);
+//fetchAFITBalHE(0);
 
 
   
@@ -152,18 +155,18 @@ fetchAFITBalHE(0);
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
   //usersAFITXBal = [];
-  //fetchAFITXBal(0);
+  fetchAFITXBal(0);
   
-  //fetchAFITBal(0);
+  fetchAFITBal(0);
   
   //reset to zero, might need to revisit this when reputting SE to action
-  usersAFITBal = [];
+  /*usersAFITBal = [];
   usersAFITXBal = [];
   
   fetchAFITXBalHE(0);
 
   fetchAFITBalHE(0);
-  
+  */
   //only run cleanup on secondary thread to avoid duplication of effort and collision
   if (process.env.BOT_THREAD == 'SECOND_API'){
 	disableUserLogin();
@@ -551,8 +554,14 @@ setInterval(loadExchAfitPrice, 5*60000);
 async function loadExchAfitPrice(){
 	try{
 		console.log('loading AFIT exchange prices');
-		//let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
-		let afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		let afitSEPrice;
+		try{
+			afitSEPrice	= await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		}catch(innErr){
+			//fall back to AFIT price on HE
+			afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		}
+		//let afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
 		
 		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
 		
@@ -864,8 +873,8 @@ grabUserTokensFunc = async function (username, fullBal){
 			if (wallet_entry && wallet_entry.wallet){
 				//console.log(wallet_entry.wallet);
 				//fetch wallet balance		
-				//let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-				let result = await afitContract.methods.balanceOf('0xBc0d46F3F43E21a391cAb8e1A3059a8df9213a44').call(); // 29803630997051883414242659
+				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+				//let result = await afitContract.methods.balanceOf('0xBc0d46F3F43E21a391cAb8e1A3059a8df9213a44').call(); // 29803630997051883414242659
 				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
 				afitBSC = parseFloat(format);
 				//console.log(format);
@@ -2025,6 +2034,28 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 	
 });
 
+
+app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
+	let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
+	console.log(nonce);
+	nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
+	const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
+	const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
+	const addrBuf = ethutil.pubToAddress(pubKey)
+	const addr = ethutil.bufferToHex(addrBuf)
+	console.log('orig:'+req.query.wallet);
+	console.log(pubKey);
+	console.log('out:'+addr);
+	
+	if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
+		console.log('correct address');
+		res.send({success: true});
+	}else{
+		console.log('incorrect address');
+		res.send({error: 'incorrect address'});
+	}
+})
+
 app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.wallet){
@@ -2192,7 +2223,6 @@ app.get('/sendAirdropResultsNotif', async function (req, res){
 	}
 	
 });
-
 
 /* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
@@ -4398,7 +4428,12 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		let afitx_se_balance = 0;
 		let afitx_he_balance = 0;
 		//confirm amount within AFITX conditions
-		let bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		let bal = 0;
+		try{
+			bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		}catch(innEr){
+			console.log(innEr);
+		}
 		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
 		
 		if (bal){

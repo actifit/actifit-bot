@@ -1248,10 +1248,11 @@ async function startProcess (days, steemOnlyReward) {
 	
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
-	//let start = moment().utc().startOf('date').subtract(2, 'days').toDate()
-	//let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
+	// let start = moment().utc().startOf('date').subtract(3, 'days').toDate()
+	// let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
 	console.log('start:'+start);
 	console.log('txEnd:'+txEnd);
+	
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		//steem based rewards
