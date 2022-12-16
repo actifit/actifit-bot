@@ -110,7 +110,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 	  console.log('--- Start delegators reward ---');
-	  runRewards(false);//param steemOnlyReward
+	  runRewards(false, true);//param steemOnlyReward, updateDelegations
 	});
 	
 	//let's schedule the AFIT to S-E token move event at 10:00 
@@ -157,7 +157,8 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 }else{
 	//processGadgetBuyPrize();
-	runRewards(true);
+	runRewards(true, true);
+	//runRewards(false, false);
 	//moveAFITToSE(true);
 	/*let val = utils.rewardCap('HIVE');
 	console.log(val);
@@ -990,7 +991,7 @@ async function airdropAFITX(){
 
 */
 
-function runRewards(steemOnlyReward){
+function runRewards(steemOnlyReward, updateDelegations){
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
 		mongo_conn = config.mongo_local
@@ -1022,7 +1023,7 @@ function runRewards(steemOnlyReward){
 		
 		//run for one day
 		var delegation_days = 1;
-		startProcess(delegation_days, steemOnlyReward);
+		startProcess(delegation_days, steemOnlyReward, updateDelegations);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
 		setInterval(loadSteemPrices,5 * 60 * 1000);
@@ -1224,7 +1225,7 @@ function loadSteemPrices() {
 }
 
 
-async function startProcess (days, steemOnlyReward) {
+async function startProcess (days, steemOnlyReward, updateDelegations) {
 	let end = 0
 	// Find last saved delegation transaction
 	//let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
@@ -1232,7 +1233,7 @@ async function startProcess (days, steemOnlyReward) {
 	//console.log(lastTx)
 	//if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	if (!testRun){
+	if (!testRun && updateDelegations){
 		//update Steem delegations
 		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
 		await processDelegations(client, steem_history_limit, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
@@ -1248,15 +1249,16 @@ async function startProcess (days, steemOnlyReward) {
 	
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
-	// let start = moment().utc().startOf('date').subtract(3, 'days').toDate()
-	// let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
+	//let start = moment().utc().startOf('date').subtract(2, 'days').toDate()
+	//let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
+	//let txEnd = moment().utc().startOf('date').toDate()
 	console.log('start:'+start);
 	console.log('txEnd:'+txEnd);
 	
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		//steem based rewards
-		await processTokenRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, start, txEnd, days)
+		//await processTokenRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, start, txEnd, days)
 		
 		//hive based rewards
 		await processTokenRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, start, txEnd, days)
@@ -1271,7 +1273,7 @@ async function startProcess (days, steemOnlyReward) {
 	if (dayId == 1){
 		//console.log('processSteemRewards');
 		//processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
-		let resSt = await processSteemRewards('STEEM', steem_history_limit, client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
+		//let resSt = await processSteemRewards('STEEM', steem_history_limit, client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
 		//console.log('>>>>>STEEM REWARDS COMPLETE');
 		let resHv = await processSteemRewards('HIVE', hive_history_limit, hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
 		//console.log('>>>>>HIVE REWARDS COMPLETE');
