@@ -2626,7 +2626,7 @@ async function redeemDelegations(){
 	await delegationRedeemer('STEEM');
 }
 
-async function delegationRedeemer(bchain){
+async function delegationRedeemer(bchain, threshold){
 	//go through delegations by funds account, and cancel outdated ones (3 months and beyond)
 	const max_limit = 1000;
 	let i = 0;
@@ -2647,7 +2647,11 @@ async function delegationRedeemer(bchain){
 
 			console.log(delg[i].min_delegation_time); 
 			console.log(diff_in_days);
-			if (diff_in_days > 3*30){
+			let minDays = 3*30;
+			if (threshold){
+				minDays = threshold;
+			}
+			if (diff_in_days > minDays){
 				console.log('cancel out delegation to'+delg[i].delegatee);
 				//cancel out delegation
 				if (bchain == 'HIVE'){

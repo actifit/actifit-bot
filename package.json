@@ -39,7 +39,7 @@
     "delegate": "node delegations.js",
     "api": "node app.js",
     "all": "node app.js | node delegations.js ",
-    "start": "node app.js | node delegations.js "
+    "start": "node app.js"
   },
   "engines": {},
   "author": "cryptouru",
