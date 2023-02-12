@@ -155,6 +155,23 @@ var HOURS = 60 * 60;
 	}
  }
  
+  async function encodeMemo(memo, userPubKey, bchain){
+	let chainLnk = await setProperNode(bchain);
+	console.log('utils decodememo')
+	memo = '#'+memo;
+	let encoded_msg = await chainLnk.memo.encode(config.full_pay_ac_key, userPubKey, memo); 
+	console.log(encoded_msg);
+	return encoded_msg;
+ }
+ 
+ async function decodeMemo(memo, userKey, bchain){
+	let chainLnk = await setProperNode(bchain);
+	console.log('utils decodememo')
+	let decrypted = await chainLnk.memo.decode(userKey, memo); 
+	console.log(decrypted);
+	return decrypted;
+ }
+ 
  async function processSteemTrx(operation, userKey, bchain, db, active){
 	console.log('utils processSteemTrx');
 	console.log(operation);
@@ -579,6 +596,110 @@ var HOURS = 60 * 60;
 			}, 5000);
 		});
 	}
+	
+	function arraysEqual(array1, array2) {
+	  if (array1.length !== array2.length) return false;
+	  for (let i = 0; i < array1.length; i++) {
+		if (Array.isArray(array1[i]) && Array.isArray(array2[i])) {
+		  if (!arraysEqual(array1[i], array2[i])) return false;
+		} else if (typeof array1[i] === 'object') {
+		  if (JSON.stringify(array1[i]) !== JSON.stringify(array2[i])) return false;
+		} else {
+		  if (array1[i] !== array2[i]) return false;
+		}
+	  }
+	  return true;
+	}
+	
+	
+	/*testAs();
+	async function testAs(){
+		let chainLnk = await setProperNode('HIVE');
+		let txid = '611417a631ff7f55922bf00e22e3358f46e04d78'
+		transactions = await chainLnk.api.getTransactionAsync(txid);
+		console.log(transactions);
+	}*/
+	
+	async function storeVerifiedTrx(tx, db){
+		console.log('store transaction')
+		console.log(tx);
+		if (tx && tx.ref_block_num){
+			let tx_entry = {
+				tx_id: tx.transaction_id,
+				ref_block_num: tx.ref_block_num,
+				tx: tx,
+				date: new Date(),
+			};
+			try{
+				let transaction = await db.collection('verified_tx').insert(tx_entry);
+				console.log('success inserting transaction details');
+			}catch(err){
+				console.log(err);
+			}
+		}
+	}
+	
+	async function findVerifyTrx (req, db){
+		getConfig();
+		console.log('findverify')
+		let bchain = req.query.bchain?req.query.bchain:'HIVE'
+		
+		//first check trx to see if it has been processed
+		let trx = await db.collection('verified_tx').findOne({tx_id: req.params.trxID});
+		//this shouldnt be there, so if it is skip
+		if (trx){
+			
+			return ({error: 'trx already exists'});
+		}
+		
+		
+		return new Promise((resolve, reject) => {
+			th_id = setInterval(async function(){
+				let chainLnk = await setProperNode(bchain);
+				console.log('check trx');
+				
+				let matchTrx;
+		
+				if (bchain == 'STEEM'){
+					matchTrx = await client.database.call('get_transaction', req.params.trxID);
+				}else{
+					//transactions = await hiveClient.database.call('get_transaction', req.query.txid);
+					matchTrx = await chainLnk.api.getTransactionAsync(req.params.trxID);
+					console.log(matchTrx);
+				}
+				
+				//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
+				let matchFound = false;
+				if (matchTrx && matchTrx.transaction_id && Array.isArray(matchTrx.operations)){
+					console.log('potential match')
+					//need to stringify first part as the second is already stringified
+					if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
+						console.log('GOOOOD')
+						let now = moment(new Date()); //todays date
+						let end = moment(matchTrx.expiration); // last update date
+						let duration = moment.duration(now.diff(end));
+						let hrs = duration.asHours();
+						//transaction needs to have been concluded within 5 hours.
+						if (hrs < 5){
+							matchFound = true;
+							//break;
+							//store transaction
+							await storeVerifiedTrx(matchTrx, db);
+						}
+					}
+					
+				}
+				if (matchFound){
+					//need to look again
+					console.log('found');
+					clearInterval(th_id);
+					resolve(matchTrx);
+				}
+				//});
+			}, 5000);
+		});
+	}
+	
 	
 	//function handles confirming if payment was received
 	async function confirmPaymentReceived (req, bchain) {
@@ -1892,7 +2013,7 @@ async function verifyAFITBuyTransaction(userA, amount, afit_amount, matching_afi
 	return false;
 }
 
-async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, block_num, tx_id, bchain, db){
+async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_price_alt, tx_type, tx_id, bchain, db){
 	let trx, th_id;
 	console.log('verifyGadgetPayTransaction');
 	console.log('item_price:'+item_price);
@@ -1977,7 +2098,7 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 	}
 }
 
-async function verifyGadgetTransaction(userA, gadget_id, tx_type, block_num, tx_id, bchain, db){
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db){
 	//let trx, th_id;
 	console.log('verifyGadgetTransaction');
 	console.log(tx_id);
@@ -2268,15 +2389,18 @@ async function fetchPendingRewards(user, bchain){
 	let rewards = {};
 	if (!bchain || bchain == ''){
 		//fetch rewards from all
-		rewards.HIVE = await fetchChainRewards(user, hive);
+		rewards.HIVE = await fetchChainRewards(user, hive).catch(err => {console.log (err);});
 		//console.log('big rew:'+rewards);
-		rewards.STEEM = await fetchChainRewards(user, steem);
+		
+		//remove support for STEEM rewards
+		//rewards.STEEM = await fetchChainRewards(user, steem);
+		
 		//console.log('big rew:'+rewards);
-		rewards.BLURT = await fetchChainRewards(user, blurt);
+		rewards.BLURT = await fetchChainRewards(user, blurt).catch(err => {console.log (err);});
 		//console.log('big rew:'+rewards);
 	}else{
 		let chainLnk = await setProperNode(bchain)
-		rewards.bchain = await fetchChainRewards(user, chainLnk);
+		rewards.bchain = await fetchChainRewards(user, chainLnk).catch(err => {console.log (err);});
 		//console.log('big rew:'+rewards);
 	}
 	return rewards;
@@ -2816,6 +2940,8 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    removeArrMatchLodash: removeArrMatchLodash,
    validateAccountLogin: validateAccountLogin,
    processSteemTrx: processSteemTrx,
+   decodeMemo: decodeMemo,
+   encodeMemo: encodeMemo,
    sendNotification: sendNotification,
    confirmAFITXTransition: confirmAFITXTransition,
    proceedAfitxMove: proceedAfitxMove,
@@ -2833,6 +2959,7 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    proceedSendToken: proceedSendToken,
    fetchPendingRewards: fetchPendingRewards,
    claimRewards: claimRewards,
+   findVerifyTrx: findVerifyTrx,
    rewardCap: rewardCap,
    delegateRC: delegateRC,
    fetchRCDelegations: fetchRCDelegations,

@@ -183,22 +183,27 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   }
 });
 
+////CORS IS NOW HANDLED AT LEVEL OF NGINX
 //allows setting acceptable origins to be included across all function calls
+
 app.use(function(req, res, next) {
-  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
-  var origin = req.headers.origin;
+  // var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
+  // var origin = req.headers.origin;
   //console.log('>>>origin:');
   //console.log(origin);
   //console.log(req.headers.host);
-  if(allowedOrigins.indexOf(origin) > -1){
+  // if(allowedOrigins.indexOf(origin) > -1){
 	  //console.log('goooood');
-	  res.setHeader('Access-Control-Allow-Origin', origin);
-	  res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
-  }
-  //res.setHeader('Access-Control-Allow-Origin', '*');
-  //res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
-  return next();
+	  // res.setHeader('Access-Control-Allow-Origin', origin);
+	  // res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
+  // }
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
+  //  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  //return next();
+  next();
 });
+
 
 app.get('/', function (req, res) {
 	var data = {};
@@ -1173,6 +1178,11 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	}
 });
 
+app.get('/availableHiveNodes', async function(req, res){
+	
+	res.send({'hiveNodes':config.alt_hive_nodes})
+});
+
 app.get('/delegateRC', checkHdrs, async function (req, res) {
 	console.log('>>performTrx');
 	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
@@ -1184,6 +1194,24 @@ app.get('/delegateRC', checkHdrs, async function (req, res) {
 	let outc = await utils.delegateRC(prm.user, userKey, [prm.delegatees], prm.max_rc);
 	console.log(outc);
 	res.send(outc)
+});
+
+app.post('/memoDecode', checkHdrs, async function (req, res) {
+	console.log('memo decode');
+	//set HIVE as default
+	let bchain = 'HIVE';
+	const receivedPlaintext = decrypt(req.ppkey);
+	if (req.query && req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	if (req.body && req.body.memo){
+		let outc = await utils.decodeMemo(req.body.memo, receivedPlaintext);
+		console.log('result');
+		console.log(outc);
+		res.send({xcstkn: outc});
+		return;
+	}
+	res.send({error:'unable to decode'});
 });
 
 app.get('/performTrx', checkHdrs, async function (req, res) {
@@ -1444,6 +1472,49 @@ app.get('/notificationTypes/', async function (req, res) {
 	res.send(config.notificationTypes);
 });
 
+app.post('/loginKeychain/', async function (req, res) {
+	try{
+		console.log('loginkeychain');
+		//const username = sanitize(req.body.username);
+		const username = req.body.username;
+		let bchain = req.body.bchain?req.body.bchain:'HIVE';
+		
+		if (username && username.length < 16 && username.length > 3) {
+			let account = await utils.getAccountData(username, bchain);
+			let pubKey = account[bchain].posting.key_auths[0][0];
+			console.log(pubKey);
+			let memo = encrypt(username+pubKey);
+			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
+			res.send({message : encoded_message});
+			return;
+		}
+		res.send({error: 'error'})
+	}catch(err){
+		console.log(err);
+		res.send({error: 'error'})
+	}
+});
+
+/*
+app.post('/confirmLoginKeychain', async function (req, res) {
+	try{
+		//const username = sanitize(req.body.username);
+		const username = req.body.username;
+		let bchain = req.body.bchain?req.body.bchain:'HIVE';
+		
+		if (username && username.length < 16 && username.length > 3) {
+			let account = await utils.getAccountData(username, bchain);
+			let pubKey = account[bchain].posting.key_auths[0][0];
+			console.log(pubKey);
+			let memo = encrypt(username+pubKey);
+			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
+			res.send({message : encoded_message});
+		}
+	}catch(err){
+		console.log(err);
+	}
+});
+*/
 app.post('/loginAuth', async function (req, res) {
 	console.log('login');
 	let username = null;
@@ -2519,7 +2590,7 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	//check if query has already been verified
 	let matchingEntries = await db.collection('afit_buy_transactions_hive').find(
 		{
-			blockNo: req.params.blockNo,
+			//blockNo: req.params.blockNo,
 			trxID: req.params.trxID,
 			bchain: req.params.bchain
 		}).toArray();
@@ -2885,8 +2956,7 @@ app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
 	
 });
 
-/* end point for tracking gadget buy orders */
-app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+async function performBuyHiveTrx(req){
 	
 	let user = req.params.user;
 	let product_id = req.params.gadget;
@@ -2894,21 +2964,21 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	//fetch product info
 	let product = await grabProductInfo (product_id);
 	if (!product){
-		res.send({'error': 'Product not found'});
-		return;
+		return ({'error': 'Product not found'});
+		
 	}
 	
 	//check if query has already been verified
 	let matchingEntries = await db.collection('gadget_transactions_hive').find(
 		{
-			blockNo: req.params.blockNo,
+			//blockNo: req.params.blockNo,
 			trxID: req.params.trxID,
 			bchain: req.params.bchain
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
-		res.send({'error': 'Transaction already verified'});
-		return;
+		return ({'error': 'Transaction already verified'});
+		
 	}
 	
 	let price_options = product.price;
@@ -2937,10 +3007,10 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	console.log(item_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
+		
 	}
 	
 	
@@ -2960,7 +3030,7 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		product_price_hive: item_price,
 		hive_paid: ver_trx.amount_hive,
 		currency: req.params.bchain,
-		blockNo: req.params.blockNo,
+		//blockNo: req.params.blockNo,
 		trxID: req.params.trxID,
 		bchain: req.params.bchain,
 		note: 'Bought Product '+product.name+ ' Level '+product.level,
@@ -2972,8 +3042,8 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		
 	}
 	
 	//add a ticket to the user to enter draw if user meets min requirements
@@ -3020,8 +3090,8 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		
 	}
 	
 	//decrease product available count
@@ -3037,8 +3107,29 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log(err);
 	}
 	
+	return ({'status': 'Success'});
+}
+
+/* end point for tracking gadget buy orders with HIVE via keychain*/
+
+app.get('/buyGadgetHiveKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
 	
-	res.send({'status': 'Success'});
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let outc = await performBuyHiveTrx(req);
+	res.send(outc)
+});
+
+
+/* end point for tracking gadget buy orders with HIVE*/
+app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	
+	let outc = await performBuyHiveTrx(req);
+	res.send(outc)
 });
 
 app.post('/registerUserNotification', async function(req,res){
@@ -3348,9 +3439,8 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 	}
 });
 
-/* end point for tracking multi-gadget buy orders */
-app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
-	
+
+async function performMultiBuyHiveTrx(req){
 	let user = req.params.user;
 	let product_ids = req.params.gadgets.split('-');
 	
@@ -3361,8 +3451,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		//fetch product info
 		let product = await grabProductInfo (product_ids[i]);
 		if (!product){
-			res.send({'error': 'Product not found'});
-			return;
+			return ({'error': 'Product not found'});
+			;
 		}
 		let price_options = product.price;
 		let price_options_count = price_options.length;
@@ -3397,8 +3487,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
-		res.send({'error': 'Transaction already verified'});
-		return;
+		return ({'error': 'Transaction already verified'});
+		;
 	}
 	
 	
@@ -3410,11 +3500,11 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 	console.log(products_tot_hive_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
 		console.log(ver_trx);
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
+		;
 	}
 	
 	
@@ -3443,8 +3533,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		;
 	}
 	
 	//add a ticket to the user to enter draw if user meets min requirements
@@ -3519,8 +3609,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			;
 		}
 		
 		//decrease product available count
@@ -3538,7 +3628,24 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		
 	}
 	
-	res.send({'status': 'Success'});
+	return ({'status': 'Success'});
+}
+
+/* end point for tracking multi-gadget buy orders via keychain*/
+app.get('/buyMultiGadgetHiveKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}	
+	let outc = await performMultiBuyHiveTrx(req);
+	res.send(outc);	
+});
+/* end point for tracking multi-gadget buy orders */
+app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performMultiBuyHiveTrx(req);
+	res.send(outc);
+	
 });
 
 //end point for returning latest cycle
@@ -3624,14 +3731,11 @@ app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
 	
 });
 
-/* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
-
+async function performMultiBuyTrx(req){
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	
 	//confirmed, register transaction and deduct AFIT tokens
@@ -3644,8 +3748,7 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 		let product_id = product_id_list[i];
 		let product = await grabProductInfo (product_id);
 		if (!product){
-			res.send({'error': 'Product not found'});
-			return;
+			return ({'error': 'Product not found'});
 		}
 		
 		//confirm proper AFIT token balance. Test against product price
@@ -3666,8 +3769,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 		}
 		
 		if (cur_user_token_count < item_price){
-			res.send({'error': 'Account does not have enough AFIT funds'});
-			return;
+			return ({'error': 'Account does not have enough AFIT funds'});
+			
 		}
 		
 		product.provider = 'actifit';
@@ -3693,8 +3796,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			
 		}
 		
 		//store into user_gadgets table as well
@@ -3719,8 +3822,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			
 		}
 		
 		//decrease product available count
@@ -3774,29 +3877,46 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 	
 	}
 	
-	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
-});
+	return ({'status': 'Success', 'user_tokens': user_info.tokens});
+}
 
-/* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
-
-	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
-	if (!ver_trx){
+/* end point for tracking multi gadget buy orders */
+app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
 		return;
+	}
+	//now that we have confirmed the transaction, let us go through the standard cycle
+	let outc = await performMultiBuyTrx(req);
+	res.send(outc)
+});
+
+/* end point for tracking multi gadget buy orders */
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performMultiBuyTrx(req);
+	res.send(outc)
+});
+
+
+async function performBuyTrx(infoParam){
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(infoParam.user, infoParam.gadget, 'buy-gadget', infoParam.trxID, infoParam.bchain, db);
+	if (!ver_trx){
+		return ({'error': 'error verifying trx'});
+		//return;
 	}
 	
 	//confirmed, register transaction and deduct AFIT tokens
 	
-	let user = req.params.user;
-	let product_id = req.params.gadget;
+	let user = infoParam.user;
+	let product_id = infoParam.gadget;
 	
 	//fetch product info
 	let product = await grabProductInfo (product_id);
 	if (!product){
-		res.send({'error': 'Product not found'});
-		return;
+		return({'error': 'Product not found'});
+		//return;
 	}
 	
 	//confirm proper AFIT token balance. Test against product price
@@ -3817,8 +3937,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 	}
 	
 	if (cur_user_token_count < item_price){
-		res.send({'error': 'Account does not have enough AFIT funds'});
-		return;
+		return ({'error': 'Account does not have enough AFIT funds'});
+		//return;
 	}
 	
 	product.provider = 'actifit';
@@ -3844,8 +3964,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
 	}
 	
 	//store into user_gadgets table as well
@@ -3870,8 +3990,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
 	}
 	
 	//decrease product available count
@@ -3923,7 +4043,26 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log(err);
 	}
 	
-	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
+	return ({'status': 'Success', 'user_tokens': user_info.tokens});
+	
+}
+
+/* end point for buying gadgets via keychain */
+app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res){
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	//now that we have confirmed the transaction, let us go through the standard cycle
+	let outc = await performBuyTrx(req.params);
+	res.send(outc)
+})
+
+/* end point for tracking gadget buy orders */
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performBuyTrx(req.params);
+	res.send(outc)
 });
 
 /* end point for fetching pending user's friend requests */
@@ -6479,25 +6618,23 @@ app.get("/gadgetBought", async function(req, res) {
   res.send(gadget_match);
 });
 
-
-//end point handles activating a bought gadget
-app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+async function performActivateMultiTrx(req){
 	let user = req.params.user;
 	let gadgets = req.params.gadgets
 	
 	//make sure friend and user are different
 	if (req.params.benefic && req.params.benefic.replace('@','') == user){
-		res.send({'error': 'User & friend cannot be the same account'});
-		return;
+		return({'error': 'User & friend cannot be the same account'});
+		
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return({status: 'error'});
+		//return;
 	}
 	
 	let gadget_entries = req.params.gadgets.split('-');
@@ -6521,13 +6658,33 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 		}
 	}
 	if (err != ''){
-		res.send({'error': err});
+		return ({'error': err});
 	}else{
-		res.send({'status': 'success'});
+		return ({'status': 'success'});
 	}
+}
+//end point handles activating multi bought gadgets/
+app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', async function (req, res) {
+	console.log('multi gadget activate keychain')
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}		
+	let outc = await performActivateMultiTrx(req);
+	res.send(outc);
+	
 });
 
+//end point handles activating multi bought gadgets/
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+		
+	let outc = await performActivateMultiTrx(req);
+	res.send(outc);
+	
+});
 
+//NOTICE: deprecated in favor of activateMultiGadget
 //end point handles activating a bought gadget
 app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 	let user = req.params.user;
@@ -6540,7 +6697,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -6567,16 +6724,16 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 });
 
-//end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+
+async function performDeactivateTrx(req){
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
+		
 	}
 	
 	//find item to activate and proceed activating
@@ -6585,11 +6742,30 @@ app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async functio
 	if (gadget_match){
 		gadget_match.status="bought";
 		db.collection('user_gadgets').save(gadget_match);
-		res.send({'status': 'success'});
+		return ({'status': 'success'});
 	}else{
-		res.send({'error': 'Product not found'});
+		return ({'error': 'Product not found'});
 		
+	}	
+	
+}
+
+//end point handles deactivating bought gadget via keychain
+app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
 	}
+
+	let outc = await performDeactivateTrx(req);
+	res.send(outc);	
+});
+
+//end point handles deactivating a bought gadget
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performDeactivateTrx(req);
+	res.send(outc);
 });
 
 

@@ -81,7 +81,10 @@ let steemPrice = 1;
 let sbdPrice = 1;
 let newestTxId = -1;
 
-console.log('--- Reward script initialized ---');
+console.log('--- Delegations script initialized ---');
+console.log('envt variables:');
+console.log(process.env.BOT_THREAD);
+//return;
 
 let schedule = require('node-schedule')
 
@@ -107,6 +110,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 }else */
 if (process.env.BOT_THREAD == 'MAIN'){
 	
+	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
 	
 	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
 	  console.log('--- Start delegators reward ---');
@@ -157,7 +161,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 }else{
 	//processGadgetBuyPrize();
-	runRewards(true, true);
+	runRewards(true, false);
 	//runRewards(false, false);
 	//moveAFITToSE(true);
 	/*let val = utils.rewardCap('HIVE');
@@ -685,7 +689,8 @@ async function moveAFITToSE(testMode){
 		//grab actifit current AFIT balance
 			
 		let afit_av_bal = await hsc.findOne('tokens', 'balances', { account: 'actifit', symbol: 'AFIT' });
-		
+		console.log('AFIT balance on actifit:')
+		console.log(afit_av_bal);
 		//loop through entries, and send over AFIT
 		poweringDown.forEach(async function(entry){
 			
@@ -1235,8 +1240,8 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 	await updateProperties()
 	if (!testRun && updateDelegations){
 		//update Steem delegations
-		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
-		await processDelegations(client, steem_history_limit, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
+		//console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
+		//await processDelegations(client, steem_history_limit, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
 		
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
