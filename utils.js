@@ -395,7 +395,7 @@ var HOURS = 60 * 60;
 						let match_trx;
 						
 						//check if we have a proper entry matching user transfer
-						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && trx.quantity == amount && trx.transactionId == txid))) {
+						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && parseFloat(trx.quantity) == parseFloat(amount) && trx.transactionId == txid))) {
 							//found match, let's make sure transaction is recent enough
 							console.log('found match');
 							paymentFound = true;
