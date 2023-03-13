@@ -186,23 +186,32 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
 //allows setting acceptable origins to be included across all function calls
 
-app.use(function(req, res, next) {
-  // var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
-  // var origin = req.headers.origin;
-  //console.log('>>>origin:');
-  //console.log(origin);
-  //console.log(req.headers.host);
-  // if(allowedOrigins.indexOf(origin) > -1){
-	  //console.log('goooood');
-	  // res.setHeader('Access-Control-Allow-Origin', origin);
-	  // res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
-  // }
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
-  //  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-  //return next();
-  next();
-});
+if (process.env.BOT_THREAD != 'SECOND_API'){
+	app.use(function(req, res, next) {
+	  // var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
+	  // var origin = req.headers.origin;
+	  //console.log('>>>origin:');
+	  //console.log(origin);
+	  //console.log(req.headers.host);
+	  // if(allowedOrigins.indexOf(origin) > -1){
+		  //console.log('goooood');
+		  // res.setHeader('Access-Control-Allow-Origin', origin);
+		  // res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
+	  // }
+	  
+	  //headers are managed by server there
+	  //console.log('hostname');
+	  console.log(req.headers.host);
+	  console.log(req.hostname)
+	  //if (!req.headers.host.includes('api2.actifit.io')){  
+		  res.setHeader('Access-Control-Allow-Origin', '*');
+		  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
+	  //}
+	  //  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+	  //return next();
+	  next();
+	});
+}
 
 
 app.get('/', function (req, res) {
@@ -566,6 +575,21 @@ loadExchAfitPrice();
 //reload every 5 mins
 setInterval(loadExchAfitPrice, 5*60000);
 
+function switchHENode(){
+	try{
+		console.log('switching hive engine node');
+		//pick a random node that is not the current one
+		let heNodeOptions = config.hive_engine_rpc_options.filter(item => item !== hsc.axios.defaults.baseURL);
+		const randomIndex = Math.floor(Math.random() * heNodeOptions.length);
+		const heNodeSelection = heNodeOptions[randomIndex];
+		hsc.axios.defaults.baseURL = heNodeSelection;
+		console.log('new node')
+		console.log(hsc.axios.defaults.baseURL);
+	}catch(err){
+		console.log(err);
+	}
+}
+
 async function loadExchAfitPrice(){
 	try{
 		console.log('loading AFIT exchange prices');
@@ -574,11 +598,23 @@ async function loadExchAfitPrice(){
 			afitSEPrice	= await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
 		}catch(innErr){
 			//fall back to AFIT price on HE
-			afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+			afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});*/
 		}
 		//let afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
-		
-		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		//await switchHENode();
+		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});*/
+		console.log('AFIT HE PRICE');
+		console.log(afitHEPrice);
 		
 		//grab STEEM price
 		let steemPriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem&vs_currencies=usd');
@@ -675,7 +711,12 @@ async function fetchAFITXBalHE(offset){
   try{
   console.log('--- Fetch new AFITX token balance ---');
   console.log(offset);
-  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			}); //max amount, offset, */
   if (offset == 0 && tempArr.length > 0){
 	  console.log('>>Found new results, reset older ones');
 	  //reset existing data if we have fresh new data
@@ -800,7 +841,12 @@ async function fetchAFITBalHE(offset){
   try{
   console.log('--- Fetch new AFIT token balance ---');
   console.log(offset);
-  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false) //max amount, offset,
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false); /*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			}); //max amount, offset, */
   if (offset == 0 && tempArr.length > 0){
 	  console.log('>>Found new results, reset older ones');
 	  //reset existing data if we have fresh new data
@@ -972,21 +1018,77 @@ getTotalSupplyAFIT = async function (){
 	}
 }
 
-getAFITPCSPrice = async function (){
-	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/0x4516bb582f59befcbc945d8c2dac63ef21fba9f6');
-	
+getAFITPCSPrice = async function (token, api){
+	let tokenAddress = '0x4516bb582f59befcbc945d8c2dac63ef21fba9f6';//AFIT default
+	if (token == 'AFITX'){
+		tokenAddress = '0x246d22ff6e0b90f80f2278613e8db93ff7a09b95';
+	}
+	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/'+tokenAddress);
+	if (api){
+		switch (api){
+			case '1':
+				url = new URL('https://api.dex.guru/v1/tokens/'+tokenAddress+'-bsc');
+				break;
+			/*case '2':
+				url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=8VYN5BUXD6T1X1GAU12UHMQXBT3IJTF68V');
+				break;*/
+		}
+	}
 	try{
 		let connector = await fetch(url);
 		let data = await connector.json();
 		console.log(data);
 		//return back the count as a number
 		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
-		let price= parseFloat(data.data.price);
+		let price;
+		if (typeof api == "undefined" || api == ''){
+			price= parseFloat(data.data.price);
+		}else{
+			switch (api){
+				case '1':
+					price = parseFloat(data.priceUSD);
+					break;
+			}
+		}
 		return price;
 	}catch(exc){
+		console.log(exc);
+		if (typeof api == "undefined" || api == ''){
+			//attempt again using different API	
+			return getAFITPCSPrice(token,'1');
+		}
 		return 'error';
 	}
 }
+
+app.get('/verifyLoginCaptcha', async function (req, res){
+	if (!req.query.token){
+		res.send({error:'error'})
+	}
+	let recaptchaToken = req.query.token;
+	const response = await fetch(config.captchaVerifyUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          secret: config.captchaVerifySecret,
+          response: recaptchaToken,
+          //remoteip: // optional, the user's IP address
+        })
+      })
+
+	const data = await response.json()
+	console.log(data)
+
+	if (data.success) {
+        // continue with form submission
+		res.send({success: true});
+	} else {
+        // handle error
+		res.send({error:'error'})
+	}
+})
 
 //for the purposes of this document
 app.get('/totalSupplyAFIT', async function (req,res){
@@ -1012,6 +1114,18 @@ app.get('/circulatingSupplyAFIT', async function (req,res){
 	}else{
 		res.send('1036231');
 	}	
+})
+
+app.get('/AFITBSCPrice', async function (req, res){
+	let price = await getAFITPCSPrice();
+	let jsonData = {token: 'AFIT', price: parseFloat(price.toFixed(4))};
+	res.send(jsonData);
+})
+
+app.get('/AFITXBSCPrice', async function (req, res){
+	let price = await getAFITPCSPrice('AFITX');
+	let jsonData = {token: 'AFITX', price: parseFloat(price.toFixed(4))};
+	res.send(jsonData);
 })
 
 //for dex-trade price action
@@ -1479,7 +1593,7 @@ app.post('/loginKeychain/', async function (req, res) {
 		const username = req.body.username;
 		let bchain = req.body.bchain?req.body.bchain:'HIVE';
 		
-		if (username && username.length < 16 && username.length > 3) {
+		if (username && username.length < 20 && username.length > 3) {
 			let account = await utils.getAccountData(username, bchain);
 			let pubKey = account[bchain].posting.key_auths[0][0];
 			console.log(pubKey);
@@ -1616,12 +1730,26 @@ app.get('/thread_param/', async function(req, res) {
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
 	var transactions;
+	let pageSize = isNaN(req.query.itemCount)? 1000:parseInt(req.query.itemCount);
+	if (pageSize > 1000) pageSize = 1000;
+	
+	const pageNumber = req.query.page || 1; // default page is 1
+	const skip = (pageNumber - 1) * pageSize;
+	
 	if(req.params.user){
 		query = {user: req.params.user}
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions')
+			.find(query, {fields : { _id:0} })
+			.sort({date: -1})
+			.skip(skip)
+			.limit(pageSize).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions')
+			.find(query, {fields : { _id:0} })
+			.sort({date: -1})
+			.skip(skip)
+			.limit(pageSize).toArray();
 	}
     res.send(transactions);
 });
@@ -2162,6 +2290,28 @@ app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
 	};
 	try{
 		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
+
+
+
+app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user){
+		res.send({error:'error'});
+		return;
+	}
+	let username = req.query.user;
+	//let wallet = req.query.wallet;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//delete user/wallet combination
+	
+	try{
+		let transaction = await db.collection('user_wallet_address').remove({user: username, chain: walletChain});
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
@@ -4590,7 +4740,12 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		}catch(innEr){
 			console.log(innEr);
 		}
-		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' }); /*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});;*/
 		
 		if (bal){
 			afitx_se_balance = parseFloat(bal.balance);
