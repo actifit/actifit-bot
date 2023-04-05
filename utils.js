@@ -172,10 +172,10 @@ var HOURS = 60 * 60;
 	return decrypted;
  }
  
- async function processSteemTrx(operation, userKey, bchain, db, active){
+ async function processSteemTrx(ops, userKey, bchain, db, active){
 	console.log('utils processSteemTrx');
-	console.log(operation);
-	const ops = [ operation ];
+	//console.log(operation);
+	//const ops = [ operation ];
 	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
 	console.log(ops);
 	
@@ -597,6 +597,41 @@ var HOURS = 60 * 60;
 		});
 	}
 	
+	function customArraysEqual(op1, op2){
+		try{
+			return _.isEqual(op1, op2);/*
+			//console.log('op1')
+			//console.log(op1)
+			//console.log('op2')
+			//console.log(op2)
+			let leftEntry = op1[0][1];//JSON.parse(op1[0][1]);
+			let rightEntry = op2[0][1];//JSON.parse(op2[0][1]);
+			console.log(leftEntry);
+			console.log(rightEntry);
+			if (op1[0][0] == op2[0][0]){
+				if (leftEntry['required_auths'] == rightEntry['required_auths']
+					&& leftEntry['required_posting_auths'] == rightEntry['required_posting_auths']
+					&& leftEntry['id'] == rightEntry['id']
+					&& _.isEqual(leftEntry['json'], rightEntry['json'])){
+						return true;
+					}else{
+						console.log('non matching subs')
+					}
+				
+			}else{
+				console.log(op1[0][0])
+				console.log(op2[0][0])
+				console.log('different op');
+				
+			}
+			return false;*/
+		}catch(err){
+			console.log(err);
+			console.log('error matching')
+			return false;
+		}
+	}
+	
 	function arraysEqual(array1, array2) {
 	  if (array1.length !== array2.length) return false;
 	  for (let i = 0; i < array1.length; i++) {
@@ -639,7 +674,7 @@ var HOURS = 60 * 60;
 		}
 	}
 	
-	async function findVerifyTrx (req, db){
+	async function findVerifyTrx (req, db, nostore){
 		getConfig();
 		console.log('findverify')
 		let bchain = req.query.bchain?req.query.bchain:'HIVE'
@@ -651,48 +686,68 @@ var HOURS = 60 * 60;
 			
 			return ({error: 'trx already exists'});
 		}
-		
-		
+		//track attempts for timeout
+		let attempts = 1;
+		let max_attempts = 30;
+		let fv_th_id;
+		let matchFound = false;
+		let matchTrx;
+				
 		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
-				let chainLnk = await setProperNode(bchain);
-				console.log('check trx');
-				
-				let matchTrx;
-		
-				if (bchain == 'STEEM'){
-					matchTrx = await client.database.call('get_transaction', req.params.trxID);
-				}else{
-					//transactions = await hiveClient.database.call('get_transaction', req.query.txid);
-					matchTrx = await chainLnk.api.getTransactionAsync(req.params.trxID);
-					console.log(matchTrx);
-				}
-				
-				//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
-				let matchFound = false;
-				if (matchTrx && matchTrx.transaction_id && Array.isArray(matchTrx.operations)){
-					console.log('potential match')
-					//need to stringify first part as the second is already stringified
-					if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
-						console.log('GOOOOD')
-						let now = moment(new Date()); //todays date
-						let end = moment(matchTrx.expiration); // last update date
-						let duration = moment.duration(now.diff(end));
-						let hrs = duration.asHours();
-						//transaction needs to have been concluded within 5 hours.
-						if (hrs < 5){
-							matchFound = true;
-							//break;
-							//store transaction
-							await storeVerifiedTrx(matchTrx, db);
-						}
+			fv_th_id = setInterval(async function(){
+				if (attempts < max_attempts){
+					attempts += 1;
+					let chainLnk = await setProperNode(bchain);
+					console.log('check trx');
+					
+					
+			
+					if (bchain == 'STEEM'){
+						matchTrx = await client.database.call('get_transaction', req.params.trxID);
+					}else{
+						//transactions = await hiveClient.database.call('get_transaction', req.query.txid);
+						matchTrx = await chainLnk.api.getTransactionAsync(req.params.trxID);
+						console.log(matchTrx);
 					}
 					
+					//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
+					
+					if (matchTrx && matchTrx.transaction_id && Array.isArray(matchTrx.operations)){
+						console.log('potential match')
+						//need to stringify first part as the second is already stringified
+						if (customArraysEqual(matchTrx.operations, JSON.parse(req.query.operation))){
+						//if (customArraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
+						//if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
+							console.log('GOOOOD')
+							let now = moment(new Date()); //todays date
+							let end = moment(matchTrx.expiration); // last update date
+							let duration = moment.duration(now.diff(end));
+							let hrs = duration.asHours();
+							//transaction needs to have been concluded within 7 hours.
+							console.log(hrs);
+							if (hrs < 7){
+								matchFound = true;
+								//break;
+								
+								if (nostore){
+									
+								}else{
+									//store transaction
+									await storeVerifiedTrx(matchTrx, db);
+								}
+							}
+						}
+						
+					}
+				}else{
+					console.log('not found after '+attempts+' attempts');
+					clearInterval(fv_th_id);
+					resolve(false);
 				}
 				if (matchFound){
 					//need to look again
 					console.log('found');
-					clearInterval(th_id);
+					clearInterval(fv_th_id);
 					resolve(matchTrx);
 				}
 				//});

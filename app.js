@@ -201,8 +201,8 @@ if (process.env.BOT_THREAD != 'SECOND_API'){
 	  
 	  //headers are managed by server there
 	  //console.log('hostname');
-	  console.log(req.headers.host);
-	  console.log(req.hostname)
+	  //console.log(req.headers.host);
+	  //console.log(req.hostname)
 	  //if (!req.headers.host.includes('api2.actifit.io')){  
 		  res.setHeader('Access-Control-Allow-Origin', '*');
 		  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
@@ -322,8 +322,21 @@ sample query data
 1|app  |       key_id: '3335741209'
 
 */
-
-
+//show transactions for gadgets bought using HIVE
+app.get('/gadgetPurchaseTrx', async function (req, res){
+	let startDate = moment(moment(new Date()).utc().toDate()).format('YYYY-MM-DD');//subtract(1, 'days').
+	console.log('startDate:'+startDate);
+	if (req.query.startDate){
+		startDate = moment(moment(req.query.startDate).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	}
+	let query = {
+					date: {
+						$gte: new Date(startDate)
+					}
+				}
+	let results = await db.collection('gadget_transactions_hive').find(query).sort({date: -1}).toArray();
+	res.send(results);
+})
 
 app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
 	res.send({});
@@ -1272,18 +1285,22 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	}
 	
 	let match_arr = Object.entries(operation);
-	/*console.log(user);
+	//console.log(user);
 	console.log(operation);
 	console.log((typeof operation));
 	console.log(match_arr);
-	console.log(match_arr[0][1]);*/
+	console.log(match_arr[0][1]);
+	
+	//res.send({error: true, trx: performTrx});
+	//return;
 	let active = null;
 	if (req.body.active){
 		active = req.body.active;
 	}
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, active);
+	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, active);
+	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, active);
 	console.log(performTrx);
 	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
@@ -1355,7 +1372,8 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	let match_arr = Object.entries(operation);
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
+	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
+	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, null);
 	console.log(performTrx);
 	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
@@ -1541,6 +1559,32 @@ app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let result = await db_col.remove({user: req.query.user, token: req.query.token});
 	res.send({success: true});
 });
+
+app.get('/updateSettingsKeychain/:trxID', async function (req, res){
+	if (!req.query || !req.query.operation || !req.query.user){
+		res.send({status:'error'})
+	}else{
+		try{
+			//third param to find verify is to avoid storing transaction as its not needed
+			let conf_trx = await utils.findVerifyTrx(req, db, true);
+			/*console.log('settings trx found:')
+			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
+			console.log(req.query.user);*/
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+				res.send({status: 'error'});
+				return;
+			}
+			//cleanup json
+			let json = JSON.parse(conf_trx.operations[0][1].json)
+			let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: json}, {upsert : true });
+			//console.log(setgs);
+			res.send({success: true});
+		}catch(err){
+			res.send({error: 'error'});
+		}
+	}
+})
+
 
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
@@ -6651,6 +6695,31 @@ app.get("/gadgetsBoughtByDate", async function(req, res){
 	console.log(usersArray);
 	//, 'entries': gadgets
 	res.send({'totalGadgets': gadgets.length, 'uniqueUsers': usersArray.length});
+});
+
+app.get("/gadgetsBoughtByDateDetails", async function(req, res){
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	let endDate = moment(moment(startDate).utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');
+	let gadgets = await db.collection('user_gadgets').find(
+		{
+			date_bought:{
+				$lte: new Date(startDate),
+				$gt: new Date(endDate)
+			}
+		}).toArray();
+	let usersArray = [];
+	for (let i=0;i<gadgets.length;i++){
+		let entry = gadgets[i];
+		if (!usersArray.includes(entry.user)){
+			usersArray.push(entry.user);
+		}
+	}
+	console.log(usersArray);
+	//, 'entries': gadgets
+	res.send({'totalGadgets': gadgets.length, 'uniqueUsers': usersArray.length, 'gadgets': gadgets});
 });
 
 app.get("/friendships", async function(req, res){
