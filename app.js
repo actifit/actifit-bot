@@ -18,11 +18,17 @@ let ObjectId = require('mongodb').ObjectId;
 
 const request = require("request");
 
+const ethutil = require('ethereumjs-util');
+
+
 // Connection URL
 let url = config.mongo_uri;
 if (config.testing){
 	url = config.mongo_local;
 }
+
+//console.log('verify gadget buy');
+
 
 var db;
 var collection;
@@ -30,13 +36,49 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
+var Web3 = require('web3');
+
+const bscrpc = 'https://bsc-dataseed1.binance.org:443';
+//const bscrpc = 'https://rpc.ankr.com/bsc/6910e0510261f4593d3d10cf40688da308da788de3e3b8924b88fb0ce2a51602';
+
+const web3 = new Web3(bscrpc);
+
+const minABI = [
+  // balanceOf
+  {
+	constant: true,
+	inputs: [{ name: "_owner", type: "address" }],
+	name: "balanceOf",
+	outputs: [{ name: "balance", type: "uint256" }],
+	type: "function",
+  }];
+
+//console.log(config.afitTokenAddress);
+const afitContract = new web3.eth.Contract(minABI, config.afitTokenBSC);
+const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
+const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
+const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
+
+connectDB();
+
+let rewardBanList = ['gelvirglenn12', 'yasirgujrati'];
+
+//setInterval(connectWithRetry, 5000);
+
+function connectDB () {
 
 // Use connect method to connect to the server
-MongoClient.connect(url, function(err, client) {
+MongoClient.connect(url, 
+	{	
+		reconnectTries: Number.MAX_VALUE,
+		autoReconnect: true
+	}
+	, function(err, client) {
 	if(!err) {
 	  console.log("Connected successfully to server");
 
 	  db = client.db(db_name);
+	  
 	  
 	  //print version
 	/*  var adminDb = db.admin();
@@ -54,12 +96,21 @@ MongoClient.connect(url, function(err, client) {
 	  //clearCorruptData();
 	  
 	  //disableUserLogin();
+	  /*
+	  let user = 'mcfarhat';
+	  utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget', 'https://actifit.io/'+user);
+	  
+	  utils.sendNotification(db, user, 'actifit', 'friendship_request', 'friendship', 'User ' + 'actifit' + ' has sent you a friendship request', 'https://actifit.io/'+'actifit');
+	  return;*/
+	  //utils.sendFirebaseNotification(db, 'arabpromovault');
 	  
 	} else {
 		utils.log(err, 'api');
 	}
   
 });
+
+}
 
 async function clearCorruptData(){
 	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
@@ -76,17 +127,55 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 let rule = new schedule.RecurrenceRule();
 
+//tracking AFITX data
 let usersAFITXBal = [];
 let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
+
+
+
+//similarly fetch AFIT data
+let usersAFITBal = [];
+let usersAFITBalHE = [];
+let fullSortedAFITList = [];
+
 //initial fetch
+
 fetchAFITXBal(0);
+
+fetchAFITBal(0);
+
+setTimeout(launchHEFetch, 10000);
+
+async function launchHEFetch(){
+	console.log('looking up HE data')
+	fetchAFITXBalHE(0);
+
+	fetchAFITBalHE(0);	
+}
+
+
+
   
 //fetch new AFITX user account balance every 5 mins
 let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
-  //usersAFITXBal = [];
+  usersAFITBal = [];
+  usersAFITXBal = [];
   fetchAFITXBal(0);
+  
+  fetchAFITBal(0);
+  
+  setTimeout(launchHEFetch, 10000);
+  
+  //reset to zero, might need to revisit this when reputting SE to action
+  /*usersAFITBal = [];
+  usersAFITXBal = [];
+  
+  fetchAFITXBalHE(0);
+
+  fetchAFITBalHE(0);
+  */
   
   //only run cleanup on secondary thread to avoid duplication of effort and collision
   if (process.env.BOT_THREAD == 'SECOND_API'){
@@ -94,16 +183,36 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   }
 });
 
+////CORS IS NOW HANDLED AT LEVEL OF NGINX
 //allows setting acceptable origins to be included across all function calls
-app.use(function(req, res, next) {
-  var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000'];
-  var origin = req.headers.origin;
-  if(allowedOrigins.indexOf(origin) > -1){
-	   res.setHeader('Access-Control-Allow-Origin', origin);
-  }
-  res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
-  return next();
-});
+
+if (process.env.BOT_THREAD != 'SECOND_API'){
+	app.use(function(req, res, next) {
+	  // var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
+	  // var origin = req.headers.origin;
+	  //console.log('>>>origin:');
+	  //console.log(origin);
+	  //console.log(req.headers.host);
+	  // if(allowedOrigins.indexOf(origin) > -1){
+		  //console.log('goooood');
+		  // res.setHeader('Access-Control-Allow-Origin', origin);
+		  // res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
+	  // }
+	  
+	  //headers are managed by server there
+	  //console.log('hostname');
+	  //console.log(req.headers.host);
+	  //console.log(req.hostname)
+	  //if (!req.headers.host.includes('api2.actifit.io')){  
+		  res.setHeader('Access-Control-Allow-Origin', '*');
+		  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
+	  //}
+	  //  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+	  //return next();
+	  next();
+	});
+}
+
 
 app.get('/', function (req, res) {
 	var data = {};
@@ -120,6 +229,326 @@ app.get('/', function (req, res) {
 });
 
 
+
+/*************************** DIGIFINEX API *************************/
+
+/*
+const verifier = require('@exoshtw/admob-ssv').Verifier;
+
+//const verifier = new Verifier();
+
+
+app.get('/ssvcallback', (req, res, next) => {
+    verifier.verify(req.query)
+        .then((isValid) => {
+            if (!isValid) {
+				console.log('not valid');
+                res.status(500);
+                res.json({
+                    error: 'Invalid signature',
+                });
+            }else{
+				console.log('success');
+			}
+
+            // ...
+        })
+        .catch((e) => {
+			console.log('crash');
+            return next(e);
+        });
+});
+*/
+
+/*
+const admobSSV = require('admob-rewarded-ads-ssv');
+
+//Add callback to your rewarded ads in your admob account.
+//Make sure you listen to 'get' request.
+
+app.get('/ssv-verify', (req, res, next) => {
+    // If you want to debug then send second param as true
+    // admobSSV.verify(req.url, true);
+    admobSSV.verify(req.url, true)
+        .then((response) => {
+          //Verification Successful
+		  console.log(response);
+		  res.send({status:'success'});
+        })
+        .catch((e) => {
+          //Verification Failed
+          console.error(e.message);
+		  res.send({error:e.message});
+        });
+});
+*/
+
+
+/*
+const AdMobSSV = require('express-admob-ssv');
+
+app.get('/ssv-verify',
+  AdMobSSV.middleware(),
+  (req, res, next) => {
+	  console.log('success');
+    // SSV Valid
+    // here goes Your logic
+  });
+  */
+  
+  const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
+
+/*
+
+sample query data
+1|app  |       ad_network: '5450213213286189855',
+1|app  |       ad_unit: '1234567890',
+1|app  |       custom_data: 'tier-1',
+1|app  |       reward_amount: '1',
+1|app  |       reward_item: 'Reward',
+1|app  |       timestamp: '1656954784154',
+1|app  |       transaction_id: '123456789',
+1|app  |       user_id: '123',
+1|app  |       signature: 'WEFWRG#$%#$T##$%#TR#%GG%$$%3453543FGDFG',
+1|app  |       key_id: '3335741209'
+
+*/
+//show transactions for gadgets bought using HIVE
+app.get('/gadgetPurchaseTrx', async function (req, res){
+	let startDate = moment(moment(new Date()).utc().toDate()).format('YYYY-MM-DD');//subtract(1, 'days').
+	console.log('startDate:'+startDate);
+	if (req.query.startDate){
+		startDate = moment(moment(req.query.startDate).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	}
+	let query = {
+					date: {
+						$gte: new Date(startDate)
+					}
+				}
+	let results = await db.collection('gadget_transactions_hive').find(query).sort({date: -1}).toArray();
+	res.send(results);
+})
+
+app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
+	res.send({});
+	return;
+	let startDate = moment(moment(req.params.date).utc().startOf('date').add(1, 'days').toDate()).format('YYYY-MM-DD');
+	console.log(startDate);
+	//res.send(startDate);
+	//return;
+	let query = {
+					user: req.params.user,
+					reward_activity:'Ad Reward',
+					date:{
+						$gte: new Date(startDate)
+					}
+				}
+	let results = await db.collection('token_transactions').find(query).toArray();
+	//loop through entries, removing rewards
+	for (let i=0;i<results.length;i++){
+		if (parseFloat(results[i].token_count)>0){
+			//console.log(results[i]);
+			results[i].old_reward = results[i].token_count;
+			results[i].token_count = 0;
+			results[i].old_note = results[i].note;
+			results[i].note = 'Cancelled reward due to system abuse.';
+			results[i].old_date = results[i].date;
+			results[i].date = new Date();
+			db.collection('token_transactions').save(results[i]);
+		}
+	}
+	
+	//console.log(results);
+	res.send(results);
+});
+
+
+app.get('/adRewardsReview/', async function (req, res) {
+	let queryType = {
+		reward_activity: 'Ad Reward',
+		token_count: {
+			$gt: 0
+		}
+		/*date: {
+			$gte: new Date(startDate),
+			//$lte: new Date(startDate)
+		},*/
+	}
+	
+	let results = await db.collection('token_transactions').aggregate([
+		{
+			$match: queryType
+		},
+		{
+			$group:{
+				   _id: '$user',
+				   /*reward_entries: { $sum: "$count" },*/
+				   reward_entries: { $sum: 1 }
+				}
+		},
+		{
+		  $sort: {
+			"reward_entries": -1,
+		  }
+		}
+	   ]).toArray();
+	res.send(results);
+	console.log(results);
+})
+
+/*http://localhost:3120/ssv-verify?ad_network=54...55&ad_unit=12345678&reward_amount=10&reward_item=coins&timestamp=150777823&custom_data=mcfarhat_1_1_free&transaction_id=12...DEF&user_id=1234567&signature=ME...Z1c&key_id=1268887
+*/
+
+app.get('/ssv-verify',
+  async (req, res, next) => {
+    try {
+      const url = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
+      await verifyAdMobSSV(url, true); // true for throwing errors
+	  console.log('success');
+    }
+    catch(error) {
+      // Do something
+      // or log somethings
+	  console.log(error);
+      return res.status(400).end(error.message);
+    }
+    next();
+  },
+  async (req, res, next) => {
+    // SSV Valid
+	if (req.query && req.query.custom_data){
+		let data = req.query.custom_data.split('_');
+		console.log(data);
+		console.log('storing successful ad reward');
+		if (data.length < 4 || isNaN(data[1])){
+			res.send({'error': 'Error performing action'});
+			return;
+		}
+		if (rewardBanList!=null && rewardBanList.includes(data[0])){
+			res.send({'error': 'Account banned from rewards'});
+			return;
+		}
+		//send out AFIT reward to our user
+		let recordTrans = {
+			user: data[0],
+			reward_activity: 'Ad Reward',
+			token_count: parseFloat(data[1]),
+			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+			tier: data[2],
+			custom_data: req.query.custom_data,
+			ad_network: req.query.ad_network,
+			ad_unit: req.query.ad_unit,
+			transaction_id: req.query.transaction_id,
+			date: new Date(),
+		}
+		let startDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		console.log(startDate);
+		let matchQuery = {
+							user: data[0], 
+							tier: data[2], 
+							date: {
+								$gte: new Date(startDate)
+							}
+						}
+		console.log(matchQuery);
+		//check if user already has more than 1 entry for today for this same tier, if so disregard this new reward
+		let existingReward = await db.collection('token_transactions').find(matchQuery).toArray();
+		console.log(existingReward);
+		if (existingReward!=null && existingReward.length > 1){
+			res.send({'error': 'Account already rewarded today for this tier'});
+			return;
+		}
+		try{
+			console.log(recordTrans);
+			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing buy action. DB storing issue'});
+			return;
+		}
+	}
+	//
+	//console.log('double success');
+	res.send({status:'success'});
+  });
+
+app.get('/getDailyDelegationPool/', async function(req, res){
+	
+//app.get('/afitDailyDelegatorRewards', async function (req, res){
+	
+	let hive_pool = await utils.rewardCap('HIVE'); 
+	let steem_pool = await utils.rewardCap('STEEM'); 
+	
+	//res.send({'hive': weekly_rewd_cap, 'steem': weekly_rewd_cap});
+	res.send({'hive_pool': hive_pool, 'steem_pool': steem_pool});
+})
+
+app.get('/dailyTip', async function (req, res){
+	let tipEntry = await db.collection('daily_tip').find().toArray();
+	res.send(tipEntry);
+})
+
+app.get('/proposalNotified', async function (req, res){
+	let propNotif = await db.collection('proposal_notified').find().toArray();
+	res.send(propNotif);
+})
+
+app.get('/updateProposalNotified', async function (req, res){
+	if (!req.query || !req.query.author || !req.query.permlink || !req.query.secr){
+		res.send({})
+		return;
+	}
+	if (req.query.secr != '94$8u93h_f$83jg9_843909k'){
+		res.send({})
+		return;
+	}
+		
+	let author = req.query.author;
+	let user_info = await db.collection('proposal_notified').findOne({author: author});
+	if (typeof user_info!= "undefined" && user_info!=null){
+		/*if (typeof user_info.count!= "undefined"){
+			user_info.count = 0;
+			user_info.permlinks = [];
+		}*/
+	}else{
+		user_info = new Object();
+		user_info.author = author;
+		user_info.permlinks = [];
+		user_info.count = 0;
+	}
+	user_info.count += 1;
+	user_info.permlinks.push(req.query.permlink);
+	console.log(user_info);
+	
+	try{
+		let trans = await db.collection('proposal_notified').save(user_info);
+		res.send({status: 'success'});
+	}catch(err){
+		console.log(err)
+		res.send({error: JSON.stringify(err)});
+	}
+	
+})
+
+app.get('/loginImg', async function (req, res){
+	res.send({'imgUrl':'https://raw.githubusercontent.com/actifit/actifit-landingpage/master/static/img/insta_achive_earn.png'});
+})
+
+app.get('/queryPost', async function (req, res){
+	if (!req.query || !req.query.permlink){
+		res.send({error:''});
+		return;
+	}
+	let outc = await db.collection('posts').find({permlink: req.query.permlink}).toArray();
+	res.send(outc);
+})
+
+app.get('/news', async function (req, res){
+	let outc = await db.collection('news').find({enabled: true}).sort({date: -1}).toArray();
+	res.send(outc);
+})
 
 //schedule restart intervals due to memory drain down
 function restartApiNode() {
@@ -192,12 +621,46 @@ loadExchAfitPrice();
 //reload every 5 mins
 setInterval(loadExchAfitPrice, 5*60000);
 
+function switchHENode(){
+	try{
+		console.log('switching hive engine node');
+		//pick a random node that is not the current one
+		let heNodeOptions = config.hive_engine_rpc_options.filter(item => item !== hsc.axios.defaults.baseURL);
+		const randomIndex = Math.floor(Math.random() * heNodeOptions.length);
+		const heNodeSelection = heNodeOptions[randomIndex];
+		hsc.axios.defaults.baseURL = heNodeSelection;
+		console.log('new node')
+		console.log(hsc.axios.defaults.baseURL);
+	}catch(err){
+		console.log(err);
+	}
+}
+
 async function loadExchAfitPrice(){
 	try{
 		console.log('loading AFIT exchange prices');
-		let afitSEPrice = await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
-		
-		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		let afitSEPrice;
+		try{
+			afitSEPrice	= await ssc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		}catch(innErr){
+			//fall back to AFIT price on HE
+			afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});*/
+		}
+		//let afitSEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);
+		//await switchHENode();
+		let afitHEPrice = await hsc.find('market', 'metrics', {symbol : 'AFIT' }, 1000, 0, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});*/
+		console.log('AFIT HE PRICE');
+		console.log(afitHEPrice);
 		
 		//grab STEEM price
 		let steemPriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=steem&vs_currencies=usd');
@@ -271,10 +734,10 @@ async function fetchAFITXBal(offset){
 		setTimeout(function(){
 			fetchAFITXBal(0);
 		}, 30000);
-	}else{
+	}/*else{
 		//done with AFITX SE, proceed with AFITX HE
 		fetchAFITXBalHE(0);
-	}
+	}*/
   }
   }catch(err){
 	  console.log(err);
@@ -284,6 +747,8 @@ async function fetchAFITXBal(offset){
 			fetchAFITXBal(0);
 		}, 30000);
 	  }
+	  //either way, call HE version
+	  //fetchAFITXBalHE(0);
   }
   //console.log(usersAFITXBal);
 }
@@ -292,7 +757,12 @@ async function fetchAFITXBalHE(offset){
   try{
   console.log('--- Fetch new AFITX token balance ---');
   console.log(offset);
-  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false) //max amount, offset,
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false);/*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			}); //max amount, offset, */
   if (offset == 0 && tempArr.length > 0){
 	  console.log('>>Found new results, reset older ones');
 	  //reset existing data if we have fresh new data
@@ -362,13 +832,128 @@ async function fetchAFITXBalHE(offset){
 }
 
 async function getAFITXUserData(user){
-	let ind = fullSortedAFITXList.findIndex(v => v.account == user)
-	let entry = fullSortedAFITXList.find(v => v.account == user)
+	
+	//using usersAFITXBal instead of fullSortedAFITXList
+	let ind = usersAFITXBal.findIndex(v => v.account == user)
+	let entry = usersAFITXBal.find(v => v.account == user)
 	return {ind: ind, entry: entry}
 }
 
+
+async function fetchAFITBal(offset){
+  try{
+  console.log('--- Fetch new AFIT token balance ---');
+  console.log(offset);
+  let tempArr = await ssc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false) //max amount, offset,
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITBal = [];
+  }
+  usersAFITBal = usersAFITBal.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITBal(usersAFITBal.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0 && tempArr.length < 1){
+		console.log('no AFIT data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBal(0);
+		}, 30000);
+	}else{
+		//done with AFIT SE, proceed with AFIT HE
+		//fetchAFITBalHE(0);
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFIT data, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBal(0);
+		}, 30000);
+	  }
+	   //either way, call HE version
+	  //fetchAFITBalHE(0);
+  }
+  //console.log(usersAFITBal);
+}
+
+async function fetchAFITBalHE(offset){
+  try{
+  console.log('--- Fetch new AFIT token balance ---');
+  console.log(offset);
+  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false); /*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			}); //max amount, offset, */
+  if (offset == 0 && tempArr.length > 0){
+	  console.log('>>Found new results, reset older ones');
+	  //reset existing data if we have fresh new data
+	  usersAFITBalHE = [];
+  }
+  usersAFITBalHE = usersAFITBalHE.concat(tempArr);
+  
+  if (tempArr.length > 999){
+	//we possibly have more entries, let's call again
+	setTimeout(function(){
+		fetchAFITBalHE(usersAFITBalHE.length);
+	}, 1000);
+  }else{
+	//if we were not able to fetch entries, we need to try API again
+	if (offset == 0 && tempArr.length < 1){
+		console.log('no AFIT data HE, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBalHE(0);
+		}, 30000);
+	}else{
+		//done, let's merge both SE & HE lists
+		for (let i=0;i<usersAFITBal.length;i++){
+			usersAFITBal[i].seholder = true;
+			let match = usersAFITBalHE.find(entry => entry.account === usersAFITBal[i].account);
+			if (match){
+				usersAFITBal[i].sebalance = usersAFITBal[i].balance;
+				usersAFITBal[i].hebalance = match.balance;
+				usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
+				usersAFITBal[i].heholder = true;
+			}
+		}
+		//append HE holdings
+		for (let i=0;i<usersAFITBalHE.length;i++){
+			usersAFITBalHE[i].heholder = true;
+			let match = usersAFITBal.find(entry => entry.account === usersAFITBalHE[i].account);
+			if (!match){
+				usersAFITBal.push(usersAFITBalHE[i]);
+				//usersAFITBal[i].hebalance = match.balance;
+				//usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
+			}
+		}
+		
+	}
+  }
+  }catch(err){
+	  console.log(err);
+	  if (offset == 0){
+		console.log('no AFIT data HE, fetch again in 30 secs');
+		setTimeout(function(){
+			fetchAFITBalHE(0);
+		}, 30000);
+	  }
+  }
+  //console.log(usersAFITBal);
+}
+
+
+
+
 /* function handles calculating and returning user token count */
-grabUserTokensFunc = async function (username){
+grabUserTokensFunc = async function (username, fullBal){
 	let user = await db.collection('user_tokens').findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
@@ -381,6 +966,41 @@ grabUserTokensFunc = async function (username){
 		user._id=username;
 		user.name=username;
 		user.tokens=0;
+	}
+	
+	if (fullBal){
+		//also append tokens on hive-engine & steem-engine
+		let heEntry = usersAFITBal.find(entry => entry.account === username);
+		//let heEntry = fullSortedAFITList.find(entry => entry.account === username);
+		console.log('AFIT entry list');
+		console.log(fullSortedAFITList.length);
+		if (heEntry && !isNaN(heEntry.balance) && heEntry.balance>0){
+			user.tokens = parseFloat(user.tokens) + parseFloat(heEntry.balance);
+			console.log('HE');
+			console.log(user.tokens);
+		}
+		
+		//also append tokens on BSC
+			//check if user has a BSC wallet
+		let wallet_entry = await db.collection('user_wallet_address').findOne({user: username});
+		try{
+			if (wallet_entry && wallet_entry.wallet){
+				//console.log(wallet_entry.wallet);
+				//fetch wallet balance		
+				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+				//let result = await afitContract.methods.balanceOf('0xBc0d46F3F43E21a391cAb8e1A3059a8df9213a44').call(); // 29803630997051883414242659
+				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+				afitBSC = parseFloat(format);
+				//console.log(format);
+				user.tokens = parseFloat(user.tokens) + afitBSC;
+			}
+		}catch(exc){
+			console.log(exc);
+			console.log('error fetching wallet balance / BSC')
+		}
+		console.log(user.tokens);
+		
+		
 	}
 	return user;
 }
@@ -429,6 +1049,171 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
+getTotalSupplyAFIT = async function (){
+	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey='+config.bscscan_api);
+	
+	try{
+		let connector = await fetch(url);
+		let data = await connector.json();
+		//return back the count as a number
+		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
+		let count= parseFloat(data.result)/Math.pow(10,18);///10**18;
+		return ''+count;
+	}catch(exc){
+		return 'error';
+	}
+}
+
+getAFITPCSPrice = async function (token, api){
+	let tokenAddress = '0x4516bb582f59befcbc945d8c2dac63ef21fba9f6';//AFIT default
+	if (token == 'AFITX'){
+		tokenAddress = '0x246d22ff6e0b90f80f2278613e8db93ff7a09b95';
+	}
+	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/'+tokenAddress);
+	if (api){
+		switch (api){
+			case '1':
+				url = new URL('https://api.dex.guru/v1/tokens/'+tokenAddress+'-bsc');
+				break;
+			/*case '2':
+				url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=');
+				break;*/
+		}
+	}
+	try{
+		let connector = await fetch(url);
+		let data = await connector.json();
+		console.log(data);
+		//return back the count as a number
+		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
+		let price;
+		if (typeof api == "undefined" || api == ''){
+			price= parseFloat(data.data.price);
+		}else{
+			switch (api){
+				case '1':
+					price = parseFloat(data.priceUSD);
+					break;
+			}
+		}
+		return price;
+	}catch(exc){
+		console.log(exc);
+		if (typeof api == "undefined" || api == ''){
+			//attempt again using different API	
+			return getAFITPCSPrice(token,'1');
+		}
+		return 'error';
+	}
+}
+
+app.get('/verifyLoginCaptcha', async function (req, res){
+	if (!req.query.token){
+		res.send({error:'error'})
+	}
+	let recaptchaToken = req.query.token;
+	const response = await fetch(config.captchaVerifyUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+          secret: config.captchaVerifySecret,
+          response: recaptchaToken,
+          //remoteip: // optional, the user's IP address
+        })
+      })
+
+	const data = await response.json()
+	console.log(data)
+
+	if (data.success) {
+        // continue with form submission
+		res.send({success: true});
+	} else {
+        // handle error
+		res.send({error:'error'})
+	}
+})
+
+//for the purposes of this document
+app.get('/totalSupplyAFIT', async function (req,res){
+	let outcome = await getTotalSupplyAFIT();
+	res.send(outcome);
+	
+})
+//for the purposes of real circulating supply
+app.get('/circulatingSupplyAFIT', async function (req,res){
+	let totSupply = await getTotalSupplyAFIT();
+	let cirSupply = 0;
+	if (!isNaN(totSupply)){
+		totSupply = parseFloat(totSupply);
+		cirSupply = totSupply;
+		//grab balances of well-known actifit wallets, and deduct balance from total supply
+		for (let i=0;i<config.actifitSpWallets.length;i++){
+			let result = await afitContract.methods.balanceOf(config.actifitSpWallets[i]).call(); // 29803630997051883414242659
+			let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+			afitBSC = parseFloat(format);
+			cirSupply -= afitBSC;
+		}
+		res.send(''+Math.round(cirSupply))
+	}else{
+		res.send('1036231');
+	}	
+})
+
+app.get('/AFITBSCPrice', async function (req, res){
+	let price = await getAFITPCSPrice();
+	let jsonData = {token: 'AFIT', price: parseFloat(price.toFixed(4))};
+	res.send(jsonData);
+})
+
+app.get('/AFITXBSCPrice', async function (req, res){
+	let price = await getAFITPCSPrice('AFITX');
+	let jsonData = {token: 'AFITX', price: parseFloat(price.toFixed(4))};
+	res.send(jsonData);
+})
+
+//for dex-trade price action
+app.get('/dex-trade/afit-usdt', async function (req,res){
+	//grab price from PCS
+	//https://api.pancakeswap.info/api/v2/tokens/0x4516bb582f59befcbc945d8c2dac63ef21fba9f6
+	let price = await getAFITPCSPrice();
+	let jsonData = {
+	  "AFIT/USDT": {  // pair name
+		"price": parseFloat(price.toFixed(4)),//0.122, // central price
+		"up": 0.1, // percent deviation top line 15% = 0.15
+		"down": 0.05  // percent deviation bottom line 10% = 0.1
+	  }
+	}
+	res.send(jsonData);
+	
+})
+
+app.get('/getChainInfo', async function (req, res){
+	let outc = await utils.getChainInfo(req.query.bchain);
+	res.send(outc);
+});
+
+app.get('/getAccountData', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let outc = await utils.getAccountData(req.query.user, req.query.bchain);
+	res.send(outc);
+})
+
+app.get('/pendingRewards', async function (req, res){
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let outc = await utils.fetchPendingRewards(req.query.user, req.query.bchain);
+	res.send({pendingRewards: outc});
+})
+  
   
 app.get('/votingStatus', async function (req, res) {
 	let votingStatus = await db.collection('voting_status').findOne({});
@@ -437,14 +1222,15 @@ app.get('/votingStatus', async function (req, res) {
 		accountQueries = 0;
 		accountRefresh = true;
 	}
-	let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+	let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 	//fetch anew account data if account is empty or we need to refresh account data
 	if (!account || accountRefresh){
 		console.log('refreshing account data');
 		account = await utils.getAccountData(config.account, bchain);
 		accountRefresh = false;
 	}
-	let vp_res = await utils.getVotingPower(account);
+	//console.log(account);
+	let vp_res = await utils.getVotingPower(account[bchain]);
 	
 	let reward_start = utils.toHrMn(utils.timeTilKickOffVoting(vp_res * 100));
 
@@ -485,14 +1271,14 @@ let checkHdrs = (req, res, next) => {
 			//check if user is validated with stored encrypted posting key
 			let db_col = db.collection('user_login_token');
 			//find existing login entry in DB
-			let user_tkn = await db_col.findOne({user: user, token: req.query.token});
-			//console.log(user_tkn);
-			if (!user_tkn || !user_tkn.ppkey){
+			let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
+			console.log(user_tkn);
+			if (!Array.isArray(user_tkn) || user_tkn.length == 0){
 				console.error('Authentication failed. Key not found');
 				res.send({error: 'Authentication failed. Key not found'});
 				return;
 			}
-			req.ppkey = user_tkn.ppkey;
+			req.ppkey = user_tkn[0].ppkey;
 			req.decoded = decoded;
 			next();
 		  }
@@ -532,20 +1318,64 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	}
 	
 	let match_arr = Object.entries(operation);
-	/*console.log(user);
+	//console.log(user);
 	console.log(operation);
 	console.log((typeof operation));
 	console.log(match_arr);
-	console.log(match_arr[0][1]);*/
+	console.log(match_arr[0][1]);
+	
+	//res.send({error: true, trx: performTrx});
+	//return;
+	let active = null;
+	if (req.body.active){
+		active = req.body.active;
+	}
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, active);
+	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, active);
 	console.log(performTrx);
-	if (!performTrx.tx.block_num){
+	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
 	}else{
 		res.send({success: true, trx: performTrx});
 	}
+});
+
+app.get('/availableHiveNodes', async function(req, res){
+	
+	res.send({'hiveNodes':config.alt_hive_nodes})
+});
+
+app.get('/delegateRC', checkHdrs, async function (req, res) {
+	console.log('>>performTrx');
+	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
+		res.send({});
+	}
+	let prm = req.query;
+	const receivedPlaintext = decrypt(req.ppkey);
+	let userKey = receivedPlaintext;
+	let outc = await utils.delegateRC(prm.user, userKey, [prm.delegatees], prm.max_rc);
+	console.log(outc);
+	res.send(outc)
+});
+
+app.post('/memoDecode', checkHdrs, async function (req, res) {
+	console.log('memo decode');
+	//set HIVE as default
+	let bchain = 'HIVE';
+	const receivedPlaintext = decrypt(req.ppkey);
+	if (req.query && req.query.bchain){
+		bchain = req.query.bchain;
+	}
+	if (req.body && req.body.memo){
+		let outc = await utils.decodeMemo(req.body.memo, receivedPlaintext);
+		console.log('result');
+		console.log(outc);
+		res.send({xcstkn: outc});
+		return;
+	}
+	res.send({error:'unable to decode'});
 });
 
 app.get('/performTrx', checkHdrs, async function (req, res) {
@@ -573,19 +1403,137 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	}
 	
 	let match_arr = Object.entries(operation);
-	/*console.log(user);
-	console.log(operation);
-	console.log((typeof operation));
-	console.log(match_arr);
-	console.log(match_arr[0][1]);*/
 	
 	//perform transaction
-	let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain);
+	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
+	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, null);
 	console.log(performTrx);
-	if (!performTrx.tx.block_num){
+	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
 	}else{
 		res.send({success: true, trx: performTrx});
+	}
+});
+
+
+app.get('/claimRewards', checkHdrs, async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({'error':''})
+		return
+	}
+	
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	let userKey = receivedPlaintext;
+	
+	/*res.send({'hive': {'success': true}, 'steem': {'success': true}, 'blurt': {'success': true}});*/
+	let outcHive = await utils.claimRewards(req.query.user, userKey, 'HIVE');
+	let outcSteem = await utils.claimRewards(req.query.user, userKey, 'STEEM');
+	let outcBlurt = await utils.claimRewards(req.query.user, userKey, 'BLURT');
+	res.send({'hive': outcHive, 'steem': outcSteem, 'blurt': outcBlurt});
+});
+
+
+app.get('/afitMarkets', async function (req, res){
+	let markets = [
+		{
+				'chain': 'BSC',
+				'exchange': 'Digifinex',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://www.digifinex.com/en-ww/trade/USDT/AFIT'
+						}
+					]
+			},
+		{
+				'chain': 'BSC',
+				'exchange': 'Dex-trade',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://dex-trade.com/spot/trading/AFITUSDT'
+						},
+						{
+							'name': 'AFIT/BTC',
+							'link': 'https://dex-trade.com/spot/trading/AFITBTC'
+						}
+					],
+					
+		},
+		{
+				'chain': 'BSC',
+				'exchange': 'PCS',
+				'link': 'https://links.actifit.io/digi',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/USDT',
+							'link': 'https://pancakeswap.finance/swap?inputCurrency=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&outputCurrency=BNB'
+						}
+					]
+			},
+		{
+				'chain': 'Hive',
+				'exchange': 'Hive-Engine',
+				'link': 'https://hive-engine.com',
+				'icon': '',
+				'pairs': [
+						{
+							'name': 'AFIT/HIVE',
+							'link': 'https://tribaldex.com/trade/AFIT'
+						}
+					]
+		},
+	];
+	res.send(markets);
+});
+
+
+app.get('/recalculateUserTokens', async function (req, res){
+	if (req.query && req.query.user){
+	
+	let user = req.query.user;
+	let trx = await db.collection('token_transactions').aggregate([
+		{
+			$match: {user: user}
+		},
+		{
+		   $group:
+			{
+			   _id: null,
+			   token_balance: { $sum: "$token_count" },
+			}
+		}
+	   ]).toArray(async function(err, results) {
+		var output = 'user'+user+ 'tokens:'+results[0].token_balance;
+		
+		
+		let user_info = await grabUserTokensFunc (user);
+		console.log(user_info);
+		//let cur_user_token_count = parseFloat(user_info.tokens);
+		
+		user_info.tokens = parseFloat(results[0].token_balance);
+		if (user_info.tokens < 0){
+			user_info.tokens = 0;
+		}
+		//recalculate and store user token count
+		try{
+			let trans = await db.collection('user_tokens').save(user_info);
+			console.log('success updating user token count');
+			res.send('success recalculating & updating user token count: '+user_info.tokens);
+			console.log(results);
+		}catch(err){
+			console.log(err);
+		}
+		
+	   });
+	}else{
+		res.send({error: 'error'});
 	}
 });
 
@@ -622,12 +1570,54 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
+app.get('/resetFundsPass', checkHdrs, async function (req, res) {
+	let collection = db.collection('account_funds_pass')
+
+	let user = req.query.user.trim().toLowerCase();
+	let result = 'no change';
+	if (user!=''){
+		result = await collection.remove({
+			"user": user,
+		});
+		console.log(user+" password reset ");
+		res.send({status:'success'});
+		return;
+	}
+	res.send({error:'no user found'});
+	
+})
 
 app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let db_col = db.collection('user_login_token');
 	let result = await db_col.remove({user: req.query.user, token: req.query.token});
 	res.send({success: true});
 });
+
+app.get('/updateSettingsKeychain/:trxID', async function (req, res){
+	if (!req.query || !req.query.operation || !req.query.user){
+		res.send({status:'error'})
+	}else{
+		try{
+			//third param to find verify is to avoid storing transaction as its not needed
+			let conf_trx = await utils.findVerifyTrx(req, db, true);
+			/*console.log('settings trx found:')
+			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
+			console.log(req.query.user);*/
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+				res.send({status: 'error'});
+				return;
+			}
+			//cleanup json
+			let json = JSON.parse(conf_trx.operations[0][1].json)
+			let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: json}, {upsert : true });
+			//console.log(setgs);
+			res.send({success: true});
+		}catch(err){
+			res.send({error: 'error'});
+		}
+	}
+})
+
 
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
@@ -658,7 +1648,64 @@ app.get('/userSettings/:user', async function (req, res) {
 	}
 });
 
+app.get('/userSettings/', async function (req, res) {
+	let setgs = await db.collection('user_settings').find().toArray();
+	console.log(setgs);
+	if (!setgs){
+		res.send({});
+	}else{
+		res.send(setgs);
+	}
+});
 
+
+app.get('/notificationTypes/', async function (req, res) {
+	res.send(config.notificationTypes);
+});
+
+app.post('/loginKeychain/', async function (req, res) {
+	try{
+		console.log('loginkeychain');
+		//const username = sanitize(req.body.username);
+		const username = req.body.username;
+		let bchain = req.body.bchain?req.body.bchain:'HIVE';
+		
+		if (username && username.length < 20 && username.length > 3) {
+			let account = await utils.getAccountData(username, bchain);
+			let pubKey = account[bchain].posting.key_auths[0][0];
+			console.log(pubKey);
+			let memo = encrypt(username+pubKey);
+			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
+			res.send({message : encoded_message});
+			return;
+		}
+		res.send({error: 'error'})
+	}catch(err){
+		console.log(err);
+		res.send({error: 'error'})
+	}
+});
+
+/*
+app.post('/confirmLoginKeychain', async function (req, res) {
+	try{
+		//const username = sanitize(req.body.username);
+		const username = req.body.username;
+		let bchain = req.body.bchain?req.body.bchain:'HIVE';
+		
+		if (username && username.length < 16 && username.length > 3) {
+			let account = await utils.getAccountData(username, bchain);
+			let pubKey = account[bchain].posting.key_auths[0][0];
+			console.log(pubKey);
+			let memo = encrypt(username+pubKey);
+			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
+			res.send({message : encoded_message});
+		}
+	}catch(err){
+		console.log(err);
+	}
+});
+*/
 app.post('/loginAuth', async function (req, res) {
 	console.log('login');
 	let username = null;
@@ -709,6 +1756,10 @@ app.post('/loginAuth', async function (req, res) {
 			if (req.body && req.body.keeploggedin){
 				user_tkn.keeploggedin = req.body.keeploggedin;
 			}
+			//keep record of login source
+			if (req.body && req.body.loginsource){
+				user_tkn.loginsrc = req.body.loginsource;
+			}
 			let db_save = await db_col.save(user_tkn);
 			
 			// return the JWT token for the future API calls
@@ -732,26 +1783,50 @@ app.post('/loginAuth', async function (req, res) {
     }
 });
 
-app.get('/getDailyDelegationPool/', async function(req, res){
-	res.send({'hive_pool': config.weekly_rewards_limit, 'steem_pool': config.weekly_rewards_limit});
-});
 
 /* end point for user total token count display */
 app.get('/user/:user', async function (req, res) {
-	let user = await grabUserTokensFunc(req.params.user);
+	let user; 
+	if (req.query && req.query.fullBalance){
+		user = await grabUserTokensFunc(req.params.user, true);
+	}else{
+		user = await grabUserTokensFunc(req.params.user);
+	}
     res.send(user);
 });
+
+app.get('/userFullBal/:user', async function (req, res) {
+	let user = await grabUserTokensFunc(req.params.user, true);
+	res.send(user);
+});
+app.get('/thread_param/', async function(req, res) {
+	res.send(process.env.BOT_THREAD);
+})
 
 /* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
 app.get('/transactions/:user?', async function (req, res) {
 	let query = {};
 	var transactions;
+	let pageSize = isNaN(req.query.itemCount)? 1000:parseInt(req.query.itemCount);
+	if (pageSize > 1000) pageSize = 1000;
+	
+	const pageNumber = req.query.page || 1; // default page is 1
+	const skip = (pageNumber - 1) * pageSize;
+	
 	if(req.params.user){
 		query = {user: req.params.user}
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions')
+			.find(query, {fields : { _id:0} })
+			.sort({date: -1})
+			.skip(skip)
+			.limit(pageSize).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
-		transactions = await db.collection('token_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		transactions = await db.collection('token_transactions')
+			.find(query, {fields : { _id:0} })
+			.sort({date: -1})
+			.skip(skip)
+			.limit(pageSize).toArray();
 	}
     res.send(transactions);
 });
@@ -1114,6 +2189,29 @@ app.get('/modAction', async function (req, res) {
 						console.log(modTrans.user+" verified ");
 						result.status='success';
 						break;
+						
+			case 'freesignup': 			
+						collection = db.collection('signup_promo_codes')
+						//var dt = new Date().toJSON()
+						//dt.substring(0,dt.indexOf("."));
+						
+						if (modTrans.user == ''){
+							res.send({'error': 'Cannot verify empty user'});
+							return;
+						}
+						modTrans.signusername = req.query.signusername;
+						modTrans.txlink = req.query.txlink;
+						let randomCode = generatePassword(1);
+						result = await collection.insert({   
+							"code": randomCode,
+							"entries": 1,
+							"delegation": true,
+							"signup_reward": true,
+							"referrer_reward": true
+						});
+						console.log(modTrans.user+" verified ");
+						result.status='https://actifit.io/signup?promo='+randomCode;
+						break;
 		}
 		
 		collection = db.collection('team_transactions');
@@ -1124,8 +2222,322 @@ app.get('/modAction', async function (req, res) {
 	}
 });
 
+async function isUserBridgeEligible (user, customDate){
+	let query = {user: user}
+	let targetDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	console.log(targetDate);
+	if (customDate){
+		targetDate = customDate;
+	}
+	query.date = {
+				"$gte": new Date(targetDate)
+	}
+	console.log(query);
+	let entries = await db.collection('bsc_bridge_queue').find(query).toArray();
+	console.log(entries);
+	if (entries.length > 0){
+		return false;
+	}
+	return true;
+}
+
+//confirms whether user can still use bridge today or certain date (if he already scheduled a transaction or one is complete)
+app.get('/userBridgeEligible', async function (req, res) {
+	if (!req.query || !req.query.user){
+		res.send({});
+		return;
+	}
+	let targetDate;
+	if (req.query.date){
+		targetDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');;
+	}
+	let userStatus = await isUserBridgeEligible(req.query.user, targetDate);
+	
+	res.send ({'eligible': userStatus});
+	
+})
+
+//query user bridge transactions by req.query.user and optional status and starting date
+app.get('/userBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	if (!req.query || !req.query.user){
+		res.send({});
+		return;
+	}
+	let query = {user: req.query.user}
+	if (req.query.status){
+		query.status = req.query.status;
+	}
+	if (req.query.date){
+		let targetDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');;
+		query.date = {
+					"$gt": new Date(targetDate)
+		}
+	}
+	let entries = await db.collection('bsc_bridge_queue').find(query).sort({date: 1}).toArray();
+	res.send(entries);
+});
 
 
+app.get('/completedBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	let entries = await db.collection('bsc_bridge_queue').find({status: 'complete'}).sort({date: 1}).toArray();
+	res.send(entries);
+});
+
+app.get('/pendingBridgeTransactions', async function (req, res) {
+	//fetch queue by oldest
+	let entries = await db.collection('bsc_bridge_queue').find({status: 'pending'}).sort({date: 1}).toArray();
+	res.send(entries);
+});
+
+app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user || !req.query.afitTrx || !req.query.hbdTrx){
+		res.send({error:'missing data'});
+		return;
+	}
+	//check eligibility for another transaction
+	let isUserEligible = isUserBridgeEligible(req.query.user);
+	if (!isUserEligible){
+		res.send({error:'You have already sent out a transaction today. You can only transact once per day.'});
+		return;
+	}
+	let username = req.query.user;
+	let wallet = req.query.wallet;
+	let afitTrx = req.query.afitTrx;
+	let hbdTrx = req.query.hbdTrx;
+	//let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//store user/token combination
+	let bridgeEntry = {
+		user: username,
+		wallet: wallet,
+		afitTrx: afitTrx,
+		hbdTrx: hbdTrx,
+		status: 'pending',
+		date: new Date()
+	};
+	try{
+		let transaction = await db.collection('bsc_bridge_queue').insert(bridgeEntry);
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+	
+});
+
+
+app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
+	let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
+	console.log(nonce);
+	nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
+	const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
+	const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
+	const addrBuf = ethutil.pubToAddress(pubKey)
+	const addr = ethutil.bufferToHex(addrBuf)
+	console.log('orig:'+req.query.wallet);
+	console.log(pubKey);
+	console.log('out:'+addr);
+	
+	if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
+		console.log('correct address');
+		res.send({success: true});
+	}else{
+		console.log('incorrect address');
+		res.send({error: 'incorrect address'});
+	}
+})
+
+app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user || !req.query.wallet){
+		res.send({error:'error'});
+		return;
+	}
+	let username = req.query.user;
+	let wallet = req.query.wallet;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//store user/token combination
+	let userWalletEntry = {
+		user: username,
+		wallet: wallet,
+		chain: walletChain,
+		date: new Date()
+	};
+	try{
+		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
+
+
+
+app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {
+	//validate proper data used
+	if (!req.query || !req.query.user){
+		res.send({error:'error'});
+		return;
+	}
+	let username = req.query.user;
+	//let wallet = req.query.wallet;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	//delete user/wallet combination
+	
+	try{
+		let transaction = await db.collection('user_wallet_address').remove({user: username, chain: walletChain});
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
+
+app.get('/getUserWalletAddress', async function (req, res){
+	if (!req.query.user){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	let matchAddress = await db.collection('user_wallet_address').find({user: user, chain: walletChain}).sort({tokens: -1}).toArray();
+	res.send(matchAddress);
+});
+/*
+app.get('/afitAirdropHive', async function (req, res){
+	let participants = await db.collection('user_wallet_address').find({chain: 'BSC'}).toArray();
+	console.log(participants.length);
+	let delay = 0;
+	for (let entry of participants) {
+		setTimeout(async function(){
+			//grab tokens of the user on actifit wallet
+			let afit_wallet = await grabUserTokensFunc(entry.user);
+			console.log('afit_wallet:'+afit_wallet.tokens);
+			let afit_he_bal_val = 0;
+			try { 
+				let afit_he_bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+				afit_he_bal_val = afit_he_bal.balance;
+			}catch(err){
+				
+			}
+			console.log('afit_he_bal:'+afit_he_bal_val);
+			let afit_se_bal_val = 0;
+			try { 
+				let afit_se_bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+				afit_se_bal_val = afit_se_bal.balance;
+			}catch(err){
+				
+			}
+			console.log('afit_se_bal:'+afit_se_bal_val);
+			let tot_tokens = parseFloat(afit_wallet.tokens) + parseFloat(afit_he_bal_val) + parseFloat(afit_se_bal_val);
+			console.log(tot_tokens);
+			let reward = 0;
+			if (tot_tokens>=2000 && tot_tokens <5000){
+				reward = tot_tokens*0.004;
+			}else if (tot_tokens>=5000 && tot_tokens <10000){
+				reward = tot_tokens*0.005;
+			}else if (tot_tokens>=10000 && tot_tokens <50000){
+				reward = tot_tokens*0.006;
+			}else if (tot_tokens>=50000 && tot_tokens <100000){
+				reward = tot_tokens*0.007;
+			}else if (tot_tokens>=100000){
+				reward = 800;
+			}
+			console.log(reward);
+			//only insert if user is eligible
+			if (reward>0){
+				let airdrop_entry = {
+					user: entry.user,
+					chain: 'BSC',
+					tokens_count: tot_tokens,
+					actifit_wallet_afit_bal: afit_wallet.tokens,
+					afit_he_bal: afit_he_bal_val,
+					afit_se_bal: afit_se_bal_val,
+					afit_bsc_reward: reward, 
+					date: new Date()
+				}
+				//insert into airdrop snapshot
+				let transaction = await db.collection('afit_bsc_hive_airdrop').insert(airdrop_entry);
+				res.write(JSON.stringify(transaction));
+			}
+		}, delay+=1500);
+	}
+	//res.end();
+	//afit_bsc_hive_airdrop
+})
+*/
+
+/*
+app.get('/airdropDataDisplay', async function (req, res){
+	console.log('airdrop data');
+	let entries = await db.collection('afit_bsc_hive_airdrop_wallets').find().toArray();
+	let display = '';
+	for (let entry of entries){
+		display += entry.wallet+','+entry.reward+'<br/>';
+	}
+	res.send(display);
+})
+*/
+
+app.get('/airdropDataDisplay', async function (req, res){
+	console.log('airdrop data');
+	let entries = await db.collection('afit_bsc_hive_airdrop_wallets').find().toArray();
+	let display = '[';
+	for (let entry of entries){
+		display += '"'+entry.wallet+'",'
+	}
+	display += ']\n\n\n[';
+	for (let entry of entries){
+		display += Math.floor(entry.reward)+','
+	}
+	display += ']';
+	res.send(display);
+})
+
+
+
+app.get('/airdropData', async function (req, res){
+	console.log('airdrop data');
+	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
+	let totalAirdrop = 0;
+	let updated_entries = [];
+	for (let entry of entries){
+		totalAirdrop += entry.afit_bsc_reward;
+		//find matching wallet
+		let wallet_entry = await db.collection('user_wallet_address').findOne({user: entry.user});
+		entry.wallet_address = wallet_entry.wallet;
+		updated_entries.push({'wallet': entry.wallet_address, 'reward': entry.afit_bsc_reward});
+		//let transaction = await db.collection('afit_bsc_hive_airdrop_wallets').insert({'wallet': entry.wallet_address, 'user':entry.user,'reward': entry.afit_bsc_reward});
+	}
+	res.send(updated_entries);
+})
+
+app.get('/airdropResults', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({error: 'error'});
+		return;
+	}
+	let entry = await db.collection('afit_bsc_hive_airdrop').findOne({user: req.query.user});
+	res.send(entry);
+})
+
+app.get('/sendAirdropResultsNotif', async function (req, res){
+	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
+	let delay = 0;
+	for (let entry of entries){
+		setTimeout(async function(){
+		//send notification to user
+			console.log(entry);
+		//res.write(entry);
+			utils.sendNotification(db, entry.user, 'actifit', 'airdrop_results', 'airdrop', 'Congrats! Your snapshot total AFIT amount was '+entry.tokens_count+'. This makes you eligible for '+entry.afit_bsc_reward+' reward! Tokens will be distributed to your BSC wallet address upon actifit DeFi launch. You can check your balance by visiting your wallet on actifit.io', 'https://actifit.io/wallet');
+		}, delay+=3000);
+		//break;
+	}
+	
+});
 
 /* end point for user total token count display */
 app.get('/topAFITHolders', async function (req, res) {
@@ -1137,6 +2549,49 @@ app.get('/topAFITHolders', async function (req, res) {
 	}
     res.send(tokenHolders);
 });
+
+/* end point for user total token count display */
+app.get('/topAFITHEHolders', async function (req, res) {
+	let afitSorted = utils.sortArrLodash(usersAFITBal);
+	fullSortedAFITList = afitSorted;
+	/*let maxAmount = parseInt(req.query.count);
+	if (isNaN(maxAmount)){
+		//set max as 100
+		maxAmount = 100;
+	}
+	
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('afitx.s-e');
+	banned_arr.push('afitx.h-e');
+	banned_arr.push('');
+	
+	afitSorted = utils.removeArrMatchLodash(afitSorted, banned_arr, 'account');
+	*/
+	//always skip top holder as that would be actifit
+	//afitxSorted = afitxSorted.slice(1, maxAmount + 1);
+	
+	let output = afitSorted;
+	
+	/*
+	if (req.query.pretty){
+		output = '#|Token Holder | AFITX Tokens Held |<br/>';
+		output += '|---|---|---|<br/>';
+		for(var i = 0; i < afitxSorted.length; i++) {
+			let tokenHolder = afitxSorted[i];
+			output += (i+1) + '|';
+			output += '@'+tokenHolder.account + '|';
+			output += gk_add_commas(parseFloat(tokenHolder.balance).toFixed(3)) + '|';
+			output += '<br/>';
+		}
+	}
+	*/
+    res.send(output);
+});
+
+
 
 /* end point for user total token count display */
 app.get('/topAFITXHolders', async function (req, res) {
@@ -1350,23 +2805,19 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 	}
 });
 
-/* end point for tracking gadget buy orders */
-app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+
+/* end point for tracking AFIT buy orders */
+app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async function (req, res) {
 	
 	let user = req.params.user;
-	let product_id = req.params.gadget;
-	
-	//fetch product info
-	let product = await grabProductInfo (product_id);
-	if (!product){
-		res.send({'error': 'Product not found'});
-		return;
-	}
-	
+	//HIVE amount paid
+	let amnt = req.params.amnt;
+	let afitAmnt = req.params.afitAmnt;
+		
 	//check if query has already been verified
-	let matchingEntries = await db.collection('gadget_transactions_hive').find(
+	let matchingEntries = await db.collection('afit_buy_transactions_hive').find(
 		{
-			blockNo: req.params.blockNo,
+			//blockNo: req.params.blockNo,
 			trxID: req.params.trxID,
 			bchain: req.params.bchain
 		}).toArray();
@@ -1374,6 +2825,387 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
 		res.send({'error': 'Transaction already verified'});
 		return;
+	}
+	
+	//grab AFIT live conversion rate
+	let matchingAfit = parseFloat(amnt) / exchangeAfitPrice.afitHiveLastPrice;
+	
+	//round down number
+	console.log('Before rounding');
+	console.log(matchingAfit);
+	matchingAfit = (Math.floor(matchingAfit * 1000) - 1) / 1000;
+	
+	//ensure proper transaction
+	let ver_trx = await utils.verifyAFITBuyTransaction(req.params.user, amnt, afitAmnt, matchingAfit, 'buy-afit', req.params.blockNo, req.params.trxID, req.params.bchain);
+	if (!ver_trx || !ver_trx.success){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		buyer: user,
+		seller: 'actifit',
+		hive_paid: ver_trx.amount_hive,
+		afit_requested: afitAmnt,
+		afit_received: matchingAfit,
+		currency: req.params.bchain,
+		blockNo: req.params.blockNo,
+		trxID: req.params.trxID,
+		bchain: req.params.bchain,
+		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('afit_buy_transactions_hive').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//store as transaction to update user token count
+	
+	//perform transaction
+	let recordTrans = {
+		user: user,
+		reward_activity: 'Buy AFIT',
+		buyer: user,
+		seller: 'actifit',
+		hive_paid: ver_trx.amount_hive,
+		afit_requested: afitAmnt,
+		currency: req.params.bchain,
+		token_count: matchingAfit,
+		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//add a ticket to the user to enter draw if user meets min requirements
+	/*
+	if (cur_user_token_count >= config.minUserTokensGadgetTicket){
+		//perform transaction
+		let ticketEntry = {
+			user: user,
+			product_id: product_id,
+			product_name: product.name,
+			product_level: product.level,
+			product_price_afit: item_price_afit,
+			product_price_hive: item_price,
+			hive_paid: ver_trx.amount_hive,
+			currency: req.params.bchain,
+			count: 1,
+			date: new Date(),
+		}
+		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+	}*/
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count + parseFloat(matchingAfit);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You successfully bought "' + matchingAfit + ' AFIT" for '+'"'+ver_trx.amount_hive+'" '+req.params.bchain, 'https://actifit.io/'+user+'/wallet');
+	
+	res.send({status: 'success', boughtAmnt: matchingAfit, tokens: new_token_count});
+	
+});
+
+
+app.get('/cancelAFITBuy', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let afit_amnt_refund = req.query.afit;
+	
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'AFIT Buy Cancellation',
+		buyer: user,
+		seller: 'actifit',
+		token_count: -afit_amnt_refund,
+		note: 'Cancellation of AFIT purchase with HIVE refund ',
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//fetch user current token count
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count - parseFloat(afit_amnt_refund);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({status: 'success'});
+	
+	//send notification to user
+	//utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
+	
+});
+
+app.get('/refundPurchase', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let product_id = req.query.product_id;
+	let afit_amnt_refund = req.query.afit_paid;
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Refund Product',
+		product_id: product_id,
+		product_name: product.name,
+		buyer: user,
+		seller: 'actifit',
+		token_count: parseFloat(afit_amnt_refund),
+		note: 'Refunding product '+product.name,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//fetch user current token count
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count + parseFloat(afit_amnt_refund);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	res.send({status: 'success'});
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
+	
+});
+
+
+app.get('/updateProdStatus', async function(req, res){
+	if (!req.query.specPass || req.query.specPass != config.specPass || !req.query.user || !req.query.status || !req.query.trx_id){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let trx_id = new ObjectId(req.query.trx_id);
+	let note = req.query.note;
+	
+	let query = {user: req.query.user, _id: trx_id}
+	let prodTrans = await db.collection('products_bought').findOne(query);
+	
+	if (!prodTrans){
+		res.send({'error': 'Transaction not found'});
+		return;
+	}
+	
+	let old_status = prodTrans.status;
+	let prod_name = prodTrans.gadget_name;
+	prodTrans.last_updated = new Date();
+	prodTrans.status = req.query.status;
+	prodTrans.note = note;
+	//perform transaction
+	try{
+		let trans = await db.collection('products_bought').save(prodTrans);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//insert transaction to keep track of product progress
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Product Purchase Update',
+		product_id: prodTrans.gadget,
+		transaction_id: req.query.trx_id,
+		product_name: prod_name,
+		old_status: old_status,
+		new_status: req.query.status,
+		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+req.query.status+'" with note "'+ note+'"' ,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('order_progress').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'real_product_update', 'market', 'Your order for product "' + prod_name + '" has been moved to status "'+req.query.status+'" with note "'+note+'"', 'https://actifit.io/market');
+	
+	res.send({status: 'success'});
+			
+	//also notify actifit management
+	for (let iter=0;iter<config.management.length;iter++){
+		utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_update', 'management', 'User '+user+' order for product "' + prod_name +'" changed to status "'+req.query.status+'"', 'https://actifit.io/mods-access/');
+		
+	}
+	
+	
+});
+
+/* end point to confirm product receipt, can only be validated by the user himself */
+
+app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
+	if (!req.query.user || !req.query.trx_id){
+		res.send({error:'error'});
+		return;
+	}
+	let user = req.query.user;
+	let trx_id = new ObjectId(req.query.trx_id);
+	let newStatus = 'delivered';
+	
+	let note = req.query.note;
+	
+	let query = {user: req.query.user, _id: trx_id}
+	let prodTrans = await db.collection('products_bought').findOne(query);
+	
+	if (!prodTrans){
+		res.send({'error': 'Transaction not found'});
+		return;
+	}
+	
+	let old_status = prodTrans.status;
+	let prod_name = prodTrans.gadget_name;
+	prodTrans.last_updated = new Date();
+	prodTrans.status = newStatus;
+	prodTrans.note = note;
+	//perform transaction
+	try{
+		let trans = await db.collection('products_bought').save(prodTrans);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	//insert transaction to keep track of product progress
+	//perform transaction
+	let recordTrans = {
+		user: req.query.user,
+		reward_activity: 'Product Purchase Update',
+		product_id: prodTrans.gadget,
+		transaction_id: req.query.trx_id,
+		product_name: prod_name,
+		old_status: old_status,
+		new_status: newStatus,
+		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+newStatus+'" with note "'+ note+'"' ,
+		date: new Date(),
+	}
+	try{
+		console.log(recordTrans);
+		let transaction = await db.collection('order_progress').insert(recordTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'Error confirming product receipt. DB storing issue'});
+		return;
+	}
+	
+	//send notification to user
+	utils.sendNotification(db, user, 'actifit', 'real_product_update', 'market', 'Your order for product "' + prod_name + '" has been moved to status "'+newStatus+'" with note "'+note+'"', 'https://actifit.io/market');
+	
+	res.send({status: 'success'});
+			
+	//also notify actifit management
+	for (let iter=0;iter<config.management.length;iter++){
+		utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_update', 'management', 'User '+user+' order for product "' + prod_name +'" changed to status "'+newStatus+'"', 'https://actifit.io/mods-access/');
+		
+	}
+	
+	
+});
+
+async function performBuyHiveTrx(req){
+	
+	let user = req.params.user;
+	let product_id = req.params.gadget;
+	
+	//fetch product info
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		return ({'error': 'Product not found'});
+		
+	}
+	
+	//check if query has already been verified
+	let matchingEntries = await db.collection('gadget_transactions_hive').find(
+		{
+			//blockNo: req.params.blockNo,
+			trxID: req.params.trxID,
+			bchain: req.params.bchain
+		}).toArray();
+	
+	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
+		return ({'error': 'Transaction already verified'});
+		
 	}
 	
 	let price_options = product.price;
@@ -1402,10 +3234,10 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 	console.log(item_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadget, item_price, item_price_alt, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
+		
 	}
 	
 	
@@ -1425,7 +3257,7 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		product_price_hive: item_price,
 		hive_paid: ver_trx.amount_hive,
 		currency: req.params.bchain,
-		blockNo: req.params.blockNo,
+		//blockNo: req.params.blockNo,
 		trxID: req.params.trxID,
 		bchain: req.params.bchain,
 		note: 'Bought Product '+product.name+ ' Level '+product.level,
@@ -1437,8 +3269,8 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		
 	}
 	
 	//add a ticket to the user to enter draw if user meets min requirements
@@ -1485,8 +3317,8 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		
 	}
 	
 	//decrease product available count
@@ -1502,14 +3334,340 @@ app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (
 		console.log(err);
 	}
 	
+	return ({'status': 'Success'});
+}
+
+/* end point for tracking gadget buy orders with HIVE via keychain*/
+
+app.get('/buyGadgetHiveKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
 	
-	res.send({'status': 'Success'});
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let outc = await performBuyHiveTrx(req);
+	res.send(outc)
 });
 
 
-/* end point for tracking multi-gadget buy orders */
-app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+/* end point for tracking gadget buy orders with HIVE*/
+app.get('/buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	
+	let outc = await performBuyHiveTrx(req);
+	res.send(outc)
+});
+
+app.post('/registerUserNotification', async function(req,res){
+	console.log('>>>registerUserNotification');
+	if (!req.body || !req.body.token || !req.body.user || !req.body.app){
+		res.send({error: 'error'});
+		return;
+	}
+	//store user/token combination
+	let userTokenEntry = {
+		token: req.body.token,
+		user: req.body.user,
+		app: req.body.app,
+		date: new Date()
+	};
+	try{
+		db.collection('user_app_notif_token').update({user: req.body.user}, userTokenEntry, { upsert: true });
+		res.send({status: 'success'});
+	}catch(err){
+		res.send({error: 'error'});
+		console.log(err);
+	}
+});
+
+
+app.get('/mintProducts', async function(req,res){
+	if (req.query.secret != config.prodMintSecret){
+		res.send({error: 'error'});
+	}else{
+		let minAmount = 0;
+		let mintedAmount = 50;
+		if (req.query.minAmount){
+			minAmount = parseInt(req.query.minAmount);
+		}
+		console.log('minAmount:'+minAmount);
+		if (req.query.mintedAmount){
+			mintedAmount = parseInt(req.query.mintedAmount);
+		}
+		console.log('mintedAmount:'+mintedAmount);
+		//find products with min amount
+		let trans = await db.collection('products').update(
+			{
+				type: 'ingame',
+				count: {
+					$lte: minAmount
+				}
+			},
+			{
+				$inc: { count: mintedAmount }
+			},
+			{
+				multi: true
+			}
+		);
+		console.log(trans);
+		res.send({status: trans});
+	}
+});
+
+/* end point for checking all products bought */
+/* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
+app.get('/realProductsBought/', checkHdrs, async function (req, res) {
+	//if this is user querying different user, bail out
+	if (req.query && req.query.user && req.query.buyer){
+		if (req.query.user != req.query.buyer){
+			res.send({'error': 'Account does not have proper privileges'});
+			return;
+		}
+	}
+	
+	let hasAccess = await isModerator(req.query.user);
+	if (!hasAccess){
+		res.send({'error': 'Account does not have proper privileges'});
+		return;
+	}
+	let query = {};
+	var transactions;
+	if(req.query.buyer){
+		query = {user: req.query.buyer}
+		transactions = await db.collection('products_bought').find(query).sort({date: -1}).limit(1000).toArray();
+	}else{
+		//only limit returned transactions in case this is a general query
+		transactions = await db.collection('products_bought').find(query).sort({date: -1}).limit(1000).toArray();
+	}
+	let output = '';
+	if (req.query.pretty){
+		output = '#|User | Gadget| Gadget Name| quantity| color | Status | afit_paid | hive_paid | buyer_name | buyer_phone | buyer_address | buyer_address2 | buyer_country | buyer_state | buyer_city | buyer_zip | date_bought | last_updated | note|<br/>';
+		output += '|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|<br/>';
+		for(var i = 0; i < transactions.length; i++) {
+			let trx = transactions[i];
+			output += (i+1) + '|';
+			output += '@'+trx.user + '|';
+			output += trx.gadget + '|';
+			output += trx.gadget_name + '|';
+			output += trx.quantity + '|';
+			output += trx.color + '|';
+			output += trx.status + '|';
+			output += trx.afit_paid + ' AFIT|';
+			output += trx.hive_paid + ' HIVE|';
+			output += trx.buyer_name + '|';
+			output += trx.buyer_phone + '|';
+			output += trx.buyer_address + '|';
+			output += trx.buyer_address2 + '|';
+			output += trx.buyer_country + '|';
+			output += trx.buyer_state + '|';
+			output += trx.buyer_city + '|';
+			output += trx.buyer_zip + '|';
+			output += trx.date_bought + '|';
+			output += trx.last_updated + '|';
+			output += trx.note + '|';
+			output += '<br/>';
+		}
+	}else{
+		output = transactions;
+	}
+    res.send(output);
+});
+
+/* end point for purchasing real products */
+app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
+	console.log(req.body);
+	if (!req.query.user){
+		res.send({'error': 'User not found'});
+		return;
+	}
+	let user = req.query.user;
+	let product_id = req.body.product_id;
+	let product = await grabProductInfo (product_id);
+	if (!product){
+		res.send({'error': 'Product not found'});
+		return;
+	}
+	
+	let user_info = await grabUserTokensFunc (user);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+	
+	//posting
+	const receivedPlaintext = decrypt(req.ppkey);
+	
+	//set HIVE as default
+	let bchain = 'HIVE';
+	
+	req.query.userKey = receivedPlaintext;
+	
+	console.log(product);
+	
+	//make sure proper data sent
+	if (!req.body.buyer_name || !req.body.buyer_phone || !req.body.buyer_address ||
+		!req.body.buyer_country || !req.body.buyer_state || !req.body.buyer_city || !req.body.buyer_zip){
+			res.send({'error': 'Missing data'});
+			return;
+		}
+	let sent_afit_cost = req.body.afit_amount;
+	let sent_hive_cost = req.body.hive_amount;
+	let order_quantity = req.body.order_quantity;
+	let item_color = req.body.color_choice;
+	
+	let price_options = product.price;
+	let price_options_count = price_options.length;
+	for (let i=0; i < price_options_count; i++){
+		let entry = price_options[i];
+		console.log(entry);
+		if (entry.currency == 'USD'){
+			//USD price
+			let item_usd_price = entry.price * order_quantity;
+			console.log('item price'+item_usd_price);
+			//give 1% flexibility on price change
+			item_usd_price = item_usd_price * 0.99;
+			console.log('flexible item price'+item_usd_price);
+			console.log('exchangeAfitPrice');
+			console.log(exchangeAfitPrice);
+			//verify proper amount to be paid
+			let afit_cost = item_usd_price * entry.percent_afit / 100 / exchangeAfitPrice.afitHiveLastUsdPrice ;
+			afit_cost = Number(afit_cost.toFixed(2));
+			
+			
+	
+			if (cur_user_token_count < afit_cost){
+				res.send({'error': 'Not enough balance'});
+				return;
+			}
+			
+			//HIVE price per USD
+			let calcHiveUsdPrice = exchangeAfitPrice.afitHiveLastUsdPrice / exchangeAfitPrice.afitHiveLastPrice;
+			console.log('HIVE price:'+calcHiveUsdPrice);
+			
+			let hive_cost = item_usd_price * entry.percent_hive / 100 / calcHiveUsdPrice ;
+			hive_cost = Number(hive_cost.toFixed(2));
+			console.log('HIVE extra cost:'+hive_cost);
+			
+			console.log('AFIT cost found:'+afit_cost+' v/s sent:'+sent_afit_cost + ' AFIT');
+			console.log('HIVE cost found:'+hive_cost+' v/s sent:'+sent_hive_cost + ' HIVE');
+			
+			if (sent_afit_cost < afit_cost || sent_hive_cost < hive_cost){
+				res.send({error: 'pricing may have changed, please refresh page and try again'});
+				return;
+			}
+			
+			let outcome = await utils.purchaseRealProd(req);
+			if (outcome.error){
+				res.send({error: outcome.error});
+				return;
+			}else if(!outcome.tx || !outcome.tx.ref_block_num || !outcome.tx.id || !outcome.tx.trx_num){
+				res.send({error: (outcome.tx?outcome.tx.error:'transaction error')});
+				return;
+			}
+			//if this went successfully, also deduct AFIT amount
+			
+			product.provider = 'actifit';
+			
+			//perform transaction
+			let productBuyTrans = {
+				user: user,
+				reward_activity: 'Buy Real Product',
+				buyer: user,
+				seller: product.provider,
+				product_id: product_id,
+				product_name: product.name,
+				product_price: sent_afit_cost,
+				token_count: -sent_afit_cost,
+				order_quantity: order_quantity,
+				item_color: item_color,
+				note: 'Bought Real Product '+product.name,
+				date: new Date(),
+			}
+			try{
+				console.log(productBuyTrans);
+				let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing buy action. DB storing issue'});
+				return;
+			}
+			
+			//store into user_gadgets table as well
+			let userGadgetTrans = {
+				user: user,
+				gadget: new ObjectId(product_id),
+				gadget_name: product.name,
+				quantity: order_quantity,
+				color: item_color,
+				status: "placed",
+				afit_paid: sent_afit_cost,
+				hive_paid: sent_hive_cost,
+				buyer_name: req.body.buyer_name,
+				buyer_phone: req.body.buyer_phone,
+				buyer_address: req.body.buyer_address,
+				buyer_address2: req.body.buyer_address2,
+				buyer_country: req.body.buyer_country,
+				buyer_state: req.body.buyer_state, 
+				buyer_city: req.body.buyer_city,
+				buyer_zip: req.body.buyer_zip,
+				date_bought: new Date(),
+				last_updated: new Date(),
+				note: 'Bought Product '+product.name+ ' x '+order_quantity,
+			}
+			try{
+				console.log(userGadgetTrans);
+				let transaction = await db.collection('products_bought').insert(userGadgetTrans);
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error performing buy action. DB storing issue'});
+				return;
+			}
+			
+			//decrease product available count
+			product.count = parseInt(product.count) - parseInt(order_quantity);
+			//extreme case
+			if (product.count < 0) {
+				product.count = 0;
+			}
+			try{
+				let trans = await db.collection('products').save(product);
+				console.log('success updating product count');
+			}catch(err){
+				console.log(err);
+			}
+							
+			//update current user's token balance & store to db
+			let new_token_count = cur_user_token_count - parseFloat(sent_afit_cost);
+			user_info.tokens = new_token_count;
+			console.log('new_token_count:'+new_token_count);
+			try{
+				let trans = await db.collection('user_tokens').save(user_info);
+				console.log('success updating user token count');
+			}catch(err){
+				console.log(err);
+			}
+			
+			//send notification to user
+			utils.sendNotification(db, user, 'actifit', 'real_product_buy', 'market', 'You successfully bought product "' + product.name + '"', 'https://actifit.io/market');
+			
+		
+			
+			res.send({status: 'success', trx: outcome.tx, tokens: new_token_count});
+			
+			//also notify actifit management
+			for (let iter=0;iter<config.management.length;iter++){
+				utils.sendNotification(db, config.management[iter], 'actifit', 'real_product_buy', 'management', 'User '+user+' successfully bought product "' + product.name+'"', 'https://actifit.io/mods-access/');
+			}
+		}else{
+			res.send({error: 'not supported'});
+			return;
+		}
+	}
+});
+
+
+async function performMultiBuyHiveTrx(req){
 	let user = req.params.user;
 	let product_ids = req.params.gadgets.split('-');
 	
@@ -1520,8 +3678,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		//fetch product info
 		let product = await grabProductInfo (product_ids[i]);
 		if (!product){
-			res.send({'error': 'Product not found'});
-			return;
+			return ({'error': 'Product not found'});
+			;
 		}
 		let price_options = product.price;
 		let price_options_count = price_options.length;
@@ -1556,8 +3714,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
-		res.send({'error': 'Transaction already verified'});
-		return;
+		return ({'error': 'Transaction already verified'});
+		;
 	}
 	
 	
@@ -1569,10 +3727,11 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 	console.log(products_tot_hive_price);
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetPayTransaction(req.params.user, req.params.gadgets, products_tot_hive_price, products_tot_hive_price_alt, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx || !ver_trx.success){
-		res.send({status: 'error'});
-		return;
+		console.log(ver_trx);
+		return ({status: 'error'});
+		;
 	}
 	
 	
@@ -1601,8 +3760,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		;
 	}
 	
 	//add a ticket to the user to enter draw if user meets min requirements
@@ -1648,7 +3807,7 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 			let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
 			
 			//insert notification to user about new ticket
-			utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'You collected a ticket for purchasing gadget "' + product.name + ' - L'+ product.level + '" to enter Actifit Gadget Prize Draw!', 'https://actifit.io/'+user);
+			utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget "' + product.name + ' - L'+ product.level + '" to enter Actifit Gadget Prize Draw!', 'https://actifit.io/'+user);
 		}
 	}
 	
@@ -1677,8 +3836,8 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			;
 		}
 		
 		//decrease product available count
@@ -1696,7 +3855,24 @@ app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async func
 		
 	}
 	
-	res.send({'status': 'Success'});
+	return ({'status': 'Success'});
+}
+
+/* end point for tracking multi-gadget buy orders via keychain*/
+app.get('/buyMultiGadgetHiveKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}	
+	let outc = await performMultiBuyHiveTrx(req);
+	res.send(outc);	
+});
+/* end point for tracking multi-gadget buy orders */
+app.get('/buyMultiGadgetHive/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performMultiBuyHiveTrx(req);
+	res.send(outc);
+	
 });
 
 //end point for returning latest cycle
@@ -1782,14 +3958,11 @@ app.get('/userActiveGadgetBuyTickets/:user', async function (req, res) {
 	
 });
 
-/* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
-
+async function performMultiBuyTrx(req){
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	
 	//confirmed, register transaction and deduct AFIT tokens
@@ -1802,8 +3975,7 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 		let product_id = product_id_list[i];
 		let product = await grabProductInfo (product_id);
 		if (!product){
-			res.send({'error': 'Product not found'});
-			return;
+			return ({'error': 'Product not found'});
 		}
 		
 		//confirm proper AFIT token balance. Test against product price
@@ -1824,8 +3996,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 		}
 		
 		if (cur_user_token_count < item_price){
-			res.send({'error': 'Account does not have enough AFIT funds'});
-			return;
+			return ({'error': 'Account does not have enough AFIT funds'});
+			
 		}
 		
 		product.provider = 'actifit';
@@ -1851,8 +4023,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			
 		}
 		
 		//store into user_gadgets table as well
@@ -1877,8 +4049,8 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
+			return ({'error': 'Error performing buy action. DB storing issue'});
+			
 		}
 		
 		//decrease product available count
@@ -1932,29 +4104,46 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 	
 	}
 	
-	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
-});
+	return ({'status': 'Success', 'user_tokens': user_info.tokens});
+}
 
-/* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
-
-	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadget, 'buy-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
-	if (!ver_trx){
+/* end point for tracking multi gadget buy orders */
+app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
 		return;
+	}
+	//now that we have confirmed the transaction, let us go through the standard cycle
+	let outc = await performMultiBuyTrx(req);
+	res.send(outc)
+});
+
+/* end point for tracking multi gadget buy orders */
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performMultiBuyTrx(req);
+	res.send(outc)
+});
+
+
+async function performBuyTrx(infoParam){
+	//ensure proper transaction
+	let ver_trx = await utils.verifyGadgetTransaction(infoParam.user, infoParam.gadget, 'buy-gadget', infoParam.trxID, infoParam.bchain, db);
+	if (!ver_trx){
+		return ({'error': 'error verifying trx'});
+		//return;
 	}
 	
 	//confirmed, register transaction and deduct AFIT tokens
 	
-	let user = req.params.user;
-	let product_id = req.params.gadget;
+	let user = infoParam.user;
+	let product_id = infoParam.gadget;
 	
 	//fetch product info
 	let product = await grabProductInfo (product_id);
 	if (!product){
-		res.send({'error': 'Product not found'});
-		return;
+		return({'error': 'Product not found'});
+		//return;
 	}
 	
 	//confirm proper AFIT token balance. Test against product price
@@ -1975,8 +4164,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 	}
 	
 	if (cur_user_token_count < item_price){
-		res.send({'error': 'Account does not have enough AFIT funds'});
-		return;
+		return ({'error': 'Account does not have enough AFIT funds'});
+		//return;
 	}
 	
 	product.provider = 'actifit';
@@ -2002,8 +4191,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
 	}
 	
 	//store into user_gadgets table as well
@@ -2028,8 +4217,8 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
 	}
 	
 	//decrease product available count
@@ -2081,7 +4270,26 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req,
 		console.log(err);
 	}
 	
-	res.send({'status': 'Success', 'user_tokens': user_info.tokens});
+	return ({'status': 'Success', 'user_tokens': user_info.tokens});
+	
+}
+
+/* end point for buying gadgets via keychain */
+app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res){
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	//now that we have confirmed the transaction, let us go through the standard cycle
+	let outc = await performBuyTrx(req.params);
+	res.send(outc)
+})
+
+/* end point for tracking gadget buy orders */
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performBuyTrx(req.params);
+	res.send(outc)
 });
 
 /* end point for fetching pending user's friend requests */
@@ -2094,7 +4302,7 @@ app.get('/userFriendRequests/:user', async function (req, res) {
 /* end point for adding user's friend */
 app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2112,7 +4320,7 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req,
 		console.log('success inserting post data');
 		
 		//notify recipient
-		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_request', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
+		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_request', 'friendship', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
 	
 		res.send({status: 'success'});
 	}catch(err){
@@ -2126,7 +4334,7 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req,
 /* end point for cancelling friend request */
 app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2151,7 +4359,7 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async func
 	}catch(err){
 		console.log('error');
 		res.send({status: 'error'});
-	}	
+	}
 
 });
 
@@ -2160,7 +4368,7 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async func
 /* end point for cancelling friend request */
 app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2184,7 +4392,7 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (r
 		console.log('success updating post data');
 		
 		//notify recipient
-		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_acceptance', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
+		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_acceptance', 'friendship', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
 		
 		insertSuccess = true;
 	}catch(err){
@@ -2215,7 +4423,7 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (r
 /* end point for dropping friendship */
 app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		res.send({status: 'error'});
 		return;
@@ -2603,8 +4811,18 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		let afitx_se_balance = 0;
 		let afitx_he_balance = 0;
 		//confirm amount within AFITX conditions
-		let bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
-		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		let bal = 0;
+		try{
+			bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
+		}catch(innEr){
+			console.log(innEr);
+		}
+		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' }); /*.catch((err)=>{
+				console.log(err)
+				if (err.message.includes('timeout')){
+					switchHENode();
+				}
+			});;*/
 		
 		if (bal){
 			afitx_se_balance = parseFloat(bal.balance);
@@ -2620,17 +4838,20 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			return;
 		}*/
 		
-		//make sure user has at least 0.1 AFITX to move tokens
-		if (tot_afitx_bal < 0.1){
-			res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
-			return;
-		}
-		  //console.log(amount_to_powerdown);
-		  //console.log(this.afitx_se_balance);
-		  //calculate amount that can be transferred daily
-		if (amount / 100 > tot_afitx_bal){
-			res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
-			return;
+		//conditions only apply if he is requesting more than 300 AFIT move
+		if (amount > config.free_movable_afit_day ){
+			//make sure user has at least 0.1 AFITX to move tokens 
+			if (tot_afitx_bal < 0.1){
+				res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
+				return;
+			}
+			  //console.log(amount_to_powerdown);
+			  //console.log(this.afitx_se_balance);
+			  //calculate amount that can be transferred daily
+			if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > tot_afitx_bal){
+				res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
+				return;
+			}
 		}
 		
 		//register transaction for upcoming powering down cycle
@@ -2643,7 +4864,7 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 		let tokenPowerDownTrans = {
 			user: user,
 			daily_afit_transfer: amount,
-			min_afitx: amount / 100,
+			min_afitx: (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio,
 			date: new Date(),
 		}
 		
@@ -2775,7 +4996,7 @@ app.get('/tipAccount', async function(req, res){
 		}
 		
 		//also send notification to the recipient about tipped amount
-		utils.sendNotification(db, targetUser, user, 'tip_notification', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
+		utils.sendNotification(db, targetUser, user, 'tip_notification', 'payment', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
 		
 		//update sending user's token balance & store to db
 		let new_token_count = cur_sender_token_count - amount;
@@ -3027,18 +5248,19 @@ calcRank = async function (req, res){
 	]
 	
 	//AFIT token calculation matrix
+	//[max_afit,factor, base_afit_rank,min_afit,multiplier]
 	var afit_token_rules = [
-		[9,0],
-		[999,0.10],
-		[4999,0.20],
-		[9999,0.30],
-		[19999,0.40],
-		[49999,0.50],
-		[99999,0.60],
-		[499999,0.70],
-		[999999,0.80],
-		[4999999,0.90],
-		[5000000,1]
+		[9,0,0,0,0],
+		[999,10,0,10,0.01],
+		[4999,20,10,1000,0.00375],
+		[9999,30,25,5000,0.004],
+		[19999,40,45,10000,0.0035],
+		[49999,50,70,20000,0.001],
+		[99999,60,100,50000,0.0007],
+		[499999,70,135,100000,0.0001],
+		[999999,80,175,500000,0.00005],
+		[4999999,90,200,1000000,0.00000625],
+		[5000000,100,250,5000000,0]
 	]
 	
 	//Rewarded Posts calculation matrix
@@ -3081,6 +5303,41 @@ calcRank = async function (req, res){
 	
 	var delegation_score = 0;
 	
+	let afitBSC = 0;
+	let afitxBSC = 0;
+	let afitBNBLPBSC = 0;
+	let afitxBNBLPBSC = 0;
+	
+	//check if user has a BSC wallet
+	let wallet_entry = await db.collection('user_wallet_address').findOne({user: req.params.user});
+	try{
+	if (wallet_entry && wallet_entry.wallet){
+		console.log(wallet_entry.wallet);
+		//fetch wallet balance		
+		let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitBSC = parseFloat(format);
+		console.log(format);
+		
+		result = await afitxContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitxBSC = parseFloat(format);
+		console.log(format);
+		
+		result = await afitBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitBNBLPBSC = parseFloat(format);
+		console.log(format);		
+		
+		result = await afitxBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+		format = web3.utils.fromWei(result); // 29803630.997051883414242659
+		afitxBNBLPBSC = parseFloat(format);
+		console.log(format);
+	}
+	}catch(err){
+		console.log(err);
+	}
+	
 	//check if the user has an alt account as beneficiary
 	let delegator_info = await getAltAccountStatusFunc(req.params.user);
 	//check if returned object is not empty
@@ -3118,9 +5375,20 @@ calcRank = async function (req, res){
 	//console.log(userTokens.tokens);
 	
 	var afit_tokens_score = 0;
+	//initialize as the BSC amount value, multiplied by multiplier
+	let full_afit_bal = config.afitBSCMultiplier * afitBSC;
+	
+	//append AFIT LP token balance * multipler
+	full_afit_bal += config.afitLPBSCMultiplier * afitBNBLPBSC;
+	
 	if (userTokens != null){
-		afit_tokens_score = utils.calcScore(afit_token_rules, config.afit_token_factor, parseFloat(userTokens.tokens));
+		full_afit_bal += parseFloat(userTokens.tokens);
+		
 	}
+	if (full_afit_bal > 0){
+		afit_tokens_score = utils.calcScoreExtended(afit_token_rules, config.afit_token_factor, parseFloat(full_afit_bal), parseFloat(config.max_afit_rank_val));	
+	}
+	
 	
 	user_rank += afit_tokens_score;
 	
@@ -3150,11 +5418,21 @@ calcRank = async function (req, res){
 	let userHasAFITX = usersAFITXBal.find(entry => entry.account === req.params.user);
 	let user_rank_afitx = 0;
 	
+	//initialize as the BSC amount value, multiplied by multiplier
+	let full_afitx_bal = config.afitxBSCMultiplier * afitxBSC;
+	
+	//append AFITX LP token balance * multipler
+	full_afitx_bal += config.afitxLPBSCMultiplier * afitxBNBLPBSC;
+	
 	if (userHasAFITX){
-		user_rank_afitx = (parseFloat(userHasAFITX.balance) / 10).toFixed(2);
-		//max increase by holding AFITX is 100
-		if (user_rank_afitx > 100){
-			user_rank_afitx = 100;
+		full_afitx_bal += parseFloat(userHasAFITX.balance);
+	}
+	
+	if (full_afitx_bal > 0){
+		user_rank_afitx = (parseFloat(full_afitx_bal) / 10).toFixed(2);
+		//max increase by holding AFITX is 150(config.max_afitx_rank_increase)
+		if (user_rank_afitx > config.max_afitx_rank_increase){
+			user_rank_afitx = config.max_afitx_rank_increase;
 		}
 		user_rank += parseFloat(user_rank_afitx);
 	}
@@ -3166,7 +5444,13 @@ calcRank = async function (req, res){
 		delegation_score: delegation_score,
 		afit_tokens_score: afit_tokens_score,
 		tot_posts_score: tot_posts_score,
-		recent_posts_score:recent_posts_score
+		recent_posts_score:recent_posts_score,
+		afit_BSC: afitBSC,
+		afitx_BSC: afitxBSC,
+		afit_BNB_LP_BSC: afitBNBLPBSC,
+		afitx_BNB_LP_BSC: afitxBNBLPBSC,
+		full_afit_bal: full_afit_bal,
+		full_afitx_bal: full_afitx_bal
 	});
 	console.log(score_components)
 	return score_components;
@@ -3306,6 +5590,17 @@ app.get('/getCharityRewards', async function(req, res) {
 });
 
 
+
+/* end point for returning full payout posts data */
+app.get('/getFullAFITPayPosts', async function(req, res) {
+
+	await db.collection('token_transactions').find(
+		{"reward_activity": "Full AFIT Payout"}).sort({'date': -1}).limit(1000).toArray(function(err, results) {
+		res.send(results);
+		console.log(results);
+	   });
+
+});
 
 /* end point for returning total number of AFIT tokens paid in return for full AFIT pay along with matching STEEM + SBD */
 app.get('/getFullAFITPayStats', async function(req, res) {
@@ -3465,7 +5760,12 @@ app.get('/exchangeAFITPrice', async function(req, res) {
 
 /* end point to grab current AFIT token price */
 app.get('/curAFITPrice', async function(req, res) {
-	let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	//let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
+	let curAFITPrice = {
+		_id: 1,
+		unit_price_usd: exchangeAfitPrice.afitHiveLastUsdPrice,
+		date: exchangeAfitPrice.lastUpdated
+	}
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
 	res.send(curAFITPrice);
 });
@@ -3720,6 +6020,106 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 	}
 })
 
+//function handles fetching recent tip transactions
+app.get('/verifyTipTransactions', async function (req, res){
+	let outcome = await utils.verifyTipTransactions(db);
+	res.send(outcome);
+})
+
+app.get('/availableTipBalance', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({})
+		return;
+	}
+	let dt = await db.collection('tip_balance').findOne({user: req.query.user});
+	res.send(dt);
+})
+
+app.get('/processTipRequest', async function (req, res){
+	if (!req.query.trxId || !req.query.blkNo){
+		res.send({status: "error", error: "missing data"});
+		return;
+	}
+	
+	//update tip transactions before proceeding
+	utils.verifyTipTransactions(db);
+	
+	//fetch the relevant transaction, and process it
+	let trxId = req.query.trxId;
+	let blkNo = req.query.blkNo;
+	
+	//default chain
+	let chain = 'HIVE';//req.query.chain;
+	if (req.query.chain){
+		chain = req.query.chain;
+	}
+	
+	//check if trx has been processed before
+	let matchCriteria = {trx_id: trxId, blk_no: blkNo, chain: chain};
+	let matchTrx = await db.collection('tip_trx_processed').findOne(matchCriteria);
+	console.log(matchTrx);
+	if (matchTrx && matchTrx.processed==true){
+		//found existing processed trx, bail
+		res.send({status: "error", error: "trx already processed"});
+		return;
+	}
+	
+	let reslt = await utils.fetchChainTrx(trxId, blkNo, chain);
+	console.log(reslt);
+	
+	if (reslt && reslt.reqUser && reslt.tgtUser && reslt.amnt){
+		//recalculate tip balances
+		let tipBal = await utils.updateTipBalances(db);
+	
+		//fetch user tip balance
+		let dt = await db.collection('tip_balance').findOne({user: reslt.reqUser});
+		//only send amount if user has enough balance
+		if (dt && dt.tip_balance && dt.tip_balance >= reslt.amnt ){
+			
+			//send out the tip
+			let tx_res = await utils.proceedSendToken(reslt.reqUser, config.tip_account, config.tip_account_active_key, reslt.tgtUser, reslt.amnt, chain, reslt.symbol);
+			
+			if (tx_res && tx_res.ref_block_num){
+				//update user tip balances
+				tipBal = await utils.updateTipBalances(db);
+				
+				//confirm trx was processed to db, to avoid any future abuse
+				await db.collection('tip_trx_processed').insert({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
+				reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
+				reslt.content += '<br/>Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
+				reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
+				reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
+				reslt.eligible = true;
+				//also write comment on blockchain
+				await utils.commentToChain(reslt);
+				//success
+				res.send({status: "success"});
+			}
+			//update tip balances
+			//console.log(trx);
+		}else{
+			reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
+			reslt.content += 'Hey @'+reslt.reqUser+', we could not send a tip as your tip balance is below threshold. To tip other users, please send a minimum of '+reslt.amnt+' '+reslt.symbol+' on hive-engine to @actifit.tip account, and then retry. ';
+			reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
+			reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
+			reslt.eligible = false;
+			//also write comment on blockchain
+			await utils.commentToChain(reslt);
+			res.send({status: "error", error: "user '+reslt.reqUser+' does not have enough tip balance"});
+			return;
+		}
+	}else{
+		res.send({status: "error", error: "trx not found"});
+		return;
+	}
+});
+
+//function handles updating user tip balances
+app.get('/updateTipBalances', async function (req, res){
+	let outcome = await utils.updateTipBalances(db);
+	res.send(outcome);
+})
+
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
 app.get('/confirmAFITSEReceipt', async function(req,res){
 	if (!req.query.user){
@@ -3893,7 +6293,7 @@ app.get('/proceedAfitxTransition', async function(req,res){
 	}
 });
 
-//function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
+//function handles the process of confirming AFIT S-E receipt into proper account, and then duplicating to new exchange
 app.get('/proceedAfitTransition', async function(req,res){
 	if (!req.query.user || !req.query.amount || !req.query.txid){
 		res.send('{}');
@@ -4274,8 +6674,8 @@ matchAccessToken = async function (user, product_id, access_token){
 }
 
 app.get("/gadgetBoughtName", async function(req, res) {
-	console.log('gadgetBought');
-	console.log(req.query);
+	//console.log('gadgetBought');
+	//console.log(req.query);
   //check if proper params sent
   if (!req.query.user || !req.query.gadget_name || !req.query.gadget_level) {
 	//make sure all params are sent
@@ -4330,6 +6730,31 @@ app.get("/gadgetsBoughtByDate", async function(req, res){
 	res.send({'totalGadgets': gadgets.length, 'uniqueUsers': usersArray.length});
 });
 
+app.get("/gadgetsBoughtByDateDetails", async function(req, res){
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	if (req.query.targetDate){
+		startDate = moment(moment(req.query.targetDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	}
+	let endDate = moment(moment(startDate).utc().subtract(1, 'days').toDate()).format('YYYY-MM-DD');
+	let gadgets = await db.collection('user_gadgets').find(
+		{
+			date_bought:{
+				$lte: new Date(startDate),
+				$gt: new Date(endDate)
+			}
+		}).toArray();
+	let usersArray = [];
+	for (let i=0;i<gadgets.length;i++){
+		let entry = gadgets[i];
+		if (!usersArray.includes(entry.user)){
+			usersArray.push(entry.user);
+		}
+	}
+	console.log(usersArray);
+	//, 'entries': gadgets
+	res.send({'totalGadgets': gadgets.length, 'uniqueUsers': usersArray.length, 'gadgets': gadgets});
+});
+
 app.get("/friendships", async function(req, res){
 	let gadgets = await db.collection('friends').find().toArray();
 	res.send(gadgets);
@@ -4368,6 +6793,30 @@ app.get("/activeGadgets", async function(req, res) {
   res.send(gadget_match);
 });
 
+app.get("/nonConsumedGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status : {$ne:'consumed'} }).toArray();		
+	res.send(gadget_match);
+});
+
+app.get("/consumedGadgetsByUser/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "consumed" }).toArray();		
+	res.send(gadget_match);
+});
+
+app.get("/activeGadgetsByUserApp/:user", async function(req, res) {
+  //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
+	let targetUser = req.params.user.replace('@','');
+	let aTargetUser = '@'+targetUser;
+	let gadget_match = await db.collection('user_gadgets').find({ user: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();			
+	let gadget_match_benefic = await db.collection('user_gadgets').find({ benefic: { $in: [targetUser, aTargetUser]}, status: "active" }).toArray();					
+	res.send({'own': gadget_match});
+});
 
 app.get("/activeGadgetsByUser/:user", async function(req, res) {
   //let gadget_match = await db.collection('user_gadgets').find({ status: "active"}).toArray();
@@ -4394,14 +6843,16 @@ app.get("/boughtGadgetCountByUser/:user", async function(req, res) {
 							}
 						}
 					]).toArray();
-  console.log(gadget_match);
+  //console.log(gadget_match);
   res.send(gadget_match);
 });
 
 
+
+
 app.get("/gadgetBought", async function(req, res) {
-	console.log('gadgetBought');
-	console.log(req.query);
+	//console.log('gadgetBought');
+	//console.log(req.query);
   //check if proper params sent
   if (!req.query.user || !req.query.gadget_id) {
 	//make sure all params are sent
@@ -4417,32 +6868,30 @@ app.get("/gadgetBought", async function(req, res) {
 	{ user: 1, date_bought: 1 }
   ).toArray();
   
-  console.log(gadget_match);
+  //console.log(gadget_match);
   
   //let token_match = await matchProductTrans(user, gadget_id);
   
   res.send(gadget_match);
 });
 
-
-//end point handles activating a bought gadget
-app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+async function performActivateMultiTrx(req){
 	let user = req.params.user;
 	let gadgets = req.params.gadgets
 	
 	//make sure friend and user are different
 	if (req.params.benefic && req.params.benefic.replace('@','') == user){
-		res.send({'error': 'User & friend cannot be the same account'});
-		return;
+		return({'error': 'User & friend cannot be the same account'});
+		
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return({status: 'error'});
+		//return;
 	}
 	
 	let gadget_entries = req.params.gadgets.split('-');
@@ -4457,7 +6906,7 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 				gadget_match.benefic = req.params.benefic;
 				
 				//also send notification to the beneficiary about being set for this gadget
-				utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+				utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'friendship', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
 			}
 			db.collection('user_gadgets').save(gadget_match);
 			
@@ -4466,13 +6915,33 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 		}
 	}
 	if (err != ''){
-		res.send({'error': err});
+		return ({'error': err});
 	}else{
-		res.send({'status': 'success'});
+		return ({'status': 'success'});
 	}
+}
+//end point handles activating multi bought gadgets/
+app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', async function (req, res) {
+	console.log('multi gadget activate keychain')
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}		
+	let outc = await performActivateMultiTrx(req);
+	res.send(outc);
+	
 });
 
+//end point handles activating multi bought gadgets/
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+		
+	let outc = await performActivateMultiTrx(req);
+	res.send(outc);
+	
+});
 
+//NOTICE: deprecated in favor of activateMultiGadget
 //end point handles activating a bought gadget
 app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 	let user = req.params.user;
@@ -4485,7 +6954,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db);
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -4502,7 +6971,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 			gadget_match.benefic = req.params.benefic;
 			
 			//also send notification to the beneficiary about being set for this gadget
-			utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+			utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'friendship', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
 		}
 		db.collection('user_gadgets').save(gadget_match);
 		res.send({'status': 'success'});
@@ -4512,16 +6981,16 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 });
 
-//end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+
+async function performDeactivateTrx(req){
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
 	//ensure proper transaction
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.blockNo, req.params.trxID, req.params.bchain);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'deactivate-gadget', req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
+		
 	}
 	
 	//find item to activate and proceed activating
@@ -4530,11 +6999,30 @@ app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async functio
 	if (gadget_match){
 		gadget_match.status="bought";
 		db.collection('user_gadgets').save(gadget_match);
-		res.send({'status': 'success'});
+		return ({'status': 'success'});
 	}else{
-		res.send({'error': 'Product not found'});
+		return ({'error': 'Product not found'});
 		
+	}	
+	
+}
+
+//end point handles deactivating bought gadget via keychain
+app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
 	}
+
+	let outc = await performDeactivateTrx(req);
+	res.send(outc);	
+});
+
+//end point handles deactivating a bought gadget
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performDeactivateTrx(req);
+	res.send(outc);
 });
 
 
@@ -4569,8 +7057,7 @@ app.get("/productBoughtToken", async function(req, res) {
   
   //check if the proper access token is valid for this user/product combination
   let token_match = await matchAccessToken(user, product_id, access_token);
-  
-  let token_match = await db.collection('user_product_key').findOne({user: user, access_token: access_token});
+ 
   res.send(token_match);
 });
 
@@ -4669,8 +7156,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	if (false){
+	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -4722,7 +7209,7 @@ app.get('/confirmPayment', async function(req,res){
 				//first step is to ensure memo has not been tampered with, nor has it been claimed before
 				//to do that, let's try to find if any signup has been done using this memo
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
-				console.log('memo_used:'+memo_used);
+				//console.log('memo_used:'+memo_used);
 				if (typeof memo_used == "undefined" || memo_used == null){
 					//check on which blockchain transaction was sent based on currency
 					let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
@@ -4788,30 +7275,87 @@ claimAndCreateAccount = async function (req){
 
 };
 
+//grab account RC
+app.get('/getRC', async function (req, res){
+	let result = {};
+	try{
+		if (req.query && req.query.user){
+			result = await utils.getNewRC(req.query.user, req.query.chain);
+		}
+	}catch(err){
+		console.log(err);
+	}
+	res.send(result);
+})
+
 //send notification
 app.get('/sendNotification', async function(req,res){
 	let passed_var = eval("req.query."+config.verifyNotifParam);
+	console.log('sendnotification');
 	//console.log(passed_var);
 	//make sure needed security var is passed, and with proper value
 	if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+		console.log('missing');
 		res.send('{}');
 	}else{
 		if (req.query.notifType == 'new_post'){
 			//first notify post owner
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'post', 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			
 			//fetch user friends
 			let friends = await getUserFriends(req.query.user);
 			//send out a notification for each friend
 			for (let i=0;i<friends.length;i++){
-				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'friendship', 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			}
-			res.send('{status: success}');
+			//res.send('{status: success}');
+			//return;
+		}else if (req.query.notifType == 'new_comment'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
+		}else if (req.query.notifType == 'mention'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
+			return;
 		}
 		//
+		res.send('{status: success}');
 	}
+});
+
+
+//query our unique user count across a range - default 30 days
+app.get('/findUniqueUsers', async function(req,res){
+	let passedDays = 30;
+	if (req.query && req.query.days){
+		if(isNaN(req.query.days)){
+			res.send({})
+		}
+		try{
+			passedDays = parseInt(req.query.days);
+		}catch(excp){
+			res.send({error: 'error'});
+		}
+	}
+	//today is start date
+	
+	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
+	//go back in date according to param
+	
+	let days = passedDays>30?30:passedDays;
+	let endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
+	let transQuery = {
+		date: {
+				$gte: new Date(endDate)
+			}
+	}
+	let postContent = await db.collection('verified_posts').distinct('author', transQuery);
+	console.log(postContent.length);
+	console.log(postContent);
+	res.send({uniqueUserCount: postContent.length, dayRange: days});
+	
 });
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
@@ -5065,13 +7609,13 @@ app.get('/getUserTokenSwapHistory/:user', async function(req, res){
 
 /* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
 app.get('/getPendingTokenSwapTransCount/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}}).sort({'date': 1}).toArray();
 	res.send({pendingSwap: tokenSwapTrans.length});
 });
 
 /* end point for getting exchanges pending upvotes  */
 app.get('/getPendingTokenSwapTrans/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [null, false, 'false']}}).sort({'date': 1}).toArray();
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}}).sort({'date': 1}).toArray();
 	//generate total AFIT value as well
 	let afit_count = 0;
 	for (let i=0;i<tokenSwapTrans.length;i++){
@@ -5082,15 +7626,19 @@ app.get('/getPendingTokenSwapTrans/', async function(req, res){
 	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_pending: afit_count});
 });
 
-/* end point for getting exchanges pending upvotes  */
+/* end point for getting exchanges processed upvotes  */
 app.get('/getProcessedTokenSwapTrans/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$in: [true, 'true']}}).sort({'date': 1}).toArray();
+	let maxLimit = 300;
+	if (req.query.limit){
+		maxLimit = req.query.limit;
+	}
+	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: true}).sort({'date': -1}).limit(maxLimit).toArray();
 	//generate total AFIT value as well
 	let afit_count = 0;
 	for (let i=0;i<tokenSwapTrans.length;i++){
 		afit_count += +tokenSwapTrans[i].paid_afit
 	}
-	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_exchanged: afit_count});
+	res.send({count: tokenSwapTrans.length, afit_tokens_exchanged: afit_count, pendingTransactions: tokenSwapTrans});
 });
 
 /* end point for getting exchanges pending upvotes  */
@@ -5156,7 +7704,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 		//decrease count
 		let tokenExchangeTrans = {
 			user: user,
-			reward_activity: 'Exchange AFIT To STEEM Upvote',
+			reward_activity: 'Exchange AFIT To Upvote',
 			token_count: -paid_tokens,
 			date: new Date(),
 		}
@@ -5236,9 +7784,9 @@ app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
 		//decrease count
 		let tokenExchangeTrans = {
 			user: outdatedTokenSwapTrans[i].user,
-			reward_activity: 'Refund Exchange AFIT To STEEM Upvote',
+			reward_activity: 'Refund Exchange AFIT To Upvote',
 			token_count: outdatedTokenSwapTrans[i].paid_afit,
-			note: 'Refund Exchange AFIT To STEEM Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
+			note: 'Refund Exchange AFIT To Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
 			date: new Date(),
 		}
 		try{
@@ -5428,10 +7976,19 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 		maxCount = parseInt(req.query.maxCount);
 	}
 	
+	
+	
 	//fetch banned accounts
 	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
+	
+	//exclude current user from fetched data
+	if (req.query.exclude){
+		banned_arr.push(req.query.exclude);
+	}
+	
 	banned_arr.push('');
 	//console.log(banned_arr);
 	
@@ -5581,4 +8138,5 @@ function gk_add_commas(nStr) {
 	return x1 + x2;
 }	
 
-app.listen(appPort);
+let srvr = app.listen(appPort);
+srvr.setTimeout(120000);
