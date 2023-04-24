@@ -1,4 +1,5 @@
 const dsteem = require('dsteem')
+const dhive = require('@hiveio/dhive')
 //const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
@@ -9,13 +10,54 @@ const config = utils.getConfig()
 
 const client = new dsteem.Client(config.active_node)
 
-const hiveClient = new dsteem.Client(config.active_hive_node)
+const hiveClient = new dhive.Client(config.active_hive_node)
+
+hiveClient.updateOperations(true);
 
 const MongoClient = require('mongodb').MongoClient
 
 const testRun = false;
 
 const hive = require('@hiveio/hive-js');
+
+const steem = require('steem');
+
+const steem_history_limit = 100;
+const hive_history_limit = 1000;
+
+//prepare BSC work
+const Web3 = require('web3');
+const targetToken = 'AFIT';
+
+let fs = require('fs');
+let jsonFile = "./AFIT_abi.json";
+
+let parsed= JSON.parse(fs.readFileSync(jsonFile));
+let tokenAbi = parsed;
+
+const web3 = new Web3(config.bscProvider);
+//append proper wallet
+web3.eth.accounts.wallet.add({
+    privateKey: config.bridgeWallet,
+    address: config.bridgeWalletAdd
+});
+
+// Get BEP20 Token contract instance
+let contract = new web3.eth.Contract(tokenAbi, config.afitAddress);
+
+
+//get balance of BEP20 token 
+/*contract.methods.balanceOf(config.bridgeWalletAdd).call().then(function (bal) {
+        console.log(bal);
+     })*/
+
+//return;
+
+//hive.config.set('rebranded_api','true');
+//hive.broadcast.updateOperations();
+
+hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
+
 hive.api.setOptions({ url: config.active_hive_node });
 
 let db
@@ -39,10 +81,14 @@ let steemPrice = 1;
 let sbdPrice = 1;
 let newestTxId = -1;
 
-console.log('--- Reward script initialized ---');
+console.log('--- Delegations script initialized ---');
+console.log('envt variables:');
+console.log(process.env.BOT_THREAD);
+//return;
 
 let schedule = require('node-schedule')
 
+/*
 if (process.env.BOT_THREAD == 'MAIN'){
 
 	console.log('--- Main Bot Thread Detected ---');
@@ -57,11 +103,19 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//utils.lookupAccountPay();
 
 	//param steemOnlyReward
-	runRewards(true);
+	//runRewards(true);
 	//runRewards(false);
 	
 	
-}else if (process.env.BOT_THREAD == 'SECOND_API'){
+}else */
+if (process.env.BOT_THREAD == 'MAIN'){
+	
+	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
+	
+	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
+	  console.log('--- Start delegators reward ---');
+	  runRewards(false, true);//param steemOnlyReward, updateDelegations
+	});
 	
 	//let's schedule the AFIT to S-E token move event at 10:00 
 	let moveJob = schedule.scheduleJob({hour: 10, minute: 00}, function(){
@@ -75,11 +129,303 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  processGadgetBuyPrize();//param test
 	});
 	
+	//schedule the delegation cancellation event at 11:00 every day
+	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 00}, function(){
+	  console.log('--- Cancel outdated delegations ---');
+	  utils.redeemDelegations();
+	});
+	
+	//run the airdrop once
+	/*const date = new Date(2021, 9, 26, 9, 00, 00);
+	//const date = new Date(2021, 9, 25, 16, 12, 00);
+	let airdropJob = schedule.scheduleJob(date, function(){
+	  console.log('--- Airdrop AFIT to community ---');
+	  processAfitAirdropHive();//param test
+	});
+	*/
+	
+	//schedule recurring checks for BSC bridge transfer execution
+	const rule = new schedule.RecurrenceRule();
+	//rule.minute = 
+	let runMinTimes = [];
+	for (let i=1; i< 20; i++){
+		runMinTimes.push(i*3);
+	}
+	rule.minute = runMinTimes;
+	//rule.second = runMinTimes;
+	let bscTransferJob = schedule.scheduleJob(rule, function(){
+	  console.log('--- BSC transfer ---');
+	  processBSCTransfers();
+	  //processGadgetBuyPrize();//param test
+	});
 	
 }else{
 	//processGadgetBuyPrize();
-	runRewards(true);
+	runRewards(true, false);
+	//runRewards(false, false);
+	//moveAFITToSE(true);
+	/*let val = utils.rewardCap('HIVE');
+	console.log(val);
+	val = utils.rewardCap('STEEM');
+	console.log(val);*/
+	//testFetchHistory();
+	//processBSCTransfers();
+	
+	
 }
+/*
+async function testFetchHistory(){
+	let from = -1
+	let limit = 100;
+	let histTrans = await steem.api.getAccountHistoryAsync(config.account, from, limit);
+	//[account, txStart, limit]
+	console.log(histTrans);
+}*/
+
+async function processBSCTransfers(){
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+	  if (!err) {
+		console.log('Connected successfully to server: ')
+
+		db = dbClient.db(dbName)
+		
+		//fetch data of pending bridge items
+		let pendingBridgeEntries = await db.collection('bsc_bridge_queue').find({status: 'pending'}).sort({'date': 1}).toArray();
+		console.log('found entries');
+		console.log(pendingBridgeEntries.length);
+		
+		//grab transactions
+		let url = new URL(config.hive_engine_bsc_bridge_afit_acct_his);
+		let se_connector = await fetch(url);
+		let bridge_afit_trx_entries = await se_connector.json();
+		
+		
+		//grab HBD transactions
+		let transactions = await hiveClient.database.call('get_account_history', [config.bsc_bridge_account, -1, 300]);
+		//let hbdUrl = 
+		
+		//loop through entries, and send over AFIT
+		pendingBridgeEntries.forEach(async function(entry){
+			//verify if the entry is valid by count of AFIT and HBD stored
+			//ID of the AFIT transfer
+			let afitTrx = entry.afitTrx;
+			//ID of HBD transfer
+			let hbdTrx = entry.hbdTrx;
+			let targetWallet = entry.wallet;
+			let matchingTrx = bridge_afit_trx_entries.find(item => {
+				return (item.transactionId == afitTrx && item.from == entry.user && item.symbol == 'AFIT')
+			});
+			console.log(matchingTrx);
+			//found AFIT payment
+			if (matchingTrx){
+				let afitAmnt = parseFloat(matchingTrx.quantity);
+				console.log('afitAmnt:'+afitAmnt);
+				if (afitAmnt < config.minAFITTransfer){
+					console.log('less than min amount');
+				}else if (afitAmnt > config.maxAFITTransfer){
+					console.log('greater than max amount');
+				}else{
+					//find matching HBD transaction
+					//console.log(transactions);
+					
+					let soughtHBDAmount = config.hbdAFITTransferRate * afitAmnt;
+					soughtHBDAmount = parseFloat(soughtHBDAmount.toFixed(2));
+					console.log(soughtHBDAmount);
+					let tx_id = '';
+					let paymentFound = false;
+					for (let txs of transactions) {
+						let op = txs[1].op
+						//check if we received a transfer to our target account
+						//if we found a transfer operation sent to our target account, with the correct memo and the proper amount, proceed
+						if (op[0] === 'transfer'){
+							//console.log('transfer op ');
+							//console.log(op[1]);
+							let sentAmount = op[1].amount.split(' ')[0];
+							//the correct amount to find
+							console.log(sentAmount);
+							if (op[1].to === config.bsc_bridge_account && op[1].from === entry.user && txs[1].trx_id == hbdTrx && sentAmount == soughtHBDAmount){  
+								console.log('found match');
+								console.log(op[1]);
+								//console.log(txs);
+								/*let now = moment(new Date()); //todays date
+								let end = moment(txs[1].timestamp); // last update date
+								let duration = moment.duration(now.diff(end));
+								let hrs = duration.asHours();
+								//transaction needs to have been concluded within 5 hours.
+								if (hrs < 24){*/
+									/*tx_id = txs[1].trx_id;*/
+									paymentFound = true;
+									break;
+								
+								//}
+							}
+						}
+					}	
+					if (paymentFound){
+						let txHash = await sendAfitBSC(afitAmnt,targetWallet);
+						await updateTrxDetails(entry, txHash, afitAmnt, soughtHBDAmount);
+					}
+				}
+			}
+			//{transactionId: afitTrx});
+			//console.log(match);
+			//the ID of HBD transfer
+			//let hbdTrx = entry.hbdTrx;
+			
+		});
+		
+	  }
+	});
+}
+//send corresponding amount on BSC, while updating user balances on actifit and taking off 1 HBD as trx fee (0r 1%, whichever is bigger)
+async function sendAfitBSC(amnt, tgtAddress){	
+	console.log('sendAfitBSC');
+	let outc = await contract.methods.transfer(tgtAddress, web3.utils.toWei( amnt.toString() )).send({ 
+		from: config.bridgeWalletAdd,
+		gasPrice: 10000000000, // 10 gwei //0.000000005
+		gas: 100000,
+	});
+	console.log(outc.transactionHash);
+	return outc.transactionHash;
+	/*web3.eth.sendTransaction({
+		from: config.bridgeWalletAdd,//web3.eth.accounts[0],
+		to: tgtAddress,
+		data: contract.methods.transfer(tgtAddress, web3.utils.toWei( amnt.toString() ) ).encodeABI(),
+		//value: _addr[1]* 10 ** 18,//20000000000000000, 
+		gasPrice: 10000000000, // 10 gwei //0.000000005
+		gas: 100000, 
+		//gas: maxGas,
+		
+	}, 
+	(err, txHash) => {
+		console.log(!err ? txHash : err);
+	})*/
+}
+
+async function updateTrxDetails(entry, trxHash, afitAmnt, hbdAmnt){
+	entry.txHash = trxHash;
+	entry.status = "complete";
+	entry.afitLockedAmount = afitAmnt;
+	entry.origHbdAmount = hbdAmnt;
+	let hbdFees = (hbdAmnt > 100? hbdAmnt / 100 : 1);
+	console.log(hbdFees);
+	entry.hbdFees = hbdFees;
+	let pendingHbd = hbdAmnt - hbdFees;
+	entry.hbdLockedAmount = pendingHbd;
+	entry.trfDate = new Date();
+	try{
+		let trans = await db.collection('bsc_bridge_queue').save(entry);
+		console.log('success updating BSC transfer trx');
+	}catch(err){
+		console.log(err);
+	}
+}
+
+//run the airdrop once
+	/*const date = new Date(2021, 9, 25, 19, 06, 30);
+	console.log(date);
+	schedule.scheduleJob(date, function(){
+	  console.log('--- Airdrop AFIT to community ---');
+	  processAfitAirdropHive();//param test
+	});*/
+	
+
+//processAfitAirdropHive();
+
+/*
+async function processAfitAirdropHive(){
+	let mongo_conn = config.mongo_uri
+	if (config.testing){
+		mongo_conn = config.mongo_local
+	}
+	// Use connect method to connect to the server
+	MongoClient.connect(mongo_conn, async function (err, dbClient) {
+		if (!err) {
+			console.log('Connected successfully to server: ');
+			db = dbClient.db(dbName);
+			
+			let participants = await db.collection('user_wallet_address').find({chain: 'BSC'}).toArray();
+			console.log(participants.length);
+			let delay = 0;
+			for (let entry of participants) {
+				setTimeout(async function(){
+					//grab tokens of the user on actifit wallet
+					//let afit_wallet = await grabUserTokensFunc(entry.user);
+					
+					let user = await db.collection('user_tokens').findOne({_id: entry.user});
+					//console.log(afit_wallet);
+					//fixing token amount display for 3 digits
+					if (typeof user!= "undefined" && user!=null){
+						if (typeof user.tokens!= "undefined"){
+							user.tokens = user.tokens.toFixed(3)
+						}
+					}else{
+						user = new Object();
+						user._id=username;
+						user.name=username;
+						user.tokens=0;
+					}
+					
+					console.log('afit_wallet:'+user.tokens);
+					let afit_he_bal_val = 0;
+					try { 
+						let afit_he_bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+						afit_he_bal_val = afit_he_bal.balance;
+					}catch(err){
+						
+					}
+					console.log('afit_he_bal:'+afit_he_bal_val);
+					let afit_se_bal_val = 0;
+					try { 
+						let afit_se_bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
+						afit_se_bal_val = afit_se_bal.balance;
+					}catch(err){
+						
+					}
+					console.log('afit_se_bal:'+afit_se_bal_val);
+					let tot_tokens = parseFloat(user.tokens) + parseFloat(afit_he_bal_val) + parseFloat(afit_se_bal_val);
+					console.log(tot_tokens);
+					let reward = 0;
+					if (tot_tokens>=2000 && tot_tokens <5000){
+						reward = tot_tokens*0.004;
+					}else if (tot_tokens>=5000 && tot_tokens <10000){
+						reward = tot_tokens*0.005;
+					}else if (tot_tokens>=10000 && tot_tokens <50000){
+						reward = tot_tokens*0.006;
+					}else if (tot_tokens>=50000 && tot_tokens <100000){
+						reward = tot_tokens*0.007;
+					}else if (tot_tokens>=100000){
+						reward = 800;
+					}
+					console.log(reward);
+					//only insert if user is eligible
+					if (reward>0){
+						let airdrop_entry = {
+							user: entry.user,
+							chain: 'BSC',
+							tokens_count: parseFloat(tot_tokens),
+							actifit_wallet_afit_bal: parseFloat(user.tokens),
+							afit_he_bal: parseFloat(afit_he_bal_val),
+							afit_se_bal: parseFloat(afit_se_bal_val),
+							afit_bsc_reward: parseFloat(reward.toFixed(3)), 
+							date: new Date()
+						}
+						//insert into airdrop snapshot
+						let transaction = await db.collection('afit_bsc_hive_airdrop').insert(airdrop_entry);
+						//res.write(JSON.stringify(transaction));
+					}
+				}, delay+=1500);
+			}
+	  }
+	});
+}
+
+*/
 
 const SSC = require('sscjs');
 const ssc = new SSC(config.steem_engine_rpc);
@@ -88,7 +434,8 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 //airdropAFITX();
 
-//moveAFITToSE(true);
+// moveAFITToSE(false);
+//runRewards(true);
 
 //testMove();
 
@@ -119,9 +466,9 @@ async function processGadgetBuyPrize() {
 		//let nextDrawDate = lastDrawDate+
 		console.log(today);
 		console.log(nextDrawDate);
-		console.log((today.getTime() == nextDrawDate.getTime()));
+		console.log((today.getTime() >= nextDrawDate.getTime()));
 		//check if this is the proper date to kick off reward
-		if (today.getTime() == nextDrawDate.getTime()){
+		if (today.getTime() >= nextDrawDate.getTime()){
 			console.log('kick off draw reward');
 			//fetch list of ticket holders
 			let entries = await utils.getGadgetBuyTickets(db);
@@ -175,21 +522,21 @@ async function processGadgetBuyPrize() {
 							db.collection('gadget_buy_prize_draw').insert(drawInfo);
 						}
 						
-						memo= 'Funds to buy back from Actifit random gadget purchase prize!';
-						
 						//send 25% of funds to buy back tokens
-						
-						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.buy_account, parseFloat(buyBackAmount).toFixed(3) + ' ' + currency, memo);
-						
-						console.log(res);
+						setTimeout(async function(){
+							memo= 'Funds to buy back from Actifit random gadget purchase prize!';
+							res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.buy_account, parseFloat(buyBackAmount).toFixed(3) + ' ' + currency, memo);
+							
+							console.log(res);
+						}, 3000);
 						
 						//keep 25% of funds to actifit project
-						memo= 'Funds to keep as 25% based on prize results.';
+						setTimeout(async function(){
+							memo = 'Funds to keep as 25% based on prize results.';
+							res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.full_pay_benef_account, parseFloat(projectSupportAmount).toFixed(3) + ' ' + currency, memo);
 						
-						
-						res = await hive.broadcast.transferAsync(config.gadget_buy_account_ak, config.gadget_buy_account, config.full_pay_benef_account, parseFloat(projectSupportAmount).toFixed(3) + ' ' + currency, memo);
-						
-						console.log(res);
+							console.log(res);
+						}, 6000);
 						
 						//send notification to the user about winning
 						utils.sendNotification(db, winner_name, 'actifit', 'prize_pool_draw_winner', 'Congratulations! You have won the prize pool of the gadget buy contest! ' + prizePoolValue + ' HIVE have been sent to your wallet', 'https://actifit.io/'+winner_name);
@@ -326,7 +673,7 @@ async function moveAFITToSE(testMode){
 		db = dbClient.db(dbName)
 		// Get the documents collection
 		let poweringDown = await db.collection('powering_down_he').find().toArray();
-		console.log (poweringDown)
+		//console.log (poweringDown)
 		
 		//sign key properly to function with dsteem requirement
 		let privateKey = dsteem.PrivateKey.fromString(
@@ -339,6 +686,11 @@ async function moveAFITToSE(testMode){
 		//let's fetch banned accounts, to ensure they dont receive an airdrop
 		let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 		
+		//grab actifit current AFIT balance
+			
+		let afit_av_bal = await hsc.findOne('tokens', 'balances', { account: 'actifit', symbol: 'AFIT' });
+		console.log('AFIT balance on actifit:')
+		console.log(afit_av_bal);
 		//loop through entries, and send over AFIT
 		poweringDown.forEach(async function(entry){
 			
@@ -351,6 +703,10 @@ async function moveAFITToSE(testMode){
 					break;
 				}
 			}
+			/*
+			if (entry.user!='mcfarhat'){
+				user_banned = true;
+			}*/
 			if (!user_banned){
 				
 				//let's make sure user still has proper AFITX amount
@@ -358,30 +714,43 @@ async function moveAFITToSE(testMode){
 				let afitx_tot_bal = 0;
 				let afitx_se_balance = 0;
 				let afitx_he_balance = 0;
-				let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-				if (bal){
-					afitx_se_balance = bal.balance;
-				}else{
-					console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
-					//return;
+				try{
+					let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+					if (bal){
+						afitx_se_balance = bal.balance;
+					}else{
+						console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
+						//return;
+					}
+				}catch(err){
+					console.log(err);
 				}
-				bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-				if (bal){
-					afitx_he_balance = bal.balance;
-				}else{
-					console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
-					//return;
+				try{
+					let bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
+					if (bal){
+						afitx_he_balance = bal.balance;
+					}else{
+						console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
+						//return;
+					}
+				}catch(err){
+					console.log(err);
 				}
+				
 				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
-				//make sure user has at least 0.1 AFITX to move tokens
-				if (afitx_tot_bal < 0.1){
-					userHasProperFunds = false;
-				}
-				  //console.log(amount_to_powerdown);
-				  //console.log(this.afitx_se_balance);
-				  //calculate amount that can be transferred daily
-				if (parseFloat(entry.daily_afit_transfer) / 100 > afitx_tot_bal){
-					userHasProperFunds = false;
+				let amount = parseFloat(entry.daily_afit_transfer);
+				if (amount > config.free_movable_afit_day ){
+					//make sure user has at least 0.1 AFITX to move tokens
+					if (afitx_tot_bal < 0.1){
+						userHasProperFunds = false;
+					}
+					  //console.log(amount_to_powerdown);
+					  //console.log(this.afitx_se_balance);
+					  //calculate amount that can be transferred daily
+					if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > afitx_tot_bal){
+						userHasProperFunds = false;
+					}
+					
 				}
 				
 				//make sure user has enough funds to send to SE
@@ -401,7 +770,12 @@ async function moveAFITToSE(testMode){
 				let cur_user_token_count = 0;
 				try{
 					cur_user_token_count = parseFloat(user.tokens);
-					if (cur_user_token_count < entry.daily_afit_transfer){
+					if (cur_user_token_count < amount){
+						userHasProperFunds = false;
+					}
+					
+					//also check if actifit account has enough funds to send out
+					if (afit_av_bal < amount){
 						userHasProperFunds = false;
 					}
 				}catch(err){
@@ -410,6 +784,8 @@ async function moveAFITToSE(testMode){
 				
 				console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_tot_bal+' userHasProperFunds:'+userHasProperFunds);
 				if (userHasProperFunds){
+					//deduct from actifit balance
+					afit_av_bal -= amount;
 					setTimeout(async function(){
 										
 						try{
@@ -421,13 +797,13 @@ async function moveAFITToSE(testMode){
 						
 							console.log(entry);
 											
-							let amount = parseFloat(entry.daily_afit_transfer);
+							let dedc_amount = parseFloat(entry.daily_afit_transfer);
 							
 							//perform transaction, decrease sender amount
 							let moveTrans = {
 								user: entry.user,
 								reward_activity: 'Move AFIT to H-E',
-								token_count: -amount,
+								token_count: -dedc_amount,
 								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to H-E',
 								date: new Date(),
 							}
@@ -463,14 +839,17 @@ async function moveAFITToSE(testMode){
 										console.log(result) 
 										//update user total count
 										updateUserCount(entry);
+										deactivateDailyAFITPowerDown(entry, testMode);
 										},
 									error => { 
 										console.error(error) 
 										//roll back db transaction as there was issue sending to blockchain
 										rollBackTrans(moveTrans);
+										deactivateDailyAFITPowerDown(entry, testMode);
 										}
 								)
 							}
+							//deactivateDailyAFITPowerDown(entry, testMode);
 						
 						}catch(err){
 							console.log(err);
@@ -481,17 +860,47 @@ async function moveAFITToSE(testMode){
 					}, delay+=4500);
 				}else{
 					console.log('error - user does not have enough funds');
+					await deactivateDailyAFITPowerDown(entry, testMode);
 					return;
 				}
 			}else{
 				console.log('user ' + entry.user + ' is banned. Skip');
+				await deactivateDailyAFITPowerDown(entry, testMode);
 			}
+			//check if user has this request for over a week, and cancel it accordingly
+			
 		});
 	  } else {
 		utils.log(err, 'delegations')
 		process.exit()
 	  }
 	})
+}
+
+
+async function deactivateDailyAFITPowerDown(entry, testMode){
+	//today
+	let start = moment().utc().startOf('date').toDate()
+	
+	//7 days running timeframe
+	let to = moment(start).subtract(7, 'days').toDate()
+	
+	let maxDate = moment(to).format()
+	
+	let transDate = moment(new Date(entry.date)).format();
+	/*console.log('request date:')
+	console.log(entry.date);
+	console.log('7 days max date:');
+	console.log(maxDate);
+	console.log('due???');
+	console.log((transDate < maxDate));*/
+    if (transDate < maxDate) {// || entry.user=='mcfarhat'
+		console.log('need to cancel out transaction')
+		if (!testMode){// || entry.user=='mcfarhat'
+			let stts = await db.collection('powering_down_he').remove(entry);
+		}
+	}
+	
 }
 
 /*
@@ -587,7 +996,7 @@ async function airdropAFITX(){
 
 */
 
-function runRewards(steemOnlyReward){
+function runRewards(steemOnlyReward, updateDelegations){
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
 		mongo_conn = config.mongo_local
@@ -619,7 +1028,7 @@ function runRewards(steemOnlyReward){
 		
 		//run for one day
 		var delegation_days = 1;
-		startProcess(delegation_days, steemOnlyReward);
+		startProcess(delegation_days, steemOnlyReward, updateDelegations);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
 		setInterval(loadSteemPrices,5 * 60 * 1000);
@@ -664,7 +1073,11 @@ async function getBenefactorPosts (account, start) {
   
   // Query account history for delegations
   properties = await nodeLink.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   //console.log(properties);
   const transactions = await client.database.call('get_account_history', [account, txStart, limit])
@@ -715,7 +1128,13 @@ async function getBenefactorPosts (account, start) {
 		let steemPureToAFIT = steemPureInUSD / curAFITPrice.unit_price_usd;
 		matchingAFIT += steemPureToAFIT;
 		
-		let rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
+		let tgtVal = '';
+		if (op[1].sbd_payout){
+			tgtVal = op[1].sbd_payout;
+		}else{
+			tgtVal = op[1].hbd_payout;
+		}
+		let rewardedSBD = parseFloat(tgtVal.split(' ')[0])
 		
 		console.log("rewardedSBD:"+rewardedSBD);
 		
@@ -811,7 +1230,7 @@ function loadSteemPrices() {
 }
 
 
-async function startProcess (days, steemOnlyReward) {
+async function startProcess (days, steemOnlyReward, updateDelegations) {
 	let end = 0
 	// Find last saved delegation transaction
 	//let lastTx = await collection.find().sort({'tx_number': -1}).limit(1).next()
@@ -819,14 +1238,15 @@ async function startProcess (days, steemOnlyReward) {
 	//console.log(lastTx)
 	//if (lastTx) end = lastTx.tx_number
 	await updateProperties()
-	if (!testRun){
+	if (!testRun && updateDelegations){
 		//update Steem delegations
-		console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
-		await processDelegations(client, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
+		//console.log('>>>>>>>>>>STEEM<<<<<<<<<<<<');
+		//await processDelegations(client, steem_history_limit, bulk_delegation_entries, delegationTrxCol, actDelgCol, config.account, -1, end)
 		
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
-		await processDelegations(hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		await processDelegations(hiveClient, hive_history_limit, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		//await processDelegationsHive(hive, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 	}
 	//TEMP BREAK
 	//return;
@@ -834,10 +1254,16 @@ async function startProcess (days, steemOnlyReward) {
 	
 	let start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	let txEnd = moment().utc().startOf('date').toDate()
+	//let start = moment().utc().startOf('date').subtract(2, 'days').toDate()
+	//let txEnd = moment().utc().startOf('date').subtract(1, 'days').toDate()
+	//let txEnd = moment().utc().startOf('date').toDate()
+	console.log('start:'+start);
+	console.log('txEnd:'+txEnd);
+	
 	if (!steemOnlyReward){
 		console.log('processTokenRewards');
 		//steem based rewards
-		await processTokenRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, start, txEnd, days)
+		//await processTokenRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, start, txEnd, days)
 		
 		//hive based rewards
 		await processTokenRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, start, txEnd, days)
@@ -852,9 +1278,9 @@ async function startProcess (days, steemOnlyReward) {
 	if (dayId == 1){
 		//console.log('processSteemRewards');
 		//processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
-		let resSt = await processSteemRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
+		//let resSt = await processSteemRewards('STEEM', steem_history_limit, client, bulk_delegation_entries, delegationTrxCol, actDelgCol, txEnd)
 		//console.log('>>>>>STEEM REWARDS COMPLETE');
-		let resHv = await processSteemRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
+		let resHv = await processSteemRewards('HIVE', hive_history_limit, hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
 		//console.log('>>>>>HIVE REWARDS COMPLETE');
 	}
 }
@@ -873,10 +1299,13 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 
 	let currentSteemPower = await getCurrentTotalSP(activeDelColLink, end);
 	console.log("currentSteemPower:"+currentSteemPower);
-		
+	
+	let weekly_rewd_cap = await utils.rewardCap(chain);
+	console.log('main weeklyrewcap'+weekly_rewd_cap );
+	
 	//check if max CAP is reached, and apply multplier accordingly
-	if (currentSteemPower > config.weekly_rewards_limit) {
-		multiplier = config.weekly_rewards_limit / currentSteemPower;
+	if (currentSteemPower > weekly_rewd_cap) {
+		multiplier = weekly_rewd_cap / currentSteemPower;
 		console.log(">>>>went beyond rewards limit. Apply multiplier");
 	}
 	console.log(">>>>multiplier:"+multiplier);
@@ -930,7 +1359,7 @@ async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
 	}
 }
 
-async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
+async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
   if (!start) start = moment().utc().startOf('date').toDate()
   // Get active delegations for the week
   console.log(config.pay_account)
@@ -945,12 +1374,13 @@ async function processSteemRewards (chain, nodeLink, dbDelegLink, delTrxCol, act
   Promise.all(
 		[
 			getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, config.exclude_enabled), //(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
-			getBenefactorRewards(nodeLink, to, start, -1)
+			getBenefactorRewards(nodeLink, history_limit, to, start, -1)
 		]
 	).then(values => {
     const activeDelegations = values[0].users
 	//console.log('***');
 	//console.log(values[1]);
+	//console.log(activeDelegations);
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = values[0].totalSteem
@@ -1035,13 +1465,66 @@ function vestsToSteemPower (vests) {
   const steemPower = (totalSteem * (vests / totalVests))
   return steemPower
 }
+/*
+alignGadgetTicketEntries();
+
+async function alignGadgetTicketEntries () {
+  console.log('>>>>>>>>alignGadgetTicketEntries<<<<<<<<<<<')
+  let start = -1;
+  let ended = false;
+  let account = config.gadget_buy_account;
+  let limit = 2;//(start < 0) ? 3000 : Math.min(start, 3000)
+  console.log('Account: ' + account + ' - Start: ' + start + ' - Limit: ' + limit)
+  try {
+    // Query account history for delegations
+    const transactions = await hiveClient.database.call('get_account_history', [account, start, limit])
+    transactions.reverse()
+	
+	//let's only fetch a max of 5 days ago delegation transactions
+	
+	//today
+	start = moment().utc().startOf('date').toDate()
+	  
+	let to = moment(start).subtract(5, 'days').toDate()
+	let end = moment(to).format()
+	
+    for (let txs of transactions) {
+	  
+	  let tx_date = moment(txs[1].timestamp).format()
+	  
+      if (txs[0] === end || tx_date < end) {
+        console.log('--- Found last transaction ---')
+        ended = true
+        break
+      }
+      let op = txs[1].op
+      lastTrans = txs[0]
+      // Look for delegation operations
+      if (op[0] === 'transfer' && op[1].to === account) {
+		console.log(txs);
+        //ensure transaction is properly processed
+		let req = new Object();
+		req.params = new Object();
+		req.params.user = op[1].from;
+		req.params.gadgets = op[1].memo;
+		
+		utils.buyMultiGadgetHiveUtls();
+		
+      }
+    }
+    
+  }catch (err) {
+    console.log(err);
+  }
+}*/
 
 
-async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
+
+async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
   let delegationTransactions = []
   let lastTrans = start
   let ended = false
-  let limit = (start < 0) ? 3000 : Math.min(start, 3000)
+  let limit = (start < 0) ? history_limit : Math.min(start, history_limit);
   console.log('Account: ' + account + ' - Start: ' + start + ' - Limit: ' + limit + ' - Last Txs: ' + end)
   try {
     // Query account history for delegations
@@ -1093,12 +1576,12 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
       await updateActiveDelegations(delTrxCol, activeDelColLink)
 	  
     } else {
-      console.log('--- No new delegations ---')
-		return;
+      console.log('--- No new delegations within current range---')
+		//return;
     }
     // If more pending delegations call process againg with new index
     if (start !== limit && !ended){ 
-		return processDelegations(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, lastTrans, end)
+		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, lastTrans, end)
 	}
     // console.log(transactions)
 	return;
@@ -1106,22 +1589,26 @@ async function processDelegations (nodeLink, dbDelegLink, delTrxCol, activeDelCo
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
     if (err.type === 'request-timeout' || err.type === 'body-timeout'){ 
-		return processDelegations(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, account, start, end);
+		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end);
 	}
   }
 }
 
-async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, totalSBD) {
+async function getBenefactorRewards (nodeLink, history_limit, start, end, txStart, totalSp, totalSBD) {
   if (!totalSBD) totalSBD = 0
   if (!totalSp) totalSp = 0
-  let limit = (txStart < 0) ? 10000 : Math.min(txStart, 10000)
+  let limit = (txStart < 0) ? history_limit : Math.min(txStart, history_limit);
   start = moment(start).format()
   end = moment(end).format()
   console.log(start)
   console.log(end)
   // Query account history for delegations
   properties = await nodeLink.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   const transactions = await nodeLink.database.call('get_account_history', [config.pay_account, txStart, limit])
   transactions.reverse()
@@ -1133,10 +1620,21 @@ async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, tot
       if (op[0] === 'comment_benefactor_reward') {
 		//console.log(op[1]);
 		//SP is the sum of conversting vesting payout to SP, and appending any STEEM payouts
-        let newSp = vestsToSteemPower(op[1].vesting_payout) + parseFloat(op[1].steem_payout.split(' ')[0])
+        let newSp = vestsToSteemPower(op[1].vesting_payout);
+		//console.log(op[1]);
+		if (op[1].steem_payout){
+			newSp += parseFloat(op[1].steem_payout.split(' ')[0])
+		}else{
+			newSp += parseFloat(op[1].hive_payout.split(' ')[0])
+		}
         totalSp = totalSp + newSp
-		let newSBD = op[1].sbd_payout.split(' ')[0]
-		totalSBD += parseFloat(newSBD)
+		if (op[1].sbd_payout){
+			let newSBD = op[1].sbd_payout.split(' ')[0]
+			totalSBD += parseFloat(newSBD)
+		}else{
+			let newSBD = op[1].hbd_payout.split(' ')[0]
+			totalSBD += parseFloat(newSBD)
+		}
       }
     } else if (date < start) break
   }
@@ -1144,7 +1642,7 @@ async function getBenefactorRewards (nodeLink, start, end, txStart, totalSp, tot
   let lastTx = transactions[transactions.length - 1]
   let lastDate = moment(lastTx[1].timestamp).format()
   // console.log(lastDate)
-  if (lastDate >= start) return getBenefactorRewards(nodeLink, start, totalSp, lastTx[0])
+  if (lastDate >= start) return getBenefactorRewards(nodeLink, history_limit, start, end, lastTx[0], totalSp, totalSBD)
 
   console.log('-- Processed rewards ---')
   // console.log(totalSp.toFixed(3))
@@ -1251,8 +1749,10 @@ async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, active
   //console.log('get Acc Power');
   //console.log(activeDelColLink);
   // Get active delegations for the week
+  console.log('getAcumulatedSteemPower');
+  //console.log(delTrxCol);
   let activeDelegations = await getActiveDelegations(delTrxCol, from, excludeOn)
-  //console.log(activeDelegations);
+  console.log(activeDelegations);
   // Get transactions of the processed week
   let weekTxs 
   if (excludeOn){
@@ -1338,7 +1838,11 @@ function upsertRewardTransaction (reward) {
 async function updateProperties () {
   // Set STEEM global properties
   properties = await client.database.getDynamicGlobalProperties()
-  totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  if (properties.total_vesting_fund_steem){
+	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+  }else{
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
+  }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
 }
 
