@@ -141,11 +141,12 @@ let fullSortedAFITList = [];
 
 //initial fetch
 
-fetchAFITXBal(0);
+//fetchAFITXBal(0);
 
-fetchAFITBal(0);
+//fetchAFITBal(0);
 
-setTimeout(launchHEFetch, 10000);
+launchHEFetch();
+//setTimeout(launchHEFetch, 10000);
 
 async function launchHEFetch(){
 	console.log('looking up HE data')
@@ -162,9 +163,9 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   //reset array
   usersAFITBal = [];
   usersAFITXBal = [];
-  fetchAFITXBal(0);
+  //fetchAFITXBal(0);
   
-  fetchAFITBal(0);
+  //fetchAFITBal(0);
   
   setTimeout(launchHEFetch, 10000);
   
@@ -231,15 +232,6 @@ app.get('/', function (req, res) {
 
 
 /*************************** DIGIFINEX API *************************/
-
-/*
-app.get('/sendWarning', async function (req, res){
-	
-	  console.log('send warning');
-		await utils.sendNotification(db, 'yasirgujrati', 'actifit', 'abuse_notice', 'airdrop', 'Your account has been unfortunately identified to be abusing the actifit bonus reward system. Your rewards since abuse detection, dating back to 24 July 2022, have been nullified. Your account has been banned from receiving rewards temporarily. Please consult with actifit team on discord for further clarification.', 'https://links.actifit.io/discord');
-		console.log('done');
-		res.send('done');
-})*/
 
 /*
 const verifier = require('@exoshtw/admob-ssv').Verifier;
@@ -497,6 +489,48 @@ app.get('/getDailyDelegationPool/', async function(req, res){
 app.get('/dailyTip', async function (req, res){
 	let tipEntry = await db.collection('daily_tip').find().toArray();
 	res.send(tipEntry);
+})
+
+app.get('/proposalNotified', async function (req, res){
+	let propNotif = await db.collection('proposal_notified').find().toArray();
+	res.send(propNotif);
+})
+
+app.get('/updateProposalNotified', async function (req, res){
+	if (!req.query || !req.query.author || !req.query.permlink || !req.query.secr){
+		res.send({})
+		return;
+	}
+	if (req.query.secr != '94$8u93h_f$83jg9_843909k'){
+		res.send({})
+		return;
+	}
+		
+	let author = req.query.author;
+	let user_info = await db.collection('proposal_notified').findOne({author: author});
+	if (typeof user_info!= "undefined" && user_info!=null){
+		/*if (typeof user_info.count!= "undefined"){
+			user_info.count = 0;
+			user_info.permlinks = [];
+		}*/
+	}else{
+		user_info = new Object();
+		user_info.author = author;
+		user_info.permlinks = [];
+		user_info.count = 0;
+	}
+	user_info.count += 1;
+	user_info.permlinks.push(req.query.permlink);
+	console.log(user_info);
+	
+	try{
+		let trans = await db.collection('proposal_notified').save(user_info);
+		res.send({status: 'success'});
+	}catch(err){
+		console.log(err)
+		res.send({error: JSON.stringify(err)});
+	}
+	
 })
 
 app.get('/loginImg', async function (req, res){
@@ -1017,7 +1051,7 @@ function decrypt(text) {
 }
 
 getTotalSupplyAFIT = async function (){
-	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=8VYN5BUXD6T1X1GAU12UHMQXBT3IJTF68V');
+	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey='+config.bscscan_api);
 	
 	try{
 		let connector = await fetch(url);
@@ -1043,7 +1077,7 @@ getAFITPCSPrice = async function (token, api){
 				url = new URL('https://api.dex.guru/v1/tokens/'+tokenAddress+'-bsc');
 				break;
 			/*case '2':
-				url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=8VYN5BUXD6T1X1GAU12UHMQXBT3IJTF68V');
+				url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=');
 				break;*/
 		}
 	}
@@ -7219,7 +7253,7 @@ app.get('/confirmPayment', async function(req,res){
 claimAndCreateAccount = async function (req){
 	let accountClaimed = false;
 	let accountCreated = false;
-	let results = '';
+	/*let results = '';
 	try{
 		results = await utils.getRC(config.account);
 		console.log('Current RC: ' + utils.format(results.estimated_pct) + '% ');
@@ -7230,7 +7264,7 @@ claimAndCreateAccount = async function (req){
 	}catch(err){
 		console.log('error grabbing RC');
 	}
-	
+	*/
 	console.log('discounted account claimed:'+accountClaimed);
 	//proceed creating account
 	try{

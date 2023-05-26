@@ -181,8 +181,10 @@ var HOURS = 60 * 60;
 	
 	let chainLnk = await setProperNode(bchain);
 	let tx;
-	
+	//console.log('using active:'+active);
+	//console.log(userKey);
 	if (active){
+		console.log('active key')
 		tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { active: active }
@@ -191,6 +193,7 @@ var HOURS = 60 * 60;
 			return {error: err.message};
 		});
 	}else{
+		console.log('posting')
 		tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
 		   { posting: userKey }
