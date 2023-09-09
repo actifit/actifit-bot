@@ -56,9 +56,12 @@ hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 //hive.config.set('chain_id', '4200000000000000000000000000000000000000000000000000000000000000');
 
 hive.api.setOptions({ url: config.active_hive_node});
-
-blurt.api.setOptions({ url: config.blurt_node});
-
+try{
+	blurt.api.setOptions({ url: config.blurt_node})
+}catch(err){
+	console.log(err)
+	
+}
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
 var HOURS = 60 * 60;
@@ -2254,10 +2257,10 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 				console.log('match found');
 				return true
 			}
-			console.log('count not find trx A');
+			console.log('could not find trx A');
 			return false;
 		}
-		console.log('count not find trx B');
+		console.log('could not find trx B');
 		//reached here, bail.
 		return false;
 		

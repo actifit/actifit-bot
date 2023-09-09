@@ -537,6 +537,12 @@ app.get('/loginImg', async function (req, res){
 	res.send({'imgUrl':'https://raw.githubusercontent.com/actifit/actifit-landingpage/master/static/img/insta_achive_earn.png'});
 })
 
+app.get('/tutorialVidUrl', async function (req, res){
+	//res.send({'vidUrl':'https://www.youtube.com/watch?v=oWbpau6H5Qs'});
+	//res.send({'vidUrl':'https://www.youtube.com/watch?v=BU2sueXr3gY'});
+	res.send({'vidUrl':'https://www.youtube.com/watch?v=kUBZJ3EpoKY'});
+})
+
 app.get('/queryPost', async function (req, res){
 	if (!req.query || !req.query.permlink){
 		res.send({error:''});
@@ -1081,13 +1087,33 @@ getAFITPCSPrice = async function (token, api){
 				break;*/
 		}
 	}
+	//both options not working now, override using dextools API
+	
+	const apiKey = '1fca8cbbe3ca435cb002996da28908ae';
+	const chain = 'bsc'; // Replace with the desired chain
+
+
+	url = `https://api.dextools.io/v1/token?chain=${chain}&address=${tokenAddress}`;
+	
+	const headers = {
+	  'X-API-Key': apiKey
+	};
+
+	
+	
 	try{
-		let connector = await fetch(url);
+		let connector = await fetch(url, {
+		  method: 'GET',
+		  headers: headers
+		})
 		let data = await connector.json();
 		console.log(data);
 		//return back the count as a number
 		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
-		let price;
+		//let price;
+		let price = parseFloat(data.data.reprPair.price);
+		//return price;
+		/*
 		if (typeof api == "undefined" || api == ''){
 			price= parseFloat(data.data.price);
 		}else{
@@ -1096,7 +1122,7 @@ getAFITPCSPrice = async function (token, api){
 					price = parseFloat(data.priceUSD);
 					break;
 			}
-		}
+		}*/
 		return price;
 	}catch(exc){
 		console.log(exc);
@@ -1452,7 +1478,7 @@ app.get('/afitMarkets', async function (req, res){
 		{
 				'chain': 'BSC',
 				'exchange': 'Dex-trade',
-				'link': 'https://links.actifit.io/digi',
+				'link': 'https://dex-trade.com/spot/trading/AFITUSDT',
 				'icon': '',
 				'pairs': [
 						{
@@ -1469,7 +1495,7 @@ app.get('/afitMarkets', async function (req, res){
 		{
 				'chain': 'BSC',
 				'exchange': 'PCS',
-				'link': 'https://links.actifit.io/digi',
+				'link': 'https://pancakeswap.finance/swap?inputCurrency=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&outputCurrency=BNB',
 				'icon': '',
 				'pairs': [
 						{
@@ -4300,13 +4326,11 @@ app.get('/userFriendRequests/:user', async function (req, res) {
 	res.send({sent_pending: user_requests, received_pending: user_targets});
 });
 
-/* end point for adding user's friend */
-app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+async function performAddFriendTrx(req){
 	//ensure proper transaction
 	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	
 	let user_friendship = {
@@ -4323,22 +4347,38 @@ app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req,
 		//notify recipient
 		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_request', 'friendship', 'User ' + req.params.userA + ' has sent you a friendship request', 'https://actifit.io/'+req.params.userA);
 	
-		res.send({status: 'success'});
+		return ({status: 'success'});
 	}catch(err){
 		console.log('error');
+		return ({status: 'error'});
+	}
+}
+
+/* end point for adding user's friend */
+app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
-	}	
+		return;
+	}
+	
+	let outc = await performAddFriendTrx(req);
+	res.send(outc)
 
 });
 
 
-/* end point for cancelling friend request */
-app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+/* end point for adding user's friend */
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performAddFriendTrx(req);
+	res.send(outc)
+});
+
+async function performCancelFriendRequestTrx(req){
 	//ensure proper transaction
 	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	let friendshipQuery = {
 		initiator: req.params.userA,
@@ -4356,23 +4396,37 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async func
 	try{
 		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship, { upsert: true });
 		console.log('success inserting post data');
-		res.send({status: 'success'});
+		return ({status: 'success'});
 	}catch(err){
 		console.log('error');
-		res.send({status: 'error'});
+		return ({status: 'error'});
 	}
+}
+
+/* end point for cancelling friend request */
+app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let outc = await performCancelFriendRequestTrx(req);
+	res.send(outc)
 
 });
 
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performCancelFriendRequestTrx(req);
+	res.send(outc)
 
+});
 
-/* end point for cancelling friend request */
-app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+async function performAcceptFriendTrx(req){
 	//ensure proper transaction
 	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'})
 	}
 	//need to update both ways to check which way was the original request
 	let friendshipQuery = {
@@ -4398,7 +4452,7 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (r
 		insertSuccess = true;
 	}catch(err){
 		console.log('error');
-		res.send({status: 'error'});
+		return ({status: 'error'});
 	}
 	
 	if (insertSuccess){
@@ -4413,21 +4467,39 @@ app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (r
 		
 		try{
 			let result = await db.collection('friends').insert(friendshipEntry);
-			res.send({status: 'success'});
+			return ({status: 'success'});
 		}catch(err){
-			res.send({status: 'error', details: err});
+			return ({status: 'error', details: err});
 		}
 	}
+}
+
+/* end point for cancelling friend request */
+app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let outc = await performAcceptFriendTrx(req);
+	res.send(outc)
+	
+});
+
+/* end point for cancelling friend request */
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performAcceptFriendTrx(req);
+	res.send(outc)
 });
 
 
-/* end point for dropping friendship */
-app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+async function performDropFriendTrx(req){
 	//ensure proper transaction
 	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'cancel-friendship', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	try{
 		//remove friendship entry both ways
@@ -4440,11 +4512,29 @@ app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function 
 		result = await db.collection('user_requests').remove({initiator: req.params.userA, request: 'friendship', target: req.params.userB});
 		result = await db.collection('user_requests').remove({initiator: req.params.userB, request: 'friendship', target: req.params.userA});
 		
-		res.send({'status': 'success'});
+		return ({'status': 'success'});
 	}catch(err){
 		console.log(err);
-		res.send({status: 'error'});
+		return ({status: 'error'});
 	}
+}
+
+/* end point for dropping friendship */
+app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let conf_trx = await utils.findVerifyTrx(req, db);
+	if (!conf_trx || conf_trx.error){
+		res.send({status: 'error'});
+		return;
+	}
+	
+	let outc = await performDropFriendTrx(req);
+	res.send(outc)
+});
+
+/* end point for dropping friendship */
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+	let outc = await performDropFriendTrx(req);
+	res.send(outc)
 });
 
 /* end point for fetching all users unread notifications */
@@ -7157,8 +7247,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	//if (false){
+	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';
@@ -7317,6 +7407,9 @@ app.get('/sendNotification', async function(req,res){
 		}else if (req.query.notifType == 'mention'){
 			//console.log(req.query.permlink);
 			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
+		}else if (req.query.notifType == 'transfer'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, req.query.title, 'https://actifit.io/'+req.query.permlink);
 		}else{
 			res.send('{error: not supported}');
 			return;
