@@ -4983,7 +4983,7 @@ app.get('/tipAccount', async function(req, res){
 		let targetUser = req.query.targetUser;
 		let amount = parseFloat(req.query.amount);
 		let fundsPass = req.query.fundsPass;
-		
+		let note = req.query.note;
 		
 		//check first if user is banned, as he wont be able to tip
 		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
@@ -5046,13 +5046,18 @@ app.get('/tipAccount', async function(req, res){
 		}
 	
 		//perform transaction, decrease sender amount
+		let noteVal = user + ' tipped ' + targetUser + ' ' + amount + ' AFIT';
+		if (note!=""){
+			noteVal = note;
+		}
+		
 		let tipTrans = {
 			user: user,
 			reward_activity: 'Send Tip',
 			recipient: targetUser,
 			token_count: -amount,
 			tip_amount: amount,
-			note: user + ' tipped ' + targetUser + ' ' + amount + ' AFIT',
+			note: noteVal,
 			date: new Date(),
 		}
 		try{
@@ -5072,7 +5077,7 @@ app.get('/tipAccount', async function(req, res){
 			sender: user,
 			token_count: amount,
 			tip_amount: amount,
-			note: user + ' tipped ' + targetUser + ' ' + amount + ' AFIT',
+			note: note,
 			date: new Date(),
 		}
 		
@@ -5087,7 +5092,7 @@ app.get('/tipAccount', async function(req, res){
 		}
 		
 		//also send notification to the recipient about tipped amount
-		utils.sendNotification(db, targetUser, user, 'tip_notification', 'payment', 'User ' + user + ' has sent you a tip of '+ amount +' AFIT', 'https://actifit.io/'+user);
+		utils.sendNotification(db, targetUser, user, 'tip_notification', 'payment', 'User ' + user + ' has sent you '+ amount +' AFIT', 'https://actifit.io/'+user);
 		
 		//update sending user's token balance & store to db
 		let new_token_count = cur_sender_token_count - amount;
