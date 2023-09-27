@@ -1364,7 +1364,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 		//check if user voted already
 		let existing_vote = await db.collection('surveys').findOne({user: req.query.user, survey_id: req.query.id});
 		let rewarded = 0;
-		if (existing_vote != null){
+		if (existing_vote == null){
 			
 			//store reward
 			let recordTrans = {
