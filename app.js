@@ -1333,7 +1333,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 	}
 	
 	//find matching survey
-	let matching_survey = await db.collection('surveys').findOne({_id: req.query.id});
+	let matching_survey = await db.collection('surveys').findOne({_id: new ObjectId(req.query.id)});
 	console.log(matching_survey);
 	if (matching_survey){
 			
