@@ -1348,6 +1348,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 			reward: matching_survey.survey_reward,
 			date: new Date(),
 		}
+		
 		//store vote
 		try{
 			console.log(productBuyTrans);
@@ -1359,25 +1360,35 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 			return;
 		}
 		
-		//store reward
-		let recordTrans = {
-			user: req.query.user,
-			reward_activity: 'Poll_vote',
-			vote_option: req.query.option,
-			token_count: matching_survey.survey_reward,
-			note: 'Reward for voting on actifit poll "'+matching_survey.title+'"',
-			date: new Date(),
+		
+		//check if user voted already
+		let existing_vote = await db.collection('surveys').findOne({user: req.query.user, survey_id: req.query.id});
+		let rewarded = 0;
+		if (existing_vote != null){
+			
+			//store reward
+			let recordTrans = {
+				user: req.query.user,
+				reward_activity: 'Poll_vote',
+				vote_option: req.query.option,
+				token_count: matching_survey.survey_reward,
+				note: 'Reward for voting on actifit poll "'+matching_survey.title+'"',
+				date: new Date(),
+			}
+			try{
+				console.log(recordTrans);
+				let transaction = await db.collection('token_transactions').insert(recordTrans);
+				rewarded = matching_survey.survey_reward;
+				console.log('success inserting post data');
+			}catch(err){
+				console.log(err);
+				res.send({'error': 'Error storing action. DB storing issue'});
+				return;
+			}
 		}
-		try{
-			console.log(recordTrans);
-			let transaction = await db.collection('token_transactions').insert(recordTrans);
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error storing action. DB storing issue'});
-			return;
-		}
-		res.send({status: 'success'});
+		
+		
+		res.send({status: 'success', rewarded: rewarded});
 	}else{
 		res.send({error:'no matching survey'})
 	}
