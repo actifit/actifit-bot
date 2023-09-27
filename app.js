@@ -557,6 +557,12 @@ app.get('/news', async function (req, res){
 	res.send(outc);
 })
 
+app.get('/surveys', async function (req, res){
+	let outc = await db.collection('surveys').find({enabled: true}).sort({date: -1}).toArray();
+	res.send(outc);
+})
+
+
 //schedule restart intervals due to memory drain down
 function restartApiNode() {
 	request.post(
@@ -1317,6 +1323,66 @@ let checkHdrs = (req, res, next) => {
 		});
 	  }
 };	
+
+
+
+app.get('/voteSurvey', checkHdrs, async function (req, res){
+	if (!req.query || !req.query.user || !req.query.id || !req.query.option){
+		res.send({'error':''})
+		return
+	}
+	
+	//find matching survey
+	let matching_survey = await db.collection('surveys').findOne({_id: req.query.id});
+	console.log(matching_survey);
+	if (matching_survey){
+			
+		const receivedPlaintext = decrypt(req.ppkey);
+		
+		let userKey = receivedPlaintext;
+		
+		let voteSurveyTrans = {
+			user: req.query.user,
+			survey_id: req.query.id,
+			option: req.query.option,
+			reward: matching_survey.survey_reward,
+			date: new Date(),
+		}
+		//store vote
+		try{
+			console.log(productBuyTrans);
+			let transaction = await db.collection('user_survey_votes').insert(voteSurveyTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error performing vote action. DB storing issue'});
+			return;
+		}
+		
+		//store reward
+		let recordTrans = {
+			user: req.query.user,
+			reward_activity: 'Poll_vote',
+			vote_option: req.query.option,
+			token_count: matching_survey.survey_reward,
+			note: 'Reward for voting on actifit poll "'+matching_survey.title+'"',
+			date: new Date(),
+		}
+		try{
+			console.log(recordTrans);
+			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			console.log('success inserting post data');
+		}catch(err){
+			console.log(err);
+			res.send({'error': 'Error storing action. DB storing issue'});
+			return;
+		}
+		res.send({status: 'success'});
+	}else{
+		res.send({error:'no matching survey'})
+	}
+});
+
 
 
 app.post('/performTrxPost', checkHdrs, async function (req, res) {
