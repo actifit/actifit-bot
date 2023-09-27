@@ -1324,7 +1324,18 @@ let checkHdrs = (req, res, next) => {
 	  }
 };	
 
-
+app.get('/userVotedSurvey', async function (req, res){
+	if (!req.query || !req.query.user || !req.query.id){
+		res.send({'error':''})
+		return
+	}
+	let existing_vote = await db.collection('user_survey_votes').findOne({user: req.query.user, survey_id: req.query.id});
+	if (existing_vote == null){
+		res.send ({voted: false});
+	}else{
+		res.send ({voted: true});
+	}
+});
 
 app.get('/voteSurvey', checkHdrs, async function (req, res){
 	if (!req.query || !req.query.user || !req.query.id || !req.query.option){
