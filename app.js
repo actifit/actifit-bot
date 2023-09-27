@@ -1351,7 +1351,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 		
 		//store vote
 		try{
-			console.log(productBuyTrans);
+			console.log(voteSurveyTrans);
 			let transaction = await db.collection('user_survey_votes').insert(voteSurveyTrans);
 			console.log('success inserting post data');
 		}catch(err){
