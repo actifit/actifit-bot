@@ -462,6 +462,10 @@ app.get('/ssv-verify',
 		try{
 			console.log(recordTrans);
 			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			
+			//also notify user of AFIT payment
+			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + data[1] + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
+			
 			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
 			console.log('success inserting post data');
 		}catch(err){
@@ -1390,6 +1394,10 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 				console.log(recordTrans);
 				let transaction = await db.collection('token_transactions').insert(recordTrans);
 				rewarded = matching_survey.survey_reward;
+				
+				//also notify user of AFIT payment
+				utils.sendNotification(db, req.query.user, 'actifit', 'receive_afit', 'payment', 'You received "' + rewarded + ' AFIT" for participating in actifit app Poll ', 'https://actifit.io/'+req.query.user+'/wallet');
+				
 				console.log('success inserting post data');
 			}catch(err){
 				console.log(err);
@@ -3488,7 +3496,7 @@ app.post('/registerUserNotification', async function(req,res){
 		date: new Date()
 	};
 	try{
-		db.collection('user_app_notif_token').update({user: req.body.user}, userTokenEntry, { upsert: true });
+		db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app}, userTokenEntry, { upsert: true });
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
@@ -5172,6 +5180,10 @@ app.get('/tipAccount', async function(req, res){
 		try{
 			console.log(tipReceiptTrans);
 			let transaction = await db.collection('token_transactions').insert(tipReceiptTrans);
+			
+			//also notify user of AFIT payment
+			utils.sendNotification(db, targetUser, user, 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" from '+user+' with note '+note, 'https://actifit.io/'+targetUser+'/wallet');
+			
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -6072,6 +6084,10 @@ storeSignupTransaction = async function (req){
 		  let transaction = db.collection('token_transactions')
 				.replaceOne(query, new_transaction, { upsert: true });
 		  result = true;
+		  
+		  //also notify user of AFIT payment
+		  utils.sendNotification(db, req.query.new_account, 'actifit', 'receive_afit', 'payment', 'You received "' + req.query.afit_reward + ' AFIT" for signing up with Actifit', 'https://actifit.io/'+req.query.new_account+'/wallet');
+		  
 		}catch(e){
 		  console.log(e);
 		  result = false;
@@ -6107,6 +6123,10 @@ storeReferralReward = async function (req){
 		let transaction = await db.collection('token_transactions')
 			.replaceOne(query, new_transaction, { upsert: true });
 		refRewarded = true;
+		
+		//also notify user of AFIT payment
+		utils.sendNotification(db, req.query.referrer, 'actifit', 'receive_afit', 'payment', 'You received "' + req.query.afit_reward * config.referrerBonus + ' AFIT" for referring '+req.query.new_account+' to Actifit', 'https://actifit.io/'+req.query.referrer+'/wallet');
+		  
 	}catch(e){
 	  console.log(e);
 	}
@@ -7502,7 +7522,53 @@ app.get('/sendNotification', async function(req,res){
 			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else if (req.query.notifType == 'transfer'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, req.query.title, 'https://actifit.io/'+req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, req.query.title, 'https://actifit.io/'+req.query.permlink);
+		}else if (req.query.notifType == 'vote'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has voted your post/comment with a "' + req.query.weight + '%" vote ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+		}else if (req.query.notifType == 'reblog'){
+			//console.log(req.query.permlink);
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has reblogged your post ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+		}else if (req.query.notifType == 'payment'){
+			let msg = '';
+			let reflink = 'https://actifit.io/'+req.query.author+'/'+req.query.permlink;
+			if (req.query.subType == 'curation_reward'){
+				let reward = await utils.vestsToHivePower(req.query.reward);
+				msg = "You have received curation payout of "+parseFloat(reward).toFixed(4)+" HP for your vote on post/comment by "+req.query.author;
+			}else if (req.query.subType == 'comment_payout_update'){
+				msg = "You have received payout on one of your posts/comments";
+			}else if (req.query.subType == 'author_reward'){
+				let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
+				msg = "You have received payout on one of your posts/comments with the amounts: "+req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout).toFixed(4)+" HP";
+			}else if (req.query.subType == 'comment_benefactor_reward'){
+				let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
+				msg = "You have received payout as beneficiary for post by "+req.query.author + " with payout of " +req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout).toFixed(4)+" HP";
+			}else if (req.query.subType == 'return_vesting_delegation'){
+				let amount = await utils.vestsToHivePower(req.query.amount);
+				msg = "Your cancelled delegation of " + parseFloat(amount).toFixed(4)+" HP " + "has now returned to your account";
+				reflink = 'https://actifit.io/'+req.query.author + '/wallet';
+			}else if (req.query.subType == 'fill_order'){
+				msg = "Your market exchange order of " + req.query.amount_filled+" has been filled by "+req.query.actionTaker+" for "+req.query.amount_received;
+				reflink = 'https://actifit.io/'+req.query.user + '/wallet';
+			}
+			else if (req.query.subType == 'fill_vesting_withdraw'){
+				let amount = await utils.vestsToHivePower(req.query.amount);
+				msg = "Your power down has completed its weekly payout of " + parseFloat(amount).toFixed(4) +" HP";
+				reflink = 'https://actifit.io/'+req.query.user + '/wallet';
+			}
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, reflink);
+			//console.log(req.query.permlink);
+			
+		}else if (req.query.notifType == 'hetokens'){
+			//console.log(req.query.permlink);
+			let msg = 'You have received '+req.query.quantity + ' ' + req.query.symbol + ' from '+req.query.actionTaker + ' with memo ' + req.query.memo ;
+			if (req.query.subType == 'issuehetokens'){
+				msg = ''+req.query.quantity + ' ' + req.query.symbol + ' have been issued to your wallet from '+req.query.actionTaker
+			}
+			if (req.query.subType == 'stakehetokens'){
+				msg = ''+req.query.quantity + ' ' + req.query.symbol + ' have been staked to your wallet from '+req.query.actionTaker
+			}
+			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, 'https://actifit.io/'+req.query.user+'/wallet');
 		}else{
 			res.send('{error: not supported}');
 			return;
@@ -7899,6 +7965,10 @@ app.get('/performAfitSteemExchange', async function(req, res){
 			console.log(tokenExchangeTrans);
 			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
 			console.log('success inserting post data');
+			
+			//also notify user of AFIT payment
+			utils.sendNotification(db, user, 'actifit', 'pay_afit', 'payment', 'You have successfully paid '+paid_tokens+' AFIT for "AFIT to upvote exchange"', 'https://actifit.io/'+user+'/wallet');
+			
 		}catch(err){
 			console.log(err);
 			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
@@ -7980,6 +8050,9 @@ app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
 			console.log(tokenExchangeTrans);
 			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
 			console.log('tokens refunded for user');
+			
+			//also notify user of AFIT payment
+			utils.sendNotification(db, outdatedTokenSwapTrans[i].user, 'actifit', 'pay_afit', 'payment', 'You received a refund of '+outdatedTokenSwapTrans[i].paid_afit+' AFIT for unused exchange service', 'https://actifit.io/'+outdatedTokenSwapTrans[i].user+'/wallet');
 		}catch(err){
 			console.log(err);
 			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
@@ -8133,6 +8206,9 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 		    let transaction = db.collection('token_transactions')
 				.replaceOne(query, new_transaction, { upsert: true });
 		    rewarded = true;
+			
+			//also notify user of AFIT payment
+			utils.sendNotification(db, req.params.user, 'actifit', 'receive_afit', 'payment', 'You received an AFIT reward of '+config.actifitWebEditRewardAmount+' AFIT for editing your post via Actifit.io', 'https://actifit.io/'+req.params.user+'/wallet');
 		  }catch(e){
 		    console.log(e);
 		  }

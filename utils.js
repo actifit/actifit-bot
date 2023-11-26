@@ -1981,6 +1981,17 @@ async function getAccountPayTransactions (account, start, end, period, chain) {
   //console.log (opsArr);
 }
 
+async function vestsToHivePower (vests) {
+  if (isNaN(totalHive) || isNaN(totalHiveVests) ){
+	hiveProps = await hiveClient.database.getDynamicGlobalProperties()
+	totalHive = Number(hiveProps.total_vesting_fund_hive.split(' ')[0])
+	totalHiveVests = Number(hiveProps.total_vesting_shares.split(' ')[0])
+  }
+  vests = Number(vests.split(' ')[0])
+  const hivePower = (totalHive * (vests / totalHiveVests))
+  return hivePower
+}
+
 
 function vestsToSteemPower (vests) {
   vests = Number(vests.split(' ')[0])
@@ -2324,40 +2335,79 @@ async function findUserMatchingDevice(db, user){
 	return result;
 }
 
+async function sendFirebaseWebNotification(db, user, details, url){
+	
+	
+}
+
 async function sendFirebaseNotification(db, user, details, url){
 	
 	/****** Reference https://firebase.google.com/docs/cloud-messaging/send-message ***********/
 	console.log('sendFirebaseNotification');
 	//fetch user's device/token
 	let device = await findUserMatchingDevice(db, user);
+	const iconUrl = 'https://actifit.io/img/hive_alert.png';
 	//console.log(device);
 	//only send message if device is found
 	if (Array.isArray(device) && device.length>0){
-		
-		let registrationToken = device[0].token;
-
+		let registrationTokens = [];
+		if (device.length > 1){
+			for (let xx=0;xx<device.length;xx++){
+				registrationTokens.push(device[xx].token);
+			}
+		}else{
+			registrationTokens.push(device[0].token);
+		}
 		var message = {
 		  notification: {
 			title: 'Actifit Notification',
-			body: details
+			body: details,
 		  },
 		  data: {
 			url: url
 		  },
+		  /*apns: {
+			payload: {
+			  aps: {
+				'mutable-content': 1
+			  }
+			},
+			fcm_options: {
+			  image: 'https://previews.dropbox.com/p/thumb/ACEWYLazPJw2ZKwDb5SQo7-5fhgfnsRyoTy6_uwlr_jlSUKIZ5sZ6Ox3ZwevTyqviJ6jOHMYtPwk_aKueGwBy7mbiYZGD7spr9rxGepX4tPZ8pe-rkDR3HuU2JUqIbLsR6zX4qOIoLEwWMqbMapH1a_XBthDKxAN70sAbjsMFdChtyybngsQWBk_8AKXXbOy1I4f2mTmtXjClixUWmcD9DveeceSRSI7rZkFywHwWeT7VV5iFGFNLp_GfITvZEAqzUfFhvZ5zOGA4ezMzFK2p8ft9-x1bWOol7uX8jBfP2KeDnQtzMBdPYffURqBsZ-e0FwrKtgxY2Cu75hCLx4rzVDa/p.png' 
+			}
+		  },*/
+		  webpush: {
+			notification:{
+				title: 'Hive Notification',
+				body: details,
+				click_action: url,
+				//link: 'https://actifit.io',
+				icon: iconUrl,
+				//image: 'https://raw.githubusercontent.com/actifit/actifit-landingpage/master/static/img/hive_alert.png'
+			},
+			fcmOptions: {
+				link: url 
+			},
+			data: {
+				link: url
+			}
+		  },
 		  //send specific recipient via fetched token
-		  token: registrationToken
+		  //token: registrationToken
 		  //variation for multi recipients
-		  //tokens: registrationTokens []
+		  tokens: registrationTokens //[]
 		  //variation for topic based msgs
 		  //topic: topicName,
 		};
 
 	// Send a message to the device corresponding to the provided
 	// registration token.
-		fbadmin.messaging().send(message)
+		fbadmin.messaging().sendMulticast(message)
+		//fbadmin.messaging().send(message)
 		  .then((response) => {
 			// Response is a message ID string.
 			console.log('Successfully sent message:', response);
+			if (response.responses && response.responses.length>0 && response.responses[0].error)console.log(response.responses[0].error)
 		  })
 		  .catch((error) => {
 			console.log('Error sending message:', error);
@@ -2986,6 +3036,7 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    generateRandomNumber: generateRandomNumber,
    lookupAccountPay: lookupAccountPay,
    vestsToSteemPower: vestsToSteemPower,
+   vestsToHivePower: vestsToHivePower,
    createAccount: createAccount,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
