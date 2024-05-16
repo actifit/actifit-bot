@@ -235,6 +235,7 @@ async function processBSCTransfers(){
 					
 					let soughtHBDAmount = config.hbdAFITTransferRate * afitAmnt;
 					soughtHBDAmount = parseFloat(soughtHBDAmount.toFixed(2));
+					if (soughtHBDAmount < 0.1) soughtHBDAmount = 0.1
 					console.log(soughtHBDAmount);
 					let tx_id = '';
 					let paymentFound = false;
@@ -248,7 +249,7 @@ async function processBSCTransfers(){
 							let sentAmount = op[1].amount.split(' ')[0];
 							//the correct amount to find
 							console.log(sentAmount);
-							if (op[1].to === config.bsc_bridge_account && op[1].from === entry.user && txs[1].trx_id == hbdTrx && sentAmount == soughtHBDAmount){  
+							if (op[1].to === config.bsc_bridge_account && op[1].from === entry.user && txs[1].trx_id == hbdTrx && sentAmount >= soughtHBDAmount){  
 								console.log('found match');
 								console.log(op[1]);
 								//console.log(txs);

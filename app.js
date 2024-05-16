@@ -20,6 +20,9 @@ const request = require("request");
 
 const ethutil = require('ethereumjs-util');
 
+let hivePrice;
+let hivePriceLastUpdate;
+
 
 // Connection URL
 let url = config.mongo_uri;
@@ -330,6 +333,32 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 	res.send(results);
 })
 
+app.get('/hivePrice', async function (req, res){
+	let refetch = false;
+	if (hivePriceLastUpdate == null || hivePrice == null){
+		refetch = true;
+	}else{
+		try{
+			let curTime = new Date();
+			let lastFetch = new Date(hivePriceLastUpdate);
+			let timesDiff = curTime.getTime() - lastFetch.getTime();
+			let diffInMins = Math.ceil(timesDiff / 1000 / 60);
+			console.log('last hive price fetched '+diffInMins+' mins ago');
+			if (diffInMins > 5){
+				refetch = true;
+			}
+		}catch(err){
+			console.log(err);
+		}
+	}
+	if (refetch){
+		let hivePriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd');
+		hivePrice = await hivePriceQuery.json();
+		hivePriceLastUpdate = new Date();
+	}
+	res.send({hive:hivePrice.hive});
+})
+
 app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
 	res.send({});
 	return;
@@ -370,11 +399,17 @@ app.get('/adRewardsReview/', async function (req, res) {
 		token_count: {
 			$gt: 0
 		}
-		/*date: {
-			$gte: new Date(startDate),
-			//$lte: new Date(startDate)
-		},*/
 	}
+	if (req.query && req.query.date){
+		let startDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		let endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
+		queryType['date'] =  {
+			$gt: new Date(startDate),
+			$lt: new Date(endDate)
+		};
+	}
+	
+	console.log(queryType);
 	
 	let results = await db.collection('token_transactions').aggregate([
 		{
@@ -687,7 +722,8 @@ async function loadExchAfitPrice(){
 	  
 	  //grab HIVE price
 		let hivePriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd');
-		let hivePrice = await hivePriceQuery.json();
+		hivePrice = await hivePriceQuery.json();
+		hivePriceLastUpdate = new Date();
 		console.log('hivePrice');
 		console.log(hivePrice);
 		//json.hive.usd
@@ -1081,20 +1117,86 @@ getTotalSupplyAFIT = async function (){
 	}
 }
 
+
+let pancakeSwapAbi =  [
+{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"}],"name":"getAmountsOut","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"view","type":"function"},
+];
+let tokenAbi = [
+{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+];
+//const Web3 = require('web3');
+
+
+let pancakeSwapContract = "0x10ED43C718714eb63d5aA57B78B54704E256024E".toLowerCase();
+//const web3 = new Web3("https://bsc-dataseed1.binance.org");
+async function calcSell( tokensToSell, tokenAddres){
+    const web3 = new Web3("https://bsc-dataseed1.binance.org");
+    const BNBTokenAddress = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" //BNB
+
+    let tokenRouter = await new web3.eth.Contract( tokenAbi, tokenAddres );
+    let tokenDecimals = await tokenRouter.methods.decimals().call();
+    
+    tokensToSell = setDecimals(tokensToSell, tokenDecimals);
+    let amountOut;
+    try {
+        let router = await new web3.eth.Contract( pancakeSwapAbi, pancakeSwapContract );
+        amountOut = await router.methods.getAmountsOut(tokensToSell, [tokenAddres ,BNBTokenAddress]).call();
+        amountOut =  web3.utils.fromWei(amountOut[1]);
+    } catch (error) {}
+    
+    if(!amountOut) return 0;
+    return amountOut;
+}
+async function calcBNBPrice(){
+    const web3 = new Web3("https://bsc-dataseed1.binance.org");
+    const BNBTokenAddress = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" //BNB
+    const USDTokenAddress  = "0x55d398326f99059fF775485246999027B3197955" //USDT
+    let bnbToSell = web3.utils.toWei("1", "ether") ;
+    let amountOut;
+    try {
+        let router = await new web3.eth.Contract( pancakeSwapAbi, pancakeSwapContract );
+        amountOut = await router.methods.getAmountsOut(bnbToSell, [BNBTokenAddress ,USDTokenAddress]).call();
+        amountOut =  web3.utils.fromWei(amountOut[1]);
+    } catch (error) {}
+    if(!amountOut) return 0;
+    return amountOut;
+}
+function setDecimals( number, decimals ){
+    number = number.toString();
+    let numberAbs = number.split('.')[0]
+    let numberDecimals = number.split('.')[1] ? number.split('.')[1] : '';
+    while( numberDecimals.length < decimals ){
+        numberDecimals += "0";
+    }
+    return numberAbs + numberDecimals;
+}
+
+
+
 getAFITPCSPrice = async function (token, api){
 	let tokenAddress = '0x4516bb582f59befcbc945d8c2dac63ef21fba9f6';//AFIT default
 	if (token == 'AFITX'){
 		tokenAddress = '0x246d22ff6e0b90f80f2278613e8db93ff7a09b95';
 	}
+	
+    let bnbPrice = await calcBNBPrice() // query pancakeswap to get the price of BNB in USDT
+    console.log(`CURRENT BNB PRICE: ${bnbPrice}`);
+    // Them amount of tokens to sell. adjust this value based on you need, you can encounter errors with high supply tokens when this value is 1.
+    let tokens_to_sell = 1; 
+    let priceInBnb = await calcSell(tokens_to_sell, tokenAddress)/tokens_to_sell; // calculate TOKEN price in BNB
+    console.log( 'SHIT_TOKEN VALUE IN BNB : ' + priceInBnb + ' | Just convert it to USD ' );
+    let afitPrice = priceInBnb*bnbPrice;
+	
+	console.log(`SHIT_TOKEN VALUE IN USD: ${priceInBnb*bnbPrice}`); // convert the token price from BNB to USD based on the retrived BNB value
+	return afitPrice;
+	/*
 	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/'+tokenAddress);
 	if (api){
 		switch (api){
 			case '1':
 				url = new URL('https://api.dex.guru/v1/tokens/'+tokenAddress+'-bsc');
 				break;
-			/*case '2':
-				url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey=');
-				break;*/
+			
 		}
 	}
 	//both options not working now, override using dextools API
@@ -1123,16 +1225,7 @@ getAFITPCSPrice = async function (token, api){
 		//let price;
 		let price = parseFloat(data.data.reprPair.price);
 		//return price;
-		/*
-		if (typeof api == "undefined" || api == ''){
-			price= parseFloat(data.data.price);
-		}else{
-			switch (api){
-				case '1':
-					price = parseFloat(data.priceUSD);
-					break;
-			}
-		}*/
+		
 		return price;
 	}catch(exc){
 		console.log(exc);
@@ -1141,7 +1234,7 @@ getAFITPCSPrice = async function (token, api){
 			return getAFITPCSPrice(token,'1');
 		}
 		return 'error';
-	}
+	}*/
 }
 
 app.get('/verifyLoginCaptcha', async function (req, res){
@@ -1197,6 +1290,11 @@ app.get('/circulatingSupplyAFIT', async function (req,res){
 	}else{
 		res.send('1036231');
 	}	
+})
+
+app.get('/BNBPrice', async function (req, res){
+	let price = await calcBNBPrice()
+	res.send({token: 'BNB', price: parseFloat(price).toFixed(4)});
 })
 
 app.get('/AFITBSCPrice', async function (req, res){
@@ -1716,6 +1814,8 @@ app.get('/resetLogin', checkHdrs, async function (req, res) {
 	res.send({success: true});
 });
 
+
+
 app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 	if (!req.query || !req.query.operation || !req.query.user){
 		res.send({status:'error'})
@@ -1741,6 +1841,52 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 	}
 })
 
+app.get('/deleteAccountKeychain/:trxID', async function (req, res){
+	if (!req.query || !req.query.user){
+		res.send({status:'error'})
+	}else{
+		try{
+			//third param to find verify is to avoid storing transaction as its not needed
+			let conf_trx = await utils.findVerifyTrx(req, db, true);
+			/*console.log('settings trx found:')
+			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
+			console.log(req.query.user);*/
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+				res.send({status: 'error'});
+				return;
+			}
+			let result = await db.collection('deleted_accounts').insert({   
+				"user": req.query.user,
+				"date": new Date(),
+				"approach": req.query.approach,
+				"platform": req.query.platform
+			});
+			res.send({success: true});
+		}catch(err){
+			res.send({error: 'error'});
+		}
+	}
+})
+
+
+
+app.get('/deleteAccount/', checkHdrs, async function (req, res) {
+	if (!req.query || !req.query.user){
+		res.send({error:'invalid request'})
+		return;
+	}
+	//var dt = new Date().toJSON()
+	//dt.substring(0,dt.indexOf("."));
+	console.log('deleteAccount');
+
+	let result = await db.collection('deleted_accounts').insert({   
+		"user": req.query.user,
+		"date": new Date(),
+		"approach": req.query.approach,
+		"platform": req.query.platform
+	});
+	res.send({success: true});
+});
 
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
@@ -1794,13 +1940,21 @@ app.post('/loginKeychain/', async function (req, res) {
 		let bchain = req.body.bchain?req.body.bchain:'HIVE';
 		
 		if (username && username.length < 20 && username.length > 3) {
-			let account = await utils.getAccountData(username, bchain);
-			let pubKey = account[bchain].posting.key_auths[0][0];
-			console.log(pubKey);
-			let memo = encrypt(username+pubKey);
-			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
-			res.send({message : encoded_message});
-			return;
+			
+			//check if account is deleted, if so do not allow login
+			let result = await db.collection('deleted_accounts').findOne({user: username});
+			if (!result){
+				let account = await utils.getAccountData(username, bchain);
+				let pubKey = account[bchain].posting.key_auths[0][0];
+				console.log(pubKey);
+				let memo = encrypt(username+pubKey);
+				let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
+				res.send({message : encoded_message});
+				return;
+			}else{
+				res.send({error: 'error'});
+				return;
+			}
 		}
 		res.send({error: 'error'})
 	}catch(err){
@@ -1840,70 +1994,78 @@ app.post('/loginAuth', async function (req, res) {
 		ppkey = req.body.ppkey;
 	}
     
+	let result = await db.collection('deleted_accounts').findOne({user: username});
+		if (!result){
 
-    if (username && ppkey) {
-		let db_col = db.collection('user_login_token');
-		//find existing login entry in DB to override
-		let user_tkn = await db_col.findOne({user: username});
-		//console.log(user_tkn);
-		
-		//encode ppkey
-		const ciphertext = encrypt(ppkey);
-		
-		let bchain = 'HIVE';
-		if (req.body && req.body.bchain){
-			bchain = req.body.bchain;
-		}
-		
-		//validate proper data used
-		let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
-		console.log('isValidUser');
-		//console.log(isValidUser);
-		//if (username === mockedUsername && ppkey === mockedPpkey) {
-		if (isValidUser.result){
-			let token = jwt.sign({username: username},
-			  config.secret,
-			  { expiresIn: '24h' // expires in 24 hours
-			  }
-			);
-			//save to DB
-			//save encrypted version + token
-			if (!user_tkn){
-				user_tkn = new Object();
+			if (username && ppkey) {
+				let db_col = db.collection('user_login_token');
+				//find existing login entry in DB to override
+				let user_tkn = await db_col.findOne({user: username});
+				//console.log(user_tkn);
+				
+				//encode ppkey
+				const ciphertext = encrypt(ppkey);
+				
+				let bchain = 'HIVE';
+				if (req.body && req.body.bchain){
+					bchain = req.body.bchain;
+				}
+				
+				//validate proper data used
+				let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
+				console.log('isValidUser');
+				//console.log(isValidUser);
+				//if (username === mockedUsername && ppkey === mockedPpkey) {
+				if (isValidUser.result){
+					let token = jwt.sign({username: username},
+					  config.secret,
+					  { expiresIn: '24h' // expires in 24 hours
+					  }
+					);
+					//save to DB
+					//save encrypted version + token
+					if (!user_tkn){
+						user_tkn = new Object();
+					}
+					user_tkn.user = username;
+					user_tkn.token = token;
+					user_tkn.ppkey = ciphertext;
+					user_tkn.lastlogin = new Date();
+					//keep record free from deletion on cleanup
+					if (req.body && req.body.keeploggedin){
+						user_tkn.keeploggedin = req.body.keeploggedin;
+					}
+					//keep record of login source
+					if (req.body && req.body.loginsource){
+						user_tkn.loginsrc = req.body.loginsource;
+					}
+					let db_save = await db_col.save(user_tkn);
+					
+					// return the JWT token for the future API calls
+					res.json({
+					  success: true,
+					  message: 'Authentication successful!',
+					  token: token,
+					  userdata: isValidUser.account
+					});
+				  } else {
+					res.status(403).send({
+					  success: false,
+					  message: 'Incorrect username or ppkey'
+					});
+				}
+			} else {
+			  res.status(400).send({
+				success: false,
+				message: 'Authentication failed! Please check the request'
+			  });
 			}
-			user_tkn.user = username;
-			user_tkn.token = token;
-			user_tkn.ppkey = ciphertext;
-			user_tkn.lastlogin = new Date();
-			//keep record free from deletion on cleanup
-			if (req.body && req.body.keeploggedin){
-				user_tkn.keeploggedin = req.body.keeploggedin;
-			}
-			//keep record of login source
-			if (req.body && req.body.loginsource){
-				user_tkn.loginsrc = req.body.loginsource;
-			}
-			let db_save = await db_col.save(user_tkn);
-			
-			// return the JWT token for the future API calls
-			res.json({
-			  success: true,
-			  message: 'Authentication successful!',
-			  token: token,
-			  userdata: isValidUser.account
-			});
-		  } else {
-			res.status(403).send({
-			  success: false,
-			  message: 'Incorrect username or ppkey'
-			});
-		}
-    } else {
-      res.status(400).send({
-        success: false,
-        message: 'Authentication failed! Please check the request'
-      });
-    }
+	}else {
+		res.status(403).send({
+		  success: false,
+		  message: 'Incorrect username or ppkey'
+		});
+	}
 });
 
 
@@ -2157,6 +2319,116 @@ app.get('/tokensBurnt', async function (req, res) {
 	});
 });
 
+
+/************************************************/
+/********** free signup accounts section ********/
+app.get('/lastSignupClaimed/:user', async function (req, res){
+	let entryFound = await db.collection('last_signups_claimed').findOne({user:req.params.user});
+	if (entryFound != null){
+		res.send(entryFound);
+	}else{
+		res.send({err:'not found'})
+	}
+});
+
+
+userFreeSignupAccounts = async function(user){
+	let match = await db.collection('signup_promo_codes').find(
+		{
+			assigned_user: user, 
+			entries: {"$gt":0}
+		}).toArray();
+	if (match !=null && match.length >0){
+		return match.length;
+	}
+	return 0;
+} 
+
+claimableAccountsCount = async function (req, res){
+	//check when last claim occurred
+	let user = req.params.user;
+	let entryFound = await db.collection('last_signups_claimed').findOne({user: user});
+	let startDate = '20240110';
+	if (entryFound != null && entryFound.claimDate!=''){
+		//found a claim date. Calculate pending claimable accounts for this user
+		startDate = entryFound.claimDate
+		 
+	}
+	//check if he has more at least one pending signup account
+	let pendingAccounts = await userFreeSignupAccounts(user);
+	if (pendingAccounts > 1){
+		return false;
+	}
+		//res.send({err:'not found'})
+	req.params.startDate = startDate;
+	//check posts rewarded since
+	let rewardedCount = await userRewardedPostCountFunc(req, res)
+	
+	if (rewardedCount > 5){
+		//above threshold, grant user more claimable accounts
+		return true;
+	}
+	//threshold not met yet
+	return false;
+}
+
+app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
+	let match = await db.collection('signup_promo_codes').find(
+		{
+			assigned_user: req.query.user, 
+			entries: {"$gte":0}
+		}).toArray();
+	if (match != null && match.length > 0){
+		res.send({result:match});
+	}else{
+		res.send({error:'no current free signup links'})
+	}
+});
+
+app.get('/claimFreeSignupAccounts/:user', async function (req, res){
+	let outc = await claimableAccountsCount(req, res);
+	if (outc){
+		let collection = db.collection('signup_promo_codes')
+		//var dt = new Date().toJSON()
+		//dt.substring(0,dt.indexOf("."));
+		try{
+			for (let i=0;i<5;i++){
+				let randomCode = generatePassword(1);
+				result = await collection.insert({   
+					"code": randomCode,
+					"entries": 1,
+					"delegation": true,
+					"signup_reward": true,
+					"referrer_reward": true,
+					"assigned_user": req.params.user,
+					"date": new Date()
+				});
+			}
+			//also store user's last claim date
+			db.collection('last_signups_claimed').update({
+				user: req.params.user
+			},{
+				user: req.params.user,
+				claimDate: new Date()
+			},{ upsert: true })
+			
+			res.send({status: "success"})
+			return;
+		}catch(err){
+			res.send({error: err});
+			return;
+		}
+	}
+	res.send({error: 'no claimable accounts'});
+})
+
+app.get('/claimableFreeAccounts/:user', async function (req, res){
+	let outc = await claimableAccountsCount(req, res);
+	res.send({status: outc})
+})
+/************************************************/
+
+
 /* end point for user total token count display */
 app.get('/modAction', async function (req, res) {
 	if (!req.query.moderator || !req.query.fundsPass || !req.query.targetAction){
@@ -2330,7 +2602,8 @@ app.get('/modAction', async function (req, res) {
 							"entries": 1,
 							"delegation": true,
 							"signup_reward": true,
-							"referrer_reward": true
+							"referrer_reward": true,
+							"date": new Date()
 						});
 						console.log(modTrans.user+" verified ");
 						result.status='https://actifit.io/signup?promo='+randomCode;
@@ -3496,7 +3769,13 @@ app.post('/registerUserNotification', async function(req,res){
 		date: new Date()
 	};
 	try{
-		db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app}, userTokenEntry, { upsert: true });
+		//special case for web notifications
+		if (req.body.webid){
+			userTokenEntry.webid = req.body.webid;
+			db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app, webid: req.body.webid}, userTokenEntry, { upsert: true });
+		}else{
+			db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app}, userTokenEntry, { upsert: true });
+		}
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
@@ -4450,6 +4729,89 @@ async function performAddFriendTrx(req){
 	}
 }
 
+/* end point for keeping track of user uploaded vids */
+//test sample: https://studio.3speak.tv/mobile/api/video/@hispapro/efqxuxlv
+//https://usermedia.actifit.io/LQCJQI4JR6Z3GGVZ4444AMKIIL6BF
+app.get('/userAddedVid/:user/:vid/?:status', async function (req, res){
+	let query = {
+		user: req.params.user,
+		vid: req.params.vid
+	}
+	let vidMonitor = {
+		user: req.params.user,
+		vid: req.params.vid,
+		status: req.params.status?req.params.status:'new',
+		date: new Date(),
+	};
+	
+	try{
+		let result = await db.collection('user_submitted_vid').replaceOne(query, vidMonitor, {upsert : true });
+		//let setgs = await db.collection('user_settings')
+		res.send ({status: 'success'});
+	}catch(err){
+		res.send ({status: 'error', details: err});
+	}
+})
+
+app.get('/userVidNotifier', async function (req, res){
+	try{
+		//remove vid links older than 7 days
+		let userVidsList = await db.collection('user_submitted_vid').find().toArray();
+		let count = userVidsList.length;
+		//loop through existing vids, if any had a status modified, send notification
+		const thspkurl = 'https://studio.3speak.tv/mobile/api/video/@_USER_/_VID_';
+		let userVidsFinalArray = [];
+		let today = new Date();
+		
+		let minDays = 7;
+		if (req.query && req.query.threshold && !isNaN(req.query.threshold)){
+			minDays = req.query.threshold;
+		}		
+	
+		for (let i=0;i<count;i++){
+			//remove prior vids with status adjusted
+			let vid_date = new Date(userVidsList[i].date);
+			let dates_diff = today.getTime() - vid_date.getTime();
+			let diff_in_days = Math.ceil(dates_diff / (1000 * 3600 * 24));
+
+			//console.log(delg[i].min_delegation_time); 
+			console.log(diff_in_days);
+			
+			if (diff_in_days > minDays){
+				//remove (skip) this entry
+				continue;
+			}
+			if ( userVidsList[i].status=='new'){
+				//check if vid has been updated
+				let vidQuery = await fetch(thspkurl.replace('_USER_',userVidsList[i].user).replace('_VID_', userVidsList[i].vid));
+				console.log(vidQuery);
+				let res = await vidQuery.json();
+				console.log(res);
+				if (res){
+					if (res.video_status == 'publish_manual'){// || res.video_status == 'published'){
+						//notify user of status change
+						utils.sendNotification(db, userVidsList[i].user, 'threespeak', 'video_status', 'post', 'Your recently uploaded video is now ready to be published! ', 'https://actifit.io/'+userVidsList[i].user);
+						continue;
+					}
+				//}else{
+				//keep track of old vids
+				userVidsFinalArray.push(userVidsList[i]);
+				}
+			}
+		}
+		//cleanup old db
+		await db.collection('user_submitted_vid').deleteMany({});
+		if (userVidsFinalArray.length > 0){
+			await db.collection('user_submitted_vid').insertMany(userVidsFinalArray);
+		}
+		res.send({status:'success'});
+	}catch(err){
+		console.log(err);
+		res.send({error:err});
+	}
+	
+})
+
 /* end point for adding user's friend */
 app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
@@ -5396,6 +5758,17 @@ userRewardedPostCountFunc = async function(req, res){
 				"date": {
 						"$gte": new Date(endDate),
 						"$lt": new Date(startDate)
+					}
+		};
+	}else if (typeof req.query.startDate != "undefined"){
+		let startDate = moment(moment(req.query.startDate).utc().startOf('date').toDate()).format('YYYY-MM-DD');
+		console.log(startDate);
+		//adjust query to include dates
+		query_json = {
+				"reward_activity": "Post",
+				"user": user,
+				"date": {
+						"$gte": new Date(startDate)
 					}
 		};
 	}
@@ -7328,12 +7701,13 @@ app.get("/downEbook", async function(req, res) {
   db.collection('user_product_key').save(token_match);
 
   const fileName = config.ebook1
-  const filePath = config.ebook1pathlive + fileName
+  const filePath = config.ebook1pathofficlive + fileName
   
   const fs = require('fs');
   
   		
   const path = require('path');
+  console.log(__dirname);
   let pathname = path.join(__dirname, filePath);
   console.log(pathname);
   //return;

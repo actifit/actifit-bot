@@ -2407,7 +2407,12 @@ async function sendFirebaseNotification(db, user, details, url){
 		  .then((response) => {
 			// Response is a message ID string.
 			console.log('Successfully sent message:', response);
-			if (response.responses && response.responses.length>0 && response.responses[0].error)console.log(response.responses[0].error)
+			if (response.responses && response.responses.length>0){
+				for (let j=0;j<response.responses.length;j++){
+					if (response.responses[j].error) console.log(response.responses[j].error);
+					else console.log(response.responses[j]);
+				}
+			}
 		  })
 		  .catch((error) => {
 			console.log('Error sending message:', error);
