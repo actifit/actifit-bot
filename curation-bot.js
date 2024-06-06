@@ -3,6 +3,10 @@ const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
+const blurt = require("@blurtfoundation/blurtjs");
+
+//hive.config.set('rebranded_api', true)
+//hive.broadcast.updateOperations()
 
 var utils = require('./utils');
 var mail = require('./mail');
@@ -15,8 +19,12 @@ const cheerio = require('cheerio')
 const axios = require('axios');
 const request = require("request");
 
+let targetPostCount = 0;
+
+
 var account = null;
 let actSteemAccount = null;
+let actBlurtAccount = null;
 var last_trans = 0;
 var members = [];
 var whitelist = [];
@@ -31,9 +39,12 @@ var version = '0.3.4';
 var lucky_winner_id = -1;
 
 let topUsersAFITX = [];
+let topUsersAFIT = [];
 
 let gadgetsFetched = false;
 let activeGadgets = [];
+
+let allSplinterCards = [];
 
 //version of the reward system
 var reward_sys_version = 'v0.2';
@@ -50,6 +61,63 @@ let finalEligNewbieList = []; //contains array of newbies eligible for extra vot
 
 // Load the settings from the config file
 loadConfig();
+//console.log('launch test comment');
+//testCustomComment();
+
+
+//BSC requirements
+var Web3 = require('web3');
+
+const web3 = new Web3('https://bsc-dataseed1.binance.org:443');
+
+const minABI = [
+  // balanceOf
+  {
+	constant: true,
+	inputs: [{ name: "_owner", type: "address" }],
+	name: "balanceOf",
+	outputs: [{ name: "balance", type: "uint256" }],
+	type: "function",
+  }];
+
+
+
+//TG bot section
+/*********************************************************/
+
+const TelegramBot = require('node-telegram-bot-api');
+
+// Telegram token actifitNotifyBot
+const token = config.tg_bot_tkn;
+
+// Create a bot that uses 'polling' to fetch new updates
+const bot = new TelegramBot(token, {polling: true});
+
+// Actifit Chat ID
+const chatId = config.tg_grp_chat_id;
+
+//sendMsg('Test Message');
+
+bot.on('message', (msg) => {
+	console.log(msg);
+  console.log('>>>>>>>>Received message in chat:', msg.chat.id);
+  // You can store the chat ID (msg.chat.id) for future use.
+});
+
+//return;
+async function sendMsg(msg){
+	
+		//send test msg
+	console.log('sending sample message to Actifit tg')
+	//await bot.
+	bot.sendMessage(chatId, msg);// + JSON.stringify(data));
+}
+
+/*********************************************************/
+
+
+//console.log(config.afitTokenBSC);
+const afitContract = new web3.eth.Contract(minABI, config.afitTokenBSC);
 
 loadHivePrices();
 //kick off loading steem prices in 30 seconds
@@ -58,13 +126,34 @@ setTimeout(loadSteemPrices, 30*1000);
 //set proper nodes
 steem.api.setOptions({ 
 	url: config.active_node ,
+		//hive.config.set('address_prefix','TST');
 	//useAppbaseApi: true
 });
-
+/*
 hive.api.setOptions({ 
 	url: config.active_hive_node ,
 	//useAppbaseApi: true
+});*/
+
+blurt.api.setOptions({
+	url: config.active_blurt_node,
+})
+
+
+//hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
+
+hive.api.setOptions({ 
+	url: config.active_hive_node,
+	//address_prefix: 'TST',
+	//chain_id: '4200000000000000000000000000000000000000000000000000000000000000'
+	//useAppbaseApi: true
 });
+
+//console.log('grab proposal voters');
+let proposalVotersArray = [];
+const actifitProposalId = 250;
+//grabProposalVoters(actifitProposalId);
+
 
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -72,47 +161,87 @@ var HOURS = 60 * 60;
 
 //keep alive
 var http = require("http");
-setInterval(function() {
-  try{
-    http.get("http://actifitvoter.herokuapp.com");
-	
-	if (!is_voting){
-		//let's also run our token exchange cleanup process
-		console.log('running cleanup');
-		request('https://actifitbot.herokuapp.com/cancelOutdatedAfitSteemExchange', function (error, response, body) {
-			console.log('cleanup result');
-			console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
-			console.log('error: '+ error)
-		});
-		
-		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
-		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk?bchain=STEEM', function (error, response, body) {
-			console.log('process any missed AFIT SE to Actifit Wallet');
+
+
+let active_actifit_api = config.actifit_api_url;//default API node for actifit
+let acti_api_nodes = config.actifit_api_nodes;//alt nodes
+
+function switchActiApi(){
+	const randomIndex = Math.floor(Math.random() * acti_api_nodes.length);
+	console.log(randomIndex);
+	console.log(acti_api_nodes[randomIndex]);
+	active_actifit_api = acti_api_nodes[randomIndex];
+}
+
+
+//check status of user uploaded vids
+
+setInterval(function(){
+	//request('http://localhost:3120/userVidNotifier', function (error, response, body) {
+	request(active_actifit_api+'userVidNotifier', function (error, response, body) {
+			console.log('update vid status and send notification');
 			console.log(response);
 			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
 			//console.log('error: '+ error)
 		});
 		
+
+}, 1 * 60 * 1000); //every 1 min
+//}, 30 * 1000); //every 30 seconds
+
+setInterval(function() {
+  try{
+	
+	if (!is_voting){
+		//let's also run our token exchange cleanup process
+		console.log('running cleanup');
+		request(active_actifit_api+'cancelOutdatedAfitSteemExchange', function (error, response, body) {
+			console.log('cleanup result');
+			console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
+			console.log('error: '+ error)
+		});
+		
+		
 		//let's also run the cleanup for any missed AFIT SE to Actifit wallet processes
-		request('https://actifitbot.herokuapp.com/confirmAFITSEBulk?bchain=HIVE', function (error, response, body) {
+		request(active_actifit_api+'confirmAFITSEBulk?bchain=HIVE', function (error, response, body) {
 			console.log('process any missed AFIT HE to Actifit Wallet');
 			console.log(response);
 			//console.log('statusCode:', response && response.statusCode); // Print the response status code if a response was received
 			//console.log('error: '+ error)
 		});
 		
-		//also load prices & broadcast updates to witness nodes (STEEM & HIVE)
-		loadHivePrices();
-		//in 30 seconds load steem prices
-		setTimeout(loadSteemPrices, 30*1000);
 		
+		//grabProposalVoters(actifitProposalId);
 	}
+	
+	//switch API node
+	switchActiApi();
 	
   }catch(err){
 	console.log('error:'+err);
   }
 
 }, 600000); // every 10 minutes (600000)
+
+
+
+/* function for broadcasting price change */
+
+setInterval(function() {
+  try{
+	
+	if (!is_voting){
+		//also load prices & broadcast updates to witness nodes (STEEM & HIVE)
+		loadHivePrices();
+		//in 30 seconds load steem prices
+		setTimeout(loadSteemPrices, 30*1000);
+	}
+	
+  }catch(err){
+	console.log('error:'+err);
+  }
+
+}, 3600000); // every 1 hour (3600000)
 
 
 let crypto = require('crypto');
@@ -202,26 +331,172 @@ const actifit_img_urls =  [
 var botNames;
 //fetchGadgets();
 let tokensBurntLastRound = false;
-const SSC = require('sscjs');
-const ssc = new SSC(config.steem_engine_rpc);
+//const SSC = require('sscjs');
+//const ssc = new SSC(config.steem_engine_rpc);
 
-const hsc = new SSC(config.hive_engine_rpc);
+//const hsc = new SSC(config.hive_engine_rpc);
 
 // Initial Load of top AFITX token holders
 // Top 25 will be stored in topUsersAFITX
 fetchAFITXTopHolders();
+
+
+//grab all splinterlands data
+fetchAllSplinterCards();
+
+//return;
+
+
+//testSplinterlandsFunc();
+
+async function testSplinterlandsFunc(){
+	let rarityColl = await fetchUserSplinterData('mcfarhat');
+	//go through rarity cards, and append boosts accordingly
+	let splinter_boosts = [];
+	let val = 0;
+	for (let curs = 1; curs < rarityColl.length;curs++){
+		let curRarity = rarityColl[curs];
+		//if we have more than 10 cards owned for each rarity, apply an extra boost
+		if (curRarity >= 10){
+			let extraTokens = await calculateSplinterExtraRewards(curs);
+			splinter_boosts.push({rarity: curs, cardCount: curRarity, extraRewards: extraTokens})
+			//console.log()
+			
+			val += parseInt(extraTokens);
+		}
+	}
+	console.log(splinter_boosts);
+	console.log(val)
+}
+
+async function calculateSplinterExtraRewards(rarity){
+	if (rarity == 1){
+		return 5;
+	}else if (rarity == 2){
+		return 10;
+	}else if (rarity == 3){
+		return 15;
+	}else if (rarity == 4){
+		return 20;
+	}
+}
+
+async function fetchUserSplinterData(username){
+	if (allSplinterCards == null || allSplinterCards.length < 1){
+		//need to fetch all cards collection
+		console.log('fetching splinterlands full collection data anew')
+		await fetchAllSplinterCards();
+	}
+	//fetch user's cards
+	let cardColl = await fetchUserSplinterCards(username);
+	//compare and match user's cards and populate rarity to each card (join)
+	if (cardColl != null){
+		for (let i=0;i<cardColl.length;i++){
+			//prepare entry
+			let ent = cardColl[i];
+			let matchCriteria = {id:ent.card_detail_id};
+			let matchEntry = _.find(allSplinterCards, matchCriteria);
+			//console.log(matchEntry);
+			ent.rarity = matchEntry.rarity;
+			ent.name = matchEntry.name;
+			ent.color = matchEntry.color;
+			ent.type = matchEntry.type;
+			ent.id = matchEntry.card_detail_id;
+		}
+	}
+	//console.log(cardColl);
+	let rarityColl = [];
+	if (cardColl != null){
+		for (let i=1;i<5;i++){
+			rarityColl[i] = await findSpecialCardsCount(cardColl, i);
+		}
+	}
+	return rarityColl;
+	// console.log('rarity collection:');
+	// console.log(rarityColl);
+}
+
+async function findSpecialCardsCount(userCards, rarityParam){
+	let match = {rarity: rarityParam}
+	//using filter to find all matches
+	let matchCount = _.filter(userCards, match);
+	if (matchCount != null && matchCount.length > 0){
+		console.log('cards with rarity '+ rarityParam + ':'+matchCount.length)
+		return matchCount.length;
+	}else{
+		console.log('zero matches for rarity '+rarityParam);
+		return 0;
+	}
+}
+
+async function fetchAllSplinterCards(){
+	console.log('>>>>>>>>>>>>>splinterlands ALL cards');
+	try{
+		
+		//let fetch_gadgets_res = await axios.get(active_actifit_api + 'activeGadgets');
+		let gadUrl = config.splinter_api_all_cards;
+		
+		//console.log(gadUrl);
+		let outcome = await axios.get(gadUrl);
+		//console.log(outcome.data);
+		if (outcome && outcome.data){
+			allSplinterCards = outcome.data;
+		}else{
+			console.log('no cards found');
+		}
+		//console.log(activeGadgets);
+	}catch(err){
+		console.log(err);
+	}
+	
+}
+
+async function fetchUserSplinterCards(username){
+	try{
+		console.log('>>>>>>>>>>>>>splinterlands user cards');
+		
+		
+		
+		
+		//let fetch_gadgets_res = await axios.get(active_actifit_api + 'activeGadgets');
+		let gadUrl = config.splinter_api_url_user_collections.replace('_USERNAME_', username);
+		
+		//alternate different splinterlands API end points
+		let rndCall = utils.generateRandomNumber(1, 9);
+		if (rndCall > 5){
+			gadUrl = config.splinter_api_url_user_collections_alt.replace('_USERNAME_', username);
+		}
+		
+		//console.log(gadUrl);
+		let outcome = await axios.get(gadUrl);
+		console.log(outcome.data.player);
+		if (outcome && outcome.data && outcome.data.player == username ){
+			console.log(outcome.data.cards.length+' cards found');
+			return outcome.data.cards;
+		}else{
+			console.log('no cards found');
+			return null;
+		}
+		//console.log(activeGadgets);
+	}catch(err){
+		console.log(err);
+		return null;
+	}
+	
+}
+
 
 //grab list of active gadgets
 async function fetchGadgets(){
 	try{
 		console.log('>>>>>>>>>>>>>fetchGadgets');
 		
-		//let fetch_gadgets_res = await axios.get(config.api_url + 'activeGadgets');
-		let gadUrl = config.api_url + 'activeGadgets';
+		//let fetch_gadgets_res = await axios.get(active_actifit_api + 'activeGadgets');
+		let gadUrl = active_actifit_api + 'activeGadgets';
 		if (config.testing){
 			gadUrl = config.api_test_url + 'activeGadgets';
 		}
-		console.log(gadUrl);
+		//console.log(gadUrl);
 		let fetch_gadgets_res = await axios.get(gadUrl);
 		
 		activeGadgets = fetch_gadgets_res.data;
@@ -232,20 +507,24 @@ async function fetchGadgets(){
 	}
 }
 
+//initial call
+fetchAFITData();
 
-setInterval(function(){
+setInterval(fetchAFITData, 1200000); // every 20 minutes (1200000)
+
+async function fetchAFITData(){
 	try{
 	  if (!is_voting){
 		// Load updated top AFITX token holders every 10 minutes
 		// Top 25 will be stored in topUsersAFITX
 		fetchAFITXTopHolders();
+		
+		fecthAFITHEHolders();
 	  }
 	}catch(err){
 		console.log(err);
 	}
-}, 1200000); // every 20 minutes (1200000)
-
-
+}
 
 utils.log("* START - Version: " + version + " *");
 
@@ -304,7 +583,7 @@ if (fs.existsSync('members.json')) {
 // Use connect method to connect to the server
 MongoClient.connect(url, function(err, client) {
 	if(!err) {
-	  utils.log("Connected successfully to server "+url);
+	  utils.log("Connected successfully to server ");
 
 	  db = client.db(db_name);
 
@@ -313,11 +592,12 @@ MongoClient.connect(url, function(err, client) {
 	  
 	  /*let test = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
 	  console.log(test);*/
-	  
-	  /*let gadgetId = new ObjectId("5db77cb5e279c25040134953")
-	  let test = await db.collection('user_gadgets').findOne({ benefic: {$in: ['silvertop', '@silvertop']}, status: "active", gadget: gadgetId,  })
-	  console.log(test);*/
-	  
+		
+		
+//testerr();
+
+//return
+ 
 	  
 	  //testBoostData();
 	  //only start the process once we connected to the DB
@@ -338,9 +618,24 @@ MongoClient.connect(url, function(err, client) {
   
 });
 
+
+async function testerr(){
+	console.log('testerr1');
+	await fetchAFITXTopHolders();
+	await fecthAFITHEHolders();
+	let tstact = await grabUserTokensFunc('isofish');
+	console.log('testerr2');
+	console.log(tstact);
+	
+}
+
+
 // Schedule to run every minute
 if (!config.testing){
-	setInterval(startProcess, 60 * 1000);
+	if (!is_voting){
+		//we should only kickstart the bot if no voting round is running
+		setInterval(startProcess, 40 * 1000);
+	}
 }else{
 	setTimeout(startProcess, 20 * 1000);
 }
@@ -613,6 +908,8 @@ var lastIterationCount = 0;
 
 let queryCount = 0;
 
+let userInfo,tokenCount;
+
 let properties, rewardFund, rewardBalance, recentClaims, totalSteem, totalVests, votePowerReserveRate, sbd_print_percentage;
 
 async function setIsVoting(running){
@@ -686,8 +983,8 @@ async function setIsVoting(running){
 
 
 async function startProcess() {
-  if(!botNames)
-    botNames = await utils.loadBots();
+  /*if(!botNames)
+    botNames = await utils.loadBots();*/
   //if (config.detailed_logging)
     utils.log('Start process');
   // Load the settings from the config file each time so we can pick up any changes
@@ -698,15 +995,32 @@ async function startProcess() {
 	
 	
 	
-	await steem.api.getAccounts([config.account], function (err, result) {
+	/*await steem.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
       utils.log(err, result);
     else {
       actSteemAccount = result[0];
 	  //console.log(actSteemAccount);
     }
+	});*/
+	
+	//load blurt account data
+	console.log('load blurt data');
+	
+	await blurt.api.getAccounts([config.account], function (err, result) {
+    if (err || !result)
+      utils.log(err, result);
+    else {
+      actBlurtAccount = result[0];
+	  
+	  //claimRewards('BLURT');
+	  //console.log(actBlurtAccount);
+	  //claimRewards('BLURT');
+	  //console.log(actSteemAccount);
+    }
 	});
-  
+	
+	//return;
 	
   
 	/*await steem.api.setOptions({ 
@@ -715,6 +1029,14 @@ async function startProcess() {
 	});*/
   
   // Load hive account info
+  console.log('load hive data');
+  
+  /*hive.api.setOptions({
+	  address_prefix: 'TST',
+	  chain_id: '42',
+	  useTestNet: true,
+	});*/
+  
   hive.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
       utils.log(err, result);
@@ -745,8 +1067,8 @@ async function startProcess() {
   
   
   //utils.updateSteemVariables();
-  console.log('account');	
-  console.log(account!=null);	
+  //console.log('account');	
+  //console.log(account!=null);	
   console.log('skip:'+skip);	
   console.log('is_voting:'+is_voting);	
   console.log('passedOneDay:'+passedOneDay);	
@@ -827,7 +1149,6 @@ async function startProcess() {
 	
     utils.log('Voting Power: ' + utils.format(vp) + '% | Time until next vote: ' + utils.toTimer(utils.timeTilFullPower(vp*100)));
 	
-	
 	//disabling buying and burning tokens
 	/*console.log(config.vpTokenBurn);
 	if (vp >= config.vpTokenBurn/100 && vp < (config.vpTokenBurn+10)/100){
@@ -841,6 +1162,7 @@ async function startProcess() {
 	}*/
 	
 	
+	/*
 	if (vp >= vpRestart/100 && vp < vpRestartLimit/100) {
 		//restart server to avoid voting round breakdown
 		//https://devcenter.heroku.com/articles/platform-api-reference
@@ -863,34 +1185,49 @@ async function startProcess() {
 			}
 		);
 		/////////////////
-	}
-	
+	}*/
     // We are at voting power kick start - time to vote!
 	//utils.log(vp >= parseFloat(config.vp_kickstart)/100);
     if (vp >= parseFloat(config.vp_kickstart)/100 || config.testing) {
 	
 		// Check if there are any rewards to claim before voting
 		if (!config.testing){
-			await claimRewards();
+			//await claimRewards('STEEM');
+			try{
+			await claimRewards('HIVE');
+			await claimRewards('BLURT');
+			}catch(errclaim){
+				console.log(errclaim);
+			}
 		}
 		
 		//fetch gadget assignments
+		
 		let fet_res = await fetchGadgets();
 		
-		//console.log(activeGadgets);
+		console.log(activeGadgets);
 		
 		//reset number of helping votes case
 		helping_accounts_votes = 0;
 		
 		// Load Steem global variables
-
+		
+		console.log('properties');
 		properties = await hive.api.getDynamicGlobalPropertiesAsync();
+		console.log('got properties');
 		  //grab reward fund data
 		rewardFund = await hive.api.getRewardFundAsync("post");
-		rewardBalance = parseFloat(rewardFund.reward_balance.replace(" STEEM", "").replace(" HIVE", ""));
+		console.log('got reward fund');
+		rewardBalance = parseFloat(rewardFund.reward_balance.replace(" STEEM", "").replace(" HIVE", "").replace(" BLURT", ""));
 		recentClaims = rewardFund.recent_claims;
 		
-		totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0]);
+		if (properties.total_vesting_fund_steem){
+			totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0]);
+		}else if (properties.total_vesting_fund_hive){
+			totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0]);
+		}else{
+			totalSteem = Number(properties.total_vesting_fund_blurt.split(' ')[0]);
+		}
 		totalVests = Number(properties.total_vesting_shares.split(' ')[0]);
 		
 		votePowerReserveRate = properties.vote_power_reserve_rate;
@@ -904,7 +1241,7 @@ async function startProcess() {
 		banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	  
 		//grab list of moderators
-		var moderator_api_url = config.api_url+'moderators';
+		var moderator_api_url = active_actifit_api+'moderators';
 		var moderator_info = await axios.get(moderator_api_url);
 		utils.log(moderator_info.data);
 		var moderator_array = moderator_info.data;
@@ -943,6 +1280,7 @@ async function startProcess() {
 		votePosts = Array();
 		processVotes(query, false);      
     }else{
+		utils.log('claim RC ')
 		//if we're not voting, let's check to claim some more discounted account spots
 		utils.getRC(config.account).then(function(results){
 			utils.log('Current RC: ' + utils.format(results.estimated_pct) + '% | Time until full: ' + utils.toTimer(results.fullin));
@@ -1032,11 +1370,16 @@ function setSbdPrice(json){
 }
 
 function setHivePrice(json){
-	hive_price = parseFloat(json.hive.usd); 
-	console.log('HIVE price:'+hive_price)
-	if (!config.testing){
-		broadcastFeed('HIVE')
+	let tmp_hive_price = parseFloat(json.hive.usd); 
+	console.log('new HIVE price:'+tmp_hive_price)
+	if (hive_price != tmp_hive_price){
+		console.log('HIVE price change (old)'+hive_price)
+		hive_price = tmp_hive_price;
+		if (!config.testing){
+			broadcastFeed('HIVE')
+		}
 	}
+	hive_price = tmp_hive_price;
 }
 
 function setHbdPrice(json){
@@ -1046,12 +1389,12 @@ function setHbdPrice(json){
 
 function loadHivePrices() {
   fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd').then(
-		res => {res.json().then(json => setHivePrice(json)).catch(e => console.log('Error loading STEEM price: ' + e))
+		res => {res.json().then(json => setHivePrice(json)).catch(e => console.log('Error loading HIVE price: ' + e))
   }).catch(e => console.log('Error loading HIVE price: ' + e))
   
   //grab SBD price
   fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive_dollar&vs_currencies=usd').then(
-	res => {res.json().then(json => setHbdPrice(json)).catch(e => console.log('Error loading SBD price: ' + e))
+	res => {res.json().then(json => setHbdPrice(json)).catch(e => console.log('Error loading HBD price: ' + e))
   }).catch(e => console.log('Error loading HBD price: ' + e))
 }
 
@@ -1137,8 +1480,8 @@ function broadcastFeed (type) {
 	if (type == 'HIVE'){
 		price_val = hive_price;
 		//below two lines are hacks since steem-js is not yet accepting HIVE and HBD
-		//pegged_cur = ' HBD';
-		type = 'STEEM';
+		pegged_cur = ' HBD';
+		//type = 'HIVE';
 		/*steem.api.setOptions({ 
 			url: config.active_hive_node ,
 			//useAppbaseApi: true
@@ -1189,7 +1532,9 @@ function processVotes(query, subsequent) {
 	queryCount += 1;
     if (result && !err) {
 		//is_voting = true;
-		setIsVoting(true);
+		if (!config.testing){
+			setIsVoting(true);
+		}
       
 		utils.log(result.length + ' posts to process...');      
 		
@@ -1365,7 +1710,7 @@ function processVotes(query, subsequent) {
 				
 				if (!config.testing){
 				
-					let ver_url = config.api_url + "fetchVerifiedPost";			
+					let ver_url = active_actifit_api + "fetchVerifiedPost";			
 					let critical_fields = ['step_count', 'actiCrVal', 'actifitUserID', 'activityDate'];
 					
 					let incons_detected = false;
@@ -1544,22 +1889,23 @@ function processVotes(query, subsequent) {
 				
 				//store this entry to db to make sure we skip it in future voting iterations
 				if (skip_date_diff){
-				  
-				  let post_entry_skip = {
-					author: post.author,
-					permlink: post.permlink,
-					date: new Date(post.created),
-				  }
-				
-				  bulk_posts_skip.find(
-					{ 
+					if (!config.testing){
+					  let post_entry_skip = {
 						author: post.author,
-						permlink: post.permlink
-					}).upsert().replaceOne(post_entry_skip);
+						permlink: post.permlink,
+						date: new Date(post.created),
+					  }
 					
-					proceed_bulk_posts_skip = true;
-					
-				  continue;
+					  bulk_posts_skip.find(
+						{ 
+							author: post.author,
+							permlink: post.permlink
+						}).upsert().replaceOne(post_entry_skip);
+						
+						proceed_bulk_posts_skip = true;
+						
+					  continue;
+					}
 				}
 				
 				
@@ -1673,17 +2019,22 @@ function processVotes(query, subsequent) {
 								comment_url: comments[cmt_it].url,
 								date: new Date(comments[cmt_it].created)
 							}
-							bulk_transactions.find(
-							{ 
-								user: comment_transaction.user,
-								reward_activity: comment_transaction.reward_activity,
-								url: comment_transaction.url,
-								comment_url: comment_transaction.comment_url
-							}).upsert().replaceOne(comment_transaction);
 							
-							proceed_bulk_transactions = true;
-							utils.log('found comment>>>>');
-							utils.log(comment_transaction);
+							if (!config.testing){
+							
+								bulk_transactions.find(
+								{ 
+									user: comment_transaction.user,
+									reward_activity: comment_transaction.reward_activity,
+									url: comment_transaction.url,
+									comment_url: comment_transaction.comment_url
+								}).upsert().replaceOne(comment_transaction);
+								
+								proceed_bulk_transactions = true;
+								
+								utils.log('found comment>>>>');
+								utils.log(comment_transaction);
+							}
 						}
 					}
 				//}
@@ -1693,7 +2044,7 @@ function processVotes(query, subsequent) {
 				
 				/******************* user rank criteria *********************/
 				//var request = require('request');
-				var rank_api_url = config.api_url+'getRank/'+post.author;
+				var rank_api_url = active_actifit_api+'getRank/'+post.author;
 				var user_rank_info = await axios.get(rank_api_url);
 				//utils.log(user_rank_info.user_rank);
 				post.user_rank = parseFloat(user_rank_info.data.user_rank);
@@ -1737,50 +2088,76 @@ function processVotes(query, subsequent) {
 				
 				post.afit_pre_boost = post.post_score;
 				
-				//check if user has an AFIT boost as percent increments
-				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'percent_reward', post, true);
+				//fetch user's token count to make sure of eligibility to AFIT rewards
+				userInfo = await grabUserTokensFunc(post.author);
+				tokenCount = parseFloat(userInfo.tokens);
+				console.log('gotten '+post.author + ' AFIT bal ' + tokenCount);
 				
-				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+				//this only applies to users having enough AFIT threshold. Otherwise their boosts will not be consumed
+				if (tokenCount >= parseFloat(config.min_afit_reward_elig)){
+					
+					//check splinterlands eligibility for extra rewards, returns owned cards by rarity
+					let rarityColl = await fetchUserSplinterData(post.author);
+					//go through rarity cards, and append boosts accordingly
+					post.splinter_boosts = [];
+					for (let curs = 1; curs < rarityColl.length;curs++){
+						let curRarity = rarityColl[curs];
+						//if we have 10 or more cards owned for each rarity, apply an extra boost
+						if (curRarity >= 10){
+							let extraTokens = await calculateSplinterExtraRewards(curs);
+							post.splinter_boosts.push({rarity: curs, cardCount: curRarity, extraRewards: extraTokens})
+							
+							post.post_score += parseInt(extraTokens);
+						}
+					}
+					
+					//check if user has an AFIT boost as percent increments
+					boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'percent_reward', post, true);
+					
+					post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+					
+					//check if user has a User Rank boost as percent increments
+					let appendPercTokens = boost_res.extra_boost;
+					
+					//append as percentage
+					post.post_score += appendPercTokens * post.post_score / 100;
+					post.boost_afit_percent_reward = appendPercTokens;
+					
+					console.log('new post score:'+post.post_score);
+					
+					//check if user has an AFIT boost as unit entries
+					
+					boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'unit', post, true);
+					
+					post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+					
+					//check if user has a User Rank boost as percent increments
+					let appendTokens = boost_res.extra_boost;
+					
+					//append tokens
+					post.post_score += appendTokens;
+					post.boost_afit_units = appendTokens;
+					
+					console.log('new post score:'+post.post_score);
+					
+					//check if user has an AFIT boost as range entries
+					
+					boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'range', post, true);
+					
+					post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
+					
+					//check if user has a User Rank boost as percent increments
+					appendTokens = boost_res.extra_boost;
+					
+					//append tokens
+					post.post_score += appendTokens;
+					post.boost_afit_units = appendTokens;
+					
+					console.log('new post score:'+post.post_score);
+					
+				}
 				
-				//check if user has a User Rank boost as percent increments
-				let appendPercTokens = boost_res.extra_boost;
-				
-				//append as percentage
-				post.post_score += appendPercTokens * post.post_score / 100;
-				post.boost_afit_percent_reward = appendPercTokens;
-				
-				console.log('new post score:'+post.post_score);
-				
-				//check if user has an AFIT boost as unit entries
-				
-				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'unit', post, true);
-				
-				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
-				
-				//check if user has a User Rank boost as percent increments
-				let appendTokens = boost_res.extra_boost;
-				
-				//append tokens
-				post.post_score += appendTokens;
-				post.boost_afit_units = appendTokens;
-				
-				console.log('new post score:'+post.post_score);
-				
-				//check if user has an AFIT boost as range entries
-				
-				boost_res = await grabConsumeUserBoostByType(post.author, 'AFIT', 'range', post, true);
-				
-				post.user_post_boosts = post.user_post_boosts.concat(boost_res.user_post_boosts);
-				
-				//check if user has a User Rank boost as percent increments
-				appendTokens = boost_res.extra_boost;
-				
-				//append tokens
-				post.post_score += appendTokens;
-				post.boost_afit_units = appendTokens;
-				
-				console.log('new post score:'+post.post_score);
-				
+			
 				
 				//rate multiplier to allow assigning proper steem upvote value per each post according to its post_score/afit payout
 				post.rate_multiplier = post.post_score / 100;
@@ -1799,10 +2176,12 @@ function processVotes(query, subsequent) {
 			try{
 				utils.log('going through selected post '+post.url);
 				//insert post if not inserted before
-				bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
-							   post
-							);
-				proceed_bulk = true;
+				if (!config.testing){
+					bulk.find( { permlink: post.permlink } ).upsert().replaceOne(
+								   post
+								);
+					proceed_bulk = true;
+				}
 				//post token rewards DB transaction
 				
 				//by default the reward owner is the author
@@ -1840,6 +2219,8 @@ function processVotes(query, subsequent) {
 					}
 				}
 				
+				//AFIT Requirement: verify user count before rewarding as might not be eligible
+				
 				let post_transaction = {
 					user: reward_user,
 					reward_activity: activity_type,
@@ -1849,20 +2230,40 @@ function processVotes(query, subsequent) {
 					note: note,
 					reward_system: reward_sys_version
 				}
+				
+				//fetch user's token count to make sure of eligibility to AFIT rewards
+				userInfo = await grabUserTokensFunc(reward_user);
+				tokenCount = parseFloat(userInfo.tokens);
+				//console.log('gotten '+post.author + ' AFIT bal ' + tokenCount);
+				
+				//give out 0 rewards if user does not reach threshold
+				if (tokenCount < parseFloat(config.min_afit_reward_elig)){
+					console.log('>> '+reward_user+' '+tokenCount+' AFIT less than min reqt')
+					post_transaction.token_count = 0;
+					post.zero_afit=true;
+				}else{
+					console.log('>>>> '+reward_user+' min AFIT reqt met '+tokenCount)
+				}
+				
+				
 				//also in case of charity, we need to append the actual user
 				if (typeof post.json.charity != 'undefined' && post.json.charity != '' && post.json.charity != 'undefined'){
 					post_transaction['giver'] = post.author;
 				}
 			  
-				bulk_transactions.find(
-				{ 
-					user: post_transaction.user,
-					reward_activity: post_transaction.reward_activity,
-					url: post_transaction.url
-				}).upsert().replaceOne(post_transaction); 
-				proceed_bulk_transactions = true;
-				
+				if (!config.testing){
+					bulk_transactions.find(
+					{ 
+						user: post_transaction.user,
+						reward_activity: post_transaction.reward_activity,
+						url: post_transaction.url
+					}).upsert().replaceOne(post_transaction); 
+					proceed_bulk_transactions = true;
+				}
 				//reward back to referrer
+				
+				//AFIT Requirement: also no referrer reward if user does not have enough count
+				
 				try{
 				if (referrer_reward_acct){
 					note = "Referral Reward Share From User Activity Report"
@@ -1878,15 +2279,28 @@ function processVotes(query, subsequent) {
 						reward_system: reward_sys_version
 					}
 					
-					//we also need to insert another transaction to capture the actual activity/reward by the user
-					bulk_transactions.find(
-					{ 
-						user: ref_trans.user,
-						reward_activity: ref_trans.reward_activity,
-						post_author: ref_trans.post_author,
-						url: ref_trans.url
-					}).upsert().replaceOne(ref_trans);
-					proceed_bulk_transactions = true;
+					//fetch user's token count to make sure of eligibility to AFIT rewards
+					userInfo = await grabUserTokensFunc(reward_user);
+					tokenCount = parseFloat(userInfo.tokens);
+					console.log('gotten '+post.author + ' AFIT bal ' + tokenCount);
+					
+					//give out 0 rewards if user does not reach threshold
+					if (tokenCount < parseFloat(config.min_afit_reward_elig)){
+						ref_trans.token_count = 0;
+						post.zero_afit=true;
+					}
+					
+					if (!config.testing){
+						//we also need to insert another transaction to capture the actual activity/reward by the user
+						bulk_transactions.find(
+						{ 
+							user: ref_trans.user,
+							reward_activity: ref_trans.reward_activity,
+							post_author: ref_trans.post_author,
+							url: ref_trans.url
+						}).upsert().replaceOne(ref_trans);
+						proceed_bulk_transactions = true;
+					}
 				}
 				}catch(ref_benef_exc){
 					console.log(ref_benef_exc);
@@ -1906,6 +2320,7 @@ function processVotes(query, subsequent) {
 						reward_system: reward_sys_version
 					}
 					
+					if (!config.testing){
 					//we also need to insert another transaction to capture the actual activity/reward by the user
 					bulk_transactions.find(
 					{ 
@@ -1914,6 +2329,7 @@ function processVotes(query, subsequent) {
 						url: charity_trans.url
 					}).upsert().replaceOne(charity_trans);
 					proceed_bulk_transactions = true;
+					}
 				}
 				
 				//reward upvoters
@@ -1960,14 +2376,17 @@ function processVotes(query, subsequent) {
 								url: post.url,
 								date: new Date(used_date)//vote.time)
 							}
-							bulk_transactions.find(
-							{ 
-								user: vote_transaction.user,
-								reward_activity: vote_transaction.reward_activity,
-								url: vote_transaction.url
-							}).upsert().replaceOne(vote_transaction);
-							//transactions.push(vote_transaction);
-							proceed_bulk_transactions = true;
+							
+							if (!config.testing){
+								bulk_transactions.find(
+								{ 
+									user: vote_transaction.user,
+									reward_activity: vote_transaction.reward_activity,
+									url: vote_transaction.url
+								}).upsert().replaceOne(vote_transaction);
+								//transactions.push(vote_transaction);
+								proceed_bulk_transactions = true;
+							}
 							//utils.log(vote_transaction);
 						}
 					});
@@ -1981,7 +2400,7 @@ function processVotes(query, subsequent) {
 		//properly stored any future skippable posts
 		utils.log(proceed_bulk_posts_skip);
 		try{
-			if (proceed_bulk_posts_skip){
+			if (proceed_bulk_posts_skip && !config.testing){
 				await bulk_posts_skip.execute();
 			}
 		}catch(bulkerr){
@@ -1991,14 +2410,16 @@ function processVotes(query, subsequent) {
 		utils.log('votePosts.length:'+votePosts.length);
 		utils.log(proceed_bulk);
 		utils.log(proceed_bulk_transactions);
-		if (votePosts.length>0){
+		if (votePosts.length>0 && !config.testing){
 			try{
 				//store posts
 				if (proceed_bulk){
 					await bulk.execute();
+					console.log('database insertion complete');
 				}
 			}catch(bulkerr){
 				utils.log(bulkerr);
+				console.log('error database insertion');
 			}
 			try{
 				//award transaction tokens
@@ -2049,16 +2470,17 @@ function processVotes(query, subsequent) {
 				
 				//grab list of eligible verified newbie accounts
 				
-				let newbieList= await fetch(config.api_url+'activeVerifiedNewbies/');
+				let newbieList= await fetch(active_actifit_api+'activeVerifiedNewbies/');
 				let newbieEligListRes = await newbieList.json();
 				let interimEligList = [];
-				let finalEligNewbieList = [];
+				finalEligNewbieList = [];
 				
 				for (let lpr=0;lpr<newbieEligListRes.length;lpr++){
 				//update list to contain users having a post
 					let matchPst = votePosts.find( user_post => user_post.author === newbieEligListRes[lpr].user);
 					if (matchPst){
 						interimEligList.push(newbieEligListRes[lpr].user);
+						matchPst.newbie_reward = 1;
 					}
 					console.log(matchPst);
 				}
@@ -2086,7 +2508,7 @@ function processVotes(query, subsequent) {
 					lucky_winner_id = utils.generateRandomNumber(1, votePosts.length);
 					let post = votePosts[lucky_winner_id];
 					
-					utils.log('before');
+					
 					utils.log(votePosts[lucky_winner_id].post_score);
 					
 					let reward_user = post.author;
@@ -2103,6 +2525,7 @@ function processVotes(query, subsequent) {
 					
 					var bulk_transactions = db.collection('token_transactions').initializeUnorderedBulkOp();
 					
+					//AFIT Requirement: also zero out user rewards if balance is less than threshold
 					let post_transaction = {
 						user: reward_user,
 						reward_activity: activity_type,
@@ -2116,29 +2539,59 @@ function processVotes(query, subsequent) {
 						reward_system: reward_sys_version
 					}
 					
+					userInfo = await grabUserTokensFunc(reward_user);
+					tokenCount = parseFloat(userInfo.tokens);
+
+					
+					//give out 0 rewards if user does not reach threshold
+					if (tokenCount < parseFloat(config.min_afit_reward_elig)){
+						post_transaction.token_count = 0;
+						post_transaction.lucky_winner = 0;
+						post.zero_afit=true;
+					}
+					
+					
 					//adjust post_score according to reward
 					post.post_score = post.post_score * reward_factor;
 					post.rate_multiplier = post.post_score / 100;
 					post.reward_factor = reward_factor;
 					post.lucky_winner = 1;
 				  
-					bulk_transactions.find(
-					{ 
-						user: post_transaction.user,
-						reward_activity: post_transaction.reward_activity,
-						url: post_transaction.url
-					}).upsert().replaceOne(post_transaction); 		
-
+					if (!config.testing){
+						bulk_transactions.find(
+						{ 
+							user: post_transaction.user,
+							reward_activity: post_transaction.reward_activity,
+							url: post_transaction.url
+						}).upsert().replaceOne(post_transaction); 		
+						//award transaction tokens
+						await bulk_transactions.execute();
+					}
 					
-					//award transaction tokens
-					await bulk_transactions.execute();
 				}catch(bulkerr){
 					utils.log(bulkerr);
 				}
-				utils.log('after');
+				
 				utils.log(votePosts[lucky_winner_id].post_score);
 				
 				/***************** Check for AFIT/STEEM upvote exchange ******************/
+				
+				
+				let extra_reward_arr = [
+									{afit: 5, upvote: 10},//legacy support
+									{afit: 10, upvote: 15},//legacy support
+									{afit: 15, upvote: 20},//legacy support
+									{afit: 20, upvote: 25},//legacy support
+									{afit: 500, upvote: 10},//legacy support
+									{afit: 1000, upvote: 15},//legacy support
+									{afit: 1500, upvote: 20},//legacy support
+									{afit: 2000, upvote: 25},//legacy support
+									{afit: 50, upvote: 10},
+									{afit: 100, upvote: 15},
+									{afit: 150, upvote: 20},
+									{afit: 200, upvote: 25},
+									];
+				
 				try{
 				
 					//assign an ID to this reward cycle
@@ -2146,12 +2599,12 @@ function processVotes(query, subsequent) {
 					
 					//calculate current vote value, and relating voting percentage needed
 					//get vote value at 100%
-					let full_vote_value = getVoteValueUSD(100, account, 100, hive_price);
-					console.log('full_vote_value')
-					console.log(full_vote_value)
+					//let full_vote_value = getVoteValueUSD(100, account, 100, hive_price);
+					//console.log('full_vote_value')
+					//console.log(full_vote_value)
 					
 					console.log('topUsersAFITX')
-					//console.log(topUsersAFITX);
+					console.log(topUsersAFITX);
 					
 					//number of found exchanges to perform in coming round
 					let matched_exchanges = 0;
@@ -2180,6 +2633,7 @@ function processVotes(query, subsequent) {
 							console.log('>>match found');
 							matched_exchanges += 1;
 							//found a match, need to increase rewards according to AFIT pay
+							/*
 							//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
 							let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);//20*0.02=0.4
 							
@@ -2191,13 +2645,23 @@ function processVotes(query, subsequent) {
 							
 							//emulate proper voting power to give user matching rewards
 							let user_added_vote_weight = usd_val * 100 / full_vote_value; //0.8*100/full_vote_value
+							*/
+							
+							let user_added_vote_weight_entry = extra_reward_arr.find( match => match.afit === parseInt(cur_upvote_entry.paid_afit));
+							
+							console.log('>>>>user_added_vote_weight_entry');
+							
+							console.log(user_added_vote_weight_entry);
+							
+							let user_added_vote_weight = user_added_vote_weight_entry.upvote;
 							
 							let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
+							
 							
 							//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
 							//only consume half of those now, leave the rest to other accounts
 							if (helping_accounts_votes < (config.max_helping_votes / 2)){
-								user_added_vote_weight -= 1;
+								//user_added_vote_weight -= 1;
 								
 								helping_accounts_votes += 1;
 								
@@ -2214,9 +2678,9 @@ function processVotes(query, subsequent) {
 							
 							//we need to set params of this transaction
 							cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
-							cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
-							cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
-							cur_upvote_entry.usd_val = +usd_val.toFixed(2);
+							//cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
+							//cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
+							//cur_upvote_entry.usd_val = +usd_val.toFixed(2);
 							
 							cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
 							
@@ -2252,6 +2716,8 @@ function processVotes(query, subsequent) {
 								console.log('fresh game');
 								matched_exchanges += 1;
 								//found a match, need to increase rewards according to AFIT pay
+								
+								/*
 								//calculate total paid AFIT in USD (which should be equal to a 65% reward, since Actifit removes 10% benefic, and author reward removes 75%
 								let usd_val_no_benef = parseFloat(cur_upvote_entry.paid_afit) * parseFloat(cur_afit_price.unit_price_usd);
 								
@@ -2263,12 +2729,17 @@ function processVotes(query, subsequent) {
 								
 								//emulate proper voting power to give user matching rewards
 								let user_added_vote_weight = usd_val * 100 / full_vote_value;
+								*/
 								
+								let user_added_vote_weight_entry = extra_reward_arr.find( match => match.afit === parseInt(cur_upvote_entry.paid_afit));
+							
+								let user_added_vote_weight = user_added_vote_weight_entry.upvote;
+							
 								let entry_index = votePosts.findIndex( user_post => user_post.author === cur_upvote_entry.user);
 								
 								//decrease by 1% since assisting accounts will vote too (pay & funds) only if we still have room to use them
 								if (helping_accounts_votes < config.max_helping_votes){
-									user_added_vote_weight -= 1;
+									//user_added_vote_weight -= 1;
 									
 									helping_accounts_votes += 1;
 									
@@ -2284,9 +2755,9 @@ function processVotes(query, subsequent) {
 								
 								//we need to set params of this transaction
 								cur_upvote_entry.additional_vote_weight = votePosts[entry_index].additional_vote_weight / 100;
-								cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
-								cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
-								cur_upvote_entry.usd_val = +usd_val.toFixed(2);
+								//cur_upvote_entry.usd_val_no_benef = +usd_val_no_benef;
+								//cur_upvote_entry.usd_val_no_curation = +usd_val_no_curation.toFixed(2);
+								//cur_upvote_entry.usd_val = +usd_val.toFixed(2);
 								
 								cur_upvote_entry.reward_cycle_ID = reward_cycle_ID;
 								
@@ -2304,7 +2775,8 @@ function processVotes(query, subsequent) {
 				}
 				
 				/********************* proceed with STEEM upvotes ************************/
-				
+				sendMsg('Rewards round has now started! If you created an actifit report recently with more than 5,000 steps, you might receive HIVE/HBD/AFIT rewards.');
+				targetPostCount = votePosts.length;
 				votingProcess(votePosts, vote_data.power_per_vote);
 			
 			} else {
@@ -2327,11 +2799,22 @@ function processVotes(query, subsequent) {
   });
 }
 
+async function fecthAFITHEHolders(){
+	console.log('--- Fetch AFIT user balances --- ');
+	let holderList = await fetch(active_actifit_api+'topAFITHEHolders');
+	if (holderList != null){
+		topUsersAFIT = await holderList.json();
+	}
+	//console.log(topUsersAFIT);
+}
+
 async function fetchAFITXTopHolders(){
 
 	console.log('--- Fetch AFITX top users --- ');
-	let holderList = await fetch('https://actifitbot.herokuapp.com/topAFITXHolders?count='+config.topAFITXCount);
-	topUsersAFITX = await holderList.json();
+	let holderList = await fetch(active_actifit_api+'topAFITXHolders?count='+config.topAFITXCount);
+	if (holderList != null){
+		topUsersAFITX = await holderList.json();
+	}
 	console.log(topUsersAFITX);
 }
 
@@ -2349,6 +2832,10 @@ function votingProcess(posts, power_per_vote) {
         utils.log('=======================================================');
         utils.log('Voting Complete!');
         utils.log('=======================================================');
+		
+		
+		sendMsg('Rewards round is now complete! '+targetPostCount+' actifit reports have received rewards. Congrats to all participants! If your actifit report did not receive rewards yet, stay tuned for the next round starting in less than 24 hours');
+		
         //is_voting = false;
 		setIsVoting(false);
         error_sent = false;
@@ -2398,8 +2885,7 @@ async function sendVote(post, retries, power_per_vote) {
 	}
 	
 	post_rank += 1;
-	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.steemit.com'+post.url+')');
-  
+	
 	//if this is a sponsored athlete, give them special reward
 	if (config.sponsored_athletes.includes(post.author)){
 		vote_weight = config.sponsored_athlete_upvote_reward;
@@ -2409,6 +2895,14 @@ async function sendVote(post, retries, power_per_vote) {
 	if (vote_weight > config.max_vote_per_post){
 		vote_weight = config.max_vote_per_post;
 	}
+	
+	//append a min val boost for very low vote rewards
+	if (vote_weight < config.extra_boost_min_val){
+		vote_weight += config.extra_boost_pct_increase;
+	}
+	
+	utils.log('|#'+post_rank+'|@'+post.author+'|'+ post.json.step_count +'|'+token_count+' Tokens|'+utils.format(vote_weight / 100)+'%|[post](https://www.actifit.io'+post.url+')');
+  
 	
 	if (stdrd_vote_weight > config.max_vote_per_post){
 		stdrd_vote_weight = config.max_vote_per_post;
@@ -2472,7 +2966,7 @@ async function sendVote(post, retries, power_per_vote) {
 		
 		let curAuthor = post.author;
 		if (config.testing){
-			curAuthor= 'mcfarhat';
+			//curAuthor= 'mcfarhat';
 		}
 		boost_res = await grabConsumeUserBoostByType(curAuthor, 'APX', 'percent', post, true);
 					
@@ -2506,7 +3000,7 @@ async function sendVote(post, retries, power_per_vote) {
 								entry.user === post.author);
 				console.log(cur_upvote_entry);
 				cur_upvote_entry.upvote_processed = true;
-				db.collection('exchange_afit_steem').save(cur_upvote_entry);
+				//db.collection('exchange_afit_steem').save(cur_upvote_entry);
 			}
 			
 			if(config.comment_location && config.comment){
@@ -2708,7 +3202,7 @@ async function sendVote(post, retries, power_per_vote) {
 					}
 				
 				try{
-					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);			
+					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight * 3 / 100) + '% vote cast for: ' + post.url);			
 					/*steem.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
@@ -2721,7 +3215,7 @@ async function sendVote(post, retries, power_per_vote) {
 											"voter": config.rewards_account,
 											"author": post.author,
 											"permlink": post.permlink,
-											"weight": net_rewards_vote_weight
+											"weight": net_rewards_vote_weight * 3
 										  }
 									   ]
 								   ], 
@@ -2761,6 +3255,10 @@ async function sendVote(post, retries, power_per_vote) {
 						   { posting: config.posting_key }
 					   ).then(async function(rest, err) {
 							
+							
+							//notify user of voting success
+							utils.sendNotification(db, post.author, account.name, 'post_reward', 'Your activity report "'+ post.title + '" has been rewarded!', 'https://actifit.io'+post.url);
+							
 							//store exchange transaction as complete
 							if (post.additional_vote_weight){
 								console.log('Exchange vote');
@@ -2770,10 +3268,21 @@ async function sendVote(post, retries, power_per_vote) {
 								console.log(cur_upvote_entry);
 								cur_upvote_entry.upvote_processed = true;
 								db.collection('exchange_afit_steem').save(cur_upvote_entry);
+								
+								
+								if (post.top_afitx_holder){
+									//notify user of top AFITX vote
+									utils.sendNotification(db, post.author, account.name, 'top_afitx_holder_vote', 'You received extra vote reward of ' + utils.format(post.additional_vote_weight / 100) + '% for being a top AFITX holder on activity report "'+ post.title + '"!', 'https://actifit.io'+post.url);
+									
+									sendMsg('Actifit User @'+post.author+' received extra reward on their recent Actifit Post via AFIT vote exchange and being a **top AFITX holder**! 🤩 '+'https://actifit.io'+post.url);
+									
+								}else{
+									//notify user of exchange vote
+									utils.sendNotification(db, post.author, account.name, 'exchange_vote', 'You received extra vote reward of ' + utils.format(post.additional_vote_weight / 100) + '% for your exchange request on activity report "'+ post.title + '"!', 'https://actifit.io'+post.url);
+									sendMsg('Actifit User @'+post.author+' received extra reward on their recent Actifit Post via AFIT vote exchange! 🤩 '+'https://actifit.io'+post.url);
+								}
 							}
 							
-							//notify user of voting success
-							utils.sendNotification(db, post.author, account.name, 'post_reward', 'Your activity report "'+ post.title + '" has been rewarded!', 'https://actifit.io'+post.url);
 							
 							
 							if(config.comment_location && config.comment){
@@ -2786,6 +3295,8 @@ async function sendVote(post, retries, power_per_vote) {
 								}).catch(err => {
 									console.log(err);
 								})
+								
+								//await customComment(post);
 								
 						   }
 					   }).catch(e => console.log(e))
@@ -3058,10 +3569,13 @@ async function sendVote(post, retries, power_per_vote) {
 								
 				try{
 					
-					if (post.additional_vote_weight && vote_weight > config.min_vote_weight_decrease){
+					/*if (post.additional_vote_weight && vote_weight > config.min_vote_weight_decrease){
 						//decrease amount by 1% across votes to be able to reward team
-						vote_weight -= config.extra_vote_weight_decrease;//
-					}
+						vote_weight -= config.extra_vote_weight_increase;//
+					}*/
+					
+					//increase amount by 2% across votes to be able to reward team
+					vote_weight += config.extra_vote_weight_increase;
 					
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
 					/*steem.api.setOptions({ 
@@ -3087,7 +3601,7 @@ async function sendVote(post, retries, power_per_vote) {
 					   .then(async function(rest, err) {
 							
 							//store exchange transaction as complete
-							if (post.additional_vote_weight){
+							/*if (post.additional_vote_weight){
 								console.log('Exchange vote');
 								let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
 												entry.post_permlink === post.permlink && 
@@ -3095,9 +3609,9 @@ async function sendVote(post, retries, power_per_vote) {
 								console.log(cur_upvote_entry);
 								cur_upvote_entry.upvote_processed = true;
 								db.collection('exchange_afit_steem').save(cur_upvote_entry);
-							}
+							}*/
 					  
-							if(config.comment_location && config.comment){
+							/*if(config.comment_location && config.comment){
 									
 								//setTimeout(function () { 	
 								
@@ -3113,7 +3627,7 @@ async function sendVote(post, retries, power_per_vote) {
 								//}, config.voting_posting_delay);
 							}else{
 								//resolve('');   
-							} 
+							} */
 					   }).catch(e => console.log(e))
 					console.log(res);
 					if (res && res.block_num) {
@@ -3157,11 +3671,379 @@ async function sendVote(post, retries, power_per_vote) {
 				}
 				
 			}
+			
+			if (config.blurt_voting_active){
+				
+				/*************************************************/
+				/*************************************************/
+				/*************************************************/
+				
+				//second blockchain transactions
+				console.log('set blurt node');
+				/*blurt.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});*/
+				//vote first using pay and funds accounts only if we have an AFIT/blurt exchange operation and we have room to upvote using helping accounts
+				let altAcctsBlurtVotingOn = false;
+				
+				if (altAcctsBlurtVotingOn){
+					if (post.additional_vote_weight && post.helperVotes){
+						let vote_percent_add_accounts = config.helping_account_percent;//at 50%: 5000
+						try{
+												
+							utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
+							
+							/*blurt.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
+							res = await blurt.broadcast.sendAsync( 
+								   { 
+									   operations: [ 
+											   ['vote', 
+												 {
+													"voter": config.full_pay_benef_account,
+													"author": post.author,
+													"permlink": post.permlink,
+													"weight": vote_percent_add_accounts
+												  }
+											   ]
+										   ], 
+									   extensions: [] 
+									}, 
+								   { posting: config.full_pay_posting_key }
+							  ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.ref_block_num) {
+								utils.log('success');
+							}
+							
+						}catch(err){
+							utils.log(err);
+						}
+						
+						try{
+							utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);						
+							/*blurt.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
+							res = await blurt.broadcast.sendAsync( 
+								   { 
+									   operations: [ 
+											   ['vote', 
+												 {
+													"voter": config.pay_account,
+													"author": post.author,
+													"permlink": post.permlink,
+													"weight": vote_percent_add_accounts
+												  }
+											   ]
+										   ], 
+									   extensions: [] 
+									}, 
+								   { posting: config.pay_account_post_key }
+							   ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.ref_block_num) {
+								utils.log('success');
+							}
+						
+						}catch(err){
+							utils.log(err);
+						}
+						
+					}
+					
+					//if additional partner accounts enabled, vote using them as well
+					try{
+						if (config.zzan_active){
+							utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
+							/*blurt.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
+							res = await blurt.broadcast.sendAsync( 
+								   { 
+									   operations: [ 
+											   ['vote', 
+												 {
+													"voter": config.zzan_account,
+													"author": post.author,
+													"permlink": post.permlink,
+													"weight": stdrd_vote_weight
+												  }
+											   ]
+										   ], 
+									   extensions: [] 
+									}, 
+								   { posting: config.zzan_pk }
+							   ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.ref_block_num) {
+								utils.log('success');
+							}
+							
+						}
+					}catch(err){
+						utils.log(err);
+					}
+					
+					try{
+						if (config.sports_active){
+							utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
+							/*blurt.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
+							res = await blurt.broadcast.sendAsync( 
+								   { 
+									   operations: [ 
+											   ['vote', 
+												 {
+													"voter": config.sports_account,
+													"author": post.author,
+													"permlink": post.permlink,
+													"weight": stdrd_vote_weight
+												  }
+											   ]
+										   ], 
+									   extensions: [] 
+									}, 
+								   { posting: config.sports_pk }
+							   ).catch(e => console.log(e))
+							console.log(res);
+							if (res && res.ref_block_num) {
+								utils.log('success');
+							}
+							
+						}
+					}catch(err){
+						utils.log(err);
+					}
+					
+					//append appics account gadget-based voting 
+					
+						if (config.appics_active && post.vote_appics){
+							
+							try{
+								utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);						
+								/*blurt.api.setOptions({ 
+									url: config.active_node ,
+									//useAppbaseApi: true
+								});*/
+								res = await blurt.broadcast.sendAsync( 
+								   { 
+									   operations: [ 
+											   ['vote', 
+												 {
+													"voter": config.appics_account,
+													"author": post.author,
+													"permlink": post.permlink,
+													"weight": post.boost_apx_percent
+												  }
+											   ]
+										   ], 
+									   extensions: [] 
+									}, 
+								   { posting: config.appics_pk }
+							   ).catch(e => console.log(e))
+								console.log(res);
+								if (res && res.ref_block_num) {
+									utils.log('success');
+								}
+							
+							}catch(err){
+								utils.log(err);
+							}
+						}
+					
+					try{
+					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);						
+						/*blurt.api.setOptions({ 
+								url: config.active_node ,
+								//useAppbaseApi: true
+							});*/
+						res = await blurt.broadcast.sendAsync( 
+							   { 
+								   operations: [ 
+										   ['vote', 
+											 {
+												"voter": config.rewards_account,
+												"author": post.author,
+												"permlink": post.permlink,
+												"weight": net_rewards_vote_weight
+											  }
+										   ]
+									   ], 
+								   extensions: [] 
+								}, 
+							   { posting: config.rewards_account_pk }
+						   ).catch(e => console.log(e))
+						console.log(res);
+						if (res && res.ref_block_num) {
+							utils.log('success');
+						}
+						
+					}catch(err){
+						utils.log(err);
+					}
+
+				}		
+								
+				try{
+					
+					/*if (post.additional_vote_weight && vote_weight > config.min_vote_weight_decrease){
+						//decrease amount by 1% across votes to be able to reward team
+						vote_weight -= config.extra_vote_weight_increase;//
+					}*/
+					
+					//increase amount by 2% across votes to be able to reward team
+					vote_weight += config.blurt_extra_vote_weight_increase;
+					
+					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
+					/*blurt.api.setOptions({ 
+							url: config.active_node ,
+							//useAppbaseApi: true
+						});*/
+					res = await blurt.broadcast.sendAsync( 
+						   { 
+							   operations: [ 
+									   ['vote', 
+										 {
+											"voter": account.name,
+											"author": post.author,
+											"permlink": post.permlink,
+											"weight": vote_weight
+										  }
+									   ]
+								   ], 
+							   extensions: [] 
+							}, 
+						   { posting: config.posting_key }
+					   )
+					   .then(async function(rest, err) {
+							
+							//store exchange transaction as complete
+							/*if (post.additional_vote_weight){
+								console.log('Exchange vote');
+								let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+												entry.post_permlink === post.permlink && 
+												entry.user === post.author);
+								console.log(cur_upvote_entry);
+								cur_upvote_entry.upvote_processed = true;
+								db.collection('exchange_afit_steem').save(cur_upvote_entry);
+							}*/
+							
+							//no comments for now on blurt due to trx cost
+							/*if(config.comment_location && config.comment){
+									
+								//setTimeout(function () { 	
+								
+									//wait 5 seconds before commenting
+									//await delay(5000);
+								
+									await sendComment(post, 0, vote_weight, 'STEEM')
+										.then( res => {
+											//resolve(res)
+										}).catch(err => {
+											//reject(err);
+										})
+								//}, config.voting_posting_delay);
+							}else{
+								//resolve('');   
+							} */
+					   }).catch(e => console.log(e))
+					console.log(res);
+					if (res && res.ref_block_num) {
+						utils.log('success');
+						
+						//store exchange transaction as complete
+						/*if (post.additional_vote_weight){
+							console.log('Exchange vote');
+							let cur_upvote_entry = afit_steem_upvote_list.find( entry => entry.post_author === post.author && 
+											entry.post_permlink === post.permlink && 
+											entry.user === post.author);
+							console.log(cur_upvote_entry);
+							cur_upvote_entry.upvote_processed = true;
+							db.collection('exchange_afit_steem').save(cur_upvote_entry);
+						}*/
+						
+						
+					}else{
+						 // Try again one time on error
+						/*if (retries < config.max_vote_comment_retries){
+							//try to vote again
+							setTimeout(function () { 	
+								sendVote(post, retries + 1, power_per_vote)
+									.then( res => {
+										resolve(res)
+									})
+									.catch(err => {
+										reject(err);
+									})
+							}, config.voting_posting_delay);
+						}else {
+							var message = '============= Vote transaction failed '+retries+' times for: ' + post.url + ' ==============='
+							utils.log(message);
+							reject(err);
+						//errorEmail(message, config.report_emails);
+						}*/
+					}
+				
+				}catch(mainerr){
+					utils.log(mainerr);
+				}
+				
+			}
+			
 			resolve('');
 		}
 	});
 }
 
+/* function handles calculating and returning user token count */
+grabUserTokensFunc = async function (username){
+	let user = await db.collection('user_tokens').findOne({_id: username});
+	console.log(user);
+	//fixing token amount display for 3 digits
+	if (typeof user!= "undefined" && user!=null){
+		if (typeof user.tokens!= "undefined"){
+			user.tokens = user.tokens.toFixed(3)
+		}
+	}else{
+		user = new Object();
+		user._id=username;
+		user.name=username;
+		user.tokens=0;
+	}
+	//also append tokens on hive-engine & steem-engine
+	let heEntry = topUsersAFIT.find(entry => entry.account === username);
+	if (heEntry && !isNaN(heEntry.balance) && heEntry.balance>0){
+		user.tokens = parseFloat(user.tokens) + parseFloat(heEntry.balance);
+		//console.log(user.tokens);
+	}
+	
+	//also append tokens on BSC
+		//check if user has a BSC wallet
+	let wallet_entry = await db.collection('user_wallet_address').findOne({user: username});
+	try{
+		if (wallet_entry && wallet_entry.wallet){
+			//console.log(wallet_entry.wallet);
+			//fetch wallet balance		
+			let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
+			let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+			afitBSC = parseFloat(format);
+			//console.log(format);
+			user.tokens = parseFloat(user.tokens) + afitBSC;
+		}
+	}catch(exc){
+		console.log('error fetching wallet balance / BSC')
+	}
+	console.log(user.tokens);
+	return user;
+}
 
 //function handles updating current user token count
 async function updateUserTokens() {
@@ -3197,6 +4079,87 @@ async function updateUserTokens() {
 	}
 }
 
+async function testCustomComment(){
+	let cstmquery = {tag: 'arabpromovault', limit: 1};
+	hive.api.getDiscussionsByBlog(cstmquery, async function (err, result) {
+		if (result && result.length>0){
+			console.log('found post')
+			let post = result[0];
+			console.log(result);
+			await customComment(post);
+			console.log('done with comment')
+		}
+	
+	})
+}
+
+async function customComment(post){
+	if (proposalVotersArray.includes(post.author)){
+		utils.log('author '+post.author+'already voted for actifit proposal. No need to remind ')
+		//skip, we dont need to notify the user as he already voted for our proposal
+		return;
+	}
+	let parentAuthor = post.author;
+	let parentPermlink = post.permlink;
+	let jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version};
+	let permlink = 're-' + parentAuthor.replace(/\./g, '') + '-' + parentPermlink + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
+	
+	let content = "Hey @"+post.author+"! Great seeing your actifit report! Now is the time to support actifit's growth and services on hive blockchain. <br /> Please vote for our DHF proposal via link [here](https://peakd.com/proposals/250)";
+	
+	let chainLnk = hive;
+	const operations = [ 
+		   ['comment', 
+			 { 
+			   "parent_author": post.author, 
+			   "parent_permlink": post.permlink, 
+			   "author": config.rewards_account,
+			   "permlink": permlink, 
+			   "title": 'Support Actifit DHF', 
+			   "body": content, 
+			   "json_metadata" : JSON.stringify(jsonMetadata)
+			 } 
+		   ]
+	];
+	
+	console.log(operations);
+	
+	let res = await chainLnk.broadcast.sendAsync( 
+		   { 
+			   operations: operations, 
+			   extensions: [] 
+			}, 
+		   { posting: config.rewards_account_pk }
+	   ).catch(e => console.log(e))
+	utils.log(res);
+	if (res && res.block_num) {
+		utils.log('Posted comment: ' + permlink);
+		//resolve(res);
+	}
+	
+}
+
+async function grabProposalVoters (targetProposal){
+	//curl -s --data '{"jsonrpc":"2.0", "method":"condenser_api.list_proposal_votes", "params":[[250], 10, "by_proposal_voter", "ascending", "active"], "id":1}' https://api.hive.blog | more
+	
+	//let targetProposal = 250;
+	
+	let outc = await hive.api.callAsync('condenser_api.list_proposal_votes', [[targetProposal], 1000, 'by_proposal_voter', 'ascending', 'all']);//{start:[250], limit: 1000, order: 'by_proposal_voter', order_direction: 'ascending', status: 'active'});
+	
+	//filter items by target proposal id as the result contains following proposals as well
+	
+	proposalVotersArray = outc.filter((obj) => obj.proposal['id'] === targetProposal)
+							.map((obj) => obj.voter).sort();
+							
+	console.log(proposalVotersArray)
+	console.log('voter count:')
+	console.log(proposalVotersArray.length);
+
+    console.log('total voting value:');
+	let propInstance = await hive.api.callAsync('condenser_api.find_proposals', [[targetProposal]]);//{start:[250], limit: 1000, order: 'by_proposal_voter', order_direction: 'ascending', status: 'active'});
+    console.log(propInstance[0].total_votes);
+	//console.log(proposalVotersArray);
+	
+}
 
 async function sendComment(post, retries, vote_weight, bchain_node) {
 	var parentAuthor = post.author;
@@ -3204,10 +4167,25 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 	var rate_multiplier = post.rate_multiplier;
 	var post_step_count = post.json.step_count;
 	
-	var content = null;
+	var content = "";
 	// Return promise
 	//return new Promise( async (resolve, reject) => {
-		content = fs.readFileSync(config.comment_location, "utf8");
+		
+		//start off with proposal notice
+		let proposal_msg = fs.readFileSync(config.proposal_comment_location, "utf8");
+		
+		if (config.proposal_comment_active){
+			content = proposal_msg;
+		}
+		
+		if (post.zero_afit){
+			content += fs.readFileSync(config.comment_noafit_location, "utf8");	
+		}else{
+			content += fs.readFileSync(config.comment_location, "utf8");
+		}
+		
+		
+		
 		let content_sign = fs.readFileSync(config.comment_sign_location, "utf8");
 
 		// If promotion content is specified in the config then use it to comment on the upvoted post
@@ -3233,9 +4211,34 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 			
 			//create proper display for boosts consumed
 			let boost_content = '';
+			
+			//add splinterlands boost data
+			//post.splinter_boosts.concat({rarity: curs, cardCount: curRarity, extraRewards: extraTokens})
+			if (post.splinter_boosts !=null && post.splinter_boosts.length >0 ){
+				boost_content += '<div>The following splinterland boosts were applied to your post:</div>';
+				post.splinter_boosts.forEach(boost => {
+					// Access each boost object here
+					let boost_title = 'Common';
+					if (boost.rarity == 2){
+						boost_title = 'Rare';
+					}else if (boost.rarity == 3){
+						boost_title = 'Epic';
+					}else if (boost.rarity == 4){
+						boost_title = 'Legendary';
+					}
+					boost_content += '<li>'+boost.cardCount+' '+boost_title+' Cards Boost: +'+ boost.extraRewards+' AFIT';
+					console.log(boost.rarity, boost.cardCount, boost.extraRewards);
+				});
+
+			}
+			
 			let maxGadgets = post.user_post_boosts.length;
+			let maxGadgetsDisplay = (config.max_comment_gadgets_display<maxGadgets?config.max_comment_gadgets_display:maxGadgets);
+			if (maxGadgetsDisplay>0){
+				boost_content += '<div>The following boosts were applied to your post:</div>';
+			}
 			boost_content += '<b><div style="display:flex; flex-wrap: wrap;">';
-			for (let i=0;i < maxGadgets;i++){
+			for (let i=0;i < maxGadgetsDisplay;i++){
 				let cur_boost = post.user_post_boosts[i];
 				let prod_info = cur_boost.productdetails[0];
 				boost_content += '<div style="flex-direction: column; padding: 5px;">';
@@ -3271,6 +4274,10 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				boost_content += '</div>';
 			}
 			boost_content += '</div></b>';
+			if (maxGadgetsDisplay<maxGadgets){
+				//let user know other gadgets were not shown due to being too long for comment
+				boost_content += '<div>... and '+(maxGadgets - maxGadgetsDisplay)+' other gadgets.</div>';
+			}
 			let reward_diff = parseFloat(token_count) - parseFloat(post.afit_pre_boost);
 			if (reward_diff > 0){
 				boost_content += '<div><i>Boosts increased your AFIT earnings by '+reward_diff.toFixed(4)+' AFIT</i></div>';
@@ -3278,9 +4285,9 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 			content = content.replace(/\{boost_list\}/g, boost_content);
 			
 			//replace(/\{milestone\}/g, milestone_txt).
-			
+			let community_tag = "hive-193552";
 			//adding proper meta content for later relevant reward via afit_tokens data
-			var jsonMetadata = { tags: ['actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };
+			var jsonMetadata = { community:[community_tag], tags: [community_tag, 'actifit'], app: 'actifit/v'+version, activity_count: post_step_count, user_rank: post.user_rank, content_score: post.content_score, media_score: post.media_score, upvote_score: post.upvote_score, comment_score: post.comment_score, user_rank_score: post.user_rank_score, moderator_score: post.moderator_score, post_activity_score: post.activity_score, afit_tokens: token_count, post_upvote: vote_weight };
 			
 			//if this reward contains an exchange amount, list it here
 			if (post.additional_vote_weight != null){
@@ -3292,6 +4299,21 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				content = content.replace(/\{exchange_vote}/g,'') 
 			}
 			
+			//user is a newbie winner. Let him know
+			if (post.newbie_reward != null){
+				if (Array.isArray(finalEligNewbieList) && finalEligNewbieList.length > 0 && vote_weight >= config.max_newbie_vote_pct){
+					jsonMetadata.newbie_reward = true;
+					content = content.replace(/\{newbie_reward}/g,'***You received a special 20% vote for being a verified newbie! Newbie rewards apply to new verified actifit users on discord, and are given daily to 5 newbies for up to 60 days from the date of your verification*** ');
+					
+					sendMsg('Actifit User @'+parentAuthor+' received special newbie reward on their recent Actifit Post! 🤩 '+'https://actifit.io'+post.url);
+					
+				}else{
+					content = content.replace(/\{newbie_reward}/g,'');
+				}
+			}else{
+				content = content.replace(/\{newbie_reward}/g,'');
+			}
+			
 			//if this is a top AFITX reward exchange
 			if (post.top_afitx_holder != null){
 				jsonMetadata.top_afitx_holder = true;
@@ -3301,6 +4323,8 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 			if (typeof post.lucky_winner != 'undefined' && post.lucky_winner != '' && post.lucky_winner != 'undefined'){
 				content = content.replace(/\{lucky_reward}/g,'**You were also selected randomly as a LUCKY WINNER for the day. Your rewards were DOUBLED - DOUBLE CONGRATS!!**');
 				jsonMetadata.lucky_winner = 1;
+				
+				sendMsg('Actifit User @'+parentAuthor+' received the DOUBLE REWARD for the day on their recent Actifit Post! 🤩 '+'https://actifit.io'+post.url);
 			}else{
 				content = content.replace(/\{lucky_reward}/g,'') 
 			}
@@ -3456,39 +4480,6 @@ function loadConfig() {
   config = JSON.parse(fs.readFileSync("config.json"));
 }
 
-function sendPayment(to, amount, currency, reason, retries, data) {
-  if(!retries)
-    retries = 0;
-
-  // Make sure the recipient isn't on the no-refund list (for exchanges and things like that).
-  if (reason != 'forward_payment' && config.no_refund && config.no_refund.indexOf(to) >= 0) {
-    utils.log("Payment not sent to: @" + to + " for: " + reason + ' because they are on the no_refund list.');
-    return;
-  }
-
-  // Replace variables in the memo text
-  var memo = config.transfer_memos[reason];
-  memo = memo.replace(/{amount}/g, utils.format(amount, 3) + ' ' + currency);
-  memo = memo.replace(/{currency}/g, currency);
-  memo = memo.replace(/{account}/g, config.account);
-  memo = memo.replace(/{to}/g, to);
-  memo = memo.replace(/{tag}/g, data);
-
-  // Issue the payment.
-  steem.broadcast.transfer(config.active_key, config.account, to, utils.format(amount, 3) + ' ' + currency, memo, function (err, response) {
-    if (err) {
-      utils.log('Error sending payment to @' + to + ' for: ' + amount + ' ' + currency + ', Error: ' + err);
-
-      // Try again on error
-      if(retries < 2)
-        setTimeout(function() { refund(to, amount, currency, reason, retries + 1, data) }, (Math.floor(Math.random() * 10) + 3) * 1000);
-      else
-        utils.log('============= Payment failed three times for: @' + to + ' ===============');
-    } else {
-      utils.log('Payment of ' + amount + ' ' + currency + ' sent to @' + to + ' for reason: ' + reason);
-    }
-  });
-}
 
 async function claimRewards(target_chain) {
 	console.log('>>>>> claiming rewards');
@@ -3497,18 +4488,41 @@ async function claimRewards(target_chain) {
 	
 	let targetAccount = actSteemAccount;
 	
-	let claim_currency = targetAccount.reward_steem_balance
-	let claim_currency_stable = targetAccount.reward_sbd_balance
-	let chainLnk = steem;
+	let claim_currency
+	let claim_currency_stable
+	let chainLnk
+	if (target_chain == 'STEEM'){
+		claim_currency = targetAccount.reward_steem_balance
+		claim_currency_stable = targetAccount.reward_sbd_balance
+		chainLnk = steem;
+	}
+	
 	if (target_chain == 'HIVE'){
 		targetAccount = account;
-		claim_currency = targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
-		claim_currency_stable = targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
+		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		chainLnk = hive;
 		
 	}
+	
+	if (target_chain == 'BLURT'){
+		targetAccount = actBlurtAccount;
+		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
+		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
+		chainLnk = blurt;
+		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
+			await chainLnk.broadcast.claimRewardBalance(config.posting_key, config.account, claim_currency, targetAccount.reward_vesting_balance, function (err, result) {
+				if (err) {
+					console.log('error claiming rewards');
+					utils.log(err);
+				}
+			});
+		}
+		return;
+	}
+	
 	// Make api call only if you have actual reward
-	if (parseFloat(targetAccount.reward_steem_balance) > 0 || parseFloat(targetAccount.reward_sbd_balance) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
+	if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
 		
 		
 		await chainLnk.broadcast.claimRewardBalance(config.posting_key, config.account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance, function (err, result) {
@@ -3518,13 +4532,13 @@ async function claimRewards(target_chain) {
 			}
 
 			if (result) {
-
+				/*
 				var rewards_message = "$$$ ==> Rewards Claim";
 				if (parseFloat(targetAccount.reward_sbd_balance) > 0) { rewards_message = rewards_message + ' SBD: ' + parseFloat(targetAccount.reward_sbd_balance); }
 				if (parseFloat(targetAccount.reward_steem_balance) > 0) { rewards_message = rewards_message + ' STEEM: ' + parseFloat(targetAccount.reward_steem_balance); }
 				if (parseFloat(targetAccount.reward_vesting_balance) > 0) { rewards_message = rewards_message + ' VESTS: ' + parseFloat(targetAccount.reward_vesting_balance); }
 
-				utils.log(rewards_message);
+				utils.log(rewards_message);*/
 				
 				//now attempt to claim rewards with HIVE
 				if (!target_chain){
@@ -3532,7 +4546,7 @@ async function claimRewards(target_chain) {
 				}
 
 				// If there are liquid post rewards, withdraw them to the specified account
-				if (parseFloat(targetAccount.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
+				/*if (parseFloat(targetAccount.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
 
 					// Send liquid post rewards to the specified account
 					steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, targetAccount.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
@@ -3542,7 +4556,7 @@ async function claimRewards(target_chain) {
 							utils.log('$$$ Auto withdrawal - liquid post rewards: ' + targetAccount.reward_sbd_balance + ' sent to @' + config.post_rewards_withdrawal_account);
 						}
 					});
-				}
+				}*/
 			}
 		});
 	}else{
