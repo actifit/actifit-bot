@@ -1718,8 +1718,8 @@ app.get('/afitMarkets', async function (req, res){
 app.get('/recalculateUserTokens', async function (req, res){
 	if (req.query && req.query.user){
 	
-	let user = req.query.user;
-	let trx = await db.collection('token_transactions').aggregate([
+		let user = req.query.user;
+		let trx = await db.collection('token_transactions').aggregate([
 		{
 			$match: {user: user}
 		},

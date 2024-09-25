@@ -105,6 +105,7 @@ var HOURS = 60 * 60;
  
  async function getChainInfo(bchain){
 	let data = {};
+	try{
 	if (!bchain || bchain == ''){
 		let chain_info = await hive.api.getDynamicGlobalPropertiesAsync();
 		data['HIVE']=chain_info;
@@ -116,6 +117,9 @@ var HOURS = 60 * 60;
 		let chainLnk = await setProperNode(bchain);
 		let chain_info = await chainLnk.api.getDynamicGlobalPropertiesAsync();
 		data[bchain]=chain_info;
+	}
+	}catch(err){
+		console.log(err);
 	}
 	return data;
  }
