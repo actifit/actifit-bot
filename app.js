@@ -2372,11 +2372,12 @@ claimableAccountsCount = async function (req, res){
 	return false;
 }
 
+
 app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
 	let match = await db.collection('signup_promo_codes').find(
 		{
 			assigned_user: req.query.user, 
-			entries: {"$gte":0}
+			entries: {"$gt":0}
 		}).toArray();
 	if (match != null && match.length > 0){
 		res.send({result:match});
