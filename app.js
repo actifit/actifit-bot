@@ -4998,19 +4998,19 @@ app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function 
 
 /* end point for fetching all users unread notifications */
 app.get('/activeNotifications/:user', async function (req, res) {
-	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'unread'}).toArray();
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'unread'}).sort({date:-1}).limit(2000).toArray();
 	res.send(activeNotifications.reverse());
 });
 
 /* end point for fetching all users read notifications */
 app.get('/readNotifications/:user', async function (req, res) {
-	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).toArray();
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user, status: 'read'}).sort({date:-1}).limit(2000).toArray();
 	res.send(activeNotifications.reverse());
 });
 
 /* end point for fetching all users notifications */
 app.get('/allNotifications/:user', async function (req, res) {
-	let activeNotifications = await db.collection('notifications').find({user: req.params.user}).toArray();
+	let activeNotifications = await db.collection('notifications').find({user: req.params.user}).sort({date:-1}).limit(2000).toArray();
 	res.send(activeNotifications.reverse());
 });
 
