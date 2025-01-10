@@ -2261,36 +2261,39 @@ app.get('/activeRefReward/:referred', async function (req, res) {
 });
 
 /* end point for returning number of awarded users and tokens distributed */
-app.get('/user-tokens-info', async function(req, res) {
+app.get('/accountsTotalAFIT', async function(req, res) {
 
-	await db.collection(collection_name).aggregate([
+	db.collection('user_tokens').aggregate([
+		{ $match: { tokens: { $gte: 0.000001 } } },
 		{
-			$match: {}
-		},
-		{
-		   $group:
-			{
-			   _id: null,
-			   tokens_distributed: { $sum: "$tokens" },
-			   user_count: { $sum: 1 }
+			$group: {
+				_id: null,
+				tokens_distributed: { $sum: "$tokens" },
+				user_count: { $sum: 1 }
 			}
 		}
-	   ]).toArray(function(err, results) {
-		if (results.length>0){
-			try{
-				var output = 'rewarded users:'+results[0].user_count+',';
-				output += 'tokens distributed:'+results[0].tokens_distributed;
-				res.send(results);
+	]).toArray(function(err, results) {
+		if (err) {
+			console.log("Error:", err);
+			res.send('');
+			return;
+		}
+
+		if (results.length > 0) {
+			try {
+				var output = 'Rewarded users: ' + results[0].user_count + ', ';
+				output += 'Tokens distributed: ' + results[0].tokens_distributed;
+				res.send({'accounts': results[0].user_count, 'total': results[0].tokens_distributed});
 				console.log(results);
-			}catch(err){
+			} catch (err) {
 				console.log(err);
 				res.send('');
 			}
-		}else{
+		} else {
 			res.send('');
 		}
-	   });
-
+	});
+	
 });
 
 app.get('/tokensBurnt', async function (req, res) {
@@ -7735,8 +7738,8 @@ app.get("/downEbook", async function(req, res) {
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
 app.get('/confirmPayment', async function(req,res){
-	//if (req.query.confirm_payment_token != config.confirmPaymentToken){
-	if (false){
+	if (req.query.confirm_payment_token != config.confirmPaymentToken){
+	//if (false){
 		res.send('{}');
 	}else{
 		let paymentReceivedTx = '';

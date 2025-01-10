@@ -1263,7 +1263,7 @@ var HOURS = 60 * 60;
 				const create_op = [
 					'account_create',
 					{
-						fee: '10.000 BLURT',
+						fee: '100.000 BLURT',
 						creator: creator,
 						new_account_name: username,
 						owner: ownerAuth,
