@@ -8244,17 +8244,34 @@ app.get('/getPendingTokenSwapTransCount/', async function(req, res){
 	res.send({pendingSwap: tokenSwapTrans.length});
 });
 
+
+getBannedAccountsArr = async function (){
+	//fetch banned accounts
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	//console.log(banned_users);
+	let banned_arr = banned_users.map(entr => entr.user);
+	banned_arr.push('');
+	return banned_arr;
+}
+
 /* end point for getting exchanges pending upvotes  */
 app.get('/getPendingTokenSwapTrans/', async function(req, res){
 	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}}).sort({'date': 1}).toArray();
+	let banned_arr = await getBannedAccountsArr();
+	//console.log(banned_arr);
 	//generate total AFIT value as well
 	let afit_count = 0;
+	let finalList = [];
 	for (let i=0;i<tokenSwapTrans.length;i++){
 		tokenSwapTrans[i].order = i+1;
 		tokenSwapTrans[i].reward_round = Math.ceil((i+1)/config.max_afit_steem_upvotes_per_session);
 		afit_count += +tokenSwapTrans[i].paid_afit
+		if (!banned_arr.includes(tokenSwapTrans[i].user)){
+			finalList.push(tokenSwapTrans[i]);
+		}
 	}
-	res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_pending: afit_count});
+	res.send({pendingTransactions: finalList, count: finalList.length, afit_tokens_pending: afit_count});
+	//res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_pending: afit_count});
 });
 
 /* end point for getting exchanges processed upvotes  */
