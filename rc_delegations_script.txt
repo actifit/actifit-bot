@@ -1,0 +1,56 @@
+const excludeList = ["vevita", "actifit.s-e", "actifit.h-e", "afitx.s-e", "afitx.h-e", "afit.h-e", "afit.s-e", "actifit-dlux", "actifit.sports", "actifit-he", "hdev.fund", "hdev", "actifit.liquid"];
+
+const userKey = '';
+async function cancelDelegation(tgtUser){
+const json_data = JSON.stringify(['delegate_rc', {
+		  from: 'actifit.pay',
+		  delegatees: [tgtUser],
+		  max_rc: 0
+	  }]);
+
+  const op_name = 'custom_json';
+  const transId = 'rc';
+  const cstm_params = {
+	  required_auths: [],
+	  required_posting_auths: ['actifit.pay'],
+	  id: transId,
+	  json: json_data
+  }
+  
+  let operation = [
+				 [op_name, cstm_params]
+			  ];
+			  
+	tx = await hive.broadcast.sendAsync( 
+		   { operations: operation, extensions: [] },
+		   { posting: userKey }
+		).then(console.log('done')
+		).catch(err => {
+			console.log(err.message);
+			return {error: err.message};
+		});
+  
+}
+
+async function mainLooper(){
+			  
+let delg = await hive.api.callAsync('rc_api.list_rc_direct_delegations', {start:['actifit.pay', ''], limit: 1000});
+
+activeRCDelegations = delg.rc_direct_delegations;
+console.log(activeRCDelegations);
+
+	if (activeRCDelegations.length > 60){
+
+		for (let j=0;j<activeRCDelegations.length && activeRCDelegations.length-j>40;j++){
+		  //console.log('store val');
+		  if (excludeList.includes(activeRCDelegations[j].to)) continue;
+		  await cancelDelegation (activeRCDelegations[j].to);
+		}
+
+	}
+
+}
+
+mainLooper();
+
+
