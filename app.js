@@ -5442,7 +5442,7 @@ app.get('/tipAccount', async function(req, res){
 		res.send({'error':'generic error'});
 	}else{
 		let user = req.query.user;
-		let targetUser = req.query.targetUser;
+		let targetUser = req.query.targetUser.replace('@','');
 		let amount = parseFloat(req.query.amount);
 		let fundsPass = req.query.fundsPass;
 		let note = req.query.note;

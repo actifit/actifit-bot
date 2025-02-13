@@ -2486,7 +2486,7 @@ async function grabLastDrawData(db){
 }
 
 async function fetchChainRewards(user, bchain){
-	let posts = await bchain.api.getDiscussionsByBlogAsync({tag: user, limit: 100, start_author: '', start_permlink: ''})
+	let posts = await bchain.api.getDiscussionsByBlogAsync({tag: user, limit: 20, start_author: '', start_permlink: ''})
 	let pendingRewards = 0;
 	let cur = '';
 	//console.log(posts);
@@ -2510,10 +2510,6 @@ async function fetchPendingRewards(user, bchain){
 	if (!bchain || bchain == ''){
 		//fetch rewards from all
 		rewards.HIVE = await fetchChainRewards(user, hive).catch(err => {console.log (err);});
-		//console.log('big rew:'+rewards);
-		
-		//remove support for STEEM rewards
-		//rewards.STEEM = await fetchChainRewards(user, steem);
 		
 		//console.log('big rew:'+rewards);
 		rewards.BLURT = await fetchChainRewards(user, blurt).catch(err => {console.log (err);});
