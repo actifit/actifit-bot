@@ -2485,25 +2485,47 @@ async function grabLastDrawData(db){
 	return drawData;
 }
 
-async function fetchChainRewards(user, bchain){
-	let posts = await bchain.api.getDiscussionsByBlogAsync({tag: user, limit: 20, start_author: '', start_permlink: ''})
-	let pendingRewards = 0;
-	let cur = '';
-	//console.log(posts);
-	let postCount = 0;
-	for (let i=0;i<posts.length;i++){
-		if (posts[i].author == user){
-			let pstRew = parseFloat(posts[i].pending_payout_value.split(' ')[0]);
-			pendingRewards += pstRew;
-			cur = posts[i].pending_payout_value.split(' ')[1];
-			if (pstRew > 0) postCount ++;
-			//console.log(pendingRewards + cur);
-			//pendingRewards+= 
-		}
-	}
-	//console.log('rew:'+pendingRewards + cur);
-	return {amount: pendingRewards, currency:cur, postCount: postCount};
+async function recurseChainRewards(user, bchain, start_author, start_permlink, accumulatedRewards = 0, accumulatedPostCount = 0, currency = '') {
+    let posts = await hive.api.callAsync('bridge.get_account_posts', {
+        account: user,
+        sort: 'posts',
+        limit: 20,
+        start_author: start_author,
+        start_permlink: start_permlink
+    });
+
+    let stopProgression = false;
+    
+    for (let i = 0; i < posts.length; i++) {
+        if (posts[i].author === user) {
+            if (posts[i].is_paidout) {
+                stopProgression = true;
+                break;
+            }
+
+            let pstRew = parseFloat(posts[i].pending_payout_value.split(' ')[0]);
+            accumulatedRewards += pstRew;
+            currency = posts[i].pending_payout_value.split(' ')[1]; // Update currency
+            
+            if (pstRew > 0) accumulatedPostCount++;
+
+            // Update start_author and start_permlink for recursion
+            start_author = posts[i].author;
+            start_permlink = posts[i].permlink;
+        }
+    }
+
+    if (stopProgression || posts.length === 0) {
+        return { amount: accumulatedRewards, currency: currency, postCount: accumulatedPostCount };
+    } else {
+        return await recurseChainRewards(user, bchain, start_author, start_permlink, accumulatedRewards, accumulatedPostCount, currency);
+    }
 }
+
+async function fetchChainRewards(user, bchain) {
+    return await recurseChainRewards(user, bchain, '', '');
+}
+
 
 async function fetchPendingRewards(user, bchain){
 	let rewards = {};
