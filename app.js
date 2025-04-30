@@ -2728,6 +2728,64 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 });
 
 
+app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
+	if (!req.query || !req.query.operation || !req.query.user || !req.query.wallet){
+		res.send({status:'error'})
+	}else{
+		let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
+		console.log(nonce);
+		nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
+		const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
+		const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
+		const addrBuf = ethutil.pubToAddress(pubKey)
+		const addr = ethutil.bufferToHex(addrBuf)
+		console.log('orig:'+req.query.wallet);
+		console.log(pubKey);
+		console.log('out:'+addr);
+		
+		if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
+			console.log('correct address');
+			//res.send({success: true});
+			//proceed to check trx on hive
+			try{
+				//third param to find verify is to avoid storing transaction as its not needed
+				let conf_trx = await utils.findVerifyTrx(req, db, true);
+				console.log(conf_trx);
+				/*console.log('settings trx found:')
+				console.log(conf_trx.operations[0][1].required_posting_auths[0]);
+				console.log(req.query.user);*/
+				if (!conf_trx || conf_trx.error){
+					res.send({status: 'error'});
+					return;
+				} 
+				const ops = conf_trx.operations[0][1]; 
+				const json = JSON.parse(ops.json)
+				console.log(ops);
+				if (req.query.user != ops.required_posting_auths[0] || req.query.wallet != json.wallet){
+					res.send({status: 'error'});
+					return;
+				}
+				//store wallet
+				let username = req.query.user;
+				let wallet = req.query.wallet;
+				let	walletChain = req.query.chain?req.query.chain:"BSC";
+				let success = await storeWalletAdd(username, wallet, walletChain);
+				if (success){
+					res.send({status: 'success'});
+				}else{
+					res.send({error: 'error'});
+				}
+			}catch(err){
+				res.send({error: 'error'});
+				console.log(err);
+			}
+		}else{
+			console.log('incorrect address');
+			res.send({error: 'incorrect address'});
+		}
+	}
+})
+
 app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
 	let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
 	console.log(nonce);
@@ -2758,6 +2816,15 @@ app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
 	let username = req.query.user;
 	let wallet = req.query.wallet;
 	let	walletChain = req.query.chain?req.query.chain:"BSC";
+	let success = await storeWalletAdd(username, wallet, walletChain);
+	if (success){
+		res.send({status: 'success'});
+	}else{
+		res.send({error: 'error'});
+	}
+});
+
+async function storeWalletAdd(username, wallet, walletChain){
 	//store user/token combination
 	let userWalletEntry = {
 		user: username,
@@ -2767,13 +2834,12 @@ app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
 	};
 	try{
 		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
-		res.send({status: 'success'});
+		return true;
 	}catch(err){
-		res.send({error: 'error'});
-		console.log(err);
+		
 	}
-});
-
+	return false;
+}
 
 
 app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {

@@ -1,4 +1,4 @@
-const excludeList = ["vevita", "actifit.s-e", "actifit.h-e", "afitx.s-e", "afitx.h-e", "afit.h-e", "afit.s-e", "actifit-dlux", "actifit.sports", "actifit-he", "hdev.fund", "hdev", "actifit.liquid"];
+const excludeList = ["vevita", "actifit.s-e", "actifit.h-e", "afitx.s-e", "afitx.h-e", "afit.h-e", "afit.s-e", "actifit-dlux", "actifit.sports", "actifit-he", "hdev.fund", "hdev", "actifit.liquid", "actifit.vsc", "chiuzzu81"];
 
 const userKey = '';
 async function cancelDelegation(tgtUser){
