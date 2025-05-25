@@ -41,7 +41,7 @@ console.log(activeRCDelegations);
 
 	if (activeRCDelegations.length > 60){
 
-		for (let j=0;j<activeRCDelegations.length && activeRCDelegations.length-j>40;j++){
+		for (let j=0;j<activeRCDelegations.length && activeRCDelegations.length-j>20;j++){
 		  //console.log('store val');
 		  if (excludeList.includes(activeRCDelegations[j].to)) continue;
 		  await cancelDelegation (activeRCDelegations[j].to);

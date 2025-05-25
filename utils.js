@@ -32,15 +32,6 @@ const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
 const blurtClient = new dblurt.Client(config.blurt_node);
 
-/*
-testHistory();
-
-async function testHistory(){
-let transactions = await hiveClient.database.call('get_account_history', [config.signup_account, -1, 200]);
-console.log(transactions);
-}
-*/
-//hiveClient.updateOperations(true);
 		
 var config;
 
@@ -308,15 +299,6 @@ var HOURS = 60 * 60;
      setTimeout(updateSteemVariables, 180 * 1000, bchain)
  }
  // updateSteemVariables();
-
- /*function getVotingPower(account) {
-     var voting_power = account.voting_power;
-     var last_vote_time = new Date((account.last_vote_time) + 'Z');
-     var elapsed_seconds = (new Date() - last_vote_time) / 1000;
-     var regenerated_power = Math.round((STEEMIT_100_PERCENT * elapsed_seconds) / STEEMIT_VOTE_REGENERATION_SECONDS);
-     var current_power = Math.min(voting_power + regenerated_power, STEEMIT_100_PERCENT);
-     return current_power;
- }*/
  
 	//fixed implementation of proper voting power calculation
 	function getVotingPower(account) {
@@ -609,32 +591,7 @@ var HOURS = 60 * 60;
 	
 	function customArraysEqual(op1, op2){
 		try{
-			return _.isEqual(op1, op2);/*
-			//console.log('op1')
-			//console.log(op1)
-			//console.log('op2')
-			//console.log(op2)
-			let leftEntry = op1[0][1];//JSON.parse(op1[0][1]);
-			let rightEntry = op2[0][1];//JSON.parse(op2[0][1]);
-			console.log(leftEntry);
-			console.log(rightEntry);
-			if (op1[0][0] == op2[0][0]){
-				if (leftEntry['required_auths'] == rightEntry['required_auths']
-					&& leftEntry['required_posting_auths'] == rightEntry['required_posting_auths']
-					&& leftEntry['id'] == rightEntry['id']
-					&& _.isEqual(leftEntry['json'], rightEntry['json'])){
-						return true;
-					}else{
-						console.log('non matching subs')
-					}
-				
-			}else{
-				console.log(op1[0][0])
-				console.log(op2[0][0])
-				console.log('different op');
-				
-			}
-			return false;*/
+			return _.isEqual(op1, op2);
 		}catch(err){
 			console.log(err);
 			console.log('error matching')
@@ -656,15 +613,7 @@ var HOURS = 60 * 60;
 	  return true;
 	}
 	
-	
-	/*testAs();
-	async function testAs(){
-		let chainLnk = await setProperNode('HIVE');
-		let txid = '611417a631ff7f55922bf00e22e3358f46e04d78'
-		transactions = await chainLnk.api.getTransactionAsync(txid);
-		console.log(transactions);
-	}*/
-	
+
 	async function storeVerifiedTrx(tx, db){
 		console.log('store transaction')
 		console.log(tx);
@@ -709,9 +658,6 @@ var HOURS = 60 * 60;
 					attempts += 1;
 					let chainLnk = await setProperNode(bchain);
 					console.log('check trx');
-					
-					
-			
 					if (bchain == 'STEEM'){
 						matchTrx = await client.database.call('get_transaction', req.params.trxID);
 					}else{
@@ -728,7 +674,6 @@ var HOURS = 60 * 60;
 						if (customArraysEqual(matchTrx.operations, JSON.parse(req.query.operation))){
 						//if (customArraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
 						//if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
-							console.log('GOOOOD')
 							let now = moment(new Date()); //todays date
 							let end = moment(matchTrx.expiration); // last update date
 							let duration = moment.duration(now.diff(end));
@@ -795,19 +740,11 @@ var HOURS = 60 * 60;
 					if (op[0] === 'transfer'){
 						let sentAmount = op[1].amount.split(' ')[0];
 						let sentCur = op[1].amount.split(' ')[1];
-						/*if (op[1].to === config.signup_account 
-							&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
-							&& sentCur === req.query.sent_cur){
-								console.log(sentAmount);
-						console.log(op[1].memo);
-						console.log(req.query.memo );
-						console.log('>>>>>');
-						}*/
+						
 						if (op[1].to === config.signup_account 
 							&& op[1].memo === req.query.memo 
 							&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
 							&& sentCur === req.query.sent_cur){  
-							console.log('in');
 							console.log(op[1]);
 							
 							let now = moment(new Date()); //todays date
@@ -854,9 +791,7 @@ var HOURS = 60 * 60;
 					transactions = await hiveClient.database.call('get_account_history', [config.exchange_account, -1, 300]);
 				}
 				console.log("newestTxId:"+transactions[0][0]);
-				//  for (let txs of transactions) {
-				
-				//chainLnk.api.getAccountHistory(config.exchange_account, -1, 300, (err, transactions) => {
+
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -868,19 +803,11 @@ var HOURS = 60 * 60;
 							//console.log(op[1]);
 							let sentAmount = op[1].amount.split(' ')[0];
 							if (op[1].to === config.exchange_account && op[1].from === req.query.from && sentAmount >= 1){  
-								console.log('in');
 								console.log(op[1]);
-								//console.log(txs);
-								/*let now = moment(new Date()); //todays date
-								let end = moment(txs[1].timestamp); // last update date
-								let duration = moment.duration(now.diff(end));
-								let hrs = duration.asHours();
-								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 24){*/
-									tx_id = txs[1].trx_id;
-									paymentFound = true;
-									break;
-								//}
+								
+								tx_id = txs[1].trx_id;
+								paymentFound = true;
+								break;
 							}
 						}
 					}
@@ -890,7 +817,6 @@ var HOURS = 60 * 60;
 						clearInterval(th_id);
 						resolve(tx_id);
 					}
-				//});
 			}, 5000);
 		});
 	}
@@ -911,8 +837,7 @@ var HOURS = 60 * 60;
 					transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
 				}
 				console.log("newestTxId:"+transactions[0][0]);
-				
-				//chainLnk.api.getAccountHistory(config.buy_account, -1, 800, (err, transactions) => {
+
 					let tx_id = '';
 					let paymentFound = false;
 					for (let txs of transactions) {
@@ -922,9 +847,7 @@ var HOURS = 60 * 60;
 						if (op[0] === 'transfer'){
 							let sentAmount = op[1].amount.split(' ')[0];
 							if (op[1].to === config.buy_account && op[1].from === req.query.from && sentAmount === req.query.steem_amount){  
-								console.log('in');
 								console.log(op[1]);
-								//console.log(txs);
 								
 								let now = moment(new Date()); //todays date
 								let end = moment(txs[1].timestamp); // last update date
@@ -945,7 +868,6 @@ var HOURS = 60 * 60;
 						clearInterval(th_id);
 						resolve(tx_id);
 					}
-				//});
 			}, 5000);
 		});
 	}
@@ -1241,24 +1163,7 @@ var HOURS = 60 * 60;
 				key_auths: [[postingKey.createPublic(), 1]],
 			};
 			
-			/*if (_creator_account[0].pending_claimed_accounts > 0) {		
 			
-				//the create discounted account operation
-				const create_op = [
-					'create_claimed_account',
-					{
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				blurtOps.push(create_op);
-			}else{*/
 			//BLURT only supports fee-based account creation
 				const create_op = [
 					'account_create',
@@ -1308,7 +1213,6 @@ var HOURS = 60 * 60;
 			try{
 				//grab matching amount of Vests to delegate
 				let matchingVests = await steemPowerToVests(steemPowerAmount);
-				console.log('matchingVests:'+matchingVests);
 				const op = [
 					'delegate_vesting_shares',
 					{
@@ -1320,11 +1224,9 @@ var HOURS = 60 * 60;
 				
 				result = await client.broadcast.sendOperations([op], privateKey);
 				console.log('Included in block:'+ result.block_num);
-				console.log('returning back');
 				steemDg = true;
 			}catch(err){
 				console.log(err);
-				console.log('returning back err');
 				steemDg = false;
 			}
 		}
@@ -1334,7 +1236,6 @@ var HOURS = 60 * 60;
 				try{
 					//grab matching amount of Vests to delegate
 					let matchingHiveVests = await hivePowerToVests(steemPowerAmount);
-					console.log('matchingHiveVests:'+matchingHiveVests);
 					const op = [
 						'delegate_vesting_shares',
 						{
@@ -1346,11 +1247,9 @@ var HOURS = 60 * 60;
 					
 					result = await hiveClient.broadcast.sendOperations([op], privateKey);
 					console.log('Included in block:'+ result.block_num);
-					console.log('returning back');
 					hiveDg = true;
 				}catch(err){
 					console.log(err);
-					console.log('returning back err');
 					hiveDg = false;
 				}
 			}else{
@@ -1358,11 +1257,9 @@ var HOURS = 60 * 60;
 				try{
 					result = await delegateRC(config.pay_account, config.pay_account_posting_key, [delegatee], config.rc_delegation_new_signup);
 					console.log(result);
-					console.log('returning back');
 					hiveDg = true;
 				}catch(err){
 					console.log(err);
-					console.log('returning back err');
 					hiveDg = false;
 				}
 			}
@@ -1498,19 +1395,6 @@ function format(n, c, d, t) {
    for(var i = l; i < d; i++)
      v = '0' + v;
    return v;
- }
-
- async function loadBots() {
-  var query = await axios.get('https://steembottracker.net/bid_bots');
-  var bidBots = query.data;
-  var query = await axios.get('https://steembottracker.net/other_bots');
-  var otherBots = query.data;
-  // console.log(bidBots);
-  // console.log(otherBots);
-  var allBots = bidBots.concat(otherBots);
-  botNames = _.map(allBots, 'name');
-  // console.log(botNames);
-  return botNames;
  }
 
  // the weight param is actually 100*1,000 at max to consume 20% VP
@@ -2120,58 +2004,43 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 		//reached here, bail.
 		return false;
 		
-		/*let attempts = 1;
-		let max_attempts = 15;
-		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
-				if (attempts < max_attempts){
-					console.log('finding trx');
-					attempts += 1;
-				
-					if (bchain == 'STEEM'){
-						//trx = await client.database.getTransaction({id: tx_id, ref_block_num: block_num});
-						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}else{
-						//trx = await hiveClient.database.getTransaction({id: tx_id, ref_block_num: block_num});
-						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}
-					console.log(trx);
-					if (trx && trx.operations
-						&& trx.operations.length > 0){
-							console.log('found trx. Verify');
-							clearInterval(th_id);
-							console.log(trx.operations[0][1]);
-							let trx_details = trx.operations[0][1];
-							let amnt = parseFloat(trx_details.amount.split(' ')[0]);
-							//let json_data = JSON.parse(trx_details.json);
-							console.log(trx_details);
-							if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
-								&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
-								console.log('bingo');
-								//return {'success': true, 'amount_hive': amnt};
-								resolve({'success': true, 'amount_hive': amnt});
-							}else{
-								resolve(false);
-							}
-					}
-					
-				}else{
-					//timedout, stop and bail
-					console.log('timed out without finding trx');
-					clearInterval(th_id);
-					//return false;
-					resolve(false);
-				}
-			}, 5000);
-		});	*/
+		
 	}catch(err){
 		console.log(err);
 		return false;
 	}
+}
+
+async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
+	//let trx, th_id;
+	console.log('verifyWorkoutTransaction');
+	console.log(tx_id);
+	try{
+		//query db to find transaction
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
+			
+			let trx_details = trx.tx.operations[0][1];
+			let json_data = JSON.parse(trx_details.json);
+			
+			console.log(trx_details);
+			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == user
+				&& json_data.transaction == tx_type){
+				console.log('match found');
+				return true
+			}
+			console.log('count not find trx');
+			return false;
+		}
+		console.log('count not find trx');
+		//reached here, bail.
+		return false;
+		
+	}catch(err){
+		console.log(err);
+		return false;
+	}
+	
 }
 
 async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db){
@@ -2199,54 +2068,7 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain,
 		//reached here, bail.
 		return false;
 		
-		/*let attempts = 1;
-		let max_attempts = 15;
-		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
-				if (attempts < max_attempts){
-					console.log('finding trx');
-					attempts += 1;
-					if (bchain == 'STEEM'){
-						//trx = await client.database.getTransaction({id: tx_id});
-						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}else if (bchain == 'HIVE'){
-						//trx = await hiveClient.database.getTransaction({id: tx_id});
-						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}
-					if (trx && trx.operations){
-						//found trx, resolve and verify
-						console.log('found trx. Verify');
-						clearInterval(th_id);
-						console.log(trx);
-						if (trx && trx.operations
-							&& trx.operations.length > 0){
-								console.log(trx.operations[0][1]);
-								let trx_details = trx.operations[0][1];
-								let json_data = JSON.parse(trx_details.json);
-								console.log(trx_details);
-								if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
-									&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
-										//console.log('true..found');
-									//return true;
-									resolve(true);
-								}else{
-									resolve(false);
-								}
-						}
-					}
-				}else{
-					//timedout, stop and bail
-					console.log('timed out without finding trx');
-					clearInterval(th_id);
-					//return false;
-					resolve(false);
-				}
-			}, 5000);
-		});*/
+		
 		
 	}catch(err){
 		console.log(err);
@@ -2279,53 +2101,7 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 		//reached here, bail.
 		return false;
 		
-		/*
-		let attempts = 1;
-		let max_attempts = 15;
-		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
-				if (attempts < max_attempts){
-					console.log('finding trx');
-					attempts += 1;
-					if (bchain == 'STEEM'){
-						//trx = await client.database.getTransaction({id: tx_id});
-						trx = await steem.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}else if (bchain == 'HIVE'){
-						//trx = await hiveClient.database.getTransaction({id: tx_id});
-						trx = await hive.api.getTransactionAsync(tx_id).catch((error) => {
-							console.log('Error finding trx:', error);
-						});
-					}
-					if (trx && trx.operations
-						&& trx.operations.length > 0){
-							
-							console.log('found trx. Verify');
-							clearInterval(th_id);
-							
-							console.log(trx.operations[0][1]);
-							let trx_details = trx.operations[0][1];
-							let json_data = JSON.parse(trx_details.json);
-							console.log(trx_details);
-							if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
-								&& json_data.transaction == tx_type && json_data.target == userB){
-								//return true;
-								resolve(true);
-							}else{
-								resolve(false);
-							}
-					}
-					
-				}else{
-					//timedout, stop and bail
-					console.log('timed out without finding trx');
-					clearInterval(th_id);
-					//return false;
-					resolve(false);
-				}
-			}, 5000);
-		});	*/
+		
 						
 	}catch(err){
 		console.log(err);
@@ -2370,16 +2146,7 @@ async function sendFirebaseNotification(db, user, details, url){
 		  data: {
 			url: url
 		  },
-		  /*apns: {
-			payload: {
-			  aps: {
-				'mutable-content': 1
-			  }
-			},
-			fcm_options: {
-			  image: 'https://previews.dropbox.com/p/thumb/ACEWYLazPJw2ZKwDb5SQo7-5fhgfnsRyoTy6_uwlr_jlSUKIZ5sZ6Ox3ZwevTyqviJ6jOHMYtPwk_aKueGwBy7mbiYZGD7spr9rxGepX4tPZ8pe-rkDR3HuU2JUqIbLsR6zX4qOIoLEwWMqbMapH1a_XBthDKxAN70sAbjsMFdChtyybngsQWBk_8AKXXbOy1I4f2mTmtXjClixUWmcD9DveeceSRSI7rZkFywHwWeT7VV5iFGFNLp_GfITvZEAqzUfFhvZ5zOGA4ezMzFK2p8ft9-x1bWOol7uX8jBfP2KeDnQtzMBdPYffURqBsZ-e0FwrKtgxY2Cu75hCLx4rzVDa/p.png' 
-			}
-		  },*/
+		  
 		  webpush: {
 			notification:{
 				title: 'Hive Notification',
@@ -2588,16 +2355,7 @@ async function claimRewards(target_account, p_key, target_chain) {
 		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance).catch(err => {return err;});//, function (err, result) {
-				/*if (err) {
-					console.log('error claiming rewards');
-					
-					return {error: err};
-				}
-				else{
-					return {success: true};
-				}
-			});*/
+			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance).catch(err => {return err;});
 			//return outc;
 			//console.log(outc);
 			if (outc.ref_block_num){
@@ -2627,17 +2385,7 @@ async function claimRewards(target_account, p_key, target_chain) {
 			console.log('error')
 			return {error: 'n/a'}
 		}
-			/*if (err) {
-				console.log('error claiming rewards');
-				
-				return {error: err};
-			}
-
-			if (result) {
-				return {success: true};
-				//now attempt to claim rewards with HIVE
-				
-			}*/
+			
 	}else{
 		console.log('nothing to claim.');
 		return {error: 'nothing to claim'};
@@ -2648,13 +2396,6 @@ async function claimRewards(target_account, p_key, target_chain) {
 async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
 
 	let transId = 'ssc-mainnet-hive';
-	//let targetBchain = 'STEEM';
-	//other option is moving tokens from H-E to S-E
-	/*if (chain == 'STEEM'){
-	//if (this.cur_bchain == 'STEEM'){
-		transId = 'ssc-mainnet1';
-		//targetBchain = 'HIVE';
-	}*/
 	
 	
 	let json_data = {
@@ -2859,27 +2600,12 @@ function rewardCap(chain){
 	}
 	console.log(decAmount);
 	weekly_rewd_cap -= decAmount;
-	/*if (interDates > 0){
-		decAmount = weekly_rewd_cap * (decreasePct * interDates) * 0.01;
-		console.log(decAmount);
-		weekly_rewd_cap -= decAmount;
-	}*/
+	
 	console.log(weekly_rewd_cap);
 	
 	return weekly_rewd_cap;
 }
 
-
-async function launch(){
-	console.log('launch function');
-	
-	let rc = await getRCHF26(["arabsteem"]);
-	console.log(rc.rc_accounts[0]);
-	return;
-	await delegateRC('actifit.pay', 'xxxxx', ['mcfarhat', 'actifit', 'actifit.funds'], 600000000);
-		//1800000000
-	//await getRCHF26(["actifit.pay"]);
-}
 
 //redeemDelegations();
 
@@ -2956,10 +2682,8 @@ function listRCAccounts(start, limit) {
 
 
 async function getRCHF26(accounts){
-	//return new Promise(resolve => {
-        let res = await hive.api.callAsync('rc_api.find_rc_accounts', {accounts: accounts});
-		return res;
-    //});
+	let res = await hive.api.callAsync('rc_api.find_rc_accounts', {accounts: accounts});
+	return res;
 }
 
 async function delegateRC(delegator, posting_key, delegatees, max_rc) {
@@ -2987,18 +2711,6 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
 	console.log('broadcasting');
 	console.log(operation);
 	
-	/*
-	//// uncomment this part to go back to old sendasync approach for RC delegation. WORKS
-	let tx = await hive.broadcast.sendAsync( 
-		   { operations: operation, extensions: [] },
-		   { posting: posting_key }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	console.log(tx);
-	return tx;*/
-	
 	/***** end of works *********/
 	
 	/***** alt implementation ****/
@@ -3022,18 +2734,6 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
 	}*/
 	return tx;
 	
-	/*return new Promise(resolve => {
-        const json = JSON.stringify(['delegate_rc', {
-            from: delegator,
-            delegatees: delegatees,
-            max_rc: max_rc,
-        }]);
-
-        hive.broadcast.customJson(posting_key, [], [delegator], 'rc', json, function (err, result) {
-			console.log(err, result);
-            resolve(err)
-        });
-    });*/
 }
 
  module.exports = {
@@ -3057,7 +2757,6 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    calculateVotes: calculateVotes,
    filterPosts: filterPosts,
    getConfig: getConfig,
-   loadBots: loadBots,
    checkBeneficiary: checkBeneficiary,
    asyncForEach: asyncForEach,
    generateRandomNumber: generateRandomNumber,
@@ -3086,6 +2785,7 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    proceedAfitxMove: proceedAfitxMove,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    verifyAFITBuyTransaction: verifyAFITBuyTransaction,
+   verifyWorkoutTransaction: verifyWorkoutTransaction,
    getGadgetBuyTickets: getGadgetBuyTickets,
    grabLastDrawData: grabLastDrawData,
    sendFirebaseNotification: sendFirebaseNotification,

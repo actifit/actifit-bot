@@ -42,7 +42,6 @@ const collection_name = 'user_tokens';
 var Web3 = require('web3');
 
 const bscrpc = 'https://bsc-dataseed1.binance.org:443';
-//const bscrpc = 'https://rpc.ankr.com/bsc/6910e0510261f4593d3d10cf40688da308da788de3e3b8924b88fb0ce2a51602';
 
 const web3 = new Web3(bscrpc);
 
@@ -99,14 +98,7 @@ MongoClient.connect(url,
 	  //clearCorruptData();
 	  
 	  //disableUserLogin();
-	  /*
-	  let user = 'mcfarhat';
-	  utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget', 'https://actifit.io/'+user);
-	  
-	  utils.sendNotification(db, user, 'actifit', 'friendship_request', 'friendship', 'User ' + 'actifit' + ' has sent you a friendship request', 'https://actifit.io/'+'actifit');
-	  return;*/
-	  //utils.sendFirebaseNotification(db, 'arabpromovault');
-	  
+	 
 	} else {
 		utils.log(err, 'api');
 	}
@@ -118,7 +110,7 @@ MongoClient.connect(url,
 async function clearCorruptData(){
 	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
 	console.log(res);
-	console.log('annnd done');
+	console.log('done');
 }
 
 let schedule = require('node-schedule')
@@ -192,129 +184,293 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
 
 if (process.env.BOT_THREAD != 'SECOND_API'){
 	app.use(function(req, res, next) {
-	  // var allowedOrigins = ['*', 'https://actifit.io', 'http://localhost:3000', 'https://beta.actifit.io'];
-	  // var origin = req.headers.origin;
-	  //console.log('>>>origin:');
-	  //console.log(origin);
-	  //console.log(req.headers.host);
-	  // if(allowedOrigins.indexOf(origin) > -1){
-		  //console.log('goooood');
-		  // res.setHeader('Access-Control-Allow-Origin', origin);
-		  // res.setHeader('Access-Control-Allow-Headers', 'Origin, Content-Type, x-acti-token');
-	  // }
 	  
-	  //headers are managed by server there
-	  //console.log('hostname');
-	  //console.log(req.headers.host);
-	  //console.log(req.hostname)
-	  //if (!req.headers.host.includes('api2.actifit.io')){  
-		  res.setHeader('Access-Control-Allow-Origin', '*');
-		  res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
-	  //}
-	  //  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
-	  //return next();
-	  next();
+		res.setHeader('Access-Control-Allow-Origin', '*');
+		res.setHeader('Access-Control-Allow-Headers', 'Origin,  X-Requested-With, Content-Type, Accept, x-acti-token');
+	  
+		next();
 	});
 }
 
 
+
+/**************  only start API endpoint calls after here ************************/
+
 app.get('/', function (req, res) {
-	var data = {};
-	data.posts = [
-		{
-			url: 'dsadsa',
-			net_votes: 44,
-			vote_weight: "0.03"
-		}];
-	data.total_votes = 323;
-	data.total_money = "$0.63";
-    // res.render('home', data);
-    res.send('Hello there!');
+    res.send('{}');
 });
 
+var bodyParser = require('body-parser');
+app.use(bodyParser.json()); // support json encoded bodies
+app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
 
-/*************************** DIGIFINEX API *************************/
+let jwt = require('jsonwebtoken');
 
-/*
-const verifier = require('@exoshtw/admob-ssv').Verifier;
-
-//const verifier = new Verifier();
-
-
-app.get('/ssvcallback', (req, res, next) => {
-    verifier.verify(req.query)
-        .then((isValid) => {
-            if (!isValid) {
-				console.log('not valid');
-                res.status(500);
-                res.json({
-                    error: 'Invalid signature',
-                });
-            }else{
-				console.log('success');
+//function ensures user is properly logged in
+//TODO consider adjusting to first token auth then move user auth to inner functions or skip it
+let checkHdrs = (req, res, next) => {
+	let token = req.headers['x-acti-token'] || req.headers['authorization']; // Express headers are auto converted to lowercase
+	  
+	  if (token) {
+		if (token.startsWith('Bearer ')) {
+			// Remove Bearer from string
+			token = token.slice(7, token.length);
+		}
+		req.query.token = token;
+		jwt.verify(token, config.secret, async (err, decoded) => {
+		  if (err) {
+			return res.json({
+			  success: false,
+			  message: 'Token is not valid'
+			});
+		  } else {
+			let user;
+			
+			if (req.query && req.query.user){
+				user = req.query.user;
+				
+			//}else if(req.user){
+			//	user = (req.user._id || req.user.userId);
+			}else{
+				return res.send({error: 'user not supplied'});
 			}
+			//if (user){
+				//check if user is validated with stored encrypted posting key
+				let db_col = db.collection('user_login_token');
+				//find existing login entry in DB
+				let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
+				console.log(user_tkn);
+				if (!Array.isArray(user_tkn) || user_tkn.length == 0){
+					console.error('Authentication failed. Key not found');
+					return res.send({error: 'Authentication failed. Key not found'});
+				}
+				//TODO adjust in coming iterations to stick solely with req.user in next() functions
+				console.log(user);
+				req.user = { _id: user }; // Attach username
+				req.ppkey = user_tkn[0].ppkey;
+				req.decoded = decoded;
+				next();
+			//}
+		  }
+		});
+	  } else {
+		return res.json({
+		  success: false,
+		  message: 'Auth token is not provided'
+		});
+	  }
+};	
 
-            // ...
-        })
-        .catch((e) => {
-			console.log('crash');
-            return next(e);
+/*************************** WORKOUT API *************************/
+
+
+
+// Use POST for sending data in the request body
+app.post('/saveworkout', checkHdrs, async function (req, res){
+    try {
+        // Ensure DB connection is available
+        if (!db) {
+             console.error("Database connection not available.");
+             return res.status(500).json({ success: false, error: 'Database not connected.' });
+        }
+
+        // --- 1. Get User ID from Authentication Middleware ---
+        // Assuming checkHdrs successfully authenticated and set req.user
+        // Access the user ID from the authenticated user object attached by checkHdrs
+        const userId = req.user ? (req.user._id || req.user.userId) : null; // Get user ID from req.user (_id for Mongoose/Native, userId for custom)
+
+        if (!userId) {
+            // This should ideally be handled by checkHdrs, but double-check
+            console.error("Authenticated user ID is missing after checkHdrs.");
+            return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
+        }
+		
+		console.log(req.body);
+
+        // --- 2. Receive Workout Data from Request Body ---
+        // bodyParser.json() middleware makes req.body available
+        // Now expect 'workoutName' along with 'description' and 'exercises'
+        const { workoutName, description, exercises, explanation } = req.body; // Get workoutName
+
+        // Basic validation - Add workoutName check
+        if (!workoutName || typeof workoutName !== 'string' || workoutName.trim().length === 0 || // Check for non-empty string name
+            !description || !exercises || !Array.isArray(exercises)) {
+             console.warn("Invalid request body format, missing or invalid required fields:", req.body);
+             return res.status(400).json({ success: false, error: 'Invalid request data. Missing workout name, description, or exercises array, or workout name is empty.' });
+        }
+
+        // --- 3. Prepare Document for Insertion ---
+        const documentToInsert = {
+            userId: userId, // Use the authenticated user ID from req.user
+            workoutName: workoutName.trim(), // Store the name (trim whitespace)
+            description: description,
+            timestamp: new Date(), // Add current server timestamp (safer than client timestamp)
+            exercises: exercises,
+            // Add explanation if you received it
+            // explanation: explanation,
+        };
+
+        // --- 4. Get the 'userworkouts' Collection and Insert ---
+        const collection = db.collection('user_workouts'); // Get the collection instance
+
+        // Use insertOne for a single document
+        const result = await collection.insertOne(documentToInsert);
+		console.log(result);
+        // Check if insertion was acknowledged
+        if (result.acknowledged || result.insertedCount > 0) {
+            console.log(`Workout '${workoutName}' saved for user ${userId}. Inserted _id: ${result.insertedId}`);
+            // Send a success response
+            res.status(201).json({ // Use 201 Created for successful creation
+                success: true,
+                message: 'Workout plan saved successfully!',
+                insertedId: result.insertedId // Optionally return the new document's ID
+            });
+        } else {
+             console.error(`Workout insertion not acknowledged for user ${userId}.`);
+             res.status(500).json({ success: false, error: 'Failed to save workout plan.', details: 'Insertion not acknowledged.' });
+        }
+
+    } catch (err) {
+        console.error('Server error saving workout:', err);
+        // Send an error response
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error saving workout plan.',
+            details: err.message // Include error message for debugging (remove in production)
         });
+    }
 });
-*/
 
-/*
-const admobSSV = require('admob-rewarded-ads-ssv');
+// --- API Endpoint to Fetch ALL Workouts for Authenticated User (INCLUDING EXERCISES) ---
+// Path: /workouts
+// Method: GET
+// Note: This endpoint uses the same path as the POST endpoint, which is fine as they have different methods.
+app.get('/workouts', checkHdrs, async function(req, res) {
+     try {
+         // Ensure DB connection is available
+         if (!db) {
+              console.error("Database connection not available.");
+              return res.status(500).json({ success: false, error: 'Database not connected.' });
+         }
 
-//Add callback to your rewarded ads in your admob account.
-//Make sure you listen to 'get' request.
+         // --- 1. Get User ID from Authentication Middleware ---
+         const userId = req.user ? (req.user._id || req.user.userId) : null;
+         if (!userId) {
+             console.error("Authenticated user ID is missing after checkHdrs for GET /api/workouts.");
+             return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
+         }
 
-app.get('/ssv-verify', (req, res, next) => {
-    // If you want to debug then send second param as true
-    // admobSSV.verify(req.url, true);
-    admobSSV.verify(req.url, true)
-        .then((response) => {
-          //Verification Successful
-		  console.log(response);
-		  res.send({status:'success'});
-        })
-        .catch((e) => {
-          //Verification Failed
-          console.error(e.message);
-		  res.send({error:e.message});
-        });
+         // --- 2. Get the 'userworkouts' Collection and Query ---
+         const collection = db.collection('user_workouts');
+
+         // Find all workouts for the user
+         const workouts = await collection.find(
+                 { userId: userId } // Filter by authenticated user ID
+                 // *** REMOVED projection: { exercises: 0, ... } ***
+                 // This will now return the full documents including the exercises array
+             )
+             .sort({ timestamp: -1 }) // Sort by most recent first
+             .toArray(); // Get all results as an array
+
+         // Send the list of full workout documents
+         res.status(200).json({
+             success: true,
+             message: 'User workouts fetched successfully.',
+             data: workouts // This will be an array of FULL workout documents
+         });
+
+     } catch (err) {
+          console.error('Server error fetching user workouts list:', err);
+         res.status(500).json({
+             success: false,
+             error: 'Internal server error fetching workout list.',
+             details: err.message
+         });
+     }
 });
-*/
 
 
-/*
-const AdMobSSV = require('express-admob-ssv');
+// --- API Endpoint to Fetch a Specific Workout by ID for Authenticated User ---
+// Path: /api/workouts/:workoutId
+// Method: GET
+// :workoutId is a URL parameter representing the MongoDB _id of the workout document
+app.get('/workouts/:workoutId', checkHdrs, async function(req, res) {
+     try {
+         // Ensure DB connection is available
+         if (!db) {
+              console.error("Database connection not available.");
+              return res.status(500).json({ success: false, error: 'Database not connected.' });
+         }
 
-app.get('/ssv-verify',
-  AdMobSSV.middleware(),
-  (req, res, next) => {
-	  console.log('success');
-    // SSV Valid
-    // here goes Your logic
-  });
-  */
-  
-  const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
+         // --- 1. Get User ID from Authentication Middleware ---
+         const userId = req.user ? (req.user._id || req.user.userId) : null;
+         if (!userId) {
+             console.error("Authenticated user ID is missing after checkHdrs for GET /api/workouts/:workoutId.");
+             return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
+         }
+
+         // --- 2. Get the Workout ID from URL Parameters ---
+         const workoutIdParam = req.params.workoutId;
+
+         // --- 3. Validate and Convert workoutId to MongoDB ObjectId ---
+         let objectId;
+         try {
+             objectId = new ObjectId(workoutIdParam);
+         } catch (e) {
+             console.warn(`Invalid workout ID format received: ${workoutIdParam}`, e);
+             return res.status(400).json({ success: false, error: 'Invalid workout ID format.' });
+         }
+
+         // --- 4. Get the 'userworkouts' Collection and Query ---
+         const collection = db.collection('user_workouts');
+
+         // Fetch the specific workout by its _id AND ensure it belongs to the authenticated user
+         // This already fetches the full document by default
+         const workout = await collection.findOne({
+             _id: objectId, // Match the workout document's MongoDB _id
+             userId: userId // AND match the authenticated user ID (SECURITY CHECK!)
+         });
+
+         // --- 5. Handle Result ---
+         if (!workout) {
+             // Document not found with that _id OR found but doesn't belong to this user
+             console.warn(`Workout with ID ${workoutIdParam} not found for user ${userId} or unauthorized access attempt.`);
+              return res.status(404).json({ success: false, message: 'Workout not found or does not belong to this user.' });
+         }
+
+         // Send the full workout document (including exercises)
+         res.status(200).json({
+             success: true,
+             message: 'Workout fetched successfully.',
+             data: workout // This will be the full document, including the exercises array
+         });
+
+     } catch (err) {
+          console.error('Server error fetching specific workout:', err);
+         res.status(500).json({
+             success: false,
+             error: 'Internal server error fetching workout.',
+             details: err.message
+         });
+     }
+});
+
+const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
 
 /*
 
 sample query data
-1|app  |       ad_network: '5450213213286189855',
-1|app  |       ad_unit: '1234567890',
+1|app  |       ad_network: 'xxxxxxxxxxxxxxxxxxx',
+1|app  |       ad_unit: 'xxxxxxxxxx',
 1|app  |       custom_data: 'tier-1',
 1|app  |       reward_amount: '1',
 1|app  |       reward_item: 'Reward',
 1|app  |       timestamp: '1656954784154',
 1|app  |       transaction_id: '123456789',
 1|app  |       user_id: '123',
-1|app  |       signature: 'WEFWRG#$%#$T##$%#TR#%GG%$$%3453543FGDFG',
-1|app  |       key_id: '3335741209'
+1|app  |       signature: 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+1|app  |       key_id: 'xxxxxxxxxx'
 
 */
 //show transactions for gadgets bought using HIVE
@@ -432,7 +588,7 @@ app.get('/adRewardsReview/', async function (req, res) {
 	console.log(results);
 })
 
-/*http://localhost:3120/ssv-verify?ad_network=54...55&ad_unit=12345678&reward_amount=10&reward_item=coins&timestamp=150777823&custom_data=mcfarhat_1_1_free&transaction_id=12...DEF&user_id=1234567&signature=ME...Z1c&key_id=1268887
+/*http://localhost:3120/ssv-verify?ad_network=54...55&ad_unit=12345678&reward_amount=10&reward_item=coins&timestamp=150777823&custom_data=mcfarhat_1_1_free&transaction_id=12...DEF&user_id=1234567&signature=ME...Z1c&key_id=1234567
 */
 
 app.get('/ssv-verify',
@@ -540,7 +696,7 @@ app.get('/updateProposalNotified', async function (req, res){
 		res.send({})
 		return;
 	}
-	if (req.query.secr != '94$8u93h_f$83jg9_843909k'){
+	if (req.query.secr != config.prop_key){
 		res.send({})
 		return;
 	}
@@ -858,18 +1014,6 @@ async function fetchAFITXBalHE(offset){
 			}
 		}
 		
-		/*
-
-		let req = new Object();
-		req.query = new Object();
-		req.query.new_account= 'jumbo';
-		req.query.usd_invest= '1';
-		req.query.steem_invest= '1';
-		req.query.afit_reward= '1';
-		req.query.memo= 'jumdfsfddbo';
-		req.query.referrer= 'mcfarhat';
-		storeSignupTransaction(req);
-		*/
 	}
   }
   }catch(err){
@@ -1040,8 +1184,8 @@ grabUserTokensFunc = async function (username, fullBal){
 			if (wallet_entry && wallet_entry.wallet){
 				//console.log(wallet_entry.wallet);
 				//fetch wallet balance		
-				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-				//let result = await afitContract.methods.balanceOf('0xBc0d46F3F43E21a391cAb8e1A3059a8df9213a44').call(); // 29803630997051883414242659
+				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call();
+				
 				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
 				afitBSC = parseFloat(format);
 				//console.log(format);
@@ -1077,9 +1221,7 @@ generatePassword = function (multip) {
   
 
 
-var bodyParser = require('body-parser');
-app.use(bodyParser.json()); // support json encoded bodies
-app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
+
 
 //const key = crypto.randomBytes(32);
 //const iv = crypto.randomBytes(16);
@@ -1184,57 +1326,12 @@ getAFITPCSPrice = async function (token, api){
     // Them amount of tokens to sell. adjust this value based on you need, you can encounter errors with high supply tokens when this value is 1.
     let tokens_to_sell = 1; 
     let priceInBnb = await calcSell(tokens_to_sell, tokenAddress)/tokens_to_sell; // calculate TOKEN price in BNB
-    console.log( 'SHIT_TOKEN VALUE IN BNB : ' + priceInBnb + ' | Just convert it to USD ' );
+    console.log( 'TOKEN VALUE IN BNB : ' + priceInBnb + ' | Just convert it to USD ' );
     let afitPrice = priceInBnb*bnbPrice;
 	
-	console.log(`SHIT_TOKEN VALUE IN USD: ${priceInBnb*bnbPrice}`); // convert the token price from BNB to USD based on the retrived BNB value
+	console.log(`TOKEN VALUE IN USD: ${priceInBnb*bnbPrice}`); // convert the token price from BNB to USD based on the retrived BNB value
 	return afitPrice;
-	/*
-	let url = new URL('https://api.pancakeswap.info/api/v2/tokens/'+tokenAddress);
-	if (api){
-		switch (api){
-			case '1':
-				url = new URL('https://api.dex.guru/v1/tokens/'+tokenAddress+'-bsc');
-				break;
-			
-		}
-	}
-	//both options not working now, override using dextools API
 	
-	const apiKey = '1fca8cbbe3ca435cb002996da28908ae';
-	const chain = 'bsc'; // Replace with the desired chain
-
-
-	url = `https://api.dextools.io/v1/token?chain=${chain}&address=${tokenAddress}`;
-	
-	const headers = {
-	  'X-API-Key': apiKey
-	};
-
-	
-	
-	try{
-		let connector = await fetch(url, {
-		  method: 'GET',
-		  headers: headers
-		})
-		let data = await connector.json();
-		console.log(data);
-		//return back the count as a number
-		//structure: {"status":"1","message":"OK","result":"51000000000000000000000000"}
-		//let price;
-		let price = parseFloat(data.data.reprPair.price);
-		//return price;
-		
-		return price;
-	}catch(exc){
-		console.log(exc);
-		if (typeof api == "undefined" || api == ''){
-			//attempt again using different API	
-			return getAFITPCSPrice(token,'1');
-		}
-		return 'error';
-	}*/
 }
 
 app.get('/verifyLoginCaptcha', async function (req, res){
@@ -1373,58 +1470,6 @@ app.get('/votingStatus', async function (req, res) {
 });
 
 
-let jwt = require('jsonwebtoken');
-
-//function ensures user is properly logged in
-let checkHdrs = (req, res, next) => {
-	let token = req.headers['x-acti-token'] || req.headers['authorization']; // Express headers are auto converted to lowercase
-	  
-	  if (token) {
-		if (token.startsWith('Bearer ')) {
-			// Remove Bearer from string
-			token = token.slice(7, token.length);
-		}
-		req.query.token = token;
-		jwt.verify(token, config.secret, async (err, decoded) => {
-		  if (err) {
-			return res.json({
-			  success: false,
-			  message: 'Token is not valid'
-			});
-		  } else {
-			let user;
-	
-			if (req.query && req.query.user){
-				user = req.query.user;
-			}else{
-				res.send({error: 'user not supplied'});
-			}
-			
-			//console.log(operation[1].required_posting_auths);
-			//console.log(req.query.token);
-			
-			//check if user is validated with stored encrypted posting key
-			let db_col = db.collection('user_login_token');
-			//find existing login entry in DB
-			let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
-			console.log(user_tkn);
-			if (!Array.isArray(user_tkn) || user_tkn.length == 0){
-				console.error('Authentication failed. Key not found');
-				res.send({error: 'Authentication failed. Key not found'});
-				return;
-			}
-			req.ppkey = user_tkn[0].ppkey;
-			req.decoded = decoded;
-			next();
-		  }
-		});
-	  } else {
-		return res.json({
-		  success: false,
-		  message: 'Auth token is not provided'
-		});
-	  }
-};	
 
 app.get('/userVotedSurvey', async function (req, res){
 	if (!req.query || !req.query.user || !req.query.id){
@@ -1569,7 +1614,6 @@ app.get('/availableHiveNodes', async function(req, res){
 });
 
 app.get('/delegateRC', checkHdrs, async function (req, res) {
-	console.log('>>performTrx');
 	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
 		res.send({});
 	}
@@ -1628,7 +1672,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	//perform transaction
 	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
 	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, null);
-	console.log(performTrx);
+	//console.log(performTrx);
 	if (!performTrx.tx.ref_block_num){
 		res.send({error: true, trx: performTrx});
 	}else{
@@ -1963,26 +2007,6 @@ app.post('/loginKeychain/', async function (req, res) {
 	}
 });
 
-/*
-app.post('/confirmLoginKeychain', async function (req, res) {
-	try{
-		//const username = sanitize(req.body.username);
-		const username = req.body.username;
-		let bchain = req.body.bchain?req.body.bchain:'HIVE';
-		
-		if (username && username.length < 16 && username.length > 3) {
-			let account = await utils.getAccountData(username, bchain);
-			let pubKey = account[bchain].posting.key_auths[0][0];
-			console.log(pubKey);
-			let memo = encrypt(username+pubKey);
-			let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
-			res.send({message : encoded_message});
-		}
-	}catch(err){
-		console.log(err);
-	}
-});
-*/
 app.post('/loginAuth', async function (req, res) {
 	console.log('login');
 	let username = null;
@@ -2468,9 +2492,6 @@ app.get('/modAction', async function (req, res) {
 			}
 		}
 		
-		//reached here, we're fine
-		console.log('reached here, we\'re fine');
-		
 		let result = '';
 		
 		//store every moderator transaction as log
@@ -2479,8 +2500,6 @@ app.get('/modAction', async function (req, res) {
 			"action": req.query.targetAction,
 			"date": new Date(),
 		};
-		
-		console.log(req.query.targetAction);
 		
 		switch(req.query.targetAction){
 		
@@ -2733,18 +2752,13 @@ app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 		res.send({status:'error'})
 	}else{
 		let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
-		console.log(nonce);
 		nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
 		const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
 		const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
 		const addrBuf = ethutil.pubToAddress(pubKey)
 		const addr = ethutil.bufferToHex(addrBuf)
-		console.log('orig:'+req.query.wallet);
-		console.log(pubKey);
-		console.log('out:'+addr);
 		
 		if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
-			console.log('correct address');
 			//res.send({success: true});
 			//proceed to check trx on hive
 			try{
@@ -2788,15 +2802,11 @@ app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 
 app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
 	let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
-	console.log(nonce);
 	nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
 	const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
 	const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
 	const addrBuf = ethutil.pubToAddress(pubKey)
 	const addr = ethutil.bufferToHex(addrBuf)
-	console.log('orig:'+req.query.wallet);
-	console.log(pubKey);
-	console.log('out:'+addr);
 	
 	if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
 		console.log('correct address');
@@ -2836,7 +2846,7 @@ async function storeWalletAdd(username, wallet, walletChain){
 		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
 		return true;
 	}catch(err){
-		
+		console.log(err);
 	}
 	return false;
 }
@@ -2872,81 +2882,8 @@ app.get('/getUserWalletAddress', async function (req, res){
 	let matchAddress = await db.collection('user_wallet_address').find({user: user, chain: walletChain}).sort({tokens: -1}).toArray();
 	res.send(matchAddress);
 });
-/*
-app.get('/afitAirdropHive', async function (req, res){
-	let participants = await db.collection('user_wallet_address').find({chain: 'BSC'}).toArray();
-	console.log(participants.length);
-	let delay = 0;
-	for (let entry of participants) {
-		setTimeout(async function(){
-			//grab tokens of the user on actifit wallet
-			let afit_wallet = await grabUserTokensFunc(entry.user);
-			console.log('afit_wallet:'+afit_wallet.tokens);
-			let afit_he_bal_val = 0;
-			try { 
-				let afit_he_bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
-				afit_he_bal_val = afit_he_bal.balance;
-			}catch(err){
-				
-			}
-			console.log('afit_he_bal:'+afit_he_bal_val);
-			let afit_se_bal_val = 0;
-			try { 
-				let afit_se_bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFIT' });
-				afit_se_bal_val = afit_se_bal.balance;
-			}catch(err){
-				
-			}
-			console.log('afit_se_bal:'+afit_se_bal_val);
-			let tot_tokens = parseFloat(afit_wallet.tokens) + parseFloat(afit_he_bal_val) + parseFloat(afit_se_bal_val);
-			console.log(tot_tokens);
-			let reward = 0;
-			if (tot_tokens>=2000 && tot_tokens <5000){
-				reward = tot_tokens*0.004;
-			}else if (tot_tokens>=5000 && tot_tokens <10000){
-				reward = tot_tokens*0.005;
-			}else if (tot_tokens>=10000 && tot_tokens <50000){
-				reward = tot_tokens*0.006;
-			}else if (tot_tokens>=50000 && tot_tokens <100000){
-				reward = tot_tokens*0.007;
-			}else if (tot_tokens>=100000){
-				reward = 800;
-			}
-			console.log(reward);
-			//only insert if user is eligible
-			if (reward>0){
-				let airdrop_entry = {
-					user: entry.user,
-					chain: 'BSC',
-					tokens_count: tot_tokens,
-					actifit_wallet_afit_bal: afit_wallet.tokens,
-					afit_he_bal: afit_he_bal_val,
-					afit_se_bal: afit_se_bal_val,
-					afit_bsc_reward: reward, 
-					date: new Date()
-				}
-				//insert into airdrop snapshot
-				let transaction = await db.collection('afit_bsc_hive_airdrop').insert(airdrop_entry);
-				res.write(JSON.stringify(transaction));
-			}
-		}, delay+=1500);
-	}
-	//res.end();
-	//afit_bsc_hive_airdrop
-})
-*/
 
-/*
-app.get('/airdropDataDisplay', async function (req, res){
-	console.log('airdrop data');
-	let entries = await db.collection('afit_bsc_hive_airdrop_wallets').find().toArray();
-	let display = '';
-	for (let entry of entries){
-		display += entry.wallet+','+entry.reward+'<br/>';
-	}
-	res.send(display);
-})
-*/
+
 
 app.get('/airdropDataDisplay', async function (req, res){
 	console.log('airdrop data');
@@ -3020,40 +2957,9 @@ app.get('/topAFITHolders', async function (req, res) {
 app.get('/topAFITHEHolders', async function (req, res) {
 	let afitSorted = utils.sortArrLodash(usersAFITBal);
 	fullSortedAFITList = afitSorted;
-	/*let maxAmount = parseInt(req.query.count);
-	if (isNaN(maxAmount)){
-		//set max as 100
-		maxAmount = 100;
-	}
-	
-	//fetch banned accounts
-	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
-	//console.log(banned_users);
-	let banned_arr = banned_users.map(entr => entr.user);
-	banned_arr.push('afitx.s-e');
-	banned_arr.push('afitx.h-e');
-	banned_arr.push('');
-	
-	afitSorted = utils.removeArrMatchLodash(afitSorted, banned_arr, 'account');
-	*/
-	//always skip top holder as that would be actifit
-	//afitxSorted = afitxSorted.slice(1, maxAmount + 1);
 	
 	let output = afitSorted;
 	
-	/*
-	if (req.query.pretty){
-		output = '#|Token Holder | AFITX Tokens Held |<br/>';
-		output += '|---|---|---|<br/>';
-		for(var i = 0; i < afitxSorted.length; i++) {
-			let tokenHolder = afitxSorted[i];
-			output += (i+1) + '|';
-			output += '@'+tokenHolder.account + '|';
-			output += gk_add_commas(parseFloat(tokenHolder.balance).toFixed(3)) + '|';
-			output += '<br/>';
-		}
-	}
-	*/
     res.send(output);
 });
 
@@ -3210,8 +3116,6 @@ app.get('/userBadges/:user', async function (req, res) {
 async function getUserFriends(user){
 	let friendsA = await db.collection('friends').find({userA: user}, {fields : {userB:1, _id:0}}).toArray();
 	let friendsB = await db.collection('friends').find({userB: user}, {fields : {userA:1, _id:0}}).toArray();
-	console.log(friendsA);
-	console.log(friendsB);
 	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
 	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
 	return friendsA.concat(friendsB);
@@ -3364,23 +3268,7 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	let cur_user_token_count = parseFloat(user_info.tokens);
 	
 	//add a ticket to the user to enter draw if user meets min requirements
-	/*
-	if (cur_user_token_count >= config.minUserTokensGadgetTicket){
-		//perform transaction
-		let ticketEntry = {
-			user: user,
-			product_id: product_id,
-			product_name: product.name,
-			product_level: product.level,
-			product_price_afit: item_price_afit,
-			product_price_hive: item_price,
-			hive_paid: ver_trx.amount_hive,
-			currency: req.params.bchain,
-			count: 1,
-			date: new Date(),
-		}
-		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
-	}*/
+	
 	//update current user's token balance & store to db
 	let new_token_count = cur_user_token_count + parseFloat(matchingAfit);
 	user_info.tokens = new_token_count;
@@ -4151,7 +4039,6 @@ async function performMultiBuyHiveTrx(req){
 		let product = await grabProductInfo (product_ids[i]);
 		if (!product){
 			return ({'error': 'Product not found'});
-			;
 		}
 		let price_options = product.price;
 		let price_options_count = price_options.length;
@@ -4597,6 +4484,83 @@ app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function
 	res.send(outc)
 });
 
+async function performBuyWorkout(infoParam){
+	
+	let user = infoParam.user;
+	console.log('user',user);
+	//ensure proper transaction
+	let ver_trx = await utils.verifyWorkoutTransaction(user, 'generate-workout-wizard', infoParam.trxID, infoParam.bchain, db);
+	if (!ver_trx){
+		return ({'error': 'error verifying trx'});
+		//return;
+	}
+	
+	//confirm proper AFIT token balance. Test against product price
+	let user_info = await grabUserTokensFunc (user);
+	console.log(user_info);
+	let cur_user_token_count = parseFloat(user_info.tokens);
+
+	let item_price = config.workoutGenerationFeesAFIT;
+	let item_currency = 'AFIT';
+	
+	if (cur_user_token_count < item_price){
+		return ({'error': 'Account does not have enough AFIT funds'});
+		//return;
+	}
+	
+	//perform transaction
+	let productBuyTrans = {
+		user: user,
+		reward_activity: 'Buy Workout',
+		product_type: 'workout',
+		token_count: -item_price,
+		note: 'Bought Workout Generation',
+		date: new Date(),
+	}
+	try{
+		console.log(productBuyTrans);
+		let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+		console.log('success inserting post data');
+	}catch(err){
+		console.log(err);
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
+	}
+	
+	//store into user_workouts table as well
+	/*let userWorkoutTrans = {
+		user: user,
+		product_type: 'workout',
+		status: "bought",
+		date_bought: new Date(),
+		last_updated: new Date(),
+		note: 'Bought Workout',
+	}
+	try{
+		console.log(userWorkoutTrans);
+		let transaction = await db.collection('user_workouts').insert(userGadgetTrans);
+		console.log('success inserting workout data');
+	}catch(err){
+		console.log(err);
+		return ({'error': 'Error performing buy action. DB storing issue'});
+		//return;
+	}*/
+	
+	//update current user's token balance & store to db
+	let new_token_count = cur_user_token_count - parseFloat(item_price);
+	user_info.tokens = new_token_count;
+	console.log('new_token_count:'+new_token_count);
+	try{
+		let trans = await db.collection('user_tokens').save(user_info);
+		console.log('success updating user token count');
+	}catch(err){
+		console.log(err);
+	}
+	
+	return ({'status': 'Success', 'user_tokens': user_info.tokens});
+	
+}
+
 
 async function performBuyTrx(infoParam){
 	//ensure proper transaction
@@ -4761,6 +4725,12 @@ app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, 
 /* end point for tracking gadget buy orders */
 app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	let outc = await performBuyTrx(req.params);
+	res.send(outc)
+});
+
+/* end point for tracking buy workout generation action */
+app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, async function (req, res) {
+	let outc = await performBuyWorkout(req.params);
 	res.send(outc)
 });
 
