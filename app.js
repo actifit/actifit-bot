@@ -1004,6 +1004,7 @@ loadExchAfitPrice();
 //reload every 5 mins
 setInterval(loadExchAfitPrice, 5*60000);
 
+
 function switchHENode(){
 	try{
 		console.log('switching hive engine node');
