@@ -9,7 +9,7 @@
     "@hiveio/dhive": "^1.2.0",
     "@hiveio/hive-js": ">=2.0.4",
     "admob-rewarded-ads-ssv": "^1.0.1",
-    "axios": "^0.18.1",
+    "axios": "^1.12.1",
     "cheerio": "^1.0.0-rc.2",
     "dblurt": "^0.1.2",
     "dsteem": "^0.11.3",
@@ -29,7 +29,9 @@
     "request": "^2.88.0",
     "sscjs": "0.0.8",
     "steem": "^0.7.11",
-    "web3": "^1.7.3"
+    "swagger-ui-express": "^5.0.1",
+    "web3": "^1.7.3",
+    "yamljs": "^0.3.0"
   },
   "devDependencies": {
     "nodemon": "^1.17.5"

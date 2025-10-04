@@ -5,9 +5,17 @@ var utils = require('./utils');
 const moment = require('moment')
 var crypto = require('crypto');
 
+const swaggerUi = require('swagger-ui-express');
+const YAML = require('yamljs');
+
 var appPort = process.env.PORT || 3120;
 
-var app = express();
+const app = express();
+
+const swaggerDocument = YAML.load('./swagger.yaml');
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+
 
 app.engine('handlebars', exphbs({defaultLayout: 'main'}));
 app.set('view engine', 'handlebars');
@@ -345,7 +353,6 @@ app.post('/saveworkout', checkHdrs, async function (req, res){
 // --- API Endpoint to Fetch ALL Workouts for Authenticated User (INCLUDING EXERCISES) ---
 // Path: /workouts
 // Method: GET
-// Note: This endpoint uses the same path as the POST endpoint, which is fine as they have different methods.
 app.get('/workouts', checkHdrs, async function(req, res) {
      try {
          // Ensure DB connection is available
@@ -455,6 +462,174 @@ app.get('/workouts/:workoutId', checkHdrs, async function(req, res) {
          });
      }
 });
+
+
+// --- NEW API Endpoint to Update a Specific Workout by ID for Authenticated User ---
+// Path: /workouts/:workoutId
+// Method: PUT (Used for full replacement or significant update of a resource)
+app.put('/workouts/:workoutId', checkHdrs, async function (req, res) {
+    try {
+        // Ensure DB connection is available
+        if (!db) {
+            console.error("Database connection not available.");
+            return res.status(500).json({ success: false, error: 'Database not connected.' });
+        }
+
+        // --- 1. Get User ID from Authentication Middleware ---
+        // Assuming checkHdrs successfully authenticated and set req.user
+        const userId = req.user ? (req.user._id || req.user.userId) : null;
+        if (!userId) {
+            console.error("Authenticated user ID is missing after checkHdrs for PUT /workouts/:workoutId.");
+            return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
+        }
+
+        // --- 2. Get the Workout ID from URL Parameters ---
+        const workoutIdParam = req.params.workoutId;
+
+        // --- 3. Validate and Convert workoutId to MongoDB ObjectId ---
+        let objectId;
+        try {
+            objectId = new ObjectId(workoutIdParam);
+        } catch (e) {
+            console.warn(`Invalid workout ID format received for update: ${workoutIdParam}`, e);
+            return res.status(400).json({ success: false, error: 'Invalid workout ID format.' });
+        }
+
+        // --- 4. Receive Updated Workout Data from Request Body ---
+        // Expect workoutName, description, exercises, and optionally explanation
+        const { workoutName, description, exercises, explanation } = req.body;
+
+        // Basic validation for required update fields, ensuring consistency with saveworkout
+        if (!workoutName || typeof workoutName !== 'string' || workoutName.trim().length === 0 ||
+            !description || typeof description !== 'string' || description.trim().length === 0 ||
+            !exercises || !Array.isArray(exercises) || exercises.length === 0) { // Ensure exercises is a non-empty array
+            console.warn("Invalid request body format for update, missing or invalid required fields:", req.body);
+            return res.status(400).json({ success: false, error: 'Invalid request data. Missing workout name, description, or non-empty exercises array, or workout name/description is empty.' });
+        }
+
+        // --- 5. Prepare Document for Update ---
+        const updatedFields = {
+            workoutName: workoutName.trim(),
+            description: description.trim(),
+            exercises: exercises,
+            lastModified: new Date(), // Add/update a last modified timestamp
+        };
+
+        // Conditionally add explanation if provided in the request body
+        // This allows updating it, setting it if it wasn't there, or effectively removing it if sent as null/empty string.
+        if (explanation !== undefined) {
+            updatedFields.explanation = explanation;
+        }
+
+        // --- 6. Get the 'user_workouts' Collection and Update ---
+        const collection = db.collection('user_workouts');
+
+        // Update the specific workout by its _id AND ensure it belongs to the authenticated user (SECURITY CHECK!)
+        const result = await collection.updateOne(
+            {
+                _id: objectId, // Match the workout document's MongoDB _id
+                userId: userId // AND match the authenticated user ID
+            },
+            { $set: updatedFields } // Use $set to update specific fields
+        );
+
+        // --- 7. Handle Result ---
+        if (result.matchedCount === 0) {
+            // Document not found with that _id OR found but doesn't belong to this user
+            console.warn(`Workout with ID ${workoutIdParam} not found for user ${userId} or unauthorized access attempt for update.`);
+            return res.status(404).json({ success: false, message: 'Workout not found or does not belong to this user.' });
+        }
+
+        if (result.modifiedCount === 0) {
+            // Document found, but no changes were applied (e.g., submitted data was identical to existing)
+            return res.status(200).json({ success: true, message: 'Workout found, but no changes were applied (data might be identical).', workoutId: workoutIdParam });
+        }
+
+        // Successfully updated
+        res.status(200).json({
+            success: true,
+            message: 'Workout updated successfully!',
+            workoutId: workoutIdParam,
+            modifiedCount: result.modifiedCount // Number of documents modified
+        });
+
+    } catch (err) {
+        console.error('Server error updating workout:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error updating workout.',
+            details: err.message
+        });
+    }
+});
+
+// --- NEW API Endpoint to Delete a Specific Workout by ID for Authenticated User ---
+// Path: /workouts/:workoutId
+// Method: DELETE
+app.delete('/workouts/:workoutId', checkHdrs, async function (req, res) {
+    try {
+        // Ensure DB connection is available
+        if (!db) {
+            console.error("Database connection not available.");
+            return res.status(500).json({ success: false, error: 'Database not connected.' });
+        }
+
+        // --- 1. Get User ID from Authentication Middleware ---
+        // Assuming checkHdrs successfully authenticated and set req.user
+        const userId = req.user ? (req.user._id || req.user.userId) : null;
+        if (!userId) {
+            console.error("Authenticated user ID is missing after checkHdrs for DELETE /workouts/:workoutId.");
+            return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
+        }
+
+        // --- 2. Get the Workout ID from URL Parameters ---
+        const workoutIdParam = req.params.workoutId;
+
+        // --- 3. Validate and Convert workoutId to MongoDB ObjectId ---
+        let objectId;
+        try {
+            objectId = new ObjectId(workoutIdParam);
+        } catch (e) {
+            console.warn(`Invalid workout ID format received for delete: ${workoutIdParam}`, e);
+            return res.status(400).json({ success: false, error: 'Invalid workout ID format.' });
+        }
+
+        // --- 4. Get the 'user_workouts' Collection and Delete ---
+        const collection = db.collection('user_workouts');
+
+        // Delete the specific workout by its _id AND ensure it belongs to the authenticated user (SECURITY CHECK!)
+        const result = await collection.deleteOne({
+            _id: objectId, // Match the workout document's MongoDB _id
+            userId: userId // AND match the authenticated user ID
+        });
+
+        // --- 5. Handle Result ---
+        if (result.deletedCount === 0) {
+            // Document not found with that _id OR found but doesn't belong to this user
+            console.warn(`Workout with ID ${workoutIdParam} not found for user ${userId} or unauthorized access attempt for delete.`);
+            return res.status(404).json({ success: false, message: 'Workout not found or does not belong to this user.' });
+        }
+
+        // Successfully deleted
+        res.status(200).json({
+            success: true,
+            message: 'Workout deleted successfully!',
+            workoutId: workoutIdParam,
+            deletedCount: result.deletedCount // Number of documents deleted (should be 1)
+        });
+
+    } catch (err) {
+        console.error('Server error deleting workout:', err);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error deleting workout.',
+            details: err.message
+        });
+    }
+});
+
+/***************** end of workouts API *****************/
+/*******************************************************/
 
 const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
 
