@@ -776,7 +776,7 @@ app.get('/ssv-verify',
     catch(error) {
       // Do something
       // or log somethings
-	  console.log(error);
+	  console.log('ssv-verify', error);
       return res.status(400).end(error.message);
     }
     next();
