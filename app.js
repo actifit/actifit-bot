@@ -40,6 +40,9 @@ if (config.testing){
 
 //console.log('verify gadget buy');
 
+console.log('--- ACTUAL NODE VERSION IN RUNTIME: ' + process.version + ' ---');
+return;
+
 
 var db;
 var collection;
