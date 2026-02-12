@@ -43,7 +43,9 @@
     "all": "node app.js | node delegations.js ",
     "start": "node app.js"
   },
-  "engines": {},
+  "engines": {
+	  "node": "20.x"
+  },
   "author": "cryptouru",
   "license": "MIT"
 }

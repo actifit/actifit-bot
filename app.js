@@ -996,7 +996,7 @@ async function disableUserLogin(){
 		//cleanup data to prevent keeping keys
 		items_to_move.forEach(function(ent){ delete ent.ppkey; delete ent.token });
 		
-		await db_hist_col.insertOne(items_to_move);
+		await db_hist_col.insertMany(items_to_move);
 		let result = await db_col.deleteMany({lastlogin: {$lt: dateTarget }});
 	}else{
 		console.log('noting to clean');
