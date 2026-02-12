@@ -65,6 +65,8 @@ let collection
 let bulk_delegation_entries
 let bulk_hive_delegation_entries
 
+const bulkOps = [];
+
 // Database Name
 const dbName = config.db_name
 const delegationTrxCol = 'delegation_transactions'
@@ -161,6 +163,8 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 }else{
 	//processGadgetBuyPrize();
+	//updateUserTokens();
+	//return;
 	runRewards(true, false);
 	//runRewards(false, false);
 	//moveAFITToSE(true);
@@ -1030,8 +1034,8 @@ function runRewards(steemOnlyReward, updateDelegations){
 		
 		return;*/
 		
-		bulk_delegation_entries = db.collection(delegationTrxCol).initializeUnorderedBulkOp();
-		bulk_hive_delegation_entries = db.collection(hiveDelegationTrxCol).initializeUnorderedBulkOp();
+		//bulk_delegation_entries = db.collection(delegationTrxCol).initializeUnorderedBulkOp();
+		//bulk_hive_delegation_entries = db.collection(hiveDelegationTrxCol).initializeUnorderedBulkOp();
 		
 		//updateUserTokens();
 		//return;
@@ -1254,7 +1258,7 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 		
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
-		await processDelegations(hiveClient, hive_history_limit, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		await processDelegations(hiveClient, hive_history_limit, bulkOps, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 		//await processDelegationsHive(hive, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 	}
 	//TEMP BREAK
@@ -1529,7 +1533,7 @@ async function alignGadgetTicketEntries () {
 
 
 
-async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end) {
+async function processDelegations (nodeLink, history_limit, bulkOps, delTrxCol, activeDelColLink, account, start, end) {
   let delegationTransactions = []
   let lastTrans = start
   let ended = false
@@ -1567,17 +1571,32 @@ async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxC
         data.tx_date = new Date(txs[1].timestamp)
         delegationTransactions.push(data)
 		
-		dbDelegLink.find(
+		bulkOps.push({
+			replaceOne: {
+			  filter: { 
+				delegator: data.delegator, 
+				vesting_shares: data.vesting_shares 
+			  },
+			  replacement: data,
+			  upsert: true
+			}
+		  });
+		
+		/*dbDelegLink.find(
 		{ 
 			delegator: data.delegator,
 			vesting_shares: data.vesting_shares,
-		}).upsert().replaceOne(data);
+		}).upsert().replaceOne(data);*/
       }
     }
     // Insert new transactions and update active ones
     if (delegationTransactions.length > 0) {
       try{
-		await dbDelegLink.execute();
+		const collection = db.collection(delTrxCol);
+		await collection.bulkWrite(bulkOps, { ordered: false });
+		console.log(`Successfully processed ${bulkOps.length} operations.`);
+		
+		//await dbDelegLink.execute();
 	  }catch(bulkerr){
 		utils.log(bulkerr);
 	  }
@@ -1590,7 +1609,7 @@ async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxC
     }
     // If more pending delegations call process againg with new index
     if (start !== limit && !ended){ 
-		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, lastTrans, end)
+		return processDelegations(nodeLink, history_limit, bulkOps, delTrxCol, activeDelColLink, account, lastTrans, end)
 	}
     // console.log(transactions)
 	return;
@@ -1598,7 +1617,7 @@ async function processDelegations (nodeLink, history_limit, dbDelegLink, delTrxC
     console.log(err)
     // Consider exponential backoff if extreme cases start happening
     if (err.type === 'request-timeout' || err.type === 'body-timeout'){ 
-		return processDelegations(nodeLink, history_limit, dbDelegLink, delTrxCol, activeDelColLink, account, start, end);
+		return processDelegations(nodeLink, history_limit, bulkOps, delTrxCol, activeDelColLink, account, start, end);
 	}
   }
 }
@@ -1761,7 +1780,7 @@ async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, active
   console.log('getAcumulatedSteemPower');
   //console.log(delTrxCol);
   let activeDelegations = await getActiveDelegations(delTrxCol, from, excludeOn)
-  console.log(activeDelegations);
+  //console.log(activeDelegations);
   // Get transactions of the processed week
   let weekTxs 
   if (excludeOn){
@@ -1830,17 +1849,30 @@ async function updateActiveDelegations (delgTrxCol, targetCol) {
 	console.log(err);
   }
   console.log('activeDelegations dropped');
-  await db.collection(targetCol).insertOne(activeDelegations)
+  await db.collection(targetCol).insertMany(activeDelegations)
   console.log('done updating delegations '+targetCol);
   return ;
 }
 
 function upsertRewardTransaction (reward) {
+	console.log('inserting for'+reward.user);
+	return db.collection('token_transactions').replaceOne(
+  { 
+    user: reward.user, 
+    chain: reward.chain, 
+    date: reward.date, 
+    reward_activity: reward.reward_activity, 
+    orig_account: reward.orig_account 
+  },
+  reward,
+  { upsert: true }
+);
+/*
   return db.collection('token_transactions').update(
     { user: reward.user, chain: reward.chain, date: reward.date, reward_activity: reward.reward_activity, orig_account: reward.orig_account },
     reward,
     { upsert: true }
-  )
+  )*/
 }
 
 
@@ -1856,6 +1888,35 @@ async function updateProperties () {
 }
 
 //function handles updating current user token count
+async function updateUserTokens() {
+  console.log('---- Updating User Tokens ----');
+
+  try {
+    // This entire pipeline runs on the server and replaces the collection atomically
+    await db.collection('token_transactions').aggregate([
+      { 
+        $group: { 
+          _id: "$user", 
+          tokens: { $sum: "$token_count" } 
+        } 
+      },
+      { $sort: { tokens: -1 } },
+      { 
+        $project: { 
+          _id: 1, 
+          user: "$_id", 
+          tokens: 1 
+        } 
+      },
+      { $out: "user_tokens" } // Replaces the collection automatically
+    ]).next(); // Use .next() or .toArray() to trigger execution
+
+    console.log('---- Updating User Tokens Complete ----');
+  } catch (err) {
+    console.error('>> Update User Tokens Error: ' + err.message);
+  }
+}
+/*
 async function updateUserTokens() {
 	console.log('---- Updating User Tokens ----');
 
@@ -1874,14 +1935,15 @@ async function updateUserTokens() {
 	
 		let user_tokens = await query.toArray();
 		//remove old token count per user
-		await db.collection('user_tokens').remove({});
+		await db.collection('user_tokens').deleteMany({});
 		//insert new count per user
-		await db.collection('user_tokens').insertOne(user_tokens);
+		await db.collection('user_tokens').insertMany(user_tokens);
 		console.log('---- Updating User Tokens Complete ----');
 	}catch(err){
 		console.log('>>save data error:'+err.message);
 	}
-}
+}*/
+
 //function handles fetching account details for later use when claiming rewards
 async function grabAccountDetails(){
 	console.log('grabbing fund account details');
