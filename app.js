@@ -69,22 +69,21 @@ const afitxContract = new web3.eth.Contract(minABI, config.afitxTokenBSC);
 const afitBNBLPContract = new web3.eth.Contract(minABI, config.afitBNBLPTokenBSC);
 const afitxBNBLPContract = new web3.eth.Contract(minABI, config.afitxBNBLPTokenBSC);
 
-connectDB();
+
 
 let rewardBanList = ['gelvirglenn12', 'yasirgujrati'];
 
 //setInterval(connectWithRetry, 5000);
 
+const client = new MongoClient(url);
+
+connectDB();
+
 function connectDB () {
 
 // Use connect method to connect to the server
-MongoClient.connect(url, 
-	{	
-		reconnectTries: Number.MAX_VALUE,
-		autoReconnect: true
-	}
-	, function(err, client) {
-	if(!err) {
+client.connect()
+	.then(client => {
 	  console.log("Connected successfully to server");
 
 	  db = client.db(db_name);
@@ -106,17 +105,15 @@ MongoClient.connect(url,
 	  //clearCorruptData();
 	  
 	  //disableUserLogin();
-	 
-	} else {
+	})
+	.catch(err => {
 		utils.log(err, 'api');
-	}
+	});
   
-});
-
 }
 
 async function clearCorruptData(){
-	let res = await db.collection('token_transactions').remove({exchange: 'HE'});
+	let res = await db.collection('token_transactions').deleteMany({exchange: 'HE'});
 	console.log(res);
 	console.log('done');
 }
@@ -705,20 +702,27 @@ app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
 					}
 				}
 	let results = await db.collection('token_transactions').find(query).toArray();
-	//loop through entries, removing rewards
-	for (let i=0;i<results.length;i++){
-		if (parseFloat(results[i].token_count)>0){
-			//console.log(results[i]);
+
+// Use a for...of loop or a standard for loop with 'await' inside
+	for (let i = 0; i < results.length; i++) {
+		if (parseFloat(results[i].token_count) > 0) {
+			
+			// 1. Prepare the modified object
 			results[i].old_reward = results[i].token_count;
 			results[i].token_count = 0;
 			results[i].old_note = results[i].note;
 			results[i].note = 'Cancelled reward due to system abuse.';
 			results[i].old_date = results[i].date;
 			results[i].date = new Date();
-			db.collection('token_transactions').save(results[i]);
+
+			// 2. Replace the old .save() with replaceOne and AWAIT it
+			await db.collection('token_transactions').replaceOne(
+				{ _id: results[i]._id }, 
+				results[i], 
+				{ upsert: true }
+			);
 		}
 	}
-	
 	//console.log(results);
 	res.send(results);
 });
@@ -827,7 +831,7 @@ app.get('/ssv-verify',
 		}
 		try{
 			console.log(recordTrans);
-			let transaction = await db.collection('token_transactions').insert(recordTrans);
+			let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 			
 			//also notify user of AFIT payment
 			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + data[1] + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
@@ -877,28 +881,33 @@ app.get('/updateProposalNotified', async function (req, res){
 	}
 		
 	let author = req.query.author;
-	let user_info = await db.collection('proposal_notified').findOne({author: author});
-	if (typeof user_info!= "undefined" && user_info!=null){
-		/*if (typeof user_info.count!= "undefined"){
-			user_info.count = 0;
-			user_info.permlinks = [];
-		}*/
-	}else{
-		user_info = new Object();
-		user_info.author = author;
-		user_info.permlinks = [];
-		user_info.count = 0;
+	let user_info = await db.collection('proposal_notified').findOne({ author: author });
+
+	// If not found, initialize the object
+	if (!user_info) {
+		user_info = {
+			author: author,
+			permlinks: [],
+			count: 0
+		};
 	}
+
+	// Update the logic
 	user_info.count += 1;
 	user_info.permlinks.push(req.query.permlink);
 	console.log(user_info);
-	
-	try{
-		let trans = await db.collection('proposal_notified').save(user_info);
-		res.send({status: 'success'});
-	}catch(err){
-		console.log(err)
-		res.send({error: JSON.stringify(err)});
+
+	try {
+		// We use the author as the filter because _id might not exist yet for new objects
+		let trans = await db.collection('proposal_notified').replaceOne(
+			{ author: author }, 
+			user_info, 
+			{ upsert: true }
+		);
+		res.send({ status: 'success' });
+	} catch (err) {
+		console.log(err);
+		res.send({ error: JSON.stringify(err) });
 	}
 	
 })
@@ -987,8 +996,8 @@ async function disableUserLogin(){
 		//cleanup data to prevent keeping keys
 		items_to_move.forEach(function(ent){ delete ent.ppkey; delete ent.token });
 		
-		await db_hist_col.insert(items_to_move);
-		let result = await db_col.remove({lastlogin: {$lt: dateTarget }});
+		await db_hist_col.insertOne(items_to_move);
+		let result = await db_col.deleteMany({lastlogin: {$lt: dateTarget }});
 	}else{
 		console.log('noting to clean');
 	}
@@ -1686,7 +1695,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 		//store vote
 		try{
 			console.log(voteSurveyTrans);
-			let transaction = await db.collection('user_survey_votes').insert(voteSurveyTrans);
+			let transaction = await db.collection('user_survey_votes').insertOne(voteSurveyTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -1711,7 +1720,7 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 			}
 			try{
 				console.log(recordTrans);
-				let transaction = await db.collection('token_transactions').insert(recordTrans);
+				let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 				rewarded = matching_survey.survey_reward;
 				
 				//also notify user of AFIT payment
@@ -1953,23 +1962,38 @@ app.get('/recalculateUserTokens', async function (req, res){
 	   ]).toArray(async function(err, results) {
 		var output = 'user'+user+ 'tokens:'+results[0].token_balance;
 		
-		
-		let user_info = await grabUserTokensFunc (user);
+		let user_info = await grabUserTokensFunc(user);
 		console.log(user_info);
-		//let cur_user_token_count = parseFloat(user_info.tokens);
-		
+
+		// Ensure user_info isn't null to avoid crashes
+		if (!user_info) {
+			user_info = { user: user, tokens: 0 };
+		}
+
+		// Update the balance from your results array
 		user_info.tokens = parseFloat(results[0].token_balance);
-		if (user_info.tokens < 0){
+
+		// Safety check for negative balances
+		if (user_info.tokens < 0) {
 			user_info.tokens = 0;
 		}
-		//recalculate and store user token count
-		try{
-			let trans = await db.collection('user_tokens').save(user_info);
+
+		// Recalculate and store user token count
+		try {
+			// Replace .save() with .replaceOne()
+			// We filter by user to handle cases where the object might be new
+			let trans = await db.collection('user_tokens').replaceOne(
+				{ user: user }, 
+				user_info, 
+				{ upsert: true }
+			);
+			
 			console.log('success updating user token count');
-			res.send('success recalculating & updating user token count: '+user_info.tokens);
+			res.send('success recalculating & updating user token count: ' + user_info.tokens);
 			console.log(results);
-		}catch(err){
-			console.log(err);
+		} catch (err) {
+			console.error('Database Error:', err);
+			res.status(500).send('Error updating tokens');
 		}
 		
 	   });
@@ -2017,7 +2041,7 @@ app.get('/resetFundsPass', checkHdrs, async function (req, res) {
 	let user = req.query.user.trim().toLowerCase();
 	let result = 'no change';
 	if (user!=''){
-		result = await collection.remove({
+		result = await collection.deleteMany({
 			"user": user,
 		});
 		console.log(user+" password reset ");
@@ -2030,7 +2054,7 @@ app.get('/resetFundsPass', checkHdrs, async function (req, res) {
 
 app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let db_col = db.collection('user_login_token');
-	let result = await db_col.remove({user: req.query.user, token: req.query.token});
+	let result = await db_col.deleteMany({user: req.query.user, token: req.query.token});
 	res.send({success: true});
 });
 
@@ -2075,7 +2099,7 @@ app.get('/deleteAccountKeychain/:trxID', async function (req, res){
 				res.send({status: 'error'});
 				return;
 			}
-			let result = await db.collection('deleted_accounts').insert({   
+			let result = await db.collection('deleted_accounts').insertOne({   
 				"user": req.query.user,
 				"date": new Date(),
 				"approach": req.query.approach,
@@ -2099,7 +2123,7 @@ app.get('/deleteAccount/', checkHdrs, async function (req, res) {
 	//dt.substring(0,dt.indexOf("."));
 	console.log('deleteAccount');
 
-	let result = await db.collection('deleted_accounts').insert({   
+	let result = await db.collection('deleted_accounts').insertOne({   
 		"user": req.query.user,
 		"date": new Date(),
 		"approach": req.query.approach,
@@ -2222,32 +2246,46 @@ app.post('/loginAuth', async function (req, res) {
 					  { expiresIn: '24h' // expires in 24 hours
 					  }
 					);
-					//save to DB
-					//save encrypted version + token
-					if (!user_tkn){
-						user_tkn = new Object();
+					// Ensure user_tkn is initialized if it wasn't found in a previous findOne
+					if (!user_tkn) {
+						user_tkn = {}; // Modern shorthand for new Object()
 					}
+
 					user_tkn.user = username;
 					user_tkn.token = token;
 					user_tkn.ppkey = ciphertext;
 					user_tkn.lastlogin = new Date();
-					//keep record free from deletion on cleanup
-					if (req.body && req.body.keeploggedin){
+
+					// Keep record free from deletion on cleanup
+					if (req.body && req.body.keeploggedin) {
 						user_tkn.keeploggedin = req.body.keeploggedin;
 					}
-					//keep record of login source
-					if (req.body && req.body.loginsource){
+
+					// Keep record of login source
+					if (req.body && req.body.loginsource) {
 						user_tkn.loginsrc = req.body.loginsource;
 					}
-					let db_save = await db_col.save(user_tkn);
-					
-					// return the JWT token for the future API calls
-					res.json({
-					  success: true,
-					  message: 'Authentication successful!',
-					  token: token,
-					  userdata: isValidUser.account
-					});
+
+					try {
+						// We use { user: username } as the filter to identify the record.
+						// This handles both the update of an existing doc and the creation of a new one.
+						let db_save = await db_col.replaceOne(
+							{ user: username }, 
+							user_tkn, 
+							{ upsert: true }
+						);
+
+						// return the JWT token for the future API calls
+						res.json({
+							success: true,
+							message: 'Authentication successful!',
+							token: token,
+							userdata: isValidUser.account
+						});
+					} catch (err) {
+						console.error("Database save error:", err);
+						res.status(500).json({ success: false, message: "Database error" });
+					}
 				  } else {
 					res.status(403).send({
 					  success: false,
@@ -2598,7 +2636,7 @@ app.get('/claimFreeSignupAccounts/:user', async function (req, res){
 		try{
 			for (let i=0;i<5;i++){
 				let randomCode = generatePassword(1);
-				result = await collection.insert({   
+				result = await collection.insertOne({   
 					"code": randomCode,
 					"entries": 1,
 					"delegation": true,
@@ -2689,7 +2727,7 @@ app.get('/modAction', async function (req, res) {
 							res.send({'error': 'Cannot ban empty user'});
 							return;
 						}
-						result = await collection.insert({   
+						result = await collection.insertOne({   
 							"user": modTrans.user,
 							"ban_date": new Date(),
 							"ban_length": req.query.ban_length,
@@ -2737,7 +2775,7 @@ app.get('/modAction', async function (req, res) {
 						let user = req.query.resetuser.trim().toLowerCase();
 						result = 'no change';
 						if (user!=''){
-							result = await collection.remove({
+							result = await collection.deleteMany({
 								"user": user,
 							});
 							console.log(user+" password reset ");
@@ -2774,7 +2812,7 @@ app.get('/modAction', async function (req, res) {
 							res.send({'error': 'Cannot verify empty user'});
 							return;
 						}
-						result = await collection.insert({   
+						result = await collection.insertOne({   
 							"user": modTrans.user,
 							"verify_date": new Date(),
 							"sm_verif_lnk": req.query.verif_link,
@@ -2796,7 +2834,7 @@ app.get('/modAction', async function (req, res) {
 						modTrans.signusername = req.query.signusername;
 						modTrans.txlink = req.query.txlink;
 						let randomCode = generatePassword(1);
-						result = await collection.insert({   
+						result = await collection.insertOne({   
 							"code": randomCode,
 							"entries": 1,
 							"delegation": true,
@@ -2810,7 +2848,7 @@ app.get('/modAction', async function (req, res) {
 		}
 		
 		collection = db.collection('team_transactions');
-		let modTransRes = await collection.insert(modTrans);
+		let modTransRes = await collection.insertOne(modTrans);
 		console.log(modTransRes)
 		
 		res.send(result);
@@ -2913,7 +2951,7 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 		date: new Date()
 	};
 	try{
-		let transaction = await db.collection('bsc_bridge_queue').insert(bridgeEntry);
+		let transaction = await db.collection('bsc_bridge_queue').insertOne(bridgeEntry);
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
@@ -3040,7 +3078,7 @@ app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {
 	//delete user/wallet combination
 	
 	try{
-		let transaction = await db.collection('user_wallet_address').remove({user: username, chain: walletChain});
+		let transaction = await db.collection('user_wallet_address').deleteMany({user: username, chain: walletChain});
 		res.send({status: 'success'});
 	}catch(err){
 		res.send({error: 'error'});
@@ -3089,7 +3127,7 @@ app.get('/airdropData', async function (req, res){
 		let wallet_entry = await db.collection('user_wallet_address').findOne({user: entry.user});
 		entry.wallet_address = wallet_entry.wallet;
 		updated_entries.push({'wallet': entry.wallet_address, 'reward': entry.afit_bsc_reward});
-		//let transaction = await db.collection('afit_bsc_hive_airdrop_wallets').insert({'wallet': entry.wallet_address, 'user':entry.user,'reward': entry.afit_bsc_reward});
+		//let transaction = await db.collection('afit_bsc_hive_airdrop_wallets').insertOne({'wallet': entry.wallet_address, 'user':entry.user,'reward': entry.afit_bsc_reward});
 	}
 	res.send(updated_entries);
 })
@@ -3405,7 +3443,7 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	}
 	try{
 		console.log(productBuyTrans);
-		let transaction = await db.collection('afit_buy_transactions_hive').insert(productBuyTrans);
+		let transaction = await db.collection('afit_buy_transactions_hive').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -3430,30 +3468,39 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 	}
 	try{
 		console.log(recordTrans);
-		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
 		res.send({'error': 'Error performing buy action. DB storing issue'});
 		return;
 	}
-	
-	
-	let user_info = await grabUserTokensFunc (user);
+	let user_info = await grabUserTokensFunc(user);
 	console.log(user_info);
-	let cur_user_token_count = parseFloat(user_info.tokens);
-	
-	//add a ticket to the user to enter draw if user meets min requirements
-	
-	//update current user's token balance & store to db
+
+	// Ensure we have a valid object and token count
+	if (!user_info) {
+		user_info = { user: user, tokens: 0 }; 
+	}
+	let cur_user_token_count = parseFloat(user_info.tokens) || 0;
+
+	// Update current user's token balance
 	let new_token_count = cur_user_token_count + parseFloat(matchingAfit);
 	user_info.tokens = new_token_count;
-	console.log('new_token_count:'+new_token_count);
-	try{
-		let trans = await db.collection('user_tokens').save(user_info);
+	console.log('new_token_count:' + new_token_count);
+
+	try {
+		// Replace .save() with replaceOne. 
+		// We filter by user name to be safe, but you could also use { _id: user_info._id } 
+		// if you are certain the _id exists.
+		let trans = await db.collection('user_tokens').replaceOne(
+			{ user: user }, 
+			user_info, 
+			{ upsert: true }
+		);
 		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+	} catch (err) {
+		console.error('Error updating user token count:', err);
 	}
 	
 	//send notification to user
@@ -3484,7 +3531,7 @@ app.get('/cancelAFITBuy', async function(req, res){
 	}
 	try{
 		console.log(recordTrans);
-		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -3492,23 +3539,37 @@ app.get('/cancelAFITBuy', async function(req, res){
 		return;
 	}
 	
-	//fetch user current token count
-	let user_info = await grabUserTokensFunc (user);
+	// 1. Fetch user data
+	let user_info = await grabUserTokensFunc(user);
 	console.log(user_info);
-	let cur_user_token_count = parseFloat(user_info.tokens);
-	
-	//update current user's token balance & store to db
+
+	// Ensure user_info exists and has a token property to avoid parseFloat(undefined)
+	if (!user_info) {
+		user_info = { user: user, tokens: 0 };
+	}
+
+	let cur_user_token_count = parseFloat(user_info.tokens) || 0;
+
+	// 2. Calculate the refund
 	let new_token_count = cur_user_token_count - parseFloat(afit_amnt_refund);
 	user_info.tokens = new_token_count;
-	console.log('new_token_count:'+new_token_count);
-	try{
-		let trans = await db.collection('user_tokens').save(user_info);
-		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+	console.log('new_token_count (after refund): ' + new_token_count);
+
+	try {
+		// 3. Replace .save() with replaceOne
+		// We filter by 'user' to ensure we update the correct record
+		await db.collection('user_tokens').replaceOne(
+			{ user: user }, 
+			user_info, 
+			{ upsert: true }
+		);
+		console.log('success updating user token count (refund)');
+	} catch (err) {
+		console.error('Database Error:', err);
+		// You might want to handle the error response here as well
 	}
-	
-	res.send({status: 'success'});
+
+	res.send({ status: 'success' });
 	
 	//send notification to user
 	//utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
@@ -3543,7 +3604,7 @@ app.get('/refundPurchase', async function(req, res){
 	}
 	try{
 		console.log(recordTrans);
-		let transaction = await db.collection('token_transactions').insert(recordTrans);
+		let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -3551,23 +3612,37 @@ app.get('/refundPurchase', async function(req, res){
 		return;
 	}
 	
-	//fetch user current token count
-	let user_info = await grabUserTokensFunc (user);
+	// 1. Fetch user current token count
+	let user_info = await grabUserTokensFunc(user);
 	console.log(user_info);
-	let cur_user_token_count = parseFloat(user_info.tokens);
-	
-	//update current user's token balance & store to db
+
+	// Ensure user_info isn't null to avoid "cannot read property tokens of null"
+	if (!user_info) {
+		user_info = { user: user, tokens: 0 };
+	}
+
+	let cur_user_token_count = parseFloat(user_info.tokens) || 0;
+
+	// 2. Update balance
 	let new_token_count = cur_user_token_count + parseFloat(afit_amnt_refund);
 	user_info.tokens = new_token_count;
-	console.log('new_token_count:'+new_token_count);
-	try{
-		let trans = await db.collection('user_tokens').save(user_info);
+	console.log('new_token_count:' + new_token_count);
+
+	try {
+		// 3. Swap .save() for .replaceOne()
+		// Using { user: user } as the filter ensures we hit the right record 
+		// even if the _id isn't present in a new object.
+		await db.collection('user_tokens').replaceOne(
+			{ user: user }, 
+			user_info, 
+			{ upsert: true }
+		);
 		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+	} catch (err) {
+		console.error('Database Error:', err);
 	}
-	
-	res.send({status: 'success'});
+
+	res.send({ status: 'success' });
 	
 	//send notification to user
 	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You have been refunded amount "' + afit_amnt_refund + ' for cancelled product purchase '+product.name, 'https://actifit.io/'+user+'/wallet');
@@ -3583,30 +3658,34 @@ app.get('/updateProdStatus', async function(req, res){
 	let user = req.query.user;
 	let trx_id = new ObjectId(req.query.trx_id);
 	let note = req.query.note;
-	
-	let query = {user: req.query.user, _id: trx_id}
+
+	let query = { user: req.query.user, _id: trx_id };
 	let prodTrans = await db.collection('products_bought').findOne(query);
-	
-	if (!prodTrans){
-		res.send({'error': 'Transaction not found'});
+
+	if (!prodTrans) {
+		res.send({ 'error': 'Transaction not found' });
 		return;
 	}
-	
+
 	let old_status = prodTrans.status;
 	let prod_name = prodTrans.gadget_name;
 	prodTrans.last_updated = new Date();
 	prodTrans.status = req.query.status;
 	prodTrans.note = note;
-	//perform transaction
-	try{
-		let trans = await db.collection('products_bought').save(prodTrans);
-		console.log('success updating user token count');
-	}catch(err){
+
+	// 1. Swap .save() for .replaceOne()
+	try {
+		// Since prodTrans was fetched from the DB, it definitely has an _id
+		let trans = await db.collection('products_bought').replaceOne(
+			{ _id: prodTrans._id }, 
+			prodTrans
+		);
+		console.log('success updating product status');
+	} catch (err) {
 		console.log(err);
 	}
-	
-	//insert transaction to keep track of product progress
-	//perform transaction
+
+	// 2. Insert record (Fixed the "insertOneOne" typo)
 	let recordTrans = {
 		user: req.query.user,
 		reward_activity: 'Product Purchase Update',
@@ -3615,16 +3694,18 @@ app.get('/updateProdStatus', async function(req, res){
 		product_name: prod_name,
 		old_status: old_status,
 		new_status: req.query.status,
-		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+req.query.status+'" with note "'+ note+'"' ,
+		note: 'Changing product "' + prod_name + '" status from "' + old_status + '" to "' + req.query.status + '" with note "' + note + '"',
 		date: new Date(),
-	}
-	try{
+	};
+
+	try {
 		console.log(recordTrans);
-		let transaction = await db.collection('order_progress').insert(recordTrans);
-		console.log('success inserting post data');
-	}catch(err){
+		// FIX: Method name is insertOne (only one "One")
+		let transaction = await db.collection('order_progress').insertOne(recordTrans);
+		console.log('success inserting progress record');
+	} catch (err) {
 		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
+		res.send({ 'error': 'Error performing buy action. DB storing issue' });
 		return;
 	}
 	
@@ -3668,16 +3749,23 @@ app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
 	prodTrans.last_updated = new Date();
 	prodTrans.status = newStatus;
 	prodTrans.note = note;
-	//perform transaction
-	try{
-		let trans = await db.collection('products_bought').save(prodTrans);
-		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+
+	// 1. Perform transaction (Status Update)
+	try {
+		// Replace .save() with .replaceOne()
+		// We use { _id: prodTrans._id } because this document was definitely 
+		// fetched from the DB and has a unique ID.
+		let trans = await db.collection('products_bought').replaceOne(
+			{ _id: prodTrans._id }, 
+			prodTrans,
+			{ upsert: true } // Standard practice to keep 'save' behavior
+		);
+		console.log('success updating product status');
+	} catch (err) {
+		console.error('Error updating products_bought:', err);
 	}
-	
-	//insert transaction to keep track of product progress
-	//perform transaction
+
+	// 2. Insert log record
 	let recordTrans = {
 		user: req.query.user,
 		reward_activity: 'Product Purchase Update',
@@ -3686,19 +3774,20 @@ app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
 		product_name: prod_name,
 		old_status: old_status,
 		new_status: newStatus,
-		note: 'Changing product "'+prod_name+'" status from "'+old_status+'" to "'+newStatus+'" with note "'+ note+'"' ,
+		note: 'Changing product "' + prod_name + '" status from "' + old_status + '" to "' + newStatus + '" with note "' + note + '"',
 		date: new Date(),
-	}
-	try{
+	};
+
+	try {
 		console.log(recordTrans);
-		let transaction = await db.collection('order_progress').insert(recordTrans);
-		console.log('success inserting post data');
-	}catch(err){
-		console.log(err);
-		res.send({'error': 'Error confirming product receipt. DB storing issue'});
+		// Method name fixed to insertOne
+		let transaction = await db.collection('order_progress').insertOne(recordTrans);
+		console.log('success inserting progress log');
+	} catch (err) {
+		console.error('Error inserting progress log:', err);
+		res.send({ 'error': 'Error confirming product receipt. DB storing issue' });
 		return;
 	}
-	
 	//send notification to user
 	utils.sendNotification(db, user, 'actifit', 'real_product_update', 'market', 'Your order for product "' + prod_name + '" has been moved to status "'+newStatus+'" with note "'+note+'"', 'https://actifit.io/market');
 	
@@ -3795,7 +3884,7 @@ async function performBuyHiveTrx(req){
 	}
 	try{
 		console.log(productBuyTrans);
-		let transaction = await db.collection('gadget_transactions_hive').insert(productBuyTrans);
+		let transaction = await db.collection('gadget_transactions_hive').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -3822,10 +3911,9 @@ async function performBuyHiveTrx(req){
 			count: 1,
 			date: new Date(),
 		}
-		let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+		let transaction = await db.collection('gadget_buy_tickets').insertOne(ticketEntry);
 	}
-	
-	//store into user_gadgets table as well
+	// Store into user_gadgets table as well
 	let userGadgetTrans = {
 		user: user,
 		gadget: new ObjectId(product_id),
@@ -3839,29 +3927,39 @@ async function performBuyHiveTrx(req){
 		posts_consumed: [],
 		date_bought: new Date(),
 		last_updated: new Date(),
-		note: 'Bought Product '+product.name+ ' Level '+product.level,
-	}
-	try{
+		note: 'Bought Product ' + product.name + ' Level ' + product.level,
+	};
+
+	try {
 		console.log(userGadgetTrans);
-		let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+		// You've already got insertOne here—perfect.
+		let transaction = await db.collection('user_gadgets').insertOne(userGadgetTrans);
 		console.log('success inserting post data');
-	}catch(err){
+	} catch (err) {
 		console.log(err);
-		return ({'error': 'Error performing buy action. DB storing issue'});
-		
+		// Ensure you return the error properly
+		return ({ 'error': 'Error performing buy action. DB storing issue' });
 	}
-	
-	//decrease product available count
+
+	// Decrease product available count
 	product.count = parseInt(product.count) - 1;
-	//extreme case
+
+	// Extreme case
 	if (product.count < 0) {
 		product.count = 0;
 	}
-	try{
-		let trans = await db.collection('products').save(product);
+
+	try {
+		// FIX: Replace .save() with .replaceOne()
+		// We use the product's _id to ensure we update the specific item bought
+		let trans = await db.collection('products').replaceOne(
+			{ _id: product._id }, 
+			product,
+			{ upsert: true }
+		);
 		console.log('success updating product count');
-	}catch(err){
-		console.log(err);
+	} catch (err) {
+		console.error('Error updating product count:', err);
 	}
 	
 	return ({'status': 'Success'});
@@ -4120,7 +4218,7 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 			}
 			try{
 				console.log(productBuyTrans);
-				let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+				let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 				console.log('success inserting post data');
 			}catch(err){
 				console.log(err);
@@ -4152,36 +4250,49 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 			}
 			try{
 				console.log(userGadgetTrans);
-				let transaction = await db.collection('products_bought').insert(userGadgetTrans);
+				let transaction = await db.collection('products_bought').insertOne(userGadgetTrans);
 				console.log('success inserting post data');
 			}catch(err){
 				console.log(err);
 				res.send({'error': 'Error performing buy action. DB storing issue'});
 				return;
 			}
-			
-			//decrease product available count
+			// 1. Decrease product available count
 			product.count = parseInt(product.count) - parseInt(order_quantity);
-			//extreme case
+
+			// Extreme case: prevent negative inventory
 			if (product.count < 0) {
 				product.count = 0;
 			}
-			try{
-				let trans = await db.collection('products').save(product);
+
+			try {
+				// Replace .save() with replaceOne
+				await db.collection('products').replaceOne(
+					{ _id: product._id }, 
+					product, 
+					{ upsert: true }
+				);
 				console.log('success updating product count');
-			}catch(err){
-				console.log(err);
+			} catch (err) {
+				console.error('Inventory Update Error:', err);
 			}
-							
-			//update current user's token balance & store to db
+
+			// 2. Update current user's token balance & store to db
 			let new_token_count = cur_user_token_count - parseFloat(sent_afit_cost);
 			user_info.tokens = new_token_count;
-			console.log('new_token_count:'+new_token_count);
-			try{
-				let trans = await db.collection('user_tokens').save(user_info);
+			console.log('new_token_count:' + new_token_count);
+
+			try {
+				// Replace .save() with replaceOne
+				// We use { user: user } or { _id: user_info._id } to identify the user record
+				await db.collection('user_tokens').replaceOne(
+					{ user: user_info.user }, 
+					user_info, 
+					{ upsert: true }
+				);
 				console.log('success updating user token count');
-			}catch(err){
-				console.log(err);
+			} catch (err) {
+				console.error('Token Balance Update Error:', err);
 			}
 			
 			//send notification to user
@@ -4291,7 +4402,7 @@ async function performMultiBuyHiveTrx(req){
 	}
 	try{
 		console.log(productBuyTrans);
-		let transaction = await db.collection('gadget_transactions_hive').insert(productBuyTrans);
+		let transaction = await db.collection('gadget_transactions_hive').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -4339,7 +4450,7 @@ async function performMultiBuyHiveTrx(req){
 				count: 1,
 				date: new Date(),
 			}
-			let transaction = await db.collection('gadget_buy_tickets').insert(ticketEntry);
+			let transaction = await db.collection('gadget_buy_tickets').insertOne(ticketEntry);
 			
 			//insert notification to user about new ticket
 			utils.sendNotification(db, user, 'actifit', 'ticket_collected', 'ticket', 'You collected a ticket for purchasing gadget "' + product.name + ' - L'+ product.level + '" to enter Actifit Gadget Prize Draw!', 'https://actifit.io/'+user);
@@ -4367,25 +4478,32 @@ async function performMultiBuyHiveTrx(req){
 		}
 		try{
 			console.log(userGadgetTrans);
-			let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+			let transaction = await db.collection('user_gadgets').insertOne(userGadgetTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
 			return ({'error': 'Error performing buy action. DB storing issue'});
 			;
 		}
-		
-		//decrease product available count
+		// Decrease product available count
 		product.count = parseInt(product.count) - 1;
-		//extreme case
+
+		// Extreme case
 		if (product.count < 0) {
 			product.count = 0;
 		}
-		try{
-			let trans = await db.collection('products').save(product);
+
+		try {
+			// Replace .save() with .replaceOne()
+			// We filter by _id to target this specific product
+			let trans = await db.collection('products').replaceOne(
+				{ _id: product._id }, 
+				product, 
+				{ upsert: true }
+			);
 			console.log('success updating product count');
-		}catch(err){
-			console.log(err);
+		} catch (err) {
+			console.error('Error updating product count:', err);
 		}
 		
 	}
@@ -4554,7 +4672,7 @@ async function performMultiBuyTrx(req){
 		}
 		try{
 			console.log(productBuyTrans);
-			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -4580,63 +4698,50 @@ async function performMultiBuyTrx(req){
 		}
 		try{
 			console.log(userGadgetTrans);
-			let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+			let transaction = await db.collection('user_gadgets').insertOne(userGadgetTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
 			return ({'error': 'Error performing buy action. DB storing issue'});
 			
 		}
-		
-		//decrease product available count
+		// 1. Decrease product available count
 		product.count = parseInt(product.count) - 1;
-		//extreme case
+
+		// Extreme case: Prevent negative inventory
 		if (product.count < 0) {
 			product.count = 0;
 		}
-		try{
-			let trans = await db.collection('products').save(product);
-			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+
+		try {
+			// Replace .save() with .replaceOne()
+			await db.collection('products').replaceOne(
+				{ _id: product._id }, 
+				product, 
+				{ upsert: true }
+			);
+			console.log('success updating product count');
+		} catch (err) {
+			console.error('Product Update Error:', err);
 		}
-		
-		//store this in escrow
-		/*let productSellTrans = {
-			user: config.null_account,//targetAccount,//product.provider,//config.escrow_account,
-			reward_activity: 'Sell Product',
-			buyer: user,
-			seller: product.provider,
-			product_id: product_id,
-			product_type: product.type,
-			product_price: item_price,
-			token_count: item_price,
-			actifit_percent_cut: actifit_percent_cut,
-			note: 'Sold Product '+product.name+ ' to '+user,
-			date: new Date(),
-		}
-		
-		try{
-			console.log(productSellTrans);
-			let transaction = await db.collection('token_transactions').insert(productSellTrans);
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error performing sell action. DB storing issue'});
-			return;
-		}*/
-			
-		//update current user's token balance & store to db
+
+		// 2. Update current user's token balance & store to db
 		let new_token_count = cur_user_token_count - parseFloat(item_price);
 		user_info.tokens = new_token_count;
-		console.log('new_token_count:'+new_token_count);
-		try{
-			let trans = await db.collection('user_tokens').save(user_info);
+		console.log('new_token_count:' + new_token_count);
+
+		try {
+			// Replace .save() with .replaceOne()
+			// Using { user: user_info.user } is safer if _id is somehow missing
+			await db.collection('user_tokens').replaceOne(
+				{ user: user_info.user }, 
+				user_info, 
+				{ upsert: true }
+			);
 			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+		} catch (err) {
+			console.error('Token Update Error:', err);
 		}
-	
 	}
 	
 	return ({'status': 'Success', 'user_tokens': user_info.tokens});
@@ -4695,7 +4800,7 @@ async function performBuyWorkout(infoParam){
 	}
 	try{
 		console.log(productBuyTrans);
-		let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+		let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -4714,23 +4819,30 @@ async function performBuyWorkout(infoParam){
 	}
 	try{
 		console.log(userWorkoutTrans);
-		let transaction = await db.collection('user_workouts').insert(userGadgetTrans);
+		let transaction = await db.collection('user_workouts').insertOne(userGadgetTrans);
 		console.log('success inserting workout data');
 	}catch(err){
 		console.log(err);
 		return ({'error': 'Error performing buy action. DB storing issue'});
 		//return;
 	}*/
-	
-	//update current user's token balance & store to db
+	// update current user's token balance & store to db
 	let new_token_count = cur_user_token_count - parseFloat(item_price);
 	user_info.tokens = new_token_count;
-	console.log('new_token_count:'+new_token_count);
-	try{
-		let trans = await db.collection('user_tokens').save(user_info);
+	console.log('new_token_count:' + new_token_count);
+
+	try {
+		// Replace .save() with .replaceOne()
+		// We use { _id: user_info._id } since this object was previously fetched 
+		// and contains its unique identifier.
+		let trans = await db.collection('user_tokens').replaceOne(
+			{ _id: user_info._id }, 
+			user_info, 
+			{ upsert: true }
+		);
 		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+	} catch (err) {
+		console.error('Error updating user tokens:', err);
 	}
 	
 	return ({'status': 'Success', 'user_tokens': user_info.tokens});
@@ -4799,7 +4911,7 @@ async function performBuyTrx(infoParam){
 	}
 	try{
 		console.log(productBuyTrans);
-		let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+		let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
@@ -4825,61 +4937,48 @@ async function performBuyTrx(infoParam){
 	}
 	try{
 		console.log(userGadgetTrans);
-		let transaction = await db.collection('user_gadgets').insert(userGadgetTrans);
+		let transaction = await db.collection('user_gadgets').insertOne(userGadgetTrans);
 		console.log('success inserting post data');
 	}catch(err){
 		console.log(err);
 		return ({'error': 'Error performing buy action. DB storing issue'});
 		//return;
 	}
-	
-	//decrease product available count
+	// 1. Decrease product available count
 	product.count = parseInt(product.count) - 1;
-	//extreme case
+
+	// Extreme case
 	if (product.count < 0) {
 		product.count = 0;
 	}
-	try{
-		let trans = await db.collection('products').save(product);
-		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+
+	try {
+		// Replace .save() with .replaceOne()
+		await db.collection('products').replaceOne(
+			{ _id: product._id }, 
+			product, 
+			{ upsert: true }
+		);
+		console.log('success updating product count');
+	} catch (err) {
+		console.error('Inventory Update Error:', err);
 	}
-	
-	//store this in escrow
-	/*let productSellTrans = {
-		user: config.null_account,//targetAccount,//product.provider,//config.escrow_account,
-		reward_activity: 'Sell Product',
-		buyer: user,
-		seller: product.provider,
-		product_id: product_id,
-		product_type: product.type,
-		product_price: item_price,
-		token_count: item_price,
-		actifit_percent_cut: actifit_percent_cut,
-		note: 'Sold Product '+product.name+ ' to '+user,
-		date: new Date(),
-	}
-	
-	try{
-		console.log(productSellTrans);
-		let transaction = await db.collection('token_transactions').insert(productSellTrans);
-		console.log('success inserting post data');
-	}catch(err){
-		console.log(err);
-		res.send({'error': 'Error performing sell action. DB storing issue'});
-		return;
-	}*/
-		
-	//update current user's token balance & store to db
+
+	// 2. Update current user's token balance & store to db
 	let new_token_count = cur_user_token_count - parseFloat(item_price);
 	user_info.tokens = new_token_count;
-	console.log('new_token_count:'+new_token_count);
-	try{
-		let trans = await db.collection('user_tokens').save(user_info);
+	console.log('new_token_count:' + new_token_count);
+
+	try {
+		// Replace .save() with .replaceOne()
+		await db.collection('user_tokens').replaceOne(
+			{ _id: user_info._id }, 
+			user_info, 
+			{ upsert: true }
+		);
 		console.log('success updating user token count');
-	}catch(err){
-		console.log(err);
+	} catch (err) {
+		console.error('Token Update Error:', err);
 	}
 	
 	return ({'status': 'Success', 'user_tokens': user_info.tokens});
@@ -4932,7 +5031,7 @@ async function performAddFriendTrx(req){
 		status: 'pending',
 	};
 	try{
-		let transaction = await db.collection('user_requests').insert(user_friendship);
+		let transaction = await db.collection('user_requests').insertOne(user_friendship);
 		console.log('success inserting post data');
 		
 		//notify recipient
@@ -5018,7 +5117,7 @@ app.get('/userVidNotifier', async function (req, res){
 		//cleanup old db
 		await db.collection('user_submitted_vid').deleteMany({});
 		if (userVidsFinalArray.length > 0){
-			await db.collection('user_submitted_vid').insertMany(userVidsFinalArray);
+			await db.collection('user_submitted_vid').insertOneMany(userVidsFinalArray);
 		}
 		res.send({status:'success'});
 	}catch(err){
@@ -5140,7 +5239,7 @@ async function performAcceptFriendTrx(req){
 		};
 		
 		try{
-			let result = await db.collection('friends').insert(friendshipEntry);
+			let result = await db.collection('friends').insertOne(friendshipEntry);
 			return ({status: 'success'});
 		}catch(err){
 			return ({status: 'error', details: err});
@@ -5177,14 +5276,14 @@ async function performDropFriendTrx(req){
 	}
 	try{
 		//remove friendship entry both ways
-		let result = await db.collection('friends').remove({userA: req.params.userA, userB: req.params.userB});
+		let result = await db.collection('friends').deleteMany({userA: req.params.userA, userB: req.params.userB});
 		console.log(result);
-		result = await db.collection('friends').remove({userA: req.params.userB, userB: req.params.userA});
+		result = await db.collection('friends').deleteMany({userA: req.params.userB, userB: req.params.userA});
 		console.log(result);
 		
 		//also remove requests to prevent confusion
-		result = await db.collection('user_requests').remove({initiator: req.params.userA, request: 'friendship', target: req.params.userB});
-		result = await db.collection('user_requests').remove({initiator: req.params.userB, request: 'friendship', target: req.params.userA});
+		result = await db.collection('user_requests').deleteMany({initiator: req.params.userA, request: 'friendship', target: req.params.userB});
+		result = await db.collection('user_requests').deleteMany({initiator: req.params.userB, request: 'friendship', target: req.params.userA});
 		
 		return ({'status': 'success'});
 	}catch(err){
@@ -5313,7 +5412,7 @@ app.get('/claimBadge/', async function (req, res) {
 				date_claimed: new Date(),
 			};
 			try{
-				let transaction = await db.collection('user_badges').insert(user_badge);
+				let transaction = await db.collection('user_badges').insertOne(user_badge);
 				console.log('success inserting post data');
 				res.send({status: 'success', user: req.query.user, badge: req.query.badge});
 			}catch(err){
@@ -5502,7 +5601,7 @@ app.get('/cancelAFITMoveSE', async function(req, res){
 		//reached here, we're fine
 		
 		try{
-			let result = await db.collection('powering_down_he').remove({user: req.query.user});
+			let result = await db.collection('powering_down_he').deleteMany({user: req.query.user});
 			res.send({'status': 'Success'});
 		}catch(err){
 			console.log(err);
@@ -5736,7 +5835,7 @@ app.get('/tipAccount', async function(req, res){
 		}
 		try{
 			console.log(tipTrans);
-			let transaction = await db.collection('token_transactions').insert(tipTrans);
+			let transaction = await db.collection('token_transactions').insertOne(tipTrans);
 			console.log('success inserting tip data');
 		}catch(err){
 			console.log(err);
@@ -5757,7 +5856,7 @@ app.get('/tipAccount', async function(req, res){
 		
 		try{
 			console.log(tipReceiptTrans);
-			let transaction = await db.collection('token_transactions').insert(tipReceiptTrans);
+			let transaction = await db.collection('token_transactions').insertOne(tipReceiptTrans);
 			
 			//also notify user of AFIT payment
 			utils.sendNotification(db, targetUser, user, 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" from '+user+' with note '+note, 'https://actifit.io/'+targetUser+'/wallet');
@@ -5771,39 +5870,54 @@ app.get('/tipAccount', async function(req, res){
 		
 		//also send notification to the recipient about tipped amount
 		utils.sendNotification(db, targetUser, user, 'tip_notification', 'payment', 'User ' + user + ' has sent you '+ amount +' AFIT', 'https://actifit.io/'+user);
-		
-		//update sending user's token balance & store to db
+		// 1. Update sending user's token balance & store to db
 		let new_token_count = cur_sender_token_count - amount;
 		user_info.tokens = new_token_count;
-		console.log('new_token_count:'+new_token_count);
-		try{
-			let trans = await db.collection('user_tokens').save(user_info);
-			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+		console.log('new_sender_token_count: ' + new_token_count);
+
+		try {
+			// Replace .save() with replaceOne
+			await db.collection('user_tokens').replaceOne(
+				{ user: user_info.user }, 
+				user_info, 
+				{ upsert: true }
+			);
+			console.log('success updating sender token count');
+		} catch (err) {
+			console.error('Sender Update Error:', err);
 		}
-		
-		//confirm proper AFIT token balance. Test against target amount to be sent
-		let target_user_info = await grabUserTokensFunc (targetUser);
-		if (target_user_info == null){
-			//first time actifit user, let's create a new entry
-			target_user_info = new Object();
-			target_user_info._id = targetUser;
-			target_user_info.user = targetUser;
-			target_user_info.tokens = 0;
+
+		// 2. Confirm proper AFIT token balance for Target User
+		let target_user_info = await grabUserTokensFunc(targetUser);
+
+		if (!target_user_info) {
+			// first time actifit user, let's create a new entry
+			target_user_info = {
+				user: targetUser,
+				tokens: 0
+				// No need to manually set _id if you want Mongo to generate it, 
+				// or keep it as targetUser if that's your schema choice.
+			};
 		}
+
 		console.log(target_user_info);
-		let cur_target_user_token_count = parseFloat(target_user_info.tokens);
-		
-		//update receiving user's token balance & store to db
+		let cur_target_user_token_count = parseFloat(target_user_info.tokens) || 0;
+
+		// 3. Update receiving user's token balance & store to db
 		let upd_token_count = cur_target_user_token_count + amount;
 		target_user_info.tokens = upd_token_count;
-		console.log('upd_token_count:'+upd_token_count);
-		try{
-			let trans = await db.collection('user_tokens').save(target_user_info);
-			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+		console.log('upd_target_token_count: ' + upd_token_count);
+
+		try {
+			// Replace .save() with replaceOne
+			await db.collection('user_tokens').replaceOne(
+				{ user: targetUser }, 
+				target_user_info, 
+				{ upsert: true }
+			);
+			console.log('success updating target user token count');
+		} catch (err) {
+			console.error('Target Update Error:', err);
 		}
 		
 		res.send({'status': 'Success', 'tipAmount': amount,'senderTokenCount': new_token_count, 'recipientTokenCount': upd_token_count});
@@ -5874,17 +5988,23 @@ app.get('/reblogCount', async function (req, res) {
 		if (req.query.targetDate){
 			dateRegex = new RegExp ('^'+req.query.targetDate);
 		}
-		let query = await db.collection('token_transactions').find({
-				"reward_activity": "Post Reblog",
-				"date":  dateRegex
-		})
-		try{
+		// Define your filter first for cleanliness
+		const filter = {
+			"reward_activity": "Post Reblog",
+			"date": dateRegex
+		};
+
+		try {
 			console.log('counting');
-			let reblog_count = await query.count();
+			
+			// Call countDocuments directly on the collection using the filter
+			let reblog_count = await db.collection('token_transactions').countDocuments(filter);
+			
 			console.log(reblog_count);
-			res.send(JSON.stringify({reblog_count:reblog_count}));
-		}catch(err){
+			res.send(JSON.stringify({ reblog_count: reblog_count }));
+		} catch (err) {
 			console.log(err.message);
+			res.status(500).send({ error: "Failed to count documents" });
 		}
 });
 
@@ -5898,7 +6018,7 @@ app.get('/upvoteCount', async function (req, res) {
 		var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
 		console.log("startDate:"+startDate+" endDate:"+endDate);
 		//adjust query to include dates
-		query_json = {
+		const query_json = {
 				"reward_activity": "Post Vote",
 				"date": {
 						"$lte": new Date(endDate),
@@ -5906,15 +6026,16 @@ app.get('/upvoteCount', async function (req, res) {
 					}
 		};
 		
-		let query = await db.collection('token_transactions').find(query_json);
-
-		try{
-			console.log('counting');
-			let upvote_count = await query.count();
-			console.log(upvote_count);
-			res.send(JSON.stringify({upvote_count:upvote_count}));
-		}catch(err){
-			console.log(err.message);
+		try {
+			console.log('counting...');
+			// IMPORTANT: Call countDocuments directly on the collection
+			let upvote_count = await db.collection('token_transactions').countDocuments(query_json);
+			
+			console.log("Count result:", upvote_count);
+			res.send(JSON.stringify({ upvote_count: upvote_count }));
+		} catch (err) {
+			console.error("Error during count:", err.message);
+			res.status(500).send({ error: err.message });
 		}
 });
 
@@ -5937,15 +6058,17 @@ app.get('/rewardedPostCount', async function (req, res) {
 					}
 		};
 		
-		let query = await db.collection('token_transactions').find(query_json);
-		
-		try{
+		try {
 			console.log('counting');
-			let rewarded_post_count = await query.count();
+			
+			// Call countDocuments directly on the collection using the filter
+			let rewarded_post_count = await db.collection('token_transactions').countDocuments(query_json);
+			
 			console.log(rewarded_post_count);
-			res.send(JSON.stringify({rewarded_post_count:rewarded_post_count}));
-		}catch(err){
+			res.send(JSON.stringify({ rewarded_post_count: rewarded_post_count }));
+		} catch (err) {
 			console.log(err.message);
+			res.status(500).send("Error counting documents");
 		}
 });
 
@@ -5990,16 +6113,14 @@ userRewardedPostCountFunc = async function(req, res){
 	}
 
 	//build up query accordingly
-	let query = await db.collection('token_transactions').find(query_json);
-	try{
-		//grab total number of matching records
-		let rewarded_post_count = await query.count();
-		//console.log("rewarded_post_count:"+rewarded_post_count);
+	try {
+		// Call countDocuments directly on the collection
+		let rewarded_post_count = await db.collection('token_transactions').countDocuments(query_json);
 		
 		return rewarded_post_count;
-	}catch(err){
+	} catch(err) {
 		console.log(err.message);
-		return "";
+		return 0; // Returning 0 or null is usually safer than an empty string for counts
 	}
 }
 
@@ -6769,28 +6890,43 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				try{
 					console.log(tokenExchangeTrans);
 					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
-					let trans_res = transaction.result;
-					console.log(trans_res);
-					
-					if (trans_res.upserted){
-						//we have a new entry, increase user token count
-						
-						let user_info = await grabUserTokensFunc (user);
+					// 1. Update the transaction record
+					// Changed .update() to .replaceOne()
+					let transaction = await db.collection('token_transactions').replaceOne(
+						tokenExchangeTransQuery, 
+						tokenExchangeTrans, 
+						{ upsert: true }
+					);
+
+					// 2. Check for success (Modern driver returns metadata directly)
+					console.log(transaction);
+
+					// In the new driver, we check 'upsertedCount' instead of 'result.upserted'
+					if (transaction.upsertedCount > 0) {
+						// we have a new entry, increase user token count
+						let user_info = await grabUserTokensFunc(user);
 						
 						let cur_user_token_count = 0;
-						if (user_info){
-							cur_user_token_count = parseFloat(user_info.tokens);
-							//update current user's token balance & store to db
-							afit_amount = parseFloat(entry.quantity);
-							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+						if (user_info) {
+							cur_user_token_count = parseFloat(user_info.tokens) || 0;
+							
+							// update current user's token balance & store to db
+							let afit_amount = parseFloat(entry.quantity) || 0;
+							let new_token_count = cur_user_token_count + afit_amount;
 							user_info.tokens = new_token_count;
-							console.log('new_token_count:'+new_token_count);
-							try{
-								let trans = await db.collection('user_tokens').save(user_info);
+							
+							console.log('new_token_count:' + new_token_count);
+							
+							try {
+								// FIX: Replace .save() with .replaceOne()
+								await db.collection('user_tokens').replaceOne(
+									{ user: user_info.user }, 
+									user_info, 
+									{ upsert: true }
+								);
 								console.log('success adding AFIT tokens to user balance');
-							}catch(err){
-								console.log(err);
+							} catch (err) {
+								console.error('Error saving user tokens:', err);
 								return;
 							}
 						}
@@ -6877,7 +7013,7 @@ app.get('/processTipRequest', async function (req, res){
 				tipBal = await utils.updateTipBalances(db);
 				
 				//confirm trx was processed to db, to avoid any future abuse
-				await db.collection('tip_trx_processed').insert({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
+				await db.collection('tip_trx_processed').insertOne({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
 				reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
 				reslt.content += '<br/>Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
 				reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
@@ -6954,35 +7090,51 @@ app.get('/confirmAFITSEReceipt', async function(req,res){
 				try{
 					console.log(tokenExchangeTrans);
 					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('token_transactions').update(tokenExchangeTransQuery, tokenExchangeTrans, { upsert: true });
-					let trans_res = transaction.result;
-					console.log(trans_res);
-					/*console.log('nMatched:'+trans_res.nMatched);
-					console.log('nUpserted:'+trans_res.upserted);
-					console.log('nModified:'+trans_res.nModified);*/
-					if (trans_res.upserted){
-						//we have a new entry, increase user token count
-						
-						let user_info = await grabUserTokensFunc (targetUser);
+					// 1. Update the transaction record
+					// We use replaceOne because we are passing the full object tokenExchangeTrans
+					let transaction = await db.collection('token_transactions').replaceOne(
+						tokenExchangeTransQuery, 
+						tokenExchangeTrans, 
+						{ upsert: true }
+					);
+
+					// 2. Modern Result Check
+					// transaction now contains properties like acknowledged, matchedCount, and upsertedCount
+					console.log(transaction);
+
+					// Check if a new document was actually created (upserted)
+					if (transaction.upsertedCount > 0) {
+						// we have a new entry, increase user token count
+						let user_info = await grabUserTokensFunc(targetUser);
 						
 						let cur_user_token_count = 0;
-						if (user_info){
-							cur_user_token_count = parseFloat(user_info.tokens);
-							//update current user's token balance & store to db
-							afit_amount = parseFloat(match_trx.quantity);
-							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+						if (user_info) {
+							cur_user_token_count = parseFloat(user_info.tokens) || 0;
+							
+							// update current user's token balance & store to db
+							let afit_amount = parseFloat(match_trx.quantity) || 0;
+							let new_token_count = cur_user_token_count + afit_amount;
 							user_info.tokens = new_token_count;
-							console.log('new_token_count:'+new_token_count);
-							try{
-								let trans = await db.collection('user_tokens').save(user_info);
+							
+							console.log('new_token_count:' + new_token_count);
+							
+							try {
+								// FIX: Replace .save() with .replaceOne()
+								// We filter by user to ensure we hit the right record
+								await db.collection('user_tokens').replaceOne(
+									{ user: targetUser }, 
+									user_info, 
+									{ upsert: true }
+								);
 								console.log('success adding AFIT tokens to user balance');
-							}catch(err){
-								console.log(err);
+							} catch (err) {
+								console.error('Database Error:', err);
 								return;
 							}
 						}
-					}else{
-						//do nothing
+					} else {
+						// Transaction already exists; do nothing to avoid double-crediting tokens
+						console.log('Transaction already recorded, skipping balance update.');
 					}
 				}catch(err){
 					console.log(err);
@@ -7063,7 +7215,7 @@ app.get('/proceedAfitxTransition', async function(req,res){
 						//apply 0.5% burn rate
 						amount = amount * (1-config.trx_burn_rate)
 						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'));
-						let transaction = await db.collection('afitx_transitions').insert(tokenExchangeTrans);
+						let transaction = await db.collection('afitx_transitions').insertOne(tokenExchangeTrans);
 						console.log('success moving & inserting transaction data');
 						afitx_amount = amount;
 						status = 'success';
@@ -7142,7 +7294,7 @@ app.get('/proceedAfitTransition', async function(req,res){
 						//apply 0.5% burn rate
 						amount = amount * (1-config.trx_burn_rate)
 						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'), standardAfit);
-						let transaction = await db.collection('afit_transitions').insert(tokenExchangeTrans);
+						let transaction = await db.collection('afit_transitions').insertOne(tokenExchangeTrans);
 						console.log('success moving & inserting transaction data');
 						afitx_amount = amount;
 						status = 'success';
@@ -7216,7 +7368,7 @@ app.get('/processBuyOrderHive', async function(req, res){
 		}
 		try{
 			console.log(productBuyTrans);
-			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -7250,7 +7402,7 @@ app.get('/processBuyOrderHive', async function(req, res){
 		
 		try{
 			console.log(productSellTrans);
-			let transaction = await db.collection('gadget_transactions_hive').insert(productSellTrans);
+			let transaction = await db.collection('gadget_transactions_hive').insertOne(productSellTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -7342,7 +7494,7 @@ app.get('/processBuyOrder', async function(req, res){
 		}
 		try{
 			console.log(productBuyTrans);
-			let transaction = await db.collection('token_transactions').insert(productBuyTrans);
+			let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -7376,7 +7528,7 @@ app.get('/processBuyOrder', async function(req, res){
 		
 		try{
 			console.log(productSellTrans);
-			let transaction = await db.collection('token_transactions').insert(productSellTrans);
+			let transaction = await db.collection('token_transactions').insertOne(productSellTrans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
@@ -7403,7 +7555,7 @@ app.get('/processBuyOrder', async function(req, res){
 			
 			try{
 				console.log(productSellTrans);
-				let transaction = await db.collection('token_transactions').insert(productSellTrans);
+				let transaction = await db.collection('token_transactions').insertOne(productSellTrans);
 				console.log('success inserting post data');
 			}catch(err){
 				console.log(err);
@@ -7424,7 +7576,7 @@ app.get('/processBuyOrder', async function(req, res){
 			
 			try{
 				console.log(productTokenTrans);
-				let transaction = await db.collection('user_product_key').insert(productTokenTrans);
+				let transaction = await db.collection('user_product_key').insertOne(productTokenTrans);
 				console.log('success inserting access_token');
 			}catch(err){
 				console.log(err);
@@ -7434,18 +7586,24 @@ app.get('/processBuyOrder', async function(req, res){
 			
 		}
 		
-		
-		//update current user's token balance & store to db
+		// update current user's token balance & store to db
 		let new_token_count = cur_user_token_count - parseFloat(item_price);
 		user_info.tokens = new_token_count;
-		console.log('new_token_count:'+new_token_count);
-		try{
-			let trans = await db.collection('user_tokens').save(user_info);
+		console.log('new_token_count: ' + new_token_count);
+
+		try {
+			// Replace .save() with replaceOne.
+			// We filter by _id (which should be in user_info from the earlier fetch)
+			// to ensure we replace the exact document.
+			let trans = await db.collection('user_tokens').replaceOne(
+				{ _id: user_info._id }, 
+				user_info, 
+				{ upsert: true }
+			);
 			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+		} catch (err) {
+			console.error('Database Error:', err);
 		}
-		
 		res.send({'status': 'Success', 'access_token': access_token});
 	}
 })
@@ -7689,22 +7847,49 @@ async function performActivateMultiTrx(req){
 	
 	let gadget_entries = req.params.gadgets.split('-');
 	let err = '';
-	for (let i=0;i<gadget_entries.length;i++){
-		//find item to activate and proceed activating
+	for (let i = 0; i < gadget_entries.length; i++) {
+		// Find item to activate and proceed activating
 		let gadget = new ObjectId(gadget_entries[i]);
-		let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
-		if (gadget_match){
-			gadget_match.status="active";
-			if (req.params.benefic){
+		let gadget_match = await db.collection('user_gadgets').findOne({ 
+			user: user, 
+			gadget: gadget, 
+			status: "bought" 
+		});
+
+		if (gadget_match) {
+			gadget_match.status = "active";
+			gadget_match.last_updated = new Date(); // Good practice to track activation time
+
+			if (req.params.benefic) {
 				gadget_match.benefic = req.params.benefic;
 				
-				//also send notification to the beneficiary about being set for this gadget
-				utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'friendship', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+				// Send notification
+				utils.sendNotification(
+					db, 
+					req.params.benefic.replace('@', ''), 
+					user, 
+					'gadget_beneficiary', 
+					'friendship', 
+					'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 
+					'https://actifit.io/' + user
+				);
 			}
-			db.collection('user_gadgets').save(gadget_match);
+
+			try {
+				// FIX: Replace .save() with .replaceOne() and ADD 'await'
+				await db.collection('user_gadgets').replaceOne(
+					{ _id: gadget_match._id }, 
+					gadget_match, 
+					{ upsert: true }
+				);
+				console.log('Successfully activated gadget: ' + gadget_entries[i]);
+			} catch (saveErr) {
+				console.error('Error saving gadget status:', saveErr);
+			}
 			
-		}else{
+		} else {
 			err = 'Product not found';
+			console.log('Product not found for ID: ' + gadget_entries[i]);
 		}
 	}
 	if (err != ''){
@@ -7755,22 +7940,49 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 		return;
 	}
 	
-	//find item to activate and proceed activating
+	// find item to activate and proceed activating
 	gadget = new ObjectId(gadget);
-	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "bought" });
-	if (gadget_match){
-		gadget_match.status="active";
-		if (req.params.benefic){
+	let gadget_match = await db.collection('user_gadgets').findOne({ 
+		user: user, 
+		gadget: gadget, 
+		status: "bought" 
+	});
+
+	if (gadget_match) {
+		gadget_match.status = "active";
+		gadget_match.last_updated = new Date();
+
+		if (req.params.benefic) {
 			gadget_match.benefic = req.params.benefic;
 			
-			//also send notification to the beneficiary about being set for this gadget
-			utils.sendNotification(db, req.params.benefic.replace('@',''), user, 'gadget_beneficiary', 'friendship', 'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 'https://actifit.io/'+user);
+			// also send notification to the beneficiary
+			utils.sendNotification(
+				db, 
+				req.params.benefic.replace('@', ''), 
+				user, 
+				'gadget_beneficiary', 
+				'friendship', 
+				'User ' + user + ' has set you as reward beneficiary for one of their gadgets!', 
+				'https://actifit.io/' + user
+			);
 		}
-		db.collection('user_gadgets').save(gadget_match);
-		res.send({'status': 'success'});
-	}else{
-		res.send({'error': 'Product not found'});
-		
+
+		try {
+			// FIX: Replace .save() with .replaceOne() and ADD 'await'
+			await db.collection('user_gadgets').replaceOne(
+				{ _id: gadget_match._id }, 
+				gadget_match, 
+				{ upsert: true }
+			);
+			
+			// Only send success after the DB write is confirmed
+			res.send({ 'status': 'success' });
+		} catch (err) {
+			console.error('Error activating gadget:', err);
+			res.send({ 'error': 'Database update failed' });
+		}
+	} else {
+		res.send({ 'error': 'Product not found' });
 	}
 });
 
@@ -7785,18 +7997,34 @@ async function performDeactivateTrx(req){
 		return ({status: 'error'});
 		
 	}
-	
-	//find item to activate and proceed activating
+	// find item to deactivate/revert and proceed
 	gadget = new ObjectId(gadget);
-	let gadget_match = await db.collection('user_gadgets').findOne({ user: user, gadget: gadget, status: "active" });
-	if (gadget_match){
-		gadget_match.status="bought";
-		db.collection('user_gadgets').save(gadget_match);
-		return ({'status': 'success'});
-	}else{
-		return ({'error': 'Product not found'});
-		
-	}	
+	let gadget_match = await db.collection('user_gadgets').findOne({ 
+		user: user, 
+		gadget: gadget, 
+		status: "active" 
+	});
+
+	if (gadget_match) {
+		gadget_match.status = "bought";
+		gadget_match.last_updated = new Date(); // Update timestamp
+
+		try {
+			// FIX: Replace .save() with .replaceOne() and ADD 'await'
+			await db.collection('user_gadgets').replaceOne(
+				{ _id: gadget_match._id }, 
+				gadget_match, 
+				{ upsert: true }
+			);
+			
+			return ({ 'status': 'success' });
+		} catch (dbErr) {
+			console.error('Error updating gadget status:', dbErr);
+			return ({ 'error': 'Database update failed' });
+		}
+	} else {
+		return ({ 'error': 'Product not found' });
+	}
 	
 }
 
@@ -7868,20 +8096,45 @@ app.get("/validatePassForDownload", async function(req, res) {
 		res.send({'error': 'Account\'s funds password not verified'});
 		return;
 	}else{
-	  //create encrypted version of sent password
-	  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-	  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
-	  encr_pass += cipher.final('hex');
-		if (entryFound.pass !== encr_pass){
-			res.send({'error': 'Incorrect username and/or funds password'});
+	  // 1. Password Verification
+		// WARNING: createCipher is deprecated and insecure. 
+		// Consider switching to createCipheriv with a salt in the future.
+		var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+		let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
+		encr_pass += cipher.final('hex');
+
+		if (entryFound.pass !== encr_pass) {
+			res.send({ 'error': 'Incorrect username and/or funds password' });
 			return;
 		}
-		
-		//if pass if valid, re-enable download for this link for this user
-		let token_match = await db.collection('user_product_key').findOne({ user: user, product_id: product_id });
-		token_match.enabled = true;
-		db.collection('user_product_key').save(token_match);
-		res.send({'success': 'success', 'access_token': token_match.access_token});
+
+		// 2. Re-enable download access
+		let token_match = await db.collection('user_product_key').findOne({ 
+			user: user, 
+			product_id: product_id 
+		});
+
+		if (token_match) {
+			token_match.enabled = true;
+			token_match.last_updated = new Date(); // Track when access was restored
+
+			try {
+				// FIX: Replace .save() with .replaceOne() and ADD 'await'
+				await db.collection('user_product_key').replaceOne(
+					{ _id: token_match._id }, 
+					token_match, 
+					{ upsert: true }
+				);
+				
+				// Return success only after DB update is confirmed
+				res.send({ 'success': 'success', 'access_token': token_match.access_token });
+			} catch (err) {
+				console.error('Error updating access token:', err);
+				res.status(500).send({ 'error': 'Database update failed' });
+			}
+		} else {
+			res.send({ 'error': 'Access token record not found' });
+		}
 	}
 });
 
@@ -7894,27 +8147,46 @@ app.get("/downEbook", async function(req, res) {
 	res.send({'error':'generic error'});
   }
   
-  let user = req.query.user;
-  let access_token = req.query.access_token;
-  let product_id = req.query.product_id;
-  
-  //check if the proper access token is valid for this user/product combination
-  let token_match = await matchAccessToken(user, product_id, access_token);
-  console.log(token_match);
-  if (!token_match){
-	console.log('not found');
-	res.send({error: "access not permitted"});
-	return;
-  }
-  
-  if (!token_match.enabled){
-	console.log('found disabled');
-	res.send({error: "user access not permitted"});
-	return;
-  }
-  //need to set download to disabled to prevent future unauthorized access
-  token_match.enabled = false;
-  db.collection('user_product_key').save(token_match);
+	let user = req.query.user;
+	let access_token = req.query.access_token;
+	let product_id = req.query.product_id;
+
+	// check if the proper access token is valid for this user/product combination
+	let token_match = await matchAccessToken(user, product_id, access_token);
+	console.log(token_match);
+
+	if (!token_match) {
+		console.log('not found');
+		res.send({ error: "access not permitted" });
+		return;
+	}
+
+	if (!token_match.enabled) {
+		console.log('found disabled');
+		res.send({ error: "user access not permitted" });
+		return;
+	}
+
+	// need to set download to disabled to prevent future unauthorized access
+	token_match.enabled = false;
+	token_match.last_used = new Date(); // Track when the token was consumed
+
+	try {
+		// FIX: Replace .save() with .replaceOne() and ADD 'await'
+		// Using the unique _id ensures we update the exact token used
+		await db.collection('user_product_key').replaceOne(
+			{ _id: token_match._id },
+			token_match,
+			{ upsert: true }
+		);
+		
+		console.log('Access token successfully consumed/disabled');
+		// Proceed with the file download logic here...
+		
+	} catch (err) {
+		console.error('Database Error during token consumption:', err);
+		res.status(500).send({ error: "System error processing access" });
+	}
 
   const fileName = config.ebook1
   const filePath = config.ebook1pathofficlive + fileName
@@ -7972,26 +8244,43 @@ app.get('/confirmPayment', async function(req,res){
 				req.query.promo_proceed = true;
 				req.query.signup_reward = promo_match.signup_reward;
 				req.query.referrer_reward = promo_match.referrer_reward;
-				try{
+				try {
 					accountCreated = await claimAndCreateAccount(req);
-					//only delegate if account created and delegation is enabled
-					if (accountCreated && promo_match.delegation){
-						delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.cur_bchain);
+					
+					// only delegate if account created and delegation is enabled
+					if (accountCreated && promo_match.delegation) {
+						delegationSuccess = await utils.delegateToAccount(
+							req.query.new_account, 
+							spToDelegate, 
+							req.query.cur_bchain
+						);
 					}
 					
-					//decrease number of permitted entries
-					//update current user's token balance & store to db
+					// decrease number of permitted entries
 					promo_match.entries = parseInt(promo_match.entries) - 1;
-					console.log('promo_match.entries:'+promo_match.entries);
-					try{
-						let trans = await db.collection('signup_promo_codes').save(promo_match);
+					
+					// Extreme case: prevent negative entries
+					if (promo_match.entries < 0) {
+						promo_match.entries = 0;
+					}
+					
+					console.log('promo_match.entries: ' + promo_match.entries);
+
+					try {
+						// FIX: Replace .save() with .replaceOne() and ADD 'await'
+						// Using _id ensures we update the exact promo code document
+						await db.collection('signup_promo_codes').replaceOne(
+							{ _id: promo_match._id }, 
+							promo_match, 
+							{ upsert: true }
+						);
 						console.log('success updating pending entries');
-					}catch(err){
-						console.log(err);
+					} catch (err) {
+						console.error('Database error updating promo entries:', err);
 						return;
 					}
-				}catch(e){
-					console.log(e);
+				} catch (e) {
+					console.error('Process error:', e);
 				}
 				paymentReceivedTx = req.query.promo_code;
 			  }
@@ -8216,7 +8505,7 @@ app.get('/appendVerifiedPost', async function(req,res){
 			date: new Date(),
 		};
 		try{
-			let transaction = await db.collection('verified_posts').insert(verified_post);
+			let transaction = await db.collection('verified_posts').insertOne(verified_post);
 			console.log('success inserting post data');
 			res.send('{success}');
 		}catch(err){
@@ -8319,29 +8608,38 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 		let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, bchain);
 		console.log('>>>> got TX '+paymentReceivedTx);
-		if (paymentReceivedTx != ''){
-			try{
-				//we found the transfer, now let's update the status properly
-				let query = {user: req.query.from};
-				console.log(query);
-				let entryFound = await db.collection('account_funds_pass').findOne(query);
-				console.log(entryFound);
-				if (entryFound != null &&  
-					(!entryFound.passVerified)){
-					try{
-					  //we need to set this transaction as processed via upvote
-					  entryFound.passVerified = true;
-					  let transaction = await db.collection('account_funds_pass').save(entryFound);
-					  statusUpdated = true;
-					  console.log('saved');
-					}catch(e){
-					  console.log(e);
-					}
+		if (paymentReceivedTx != '') {
+		try {
+			// we found the transfer, now let's update the status properly
+			let query = { user: req.query.from };
+			console.log(query);
+			let entryFound = await db.collection('account_funds_pass').findOne(query);
+			console.log(entryFound);
+
+			if (entryFound != null && (!entryFound.passVerified)) {
+				try {
+					// we need to set this transaction as processed
+					entryFound.passVerified = true;
+					entryFound.verification_date = new Date(); // Audit trail for verification
+
+					// FIX: Replace .save() with .replaceOne()
+					// We use the unique _id to ensure we target the specific record
+					let transaction = await db.collection('account_funds_pass').replaceOne(
+						{ _id: entryFound._id },
+						entryFound,
+						{ upsert: true }
+					);
+					
+					statusUpdated = true;
+					console.log('saved successfully');
+				} catch (e) {
+					console.error('Inner Save Error:', e);
 				}
-			}catch(e){
-				console.log(e);
 			}
+		} catch (e) {
+			console.error('Outer Query Error:', e);
 		}
+	}
 	}catch(err){
 		console.log(err);
 	}
@@ -8398,18 +8696,27 @@ app.get('/confirmBuyAction', async function(req,res){
 						let user_info = await grabUserTokensFunc (targetUser);
 						
 						let cur_user_token_count = 0;
-						if (user_info){
-							cur_user_token_count = parseFloat(user_info.tokens);
-							//update current user's token balance & store to db
-							let afit_amount = parseFloat(req.query.afit_amount);
-							let new_token_count = cur_user_token_count + parseFloat(afit_amount);
+						if (user_info) {
+							cur_user_token_count = parseFloat(user_info.tokens) || 0;
+							
+							// update current user's token balance & store to db
+							let afit_amount = parseFloat(req.query.afit_amount) || 0;
+							let new_token_count = cur_user_token_count + afit_amount;
 							user_info.tokens = new_token_count;
-							console.log('new_token_count:'+new_token_count);
-							try{
-								let trans = await db.collection('user_tokens').save(user_info);
+							
+							console.log('new_token_count: ' + new_token_count);
+							
+							try {
+								// FIX: Replace .save() with .replaceOne()
+								// We filter by _id to target the exact document we just modified in memory
+								let trans = await db.collection('user_tokens').replaceOne(
+									{ _id: user_info._id }, 
+									user_info, 
+									{ upsert: true }
+								);
 								console.log('success adding AFIT tokens to user balance');
-							}catch(err){
-								console.log(err);
+							} catch (err) {
+								console.error('Database Error:', err);
 								return;
 							}
 						}
@@ -8570,7 +8877,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 		}
 		try{
 			console.log(tokenExchangeTrans);
-			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
+			let transaction = await db.collection('token_transactions').insertOne(tokenExchangeTrans);
 			console.log('success inserting post data');
 			
 			//also notify user of AFIT payment
@@ -8590,23 +8897,34 @@ app.get('/performAfitSteemExchange', async function(req, res){
 			date: new Date(),
 		}
 		try{
-			let transaction = await db.collection('exchange_afit_steem').insert(exchange_trans);
+			let transaction = await db.collection('exchange_afit_steem').insertOne(exchange_trans);
 			console.log('success inserting post data');
 		}catch(err){
 			console.log(err);
 			res.send({'error': 'Error storing the exchange transaction to queue'});
 			return;
 		}
-		
-		//update current user's token balance & store to db
-		let new_token_count = cur_user_token_count - parseFloat(paid_tokens);
+		// 1. Calculate the new balance
+		// parseFloat(...) || 0 ensures we don't end up with NaN
+		let paid = parseFloat(paid_tokens) || 0;
+		let new_token_count = cur_user_token_count - paid;
+
+		// Update the object in memory
 		user_info.tokens = new_token_count;
-		console.log('new_token_count:'+new_token_count);
-		try{
-			let trans = await db.collection('user_tokens').save(user_info);
+		console.log('new_token_count: ' + new_token_count);
+
+		try {
+			// 2. Replace .save() with .replaceOne()
+			// We filter by _id (which is inside user_info) to ensure we 
+			// update the correct record. { upsert: true } mimics the old save behavior.
+			await db.collection('user_tokens').replaceOne(
+				{ _id: user_info._id }, 
+				user_info, 
+				{ upsert: true }
+			);
 			console.log('success updating user token count');
-		}catch(err){
-			console.log(err);
+		} catch (err) {
+			console.error('Error updating tokens:', err);
 		}
 		
 		res.send({'status': 'Success'});
@@ -8626,64 +8944,77 @@ app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
 	}
 	let outdatedTokenSwapTrans = await db.collection('exchange_afit_steem').find(transQuery).toArray();
 	console.log(outdatedTokenSwapTrans);
-	
+
 	let refundedCount = 0;
-	
-	//go through each transaction and cancel it
-	for(let i = 0, transLen = outdatedTokenSwapTrans.length; i < transLen; i++) {
-		try{
-			//set as processed, and flag as refunded
-			outdatedTokenSwapTrans[i].refunded = true;
-			outdatedTokenSwapTrans[i].refund_reason = 'overdue for '+config.exchange_refund_max_days + ' days';
-			outdatedTokenSwapTrans[i].upvote_processed = true;
-			await db.collection('exchange_afit_steem').save(outdatedTokenSwapTrans[i]);
+
+	// go through each transaction and cancel it
+	for (let i = 0, transLen = outdatedTokenSwapTrans.length; i < transLen; i++) {
+		let currentTrans = outdatedTokenSwapTrans[i];
+		try {
+			// set as processed, and flag as refunded
+			currentTrans.refunded = true;
+			currentTrans.refund_reason = 'overdue for ' + config.exchange_refund_max_days + ' days';
+			currentTrans.upvote_processed = true;
+
+			// FIX: Replace .save() with .replaceOne()
+			await db.collection('exchange_afit_steem').replaceOne(
+				{ _id: currentTrans._id },
+				currentTrans,
+				{ upsert: true }
+			);
 			console.log('exchange transaction cancelled');
-		}catch(err){
+		} catch (err) {
 			console.log('unable to cancel exchange transaction');
-			res.send({'error': 'Unable to cancel exchange transaction'});
+			res.send({ 'error': 'Unable to cancel exchange transaction' });
 			return;
 		}
-		
-		//send out refunded AFIT tokens
-		//decrease count
+
+		// send out refunded AFIT tokens
 		let tokenExchangeTrans = {
-			user: outdatedTokenSwapTrans[i].user,
+			user: currentTrans.user,
 			reward_activity: 'Refund Exchange AFIT To Upvote',
-			token_count: outdatedTokenSwapTrans[i].paid_afit,
-			note: 'Refund Exchange AFIT To Upvote due to overdue pending '+config.exchange_refund_max_days + ' days without Actifit report card',
+			token_count: currentTrans.paid_afit,
+			note: 'Refund Exchange AFIT To Upvote due to overdue pending ' + config.exchange_refund_max_days + ' days without Actifit report card',
 			date: new Date(),
-		}
-		try{
+		};
+
+		try {
 			console.log(tokenExchangeTrans);
-			let transaction = await db.collection('token_transactions').insert(tokenExchangeTrans);
+			// insertOne is already correct for modern drivers
+			await db.collection('token_transactions').insertOne(tokenExchangeTrans);
 			console.log('tokens refunded for user');
-			
-			//also notify user of AFIT payment
-			utils.sendNotification(db, outdatedTokenSwapTrans[i].user, 'actifit', 'pay_afit', 'payment', 'You received a refund of '+outdatedTokenSwapTrans[i].paid_afit+' AFIT for unused exchange service', 'https://actifit.io/'+outdatedTokenSwapTrans[i].user+'/wallet');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
+
+			// notify user
+			utils.sendNotification(db, currentTrans.user, 'actifit', 'pay_afit', 'payment', 'You received a refund of ' + currentTrans.paid_afit + ' AFIT for unused exchange service', 'https://actifit.io/' + currentTrans.user + '/wallet');
+		} catch (err) {
+			console.error(err);
+			res.send({ 'error': 'Error converting AFIT to STEEM upvotes' });
 			return;
 		}
-		
-		let user_info = await grabUserTokensFunc (outdatedTokenSwapTrans[i].user);
-		console.log(user_info);
-		let cur_user_token_count = 0;
-		if (user_info){
-			cur_user_token_count = parseFloat(user_info.tokens);
-			//update current user's token balance & store to db
-			let new_token_count = cur_user_token_count + parseFloat(outdatedTokenSwapTrans[i].paid_afit);
-			user_info.tokens = new_token_count;
-			console.log('new_token_count:'+new_token_count);
-			try{
-				let trans = await db.collection('user_tokens').save(user_info);
+
+		// Update the user balance
+		let user_info = await grabUserTokensFunc(currentTrans.user);
+		if (user_info) {
+			let cur_user_token_count = parseFloat(user_info.tokens) || 0;
+			let refund_amount = parseFloat(currentTrans.paid_afit) || 0;
+			
+			user_info.tokens = cur_user_token_count + refund_amount;
+			console.log('new_token_count: ' + user_info.tokens);
+
+			try {
+				// FIX: Replace .save() with .replaceOne()
+				await db.collection('user_tokens').replaceOne(
+					{ _id: user_info._id },
+					user_info,
+					{ upsert: true }
+				);
 				console.log('success updating user token count');
-			}catch(err){
-				console.log(err);
+			} catch (err) {
+				console.error(err);
 				return;
 			}
 		}
-		
+
 		refundedCount += 1;
 	}
 	//we got here, we're good

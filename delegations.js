@@ -183,16 +183,23 @@ async function testFetchHistory(){
 }*/
 
 async function processBSCTransfers(){
+	
+	
+	
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
 		mongo_conn = config.mongo_local
 	}
+	
+	const client = new MongoClient(mongo_conn);
+	
 	// Use connect method to connect to the server
-	MongoClient.connect(mongo_conn, async function (err, dbClient) {
-	  if (!err) {
+	client.connect()
+	.then(async client => {
+	  
 		console.log('Connected successfully to server: ')
 
-		db = dbClient.db(dbName)
+		db = client.db(dbName)
 		
 		//fetch data of pending bridge items
 		let pendingBridgeEntries = await db.collection('bsc_bridge_queue').find({status: 'pending'}).sort({'date': 1}).toArray();
@@ -279,8 +286,6 @@ async function processBSCTransfers(){
 			//let hbdTrx = entry.hbdTrx;
 			
 		});
-		
-	  }
 	});
 }
 //send corresponding amount on BSC, while updating user balances on actifit and taking off 1 HBD as trx fee (0r 1%, whichever is bigger)
@@ -449,11 +454,14 @@ async function processGadgetBuyPrize() {
 		mongo_conn = config.mongo_local
 	}
 	// Use connect method to connect to the server
-	MongoClient.connect(mongo_conn, async function (err, dbClient) {
-	  if (!err) {
+	const client = new MongoClient(mongo_conn);
+	
+	// Use connect method to connect to the server
+	client.connect()
+	.then(async client => {
 		console.log('Connected successfully to server: ')
 
-		db = dbClient.db(dbName)
+		db = client.db(dbName)
 		
 		//fetch data of last reward cycle
 		let lastDraw = await db.collection('gadget_buy_prize_draw').find().sort({'drawDate': -1}).toArray();
@@ -520,7 +528,7 @@ async function processGadgetBuyPrize() {
 								rewardPool: prizePoolValue,
 								participatingTickets: entries
 							}
-							db.collection('gadget_buy_prize_draw').insert(drawInfo);
+							db.collection('gadget_buy_prize_draw').insertOne(drawInfo);
 						}
 						
 						//send 25% of funds to buy back tokens
@@ -553,9 +561,6 @@ async function processGadgetBuyPrize() {
 			
 		}
 		
-		
-		
-	  }
 	});
 }
 
@@ -583,7 +588,7 @@ async function testMove(){
 		console.log('Connected successfully to server: ')
 
 		db = dbClient.db(dbName)
-		let transaction = await db.collection('token_transactions').insert(moveTrans);
+		let transaction = await db.collection('token_transactions').insertOne(moveTrans);
 	
 	console.log('success inserting move AFIT data');
 	
@@ -667,11 +672,15 @@ async function moveAFITToSE(testMode){
 		mongo_conn = config.mongo_local
 	}
 	// Use connect method to connect to the server
-	MongoClient.connect(mongo_conn, async function (err, dbClient) {
-	  if (!err) {
+	
+	const client = new MongoClient(mongo_conn);
+	
+	// Use connect method to connect to the server
+	client.connect()
+	.then(async client => {
 		console.log('Connected successfully to server: ')
 
-		db = dbClient.db(dbName)
+		db = client.db(dbName)
 		// Get the documents collection
 		let poweringDown = await db.collection('powering_down_he').find().toArray();
 		//console.log (poweringDown)
@@ -812,7 +821,7 @@ async function moveAFITToSE(testMode){
 							console.log(moveTrans);
 							//update our DB
 							if (!testMode){
-								let transaction = await db.collection('token_transactions').insert(moveTrans);
+								let transaction = await db.collection('token_transactions').insertOne(moveTrans);
 							}
 							console.log('success inserting move AFIT data');
 							
@@ -871,10 +880,7 @@ async function moveAFITToSE(testMode){
 			//check if user has this request for over a week, and cancel it accordingly
 			
 		});
-	  } else {
-		utils.log(err, 'delegations')
-		process.exit()
-	  }
+	  
 	})
 }
 
@@ -1003,11 +1009,14 @@ function runRewards(steemOnlyReward, updateDelegations){
 		mongo_conn = config.mongo_local
 	}
 	// Use connect method to connect to the server
-	MongoClient.connect(mongo_conn, async function (err, dbClient) {
-	  if (!err) {
+	const client = new MongoClient(mongo_conn);
+	
+	// Use connect method to connect to the server
+	client.connect()
+	.then(async client => {
 		console.log('Connected successfully to server: ')
 
-		db = dbClient.db(dbName)
+		db = client.db(dbName)
 		// Get the documents collection
 		collection = db.collection(delegationTrxCol)
 		
@@ -1038,7 +1047,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 		setInterval(claimRewards,60 * 60 * 1000);
 	  
 	    //loadSteemPrices();
-	  } else {
+	  }).catch(err => {
 		utils.log(err, 'delegations')
 		mail.sendPlainMail('Database Error', err, config.report_emails)
 		  .then(function (res, err) {
@@ -1049,8 +1058,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 			}
 		  })
 		process.exit()
-	  }
-	})
+	});
 }
 
 //function to grab latest payouts for beneficiaries and reward with AFIT tokens
@@ -1822,7 +1830,7 @@ async function updateActiveDelegations (delgTrxCol, targetCol) {
 	console.log(err);
   }
   console.log('activeDelegations dropped');
-  await db.collection(targetCol).insert(activeDelegations)
+  await db.collection(targetCol).insertOne(activeDelegations)
   console.log('done updating delegations '+targetCol);
   return ;
 }
@@ -1868,7 +1876,7 @@ async function updateUserTokens() {
 		//remove old token count per user
 		await db.collection('user_tokens').remove({});
 		//insert new count per user
-		await db.collection('user_tokens').insert(user_tokens);
+		await db.collection('user_tokens').insertOne(user_tokens);
 		console.log('---- Updating User Tokens Complete ----');
 	}catch(err){
 		console.log('>>save data error:'+err.message);

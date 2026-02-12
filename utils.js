@@ -212,7 +212,7 @@ var HOURS = 60 * 60;
 			date: new Date(),
 		};
 		try{
-			let transaction = await db.collection('verified_tx').insert(tx_entry);
+			let transaction = await db.collection('verified_tx').insertOne(tx_entry);
 			console.log('success inserting transaction details');
 		}catch(err){
 			console.log(err);
@@ -531,9 +531,9 @@ var HOURS = 60 * 60;
 		
 			let user_tokens = await query.toArray();
 			//remove old token count per user
-			await db.collection('tip_balance').remove({});
+			await db.collection('tip_balance').deleteMany({});
 			//insert new count per user
-			await db.collection('tip_balance').insert(user_tokens);
+			await db.collection('tip_balance').insertOne(user_tokens);
 			console.log('---- Updating User Tip Balances Complete ----');
 			return "{success: true}";
 		}catch(err){
@@ -625,7 +625,7 @@ var HOURS = 60 * 60;
 				date: new Date(),
 			};
 			try{
-				let transaction = await db.collection('verified_tx').insert(tx_entry);
+				let transaction = await db.collection('verified_tx').insertOne(tx_entry);
 				console.log('success inserting transaction details');
 			}catch(err){
 				console.log(err);
@@ -2221,7 +2221,7 @@ async function sendNotification(db, user, action_taker, type, category, details,
 			status: 'unread',
 		};
 		try{
-			let transaction = await db.collection('notifications').insert(notification_entry);
+			let transaction = await db.collection('notifications').insertOne(notification_entry);
 			//console.log('success inserting notification data');
 			
 			//also send out a firebase message
