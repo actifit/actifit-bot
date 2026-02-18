@@ -40,7 +40,7 @@ if (config.testing){
 
 //console.log('verify gadget buy');
 
-console.log('--- ACTUAL NODE VERSION IN RUNTIME: ' + process.version + ' ---');
+//console.log('--- ACTUAL NODE VERSION IN RUNTIME: ' + process.version + ' ---');
 
 
 var db;
@@ -2629,42 +2629,54 @@ app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
 	}
 });
 
-app.get('/claimFreeSignupAccounts/:user', async function (req, res){
-	let outc = await claimableAccountsCount(req, res);
-	if (outc){
-		let collection = db.collection('signup_promo_codes')
-		//var dt = new Date().toJSON()
-		//dt.substring(0,dt.indexOf("."));
-		try{
-			for (let i=0;i<5;i++){
-				let randomCode = generatePassword(1);
-				result = await collection.insertOne({   
-					"code": randomCode,
-					"entries": 1,
-					"delegation": true,
-					"signup_reward": true,
-					"referrer_reward": true,
-					"assigned_user": req.params.user,
-					"date": new Date()
-				});
-			}
-			//also store user's last claim date
-			db.collection('last_signups_claimed').update({
-				user: req.params.user
-			},{
-				user: req.params.user,
-				claimDate: new Date()
-			},{ upsert: true })
-			
-			res.send({status: "success"})
-			return;
-		}catch(err){
-			res.send({error: err});
-			return;
-		}
-	}
-	res.send({error: 'no claimable accounts'});
-})
+app.get('/claimFreeSignupAccounts/:user', async function (req, res) {
+    try {
+        const outc = await claimableAccountsCount(req, res);
+        
+        if (!outc) {
+            return res.status(400).send({ error: 'no claimable accounts' });
+        }
+
+        const signupCollection = db.collection('signup_promo_codes');
+        const claimHistoryCollection = db.collection('last_signups_claimed');
+        const userName = req.params.user;
+
+        // 1. Generate codes - Using Promise.all for better performance in Mongo 8
+        const promoPromises = [];
+        for (let i = 0; i < 5; i++) {
+            let randomCode = generatePassword(1);
+            promoPromises.push(signupCollection.insertOne({
+                code: randomCode,
+                entries: 1,
+                delegation: true,
+                signup_reward: true,
+                referrer_reward: true,
+                assigned_user: userName,
+                date: new Date()
+            }));
+        }
+        await Promise.all(promoPromises);
+
+        // 2. Update last claim date - Modernized to updateOne with await
+        // In Mongo 8, update() is replaced by updateOne()
+        await claimHistoryCollection.updateOne(
+            { user: userName },
+            { 
+                $set: { 
+                    user: userName, 
+                    claimDate: new Date() 
+                } 
+            },
+            { upsert: true }
+        );
+
+        return res.send({ status: "success" });
+
+    } catch (err) {
+        console.error("Claim Error:", err);
+        return res.status(500).send({ error: err.message || "Internal Server Error" });
+    }
+});
 
 app.get('/claimableFreeAccounts/:user', async function (req, res){
 	let outc = await claimableAccountsCount(req, res);
@@ -5734,6 +5746,23 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			date: new Date(),
 		}
 		
+		try {
+			console.log(tokenPowerDownTrans);
+			
+			// Use updateOne and $set for modern drivers
+			let transaction = await db.collection('powering_down_he').updateOne(
+				tokenPowerDownQuery, 
+				{ $set: tokenPowerDownTrans }, 
+				{ upsert: true }
+			);
+			
+			console.log('success inserting power down data');
+		} catch (err) {
+			console.error(err); // This will show you the specific "update is not a function" error
+			res.send({'error': 'Error performing power down. DB storing issue'});
+			return;
+		}
+		/*
 		try{
 			console.log(tokenPowerDownTrans);
 			let transaction = await db.collection('powering_down_he').update(tokenPowerDownQuery, tokenPowerDownTrans, { upsert: true });
@@ -5742,7 +5771,7 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			console.log(err);
 			res.send({'error': 'Error performing power down. DB storing issue'});
 			return;
-		}
+		}*/
 		
 		res.send({'status': 'Success', trx: tokenPowerDownTrans});
 	}
