@@ -2761,15 +2761,12 @@ app.get('/modAction', async function (req, res) {
 							return;
 						}
 		
-						result = await collection.update(
-							{   "user": req.query.unbanuser.trim().toLowerCase() }, 
+						result = await collection.updateMany(
+							{   "user": modTrans.user }, 
 							{
 								$set: {
 									"ban_status": "inactive",
 									}
-							},
-							{
-								multi: true
 							}
 						);
 						console.log(req.query.unbanuser+" ban removed! ");
@@ -3071,12 +3068,12 @@ async function storeWalletAdd(username, wallet, walletChain){
 		date: new Date()
 	};
 	try{
-		let transaction = await db.collection('user_wallet_address').update({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
-		return true;
+		let transaction = await db.collection('user_wallet_address').replaceOne({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
+		return result.acknowledged;
 	}catch(err){
 		console.log(err);
+		return false;
 	}
-	return false;
 }
 
 
@@ -3361,7 +3358,7 @@ app.get('/markRead/:notif_id', checkHdrs, async function (req, res) {
 		_id: new ObjectId(req.params.notif_id),
 	};
 	try{
-		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} } );
+		let transaction = await db.collection('notifications').updateOne(notif_to_update, { $set: {status: 'read'} } );
 		console.log('success updating notification status');
 		res.send({status: 'success'});
 	}catch(err){
@@ -3376,7 +3373,7 @@ app.get('/markUnread/:notif_id', checkHdrs, async function (req, res) {
 		_id: new ObjectId(req.params.notif_id),
 	};
 	try{
-		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'unread'} } );
+		let transaction = await db.collection('notifications').updateOne(notif_to_update, { $set: {status: 'unread'} } );
 		console.log('success updating notification status');
 		res.send({status: 'success'});
 	}catch(err){
@@ -3393,7 +3390,7 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 	console.log('markAllRead');
 	console.log(notif_to_update);
 	try{
-		let transaction = await db.collection('notifications').update(notif_to_update, { $set: {status: 'read'} }, {multi: true} );
+		let transaction = await db.collection('notifications').updateMany(notif_to_update, { $set: {status: 'read'} } );
 		console.log('success updating notification status');
 		console.log(transaction);
 		res.send({status: 'success'});
@@ -4007,25 +4004,34 @@ app.post('/registerUserNotification', async function(req,res){
 		res.send({error: 'error'});
 		return;
 	}
-	//store user/token combination
-	let userTokenEntry = {
-		token: req.body.token,
-		user: req.body.user,
-		app: req.body.app,
-		date: new Date()
-	};
-	try{
-		//special case for web notifications
-		if (req.body.webid){
+	try {
+		let filter = { user: req.body.user, app: req.body.app };
+		
+		//store user/token combination
+		let userTokenEntry = {
+			token: req.body.token,
+			user: req.body.user,
+			app: req.body.app,
+			date: new Date()
+		};
+		
+		// Special case for web notifications: add webid to filter
+		if (req.body.webid) {
 			userTokenEntry.webid = req.body.webid;
-			db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app, webid: req.body.webid}, userTokenEntry, { upsert: true });
-		}else{
-			db.collection('user_app_notif_token').update({user: req.body.user, app:req.body.app}, userTokenEntry, { upsert: true });
+			filter.webid = req.body.webid;
 		}
-		res.send({status: 'success'});
-	}catch(err){
-		res.send({error: 'error'});
-		console.log(err);
+
+		// Use replaceOne for full object replacement + await for reliability
+		const result = await db.collection('user_app_notif_token').replaceOne(
+			filter,
+			userTokenEntry,
+			{ upsert: true }
+		);
+
+		res.send({ status: 'success' });
+	} catch (err) {
+		console.error("Notification Token Error:", err);
+		res.status(500).send({ error: 'error' });
 	}
 });
 
@@ -4045,7 +4051,7 @@ app.get('/mintProducts', async function(req,res){
 		}
 		console.log('mintedAmount:'+mintedAmount);
 		//find products with min amount
-		let trans = await db.collection('products').update(
+		let trans = await db.collection('products').updateMany(
 			{
 				type: 'ingame',
 				count: {
@@ -4054,9 +4060,6 @@ app.get('/mintProducts', async function(req,res){
 			},
 			{
 				$inc: { count: mintedAmount }
-			},
-			{
-				multi: true
 			}
 		);
 		console.log(trans);
@@ -5181,7 +5184,7 @@ async function performCancelFriendRequestTrx(req){
 		status: 'cancelled',
 	};
 	try{
-		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship, { upsert: true });
+		let transaction = await db.collection('user_requests').replaceOne(friendshipQuery, userFriendship, { upsert: true });
 		console.log('success inserting post data');
 		return ({status: 'success'});
 	}catch(err){
@@ -5209,58 +5212,82 @@ app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async func
 
 });
 
-async function performAcceptFriendTrx(req){
-	//ensure proper transaction
-	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'accept-friendship', req.params.blockNo, req.params.trxID, req.params.bchain, db);
-	if (!ver_trx){
-		return ({status: 'error'})
-	}
-	//need to update both ways to check which way was the original request
-	let friendshipQuery = {
-		initiator: req.params.userB,
-		target: req.params.userA,
-		request: 'friendship',
-	}
-	let userFriendship = {
-		initiator: req.params.userB,
-		request: 'friendship',
-		target: req.params.userA,
-		date: new Date(),
-		status: 'approved',
-	};
-	let insertSuccess = false;
-	try{
-		let transaction = await db.collection('user_requests').update(friendshipQuery, userFriendship);
-		console.log('success updating post data');
-		
-		//notify recipient
-		utils.sendNotification(db, req.params.userB, req.params.userA, 'friendship_acceptance', 'friendship', 'User ' + req.params.userA + ' has accepted your friendship request', 'https://actifit.io/'+req.params.userA);
-		
-		insertSuccess = true;
-	}catch(err){
-		console.log('error');
-		return ({status: 'error'});
-	}
-	
-	if (insertSuccess){
-		
-		//also insert to friendship table
-		
-		let friendshipEntry = {
-			userA: req.params.userB,
-			userB: req.params.userA,
-			date: new Date(),
-		};
-		
-		try{
-			let result = await db.collection('friends').insertOne(friendshipEntry);
-			return ({status: 'success'});
-		}catch(err){
-			return ({status: 'error', details: err});
-		}
-	}
-}
+async function performAcceptFriendTrx(req) {
+    try {
+        // 1. Verify the transaction
+        let ver_trx = await utils.verifyFriendTransaction(
+            req.params.userA, 
+            req.params.userB, 
+            'accept-friendship', 
+            req.params.blockNo, 
+            req.params.trxID, 
+            req.params.bchain, 
+            db
+        );
 
+        if (!ver_trx) {
+            return { status: 'error', message: 'Transaction verification failed' };
+        }
+
+        // 2. Query for the request in either direction
+        // This ensures that if A requested B, OR B requested A, we find it.
+        let friendshipQuery = {
+            request: 'friendship',
+            $or: [
+                { initiator: req.params.userB, target: req.params.userA },
+                { initiator: req.params.userA, target: req.params.userB }
+            ]
+        };
+
+        // 3. Update the existing request status to 'approved'
+        // Using updateOne + $set preserves the original 'initiator' value
+        let updateResult = await db.collection('user_requests').updateOne(
+            friendshipQuery,
+            { 
+                $set: { 
+                    status: 'approved',
+                    date: new Date() 
+                } 
+            }
+        );
+
+        // If no request was found, we shouldn't proceed with friend insertion
+        if (updateResult.matchedCount === 0) {
+            console.log('No pending friendship request found.');
+            return { status: 'error', message: 'No matching request found' };
+        }
+
+        console.log('Friendship request updated to approved');
+
+        // 4. Notify the person who initiated the request
+        // We determine the recipient by checking who the "target" wasn't.
+        await utils.sendNotification(
+            db, 
+            req.params.userB, 
+            req.params.userA, 
+            'friendship_acceptance', 
+            'friendship', 
+            `User ${req.params.userA} has accepted your friendship request`, 
+            `https://actifit.io/${req.params.userA}`
+        );
+
+        // 5. Insert the final friendship record
+        // Standard practice: store them alphabetically or in a consistent way to avoid duplicates
+        let friendshipEntry = {
+            userA: req.params.userA,
+            userB: req.params.userB,
+            date: new Date(),
+        };
+
+        await db.collection('friends').insertOne(friendshipEntry);
+        
+        return { status: 'success' };
+
+    } catch (err) {
+        console.error('Error in performAcceptFriendTrx:', err);
+        return { status: 'error', details: err.message };
+    }
+}
 /* end point for cancelling friend request */
 app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
 	
@@ -8715,13 +8742,13 @@ app.get('/confirmBuyAction', async function(req,res){
 				try{
 					console.log(tokenBuyTrans);
 					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('token_transactions').update(tokenBuyTransQuery, tokenBuyTrans, { upsert: true });
-					let trans_res = transaction.result;
-					console.log(trans_res);
+					let transaction = await db.collection('token_transactions').replaceOne(tokenBuyTransQuery, tokenBuyTrans, { upsert: true });
+					//let trans_res = transaction.result;
+					//console.log(trans_res);
 					/*console.log('nMatched:'+trans_res.nMatched);
 					console.log('nUpserted:'+trans_res.upserted);
 					console.log('nModified:'+trans_res.nModified);*/
-					if (trans_res.upserted){
+					if (transaction.upsertedCount > 0) {
 						//we have a new entry, increase user token count
 						
 						let user_info = await grabUserTokensFunc (targetUser);
