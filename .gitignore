@@ -86,3 +86,5 @@ $RECYCLE.BIN/
 *.lnk
 
 curation-bot.js
+config.json
+HIVErewards*.json

@@ -8431,69 +8431,74 @@ app.get('/getRC', async function (req, res){
 
 //send notification
 app.get('/sendNotification', async function(req,res){
-	let passed_var = eval("req.query."+config.verifyNotifParam);
-	console.log('sendnotification');
-	//console.log(passed_var);
-	//make sure needed security var is passed, and with proper value
-	if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
-		console.log('missing');
-		res.send('{}');
-	}else{
+	try {
+		let passed_var = eval("req.query."+config.verifyNotifParam);
+		console.log('sendnotification');
+		//console.log(passed_var);
+		//make sure needed security var is passed, and with proper value
+		if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+			console.log('missing');
+			res.send('{}');
+			return;
+		}
 		if (req.query.notifType == 'new_post'){
 			//first notify post owner
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'post', 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'post', 'You successfully created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			
 			//fetch user friends
 			let friends = await getUserFriends(req.query.user);
 			//send out a notification for each friend
 			for (let i=0;i<friends.length;i++){
-				utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'friendship', 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+				await utils.sendNotification(db, friends[i].friend, req.query.actionTaker, req.query.notifType, 'friendship', 'Your friend ' + req.query.user + ' created a new actifit report "' + req.query.title + '" ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 			}
-			//res.send('{status: success}');
-			//return;
 		}else if (req.query.notifType == 'new_comment'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'comment', 'User "'+req.query.actionTaker+'" left you a comment on your post "' + req.query.title + '" ', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else if (req.query.notifType == 'mention'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, 'mention', 'User "'+req.query.actionTaker+'" has mentioned you.', 'https://actifit.io/'+req.query.actionTaker+'/'+req.query.permlink);
 		}else if (req.query.notifType == 'transfer'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, req.query.title, 'https://actifit.io/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, req.query.title, 'https://actifit.io/'+req.query.permlink);
 		}else if (req.query.notifType == 'vote'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has voted your post/comment with a "' + req.query.weight + '%" vote ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has voted your post/comment with a "' + req.query.weight + '%" vote ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 		}else if (req.query.notifType == 'reblog'){
 			//console.log(req.query.permlink);
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has reblogged your post ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.notifType, req.query.notifType, 'User "'+req.query.actionTaker+'" has reblogged your post ', 'https://actifit.io/'+req.query.user+'/'+req.query.permlink);
 		}else if (req.query.notifType == 'payment'){
 			let msg = '';
 			let reflink = 'https://actifit.io/'+req.query.author+'/'+req.query.permlink;
-			if (req.query.subType == 'curation_reward'){
-				let reward = await utils.vestsToHivePower(req.query.reward);
-				msg = "You have received curation payout of "+parseFloat(reward).toFixed(4)+" HP for your vote on post/comment by "+req.query.author;
-			}else if (req.query.subType == 'comment_payout_update'){
-				msg = "You have received payout on one of your posts/comments";
-			}else if (req.query.subType == 'author_reward'){
-				let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
-				msg = "You have received payout on one of your posts/comments with the amounts: "+req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout).toFixed(4)+" HP";
-			}else if (req.query.subType == 'comment_benefactor_reward'){
-				let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
-				msg = "You have received payout as beneficiary for post by "+req.query.author + " with payout of " +req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout).toFixed(4)+" HP";
-			}else if (req.query.subType == 'return_vesting_delegation'){
-				let amount = await utils.vestsToHivePower(req.query.amount);
-				msg = "Your cancelled delegation of " + parseFloat(amount).toFixed(4)+" HP " + "has now returned to your account";
-				reflink = 'https://actifit.io/'+req.query.author + '/wallet';
-			}else if (req.query.subType == 'fill_order'){
-				msg = "Your market exchange order of " + req.query.amount_filled+" has been filled by "+req.query.actionTaker+" for "+req.query.amount_received;
-				reflink = 'https://actifit.io/'+req.query.user + '/wallet';
+			try {
+				if (req.query.subType == 'curation_reward'){
+					let reward = await utils.vestsToHivePower(req.query.reward);
+					msg = "You have received curation payout of "+parseFloat(reward || 0).toFixed(4)+" HP for your vote on post/comment by "+req.query.author;
+				}else if (req.query.subType == 'comment_payout_update'){
+					msg = "You have received payout on one of your posts/comments";
+				}else if (req.query.subType == 'author_reward'){
+					let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
+					msg = "You have received payout on one of your posts/comments with the amounts: "+req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout || 0).toFixed(4)+" HP";
+				}else if (req.query.subType == 'comment_benefactor_reward'){
+					let vesting_payout = await utils.vestsToHivePower(req.query.vesting_payout);
+					msg = "You have received payout as beneficiary for post by "+req.query.author + " with payout of " +req.query.hbd_payout+" "+req.query.hive_payout+" "+parseFloat(vesting_payout || 0).toFixed(4)+" HP";
+				}else if (req.query.subType == 'return_vesting_delegation'){
+					let amount = await utils.vestsToHivePower(req.query.amount);
+					msg = "Your cancelled delegation of " + parseFloat(amount || 0).toFixed(4)+" HP " + "has now returned to your account";
+					reflink = 'https://actifit.io/'+req.query.author + '/wallet';
+				}else if (req.query.subType == 'fill_order'){
+					msg = "Your market exchange order of " + req.query.amount_filled+" has been filled by "+req.query.actionTaker+" for "+req.query.amount_received;
+					reflink = 'https://actifit.io/'+req.query.user + '/wallet';
+				}
+				else if (req.query.subType == 'fill_vesting_withdraw'){
+					let amount = await utils.vestsToHivePower(req.query.amount);
+					msg = "Your power down has completed its weekly payout of " + parseFloat(amount || 0).toFixed(4) +" HP";
+					reflink = 'https://actifit.io/'+req.query.user + '/wallet';
+				}
+			} catch (asyncErr) {
+				console.log('Error processing payment notification data:', asyncErr);
+				msg = "You have received a payment notification";
 			}
-			else if (req.query.subType == 'fill_vesting_withdraw'){
-				let amount = await utils.vestsToHivePower(req.query.amount);
-				msg = "Your power down has completed its weekly payout of " + parseFloat(amount).toFixed(4) +" HP";
-				reflink = 'https://actifit.io/'+req.query.user + '/wallet';
-			}
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, reflink);
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, reflink);
 			//console.log(req.query.permlink);
 			
 		}else if (req.query.notifType == 'hetokens'){
@@ -8505,13 +8510,16 @@ app.get('/sendNotification', async function(req,res){
 			if (req.query.subType == 'stakehetokens'){
 				msg = ''+req.query.quantity + ' ' + req.query.symbol + ' have been staked to your wallet from '+req.query.actionTaker
 			}
-			utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, 'https://actifit.io/'+req.query.user+'/wallet');
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, 'https://actifit.io/'+req.query.user+'/wallet');
 		}else{
-			res.send('{error: not supported}');
+			res.status(400).send('{error: not supported}');
 			return;
 		}
-		//
+		// Wait for all notifications to be saved before responding
 		res.send('{status: success}');
+	} catch (err) {
+		console.error('sendNotification endpoint error:', err);
+		res.status(500).send('{error: "Internal server error"}');
 	}
 });
 

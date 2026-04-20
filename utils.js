@@ -2222,17 +2222,23 @@ async function sendNotification(db, user, action_taker, type, category, details,
 		};
 		try{
 			let transaction = await db.collection('notifications').insertOne(notification_entry);
-			//console.log('success inserting notification data');
+			console.log('success inserting notification to database');
 			
-			//also send out a firebase message
-			await sendFirebaseNotification(db, user, details, url);
-			console.log('notification done');
+			//also send out a firebase message with error handling
+			try {
+				await sendFirebaseNotification(db, user, details, url);
+				console.log('notification and firebase message sent successfully');
+			} catch (firebaseErr) {
+				console.log('Firebase notification failed but DB notification saved:', firebaseErr);
+				// Continue - DB notification was saved even if Firebase failed
+			}
 			return true;
 		}catch(err){
-			console.log('notification error');
+			console.log('notification database error:', err);
 			return false;
 		}
 	}
+	return false;
 }
 
 
