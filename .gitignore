@@ -89,3 +89,18 @@ $RECYCLE.BIN/
 curation-bot.js
 config.json
 HIVErewards*.json
+
+# Firebase credentials (MUST NOT be committed)
+*firebase-adminsdk*.json
+
+# Node modules (installed via npm, too large for git)
+node_modules/
+
+# Log files
+*.log
+log.log
+tbshoot.log
+
+# Downloaded files
+downloads/
+
