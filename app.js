@@ -8511,6 +8511,23 @@ app.get('/sendNotification', async function(req,res){
 				msg = ''+req.query.quantity + ' ' + req.query.symbol + ' have been staked to your wallet from '+req.query.actionTaker
 			}
 			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, 'https://actifit.io/'+req.query.user+'/wallet');
+		}else if (req.query.notifType == 'proposal_pay'){
+			//Proposal payout notification when user is a beneficiary or involved in proposal
+			let msg = 'You have received a proposal payout: ' + req.query.amount + ' HP';
+			let reflink = 'https://actifit.io/' + req.query.user + '/wallet';
+			try {
+				if (req.query.subType == 'proposal_payout'){
+					//Direct proposal payout
+					msg = 'You have received a proposal payout of ' + req.query.amount + ' HP for proposal "' + req.query.proposal_title + '"';
+				} else if (req.query.subType == 'proposal_fund_payout'){
+					//Proposal fund related payout
+					msg = 'You have received a payout related to proposal "' + req.query.proposal_title + '": ' + req.query.amount + ' HP';
+				}
+			} catch (asyncErr) {
+				console.log('Error processing proposal payout notification:', asyncErr);
+				msg = 'You have received a proposal payout: ' + req.query.amount + ' HP';
+			}
+			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType || 'proposal_payout', req.query.notifType, msg, reflink);
 		}else{
 			res.status(400).send('{error: not supported}');
 			return;
