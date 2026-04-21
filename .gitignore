@@ -86,7 +86,6 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 
-curation-bot.js
 config.json
 HIVErewards*.json
 
