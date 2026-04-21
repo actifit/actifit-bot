@@ -8513,7 +8513,7 @@ app.get('/sendNotification', async function(req,res){
 			await utils.sendNotification(db, req.query.user, req.query.actionTaker, req.query.subType, req.query.notifType, msg, 'https://actifit.io/'+req.query.user+'/wallet');
 		}else if (req.query.notifType == 'proposal_pay'){
 			//Proposal payout notification when user is a beneficiary or involved in proposal
-			let msg = 'You have received a proposal payout: ' + req.query.amount + ' HP';
+			let msg = 'You have received a proposal payout: ' + req.query.amount ;
 			let reflink = 'https://actifit.io/' + req.query.user + '/wallet';
 			try {
 				if (req.query.subType == 'proposal_payout'){
