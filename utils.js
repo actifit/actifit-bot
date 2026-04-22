@@ -2181,7 +2181,7 @@ async function sendFirebaseNotification(db, user, details, url){
 		console.log('Sending FCM message with', registrationTokens.length, 'tokens');
 		console.log('Message payload:', JSON.stringify(message, null, 2));
 		
-		// Use sendEach instead of sendMulticast to handle individual token failures
+		// Use sendAll instead of sendMulticast to handle individual token failures
 		const sendMessages = registrationTokens.map(token => ({
 			notification: message.notification,
 			data: message.data,
@@ -2189,7 +2189,7 @@ async function sendFirebaseNotification(db, user, details, url){
 			token: token
 		}));
 		
-		fbadmin.messaging().sendEach(sendMessages, false).then((response) => {
+		fbadmin.messaging().sendEach(sendMessages).then((response) => {
 			// Response is a message ID string.
 			console.log('FCM send success - successCount:', response.successCount, 'failureCount:', response.failureCount);
 			if (response.responses && response.responses.length>0){
