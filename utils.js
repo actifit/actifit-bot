@@ -2123,7 +2123,10 @@ async function sendFirebaseWebNotification(db, user, details, url){
 async function sendFirebaseNotification(db, user, details, url){
 	
 	/****** Reference https://firebase.google.com/docs/cloud-messaging/send-message ***********/
-	console.log('sendFirebaseNotification');
+	console.log('sendFirebaseNotification - START');
+	console.log('User:', user);
+	console.log('Details:', details);
+	console.log('URL:', url);
 	//fetch user's device/token
 	let device = await findUserMatchingDevice(db, user);
 	const iconUrl = 'https://actifit.io/img/hive_alert.png';
@@ -2138,6 +2141,8 @@ async function sendFirebaseNotification(db, user, details, url){
 		}else{
 			registrationTokens.push(device[0].token);
 		}
+		console.log('Device tokens found:', device?.length || 0);
+		
 		var message = {
 		  notification: {
 			title: 'Actifit Notification',
@@ -2173,11 +2178,14 @@ async function sendFirebaseNotification(db, user, details, url){
 
 	// Send a message to the device corresponding to the provided
 	// registration token.
+		console.log('Sending FCM message with', registrationTokens.length, 'tokens');
+		console.log('Message payload:', JSON.stringify(message, null, 2));
+		
 		fbadmin.messaging().sendMulticast(message)
 		//fbadmin.messaging().send(message)
 		  .then((response) => {
 			// Response is a message ID string.
-			console.log('Successfully sent message:', response);
+			console.log('FCM send success - response:', JSON.stringify(response, null, 2));
 			if (response.responses && response.responses.length>0){
 				for (let j=0;j<response.responses.length;j++){
 					if (response.responses[j].error) console.log(response.responses[j].error);
@@ -2186,7 +2194,24 @@ async function sendFirebaseNotification(db, user, details, url){
 			}
 		  })
 		  .catch((error) => {
-			console.log('Error sending message:', error);
+			console.log('===== FCM ERROR DEBUG =====');
+			console.log('Error code:', error.code);
+			console.log('Error message:', error.message);
+			console.log('Error stack:', error.stack);
+			
+			if (error.error) {
+				console.log('Nested error:', JSON.stringify(error.error, null, 2));
+			}
+			
+			if (error.code === 'messaging/server-unavailable') {
+				console.log('FCM server unavailable - retry later');
+			} else if (error.code === 'messaging/invalid-payload') {
+				console.log('Message payload format invalid');
+			} else if (error.code === 'messaging/invalid-recipient') {
+				console.log('Invalid message recipient');
+			} else if (error.code === 'messaging/invalid-plugins') {
+				console.log('FCM plugins configuration error');
+			}
 		  });
 	  
 	}/*else{
