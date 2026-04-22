@@ -2195,21 +2195,25 @@ async function sendFirebaseNotification(db, user, details, url){
 		  })
 		  .catch((error) => {
 			console.log('===== FCM ERROR DEBUG =====');
-			console.log('Error code:', error.code);
-			console.log('Error message:', error.message);
-			console.log('Error stack:', error.stack);
+			console.log('Error code:', error.code || error.errorInfo?.code);
+			console.log('Error message:', error.message || error.errorInfo?.message);
+			console.log('Error details:', error.details);
 			
-			if (error.error) {
-				console.log('Nested error:', JSON.stringify(error.error, null, 2));
+			if (error.errorInfo) {
+				console.log('Error info code:', error.errorInfo.code);
+				console.log('Error info message:', error.errorInfo.message);
 			}
 			
-			if (error.code === 'messaging/server-unavailable') {
+			const errorCode = error.code || error.errorInfo?.code;
+			if (errorCode === 'messaging/unregistered' || errorCode === 'messaging/registration-token-not-registered') {
+				console.log('Token unregistered - stale token, needs app update');
+			} else if (errorCode === 'messaging/server-unavailable') {
 				console.log('FCM server unavailable - retry later');
-			} else if (error.code === 'messaging/invalid-payload') {
+			} else if (errorCode === 'messaging/invalid-payload') {
 				console.log('Message payload format invalid');
-			} else if (error.code === 'messaging/invalid-recipient') {
+			} else if (errorCode === 'messaging/invalid-recipient') {
 				console.log('Invalid message recipient');
-			} else if (error.code === 'messaging/invalid-plugins') {
+			} else if (errorCode === 'messaging/invalid-plugins') {
 				console.log('FCM plugins configuration error');
 			}
 		  });
