@@ -24,7 +24,7 @@ var config = utils.getConfig();
 
 let ObjectId = require('mongodb').ObjectId; 
 
-const request = require("request");
+const axios = require("axios");
 
 const ethutil = require('ethereumjs-util');
 
@@ -945,21 +945,24 @@ app.get('/surveys', async function (req, res){
 
 
 //schedule restart intervals due to memory drain down
-function restartApiNode() {
-	request.post(
-		{
-			url: 'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/vnd.heroku+json; version=3',
-				'Authorization': 'Bearer ' + config.heroku_app_token
+async function restartApiNode() {
+	try {
+		const response = await axios.post(
+			'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
+			{},
+			{
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/vnd.heroku+json; version=3',
+					'Authorization': 'Bearer ' + config.heroku_app_token
+				}
 			}
-		},
-		function(error, response, body) {
-			console.log(response);
-			console.log(body);
-		}
-	);
+		);
+		console.log(response.status);
+		console.log(response.data);
+	} catch (error) {
+		console.error('Error restarting dyno:', error.message);
+	}
 }
 
 if (process.env.BOT_THREAD == 'MAIN'){

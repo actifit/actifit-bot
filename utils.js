@@ -1336,7 +1336,7 @@ function timeTilFullPower(cur_power){
    return amount.substr(amount.indexOf(' ') + 1);
  }
  
- function loadUserList(location, callback) {
+ async function loadUserList(location, callback) {
   if(!location) {
     if(callback)
       callback(null);
@@ -1345,20 +1345,17 @@ function timeTilFullPower(cur_power){
   }
 
   if (location.startsWith('http://') || location.startsWith('https://')) {
-    // Require the "request" library for making HTTP requests
-    var request = require("request");
-
-    request.get(location, function (e, r, data) {
-      try {
-        if(callback)
-          callback(data.replace(/[\r]/g, '').split('\n'));
-      } catch (err) {
-        console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
-
-        if(callback)
-          callback(null);
+    try {
+      const response = await axios.get(location);
+      if (callback) {
+        callback(response.data.replace(/[\r]/g, '').split('\n'));
       }
-    });
+    } catch (err) {
+      console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
+      if (callback) {
+        callback(null);
+      }
+    }
   } else if (fs.existsSync(location)) {
     if(callback)
       callback(fs.readFileSync(location, "utf8").replace(/[\r]/g, '').split('\n'));

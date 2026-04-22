@@ -17,7 +17,6 @@ let ObjectId = require('mongodb').ObjectId;
 
 const cheerio = require('cheerio')
 const axios = require('axios');
-const request = require("request");
 
 let targetPostCount = 0;
 

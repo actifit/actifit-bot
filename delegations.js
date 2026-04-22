@@ -21,6 +21,7 @@ const testRun = false;
 const hive = require('@hiveio/hive-js');
 
 const steem = require('steem');
+const axios = require('axios');
 
 const steem_history_limit = 100;
 const hive_history_limit = 1000;
@@ -1203,43 +1204,28 @@ async function getBenefactorPosts (account, start) {
 }
 
 //function to load relevant STEEM and SBD prices, and proceed with AFIT token swap/reward process
-function loadSteemPrices() {
+async function loadSteemPrices() {
 
   console.log('-- start AFIT token swap process --')
 
-  // Require the "request" library for making HTTP requests
-  var request = require("request");
+  try {
+    const steemResponse = await axios.get('https://api.coinmarketcap.com/v1/ticker/steem/');
+    steemPrice = parseFloat(steemResponse.data[0].price_usd);
+    console.log("Loaded STEEM price: " + steemPrice);
 
-  // Load the price feed data
-  request.get('https://api.coinmarketcap.com/v1/ticker/steem/', function (e, r, data) {
-    try {
-      steemPrice = parseFloat(JSON.parse(data)[0].price_usd);
+    const sbdResponse = await axios.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/');
+    sbdPrice = parseFloat(sbdResponse.data[0].price_usd);
+    console.log("Loaded SBD price: " + sbdPrice);
 
-      console.log("Loaded STEEM price: " + steemPrice);
-	  
-	  // Load the price feed data
-	  request.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/', function (e, r, data) {
-		try {
-			sbdPrice = parseFloat(JSON.parse(data)[0].price_usd);
+    let afit_swap_days = 1;
+    let start = moment().utc().startOf('date').toDate()
+    let to = moment(start).subtract(afit_swap_days, 'days').toDate()
 
-			console.log("Loaded SBD price: " + sbdPrice);
-		  	
-			let afit_swap_days = 1;
-			let start = moment().utc().startOf('date').toDate()
-			let to = moment(start).subtract(afit_swap_days, 'days').toDate()
-		  
-			//bring the action
-			getBenefactorPosts(config.full_pay_benef_account, to);
-			
-		} catch (err) {
-		  console.log('Error loading SBD price: ' + err);
-		}
-	  });
-  
-    } catch (err) {
-      console.log('Error loading STEEM price: ' + err);
-    }
-  });
+    getBenefactorPosts(config.full_pay_benef_account, to);
+
+  } catch (err) {
+    console.log('Error loading prices: ' + err);
+  }
 }
 
 
