@@ -50,5 +50,8 @@
     "node": "20.x"
   },
   "author": "cryptouru",
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "ws": "^8.20.0"
+  }
 }
