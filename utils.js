@@ -2189,8 +2189,7 @@ async function sendFirebaseNotification(db, user, details, url){
 			token: token
 		}));
 		
-		fbadmin.messaging().sendEach(sendMessages, false) // dryRun = false
-		  .then((response) => {
+		fbadmin.messaging().sendEach(sendMessages, false).then((response) => {
 			// Response is a message ID string.
 			console.log('FCM send success - successCount:', response.successCount, 'failureCount:', response.failureCount);
 			if (response.responses && response.responses.length>0){
