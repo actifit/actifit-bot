@@ -1,5 +1,4 @@
 var fs = require("fs");
-const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
@@ -37,7 +36,7 @@ var config;
 
 let th_id = -1;
 
-steem.api.setOptions({ url: config.active_node });
+client.api.setOptions({ url: config.active_node });
 
 //useless now with newer version of hive-js
 //hive.config.set('rebranded_api', true)
@@ -100,7 +99,7 @@ var HOURS = 60 * 60;
 	if (!bchain || bchain == ''){
 		let chain_info = await hive.api.getDynamicGlobalPropertiesAsync();
 		data['HIVE']=chain_info;
-		chain_info = await steem.api.getDynamicGlobalPropertiesAsync();
+		chain_info = await client.api.getDynamicGlobalPropertiesAsync();
 		data['STEEM']=chain_info;
 		chain_info = await blurt.api.getDynamicGlobalPropertiesAsync();
 		data['BLURT']=chain_info;
@@ -120,7 +119,7 @@ var HOURS = 60 * 60;
 	if (!bchain || bchain == ''){
 		let account_res = await hive.api.getAccountsAsync([account_name]); 
 		account['HIVE']=account_res[0];
-		account_res = await steem.api.getAccountsAsync([account_name]); 
+		account_res = await client.api.getAccountsAsync([account_name]); 
 		account['STEEM']=account_res[0];
 		account_res = await blurt.api.getAccountsAsync([account_name]); 
 		account['BLURT']=account_res[0];

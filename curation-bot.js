@@ -1,12 +1,8 @@
 var fs = require("fs");
-const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
 const blurt = require("@blurtfoundation/blurtjs");
-
-//hive.config.set('rebranded_api', true)
-//hive.broadcast.updateOperations()
 
 var utils = require('./utils');
 var mail = require('./mail');
@@ -15,6 +11,7 @@ var moment = require('moment');
 const MongoClient = require('mongodb').MongoClient;
 let ObjectId = require('mongodb').ObjectId; 
 
+const dsteem = require('dsteem');
 const cheerio = require('cheerio')
 const axios = require('axios');
 
@@ -60,9 +57,8 @@ let finalEligNewbieList = []; //contains array of newbies eligible for extra vot
 
 // Load the settings from the config file
 loadConfig();
-//console.log('launch test comment');
-//testCustomComment();
 
+const client = new dsteem.Client(config.active_node);
 
 //BSC requirements
 var Web3 = require('web3');
@@ -123,10 +119,8 @@ loadHivePrices();
 setTimeout(loadSteemPrices, 30*1000);
 
 //set proper nodes
-steem.api.setOptions({ 
+client.api.setOptions({ 
 	url: config.active_node ,
-		//hive.config.set('address_prefix','TST');
-	//useAppbaseApi: true
 });
 /*
 hive.api.setOptions({ 
@@ -994,7 +988,7 @@ async function startProcess() {
 	
 	
 	
-	/*await steem.api.getAccounts([config.account], function (err, result) {
+	/*await client.api.getAccounts([config.account], function (err, result) {
     if (err || !result)
       utils.log(err, result);
     else {
@@ -1022,7 +1016,7 @@ async function startProcess() {
 	//return;
 	
   
-	/*await steem.api.setOptions({ 
+	/*await client.api.setOptions({ 
 		url: config.active_hive_node ,
 		//useAppbaseApi: true
 	});*/
@@ -1221,7 +1215,7 @@ async function startProcess() {
 		recentClaims = rewardFund.recent_claims;
 		
 		if (properties.total_vesting_fund_steem){
-			totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0]);
+			totalSteem = Number(properties.total_vesting_fund_client.split(' ')[0]);
 		}else if (properties.total_vesting_fund_hive){
 			totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0]);
 		}else{
@@ -1327,14 +1321,14 @@ function BuyAndBurn(test){
 		}
 		let json = "{\"contractName\":\"market\",\"contractAction\":\"buy\",\"contractPayload\":{\"symbol\":\"AFIT\",\"quantity\":\"" + quantity + "\",\"price\":\"" + targetPrice + "\"}}";
 		
-		steem.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+		client.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
 		  if (!err && result) {
 			console.log('success buyin');
 			console.log(result);
 			
 			json = "{\"contractName\":\"tokens\",\"contractAction\":\"transfer\",\"contractPayload\":{\"symbol\":\"AFIT\",\"to\":\"null\",\"quantity\":\"" + quantity + "\",\"memo\":\"\"}}";
 			//burn those tokens
-			steem.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+			client.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
 				if (!err && result) {
 					console.log('success burnin');
 					console.log(result);
@@ -1355,7 +1349,7 @@ function BuyAndBurn(test){
 }
 
 function setSteemPrice(json){
-	steem_price = parseFloat(json.steem.usd); 
+	steem_price = parseFloat(json.client.usd); 
 	console.log('STEEM price:'+steem_price)
 	//witness deactivated. No further need to broadcast
 	/*if (!config.testing){
@@ -1481,12 +1475,12 @@ function broadcastFeed (type) {
 		//below two lines are hacks since steem-js is not yet accepting HIVE and HBD
 		pegged_cur = ' HBD';
 		//type = 'HIVE';
-		/*steem.api.setOptions({ 
+		/*client.api.setOptions({ 
 			url: config.active_hive_node ,
 			//useAppbaseApi: true
 		});*/
 	}else{
-		/*steem.api.setOptions({ 
+		/*client.api.setOptions({ 
 			url: config.active_node ,
 			//useAppbaseApi: true
 		});*/
@@ -1521,7 +1515,7 @@ function processVotes(query, subsequent) {
   //fetchAFITXBal(0);
 	
   /*
-  steem.api.setOptions({ 
+  client.api.setOptions({ 
 	url: config.active_hive_node ,
 	//useAppbaseApi: true
 });*/
@@ -3025,7 +3019,7 @@ async function sendVote(post, retries, power_per_vote) {
 				//first bchain transactions
 				console.log('set HIVE node');
 				/*
-				steem.api.setOptions({ 
+				client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3035,7 +3029,7 @@ async function sendVote(post, retries, power_per_vote) {
 					try{
 											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3066,7 +3060,7 @@ async function sendVote(post, retries, power_per_vote) {
 					
 					try{
 						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);			
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3101,7 +3095,7 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.zzan_active){
 						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3134,7 +3128,7 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.sports_active){
 						utils.log('voting with '+config.sports_active+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);			
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3170,7 +3164,7 @@ async function sendVote(post, retries, power_per_vote) {
 						
 						try{
 							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);			
-							/*steem.api.setOptions({ 
+							/*client.api.setOptions({ 
 								url: config.active_hive_node ,
 								//useAppbaseApi: true
 							});*/
@@ -3202,7 +3196,7 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				try{
 					utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight * 3 / 100) + '% vote cast for: ' + post.url);			
-					/*steem.api.setOptions({ 
+					/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3233,7 +3227,7 @@ async function sendVote(post, retries, power_per_vote) {
 								
 				try{
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);			
-					/*steem.api.setOptions({ 
+					/*client.api.setOptions({ 
 							url: config.active_hive_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3359,7 +3353,7 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				//second blockchain transactions
 				console.log('set STEEM node');
-				/*steem.api.setOptions({ 
+				/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
@@ -3370,11 +3364,11 @@ async function sendVote(post, retries, power_per_vote) {
 											
 						utils.log('voting with '+config.full_pay_benef_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);
 						
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-						res = await steem.broadcast.sendAsync( 
+						res = await client.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -3401,11 +3395,11 @@ async function sendVote(post, retries, power_per_vote) {
 					
 					try{
 						utils.log('voting with '+config.pay_account+ ' '+utils.format(vote_percent_add_accounts / 100) + '% vote cast for: ' + post.url);						
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-						res = await steem.broadcast.sendAsync( 
+						res = await client.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -3436,11 +3430,11 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.zzan_active){
 						utils.log('voting with '+config.zzan_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-						res = await steem.broadcast.sendAsync( 
+						res = await client.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -3469,11 +3463,11 @@ async function sendVote(post, retries, power_per_vote) {
 				try{
 					if (config.sports_active){
 						utils.log('voting with '+config.sports_account+ ' '+utils.format(stdrd_vote_weight / 100) + '% vote cast for: ' + post.url);						
-						/*steem.api.setOptions({ 
+						/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-						res = await steem.broadcast.sendAsync( 
+						res = await client.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -3505,11 +3499,11 @@ async function sendVote(post, retries, power_per_vote) {
 						
 						try{
 							utils.log('voting with '+config.appics_account+ ' '+utils.format(post.boost_apx_percent / 100) + '% vote cast for: ' + post.url);						
-							/*steem.api.setOptions({ 
+							/*client.api.setOptions({ 
 								url: config.active_node ,
 								//useAppbaseApi: true
 							});*/
-							res = await steem.broadcast.sendAsync( 
+							res = await client.broadcast.sendAsync( 
 							   { 
 								   operations: [ 
 										   ['vote', 
@@ -3537,11 +3531,11 @@ async function sendVote(post, retries, power_per_vote) {
 				
 				try{
 				utils.log('voting with '+config.rewards_account+ ' '+utils.format(net_rewards_vote_weight / 100) + '% vote cast for: ' + post.url);						
-					/*steem.api.setOptions({ 
+					/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-					res = await steem.broadcast.sendAsync( 
+					res = await client.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
 									   ['vote', 
@@ -3577,11 +3571,11 @@ async function sendVote(post, retries, power_per_vote) {
 					vote_weight += config.extra_vote_weight_increase;
 					
 					utils.log('voting with '+account.name+ ' '+utils.format(vote_weight / 100) + '% vote cast for: ' + post.url);						
-					/*steem.api.setOptions({ 
+					/*client.api.setOptions({ 
 							url: config.active_node ,
 							//useAppbaseApi: true
 						});*/
-					res = await steem.broadcast.sendAsync( 
+					res = await client.broadcast.sendAsync( 
 						   { 
 							   operations: [ 
 									   ['vote', 
@@ -4342,7 +4336,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 				
 				try{
 				
-				/*steem.api.setOptions({ 
+				/*client.api.setOptions({ 
 						url: bchain_node ,
 						//useAppbaseApi: true
 					});*/
@@ -4380,7 +4374,7 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 					//resolve(res);
 				}
 				
-				/*steem.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
+				/*client.broadcast.comment(config.posting_key, parentAuthor, parentPermlink, account.name, permlink, permlink, content, jsonMetadata, function (err, result) {
 					  if (!err && result) {
 						utils.log('Posted comment: ' + permlink);
 						resolve(result);
@@ -4452,7 +4446,7 @@ function resteem(author, permlink) {
     permlink: permlink
   }]);
 
-  steem.broadcast.customJson(config.posting_key, [], [config.account], 'follow', json, (err, result) => {
+  client.broadcast.customJson(config.posting_key, [], [config.account], 'follow', json, (err, result) => {
     if (!err && result) {
       utils.log('Resteemed Post: @' + author + '/' + permlink);
     } else {
@@ -4548,7 +4542,7 @@ async function claimRewards(target_chain) {
 				/*if (parseFloat(targetAccount.reward_sbd_balance) > 0 && config.post_rewards_withdrawal_account && config.post_rewards_withdrawal_account != '') {
 
 					// Send liquid post rewards to the specified account
-					steem.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, targetAccount.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
+					client.broadcast.transfer(config.active_key, config.account, config.post_rewards_withdrawal_account, targetAccount.reward_sbd_balance, 'Liquid Post Rewards Withdrawal', function (err, response) {
 						if (err){
 							utils.log(err, response);
 						}else{

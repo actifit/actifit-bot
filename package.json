@@ -27,7 +27,6 @@
     "nodemailer-express-handlebars": "^3.0.0",
     "p-iteration": "^1.1.7",
     "sscjs": "0.0.8",
-    "steem": "^0.7.11",
     "swagger-ui-express": "^5.0.1",
     "web3": "^1.7.3",
     "yamljs": "^0.3.0"

@@ -19,8 +19,6 @@ const MongoClient = require('mongodb').MongoClient
 const testRun = false;
 
 const hive = require('@hiveio/hive-js');
-
-const steem = require('steem');
 const axios = require('axios');
 
 const steem_history_limit = 100;
