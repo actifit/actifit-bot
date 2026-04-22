@@ -2181,15 +2181,25 @@ async function sendFirebaseNotification(db, user, details, url){
 		console.log('Sending FCM message with', registrationTokens.length, 'tokens');
 		console.log('Message payload:', JSON.stringify(message, null, 2));
 		
-		fbadmin.messaging().sendMulticast(message)
-		//fbadmin.messaging().send(message)
+		// Use sendEach instead of sendMulticast to handle individual token failures
+		const sendMessages = registrationTokens.map(token => ({
+			notification: message.notification,
+			data: message.data,
+			webpush: message.webpush,
+			token: token
+		}));
+		
+		fbadmin.messaging().sendEach(sendMessages, false) // dryRun = false
 		  .then((response) => {
 			// Response is a message ID string.
-			console.log('FCM send success - response:', JSON.stringify(response, null, 2));
+			console.log('FCM send success - successCount:', response.successCount, 'failureCount:', response.failureCount);
 			if (response.responses && response.responses.length>0){
 				for (let j=0;j<response.responses.length;j++){
-					if (response.responses[j].error) console.log(response.responses[j].error);
-					else console.log(response.responses[j]);
+					if (response.responses[j].error) {
+						console.log('Token error:', registrationTokens[j], '-', response.responses[j].error.message || response.responses[j].error);
+					} else {
+						console.log('Token success:', registrationTokens[j]);
+					}
 				}
 			}
 		  })
@@ -2208,7 +2218,7 @@ async function sendFirebaseNotification(db, user, details, url){
 			if (errorCode === 'messaging/unregistered' || errorCode === 'messaging/registration-token-not-registered') {
 				console.log('Token unregistered - stale token, needs app update');
 			} else if (errorCode === 'messaging/server-unavailable') {
-				console.log('FCM server unavailable - retry later');
+				console.log('FCM server unavailable - will retry');
 			} else if (errorCode === 'messaging/invalid-payload') {
 				console.log('Message payload format invalid');
 			} else if (errorCode === 'messaging/invalid-recipient') {
