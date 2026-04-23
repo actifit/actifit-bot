@@ -17,8 +17,6 @@ fbadmin.initializeApp({
 
 var _ = require('lodash');
 const axios = require('axios');
-const dsteem = require('dsteem');
-
 const dhive = require('@hiveio/dhive');
 
 const dblurt = require('dblurt');
@@ -27,7 +25,7 @@ const moment = require('moment')
 
 
 
-const client = new dsteem.Client(config.active_node);
+// const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
 const blurtClient = new dblurt.Client(config.blurt_node);
 
@@ -36,7 +34,7 @@ var config;
 
 let th_id = -1;
 
-client.api.setOptions({ url: config.active_node });
+// client.api.setOptions({ url: config.active_node });
 
 //useless now with newer version of hive-js
 //hive.config.set('rebranded_api', true)
