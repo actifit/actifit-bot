@@ -20,7 +20,7 @@ const axios = require('axios');
 const hive_history_limit = 1000;
 
 //prepare BSC work
-const Web3 = require('web3');
+const { Web3 } = require('web3');
 
 let fs = require('fs');
 let jsonFile = "./AFIT_abi.json";
