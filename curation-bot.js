@@ -1727,8 +1727,8 @@ function processVotes(query, subsequent) {
 							critical_fields.some(function(element) {
 							  //initialize incons field in case we find a match (or lack of)
 							  incons_field = element;
-							  let stored_meta = eval("auth_meta."+element);
-							  let new_meta = eval("post.json."+element);
+							  let stored_meta = auth_meta[element];
+							  let new_meta = post.json[element];
 							  /*console.log('stored_meta');
 							  console.log(stored_meta);
 							  console.log('new_meta');

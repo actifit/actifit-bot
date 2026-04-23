@@ -143,7 +143,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//processGadgetBuyPrize();
 	//updateUserTokens();
 	//return;
-	runRewards(true, false);
+	runRewards(false, false);
 	//runRewards(false, false);
 	//moveAFITToSE(true);
 	/*let val = utils.rewardCap('HIVE');
@@ -1000,7 +1000,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 
 		db = client.db(dbName)
 		// Get the documents collection
-		collection = db.collection(delegationTrxCol)
+		//collection = db.collection(delegationTrxCol)
 		
 		/**** copy a collection to another *****/
 		/*let documentsToMove = db.collection(delegationTrxCol).find({});
@@ -1841,7 +1841,7 @@ function upsertRewardTransaction (reward) {
 
 async function updateProperties () {
   // Set STEEM global properties
-  properties = await client.database.getDynamicGlobalProperties()
+  properties = await hiveClient.database.getDynamicGlobalProperties()
   if (properties.total_vesting_fund_steem){
 	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   }else{
