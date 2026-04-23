@@ -1,14 +1,10 @@
-const dsteem = require('dsteem')
 const dhive = require('@hiveio/dhive')
-//const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
 const mail = require('./mail')
 
 const config = utils.getConfig()
-
-const client = new dsteem.Client(config.active_node)
 
 const hiveClient = new dhive.Client(config.active_hive_node)
 
@@ -21,12 +17,10 @@ const testRun = false;
 const hive = require('@hiveio/hive-js');
 const axios = require('axios');
 
-const steem_history_limit = 100;
 const hive_history_limit = 1000;
 
 //prepare BSC work
 const Web3 = require('web3');
-const targetToken = 'AFIT';
 
 let fs = require('fs');
 let jsonFile = "./AFIT_abi.json";
@@ -44,34 +38,20 @@ web3.eth.accounts.wallet.add({
 // Get BEP20 Token contract instance
 let contract = new web3.eth.Contract(tokenAbi, config.afitAddress);
 
-
-//get balance of BEP20 token 
-/*contract.methods.balanceOf(config.bridgeWalletAdd).call().then(function (bal) {
-        console.log(bal);
-     })*/
-
-//return;
-
-//hive.config.set('rebranded_api','true');
-//hive.broadcast.updateOperations();
-
 hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node });
 
 let db
 let collection
-let bulk_delegation_entries
 let bulk_hive_delegation_entries
 
 const bulkOps = [];
 
 // Database Name
 const dbName = config.db_name
-const delegationTrxCol = 'delegation_transactions'
 const hiveDelegationTrxCol = 'hive_delegation_transactions'
 
-const actDelgCol = 'active_delegations'
 const hiveActDelgCol = 'hive_active_delegations'
 
 let properties
@@ -85,7 +65,6 @@ let newestTxId = -1;
 console.log('--- Delegations script initialized ---');
 console.log('envt variables:');
 console.log(process.env.BOT_THREAD);
-//return;
 
 let schedule = require('node-schedule')
 
@@ -1040,7 +1019,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 		//return;
 		
 		//run for one day
-		var delegation_days = 1;
+		var delegation_days = 2;
 		startProcess(delegation_days, steemOnlyReward, updateDelegations);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
