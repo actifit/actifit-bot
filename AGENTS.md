@@ -19,11 +19,9 @@
 
 ## Architecture
 
-- `app.js` — Main Express API server (Swagger docs at `/api-docs`)
-- `curation-bot.js` — Main curation/voting bot (`package.json` `main` entry)
+- `app.js` — Main Express API server (Swagger docs at `/api-docs`, `package.json` `main` entry)
 - `delegations.js` — HP delegation script
-- `utils.js` — Shared utilities, config loader, Hive/Blurt/Steem clients, Firebase init
-- `save-data.js` — Data persistence helpers
+- `utils.js` — Shared utilities, config loader, Hive/Blurt clients, Firebase init
 - `mail.js` — Email notifications
 - `swagger.yaml` — OpenAPI spec served by `app.js`
 

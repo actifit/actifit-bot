@@ -2,7 +2,7 @@
   "name": "actifit-curation-bot",
   "version": "0.0.1",
   "description": "actifit curation bot",
-  "main": "curation-bot.js",
+  "main": "app.js",
   "dependencies": {
     "@blurtfoundation/blurtjs": "^1.0.0",
     "@exoshtw/admob-ssv": "^0.1.0-rc1",

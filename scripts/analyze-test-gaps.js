@@ -46,20 +46,7 @@ console.log('\n3. MAIL.JS FUNCTIONS (' + mailFunctions.length + ' total)');
 console.log('   Currently tested: 0');
 mailFunctions.forEach((f, i) => console.log('   ' + (i+1) + '. ' + f + ' [UNTESTED]'));
 
-// 4. Extract functions from save-data.js
-const saveDataSource = fs.readFileSync('save-data.js', 'utf8');
-const saveFuncRegex = /(?:async\s+)?function\s+(\w+)|(?:let|var|const)\s+(\w+)\s*=\s*(?:async\s+)?function|\bmodule\.exports\.(\w+)\s*=/g;
-const saveFunctions = [];
-while ((match = saveFuncRegex.exec(saveDataSource)) !== null) {
-  const name = match[1] || match[2] || match[3];
-  if (name && !saveFunctions.includes(name)) saveFunctions.push(name);
-}
-
-console.log('\n4. SAVE-DATA.JS FUNCTIONS (' + saveFunctions.length + ' total)');
-console.log('   Currently tested: 0');
-saveFunctions.forEach((f, i) => console.log('   ' + (i+1) + '. ' + f + ' [UNTESTED]'));
-
-// 5. Identify middleware and auth functions
+// 4. Identify middleware and auth functions
 const middlewareRegex = /(?:let|const|var)\s+(\w+)\s*=\s*\(req,\s*res,\s*next\)\s*=>\s*\{/g;
 const middlewares = [];
 while ((match = middlewareRegex.exec(appSource)) !== null) {

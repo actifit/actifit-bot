@@ -2,7 +2,7 @@
  * Security regression tests for vulnerability fixes
  *
  * These tests verify:
- * 1. eval() has been removed from app.js and curation-bot.js
+ * 1. eval() has been removed from app.js
  * 2. ObjectId constructors are wrapped in try/catch
  * 3. JSON.parse on user input is wrapped in try/catch
  * 4. The actual endpoints handle invalid input gracefully
@@ -190,14 +190,9 @@ describe('Security Regression Tests', () => {
 
   describe('Static source analysis', () => {
     const appSource = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
-    const botSource = fs.readFileSync(path.join(__dirname, '../curation-bot.js'), 'utf8');
 
     test('app.js contains no eval() calls', () => {
       expect(appSource).not.toMatch(/eval\s*\(/);
-    });
-
-    test('curation-bot.js contains no eval() calls', () => {
-      expect(botSource).not.toMatch(/eval\s*\(/);
     });
 
     test('app.js ObjectId constructors on user input are wrapped in try/catch', () => {

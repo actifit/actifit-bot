@@ -21,7 +21,7 @@ The current test suite consists of:
 - 5 authentication middleware tests for `checkHdrs` (missing token, invalid token, missing user, DB lookup failure)
 - 18 utils unit tests for `getCurrency`, `calcScore`, `getConfig`, `asyncForEach`, `generateRandomNumber`, etc.
 
-**Still untested:** The vast majority of endpoints (~229 of 235), most `utils.js` functions (~69 of 87), all of `curation-bot.js`, `save-data.js`, and `mail.js`.
+**Still untested:** The vast majority of endpoints (~229 of 235), most `utils.js` functions (~69 of 87), and `mail.js`.
 
 ---
 
@@ -284,27 +284,7 @@ The current test suite consists of:
 
 ---
 
-## 4. Data Processing (`save-data.js` — 8 functions)
-
-| Status | Count |
-|--------|-------|
-| Tested | 0 |
-| Untested | 8 |
-
-- `runPostsProcess` — main post processing pipeline
-- `getPosts` — post retrieval and filtering
-- `processTransactions` — transaction processing
-- `updateUserTokens` — user token balance updates
-- `processVotedPosts` — voted post processing
-- `getAccountVotes` — vote retrieval
-- `getReblogs` — reblog retrieval
-- `upsertPosts` — post upsertion
-
-**Risk:** Core curation bot data pipeline completely untested.
-
----
-
-## 5. Middleware (`app.js` — 1 function)
+## 4. Middleware (`app.js` — 1 function)
 
 | Status | Count |
 |--------|-------|
@@ -339,27 +319,7 @@ The current test suite consists of:
 
 ---
 
-## 7. Curation Bot (`curation-bot.js`)
-
-This file (~4,500 lines) contains the core voting/curation logic and has **zero tests**.
-
-Key untested functionality:
-- Post fetching and filtering pipeline
-- Vote weight calculation
-- Reward distribution algorithm
-- AFIT token calculation and distribution
-- Beneficiary handling
-- Spam/abuse detection
-- Daily/weekly reward cycles
-- Gadget prize drawings
-- Lucky winner selection
-- RC delegation management
-
-**Risk:** The core business logic of the entire application is untested.
-
----
-
-## 8. Delegation Script (`delegations.js`)
+## 7. Delegation Script (`delegations.js`)
 
 This file (~1,500 lines) handles HP delegation rewards and has **zero tests**.
 
@@ -392,7 +352,6 @@ Key untested functionality:
 | `getVoteValue` / `getVoteValueUSD` | Financial math | Low | `utils.js` |
 | `findVerifyTrx` | Transaction integrity | Medium | `utils.js` |
 | `sendPlainMail` / `sendWithTemplate` | Email delivery | Low | `mail.js` |
-| `runPostsProcess` | Curation pipeline | High | `save-data.js` |
 | Login endpoints (`/loginAuth`, `/loginKeychain`) | Authentication flow | Medium | `app.js` |
 | Wallet endpoints (`/transactions`, `/userFullBal`) | Financial data | Medium | `app.js` |
 
