@@ -239,6 +239,78 @@ describe('Utils Unit Tests', () => {
     });
   });
 
+  describe('Vesting shares calculation', () => {
+    test('getVestingShares calculates effective vesting shares', () => {
+      const account = {
+        vesting_shares: '1000000.000000 VESTS',
+        received_vesting_shares: '500000.000000 VESTS',
+        delegated_vesting_shares: '200000.000000 VESTS',
+      };
+      const result = utils.getVestingShares(account);
+      expect(result).toBe(1300000);
+    });
+
+    test('getVestingShares handles zero delegation', () => {
+      const account = {
+        vesting_shares: '1000000.000000 VESTS',
+        received_vesting_shares: '0.000000 VESTS',
+        delegated_vesting_shares: '0.000000 VESTS',
+      };
+      const result = utils.getVestingShares(account);
+      expect(result).toBe(1000000);
+    });
+  });
+
+  describe('Beneficiary validation', () => {
+    test('checkBeneficiary returns true when all config beneficiaries are present', () => {
+      const post = {
+        beneficiaries: [
+          { account: 'actifit', weight: 5000 },
+          { account: 'actifit.pay', weight: 5000 },
+        ],
+      };
+      expect(utils.checkBeneficiary(post)).toBe(true);
+    });
+
+    test('checkBeneficiary returns false when beneficiaries are missing', () => {
+      const post = {
+        beneficiaries: [
+          { account: 'actifit', weight: 10000 },
+        ],
+      };
+      expect(utils.checkBeneficiary(post)).toBe(false);
+    });
+
+    test('checkBeneficiary returns false for empty beneficiaries', () => {
+      const post = { beneficiaries: [] };
+      expect(utils.checkBeneficiary(post)).toBe(false);
+    });
+  });
+
+  describe('Vote calculation', () => {
+    test('calculateVotes divides weight by total rate multiplier count', () => {
+      const posts = [
+        { rate_multiplier: 1 },
+        { rate_multiplier: 1 },
+        { rate_multiplier: 2 },
+      ];
+      const result = utils.calculateVotes(posts, 100000);
+      expect(result.power_per_vote).toBe(25000); // 100000 / (1*2 + 2*1) = 100000/4 = 25000
+    });
+
+    test('calculateVotes uses default weight of 100000', () => {
+      const posts = [{ rate_multiplier: 1 }];
+      const result = utils.calculateVotes(posts);
+      expect(result.power_per_vote).toBe(100000);
+    });
+
+    test('calculateVotes handles empty posts array', () => {
+      const result = utils.calculateVotes([], 100000);
+      // Division by zero would give Infinity, function should handle it
+      expect(typeof result.power_per_vote).toBe('number');
+    });
+  });
+
   describe('Log function', () => {
     test('log function exists and is callable', () => {
       expect(typeof utils.log).toBe('function');

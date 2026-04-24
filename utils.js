@@ -1317,10 +1317,10 @@ function format(n, c, d, t) {
        break;
      }
    }
-   if(!benefit)
-     return false;
+    if(benefit !== true)
+      return false;
 
-   return true;
+    return true;
 
  }
  
