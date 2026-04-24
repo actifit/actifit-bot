@@ -11,7 +11,6 @@ var moment = require('moment');
 const MongoClient = require('mongodb').MongoClient;
 let ObjectId = require('mongodb').ObjectId; 
 
-const dsteem = require('dsteem');
 const cheerio = require('cheerio')
 const axios = require('axios');
 
@@ -58,7 +57,7 @@ let finalEligNewbieList = []; //contains array of newbies eligible for extra vot
 // Load the settings from the config file
 loadConfig();
 
-const client = new dsteem.Client(config.active_node);
+
 
 //BSC requirements
 var Web3 = require('web3');
@@ -119,7 +118,7 @@ loadHivePrices();
 setTimeout(loadSteemPrices, 30*1000);
 
 //set proper nodes
-client.api.setOptions({ 
+hive.api.setOptions({ 
 	url: config.active_node ,
 });
 /*
@@ -1321,14 +1320,14 @@ function BuyAndBurn(test){
 		}
 		let json = "{\"contractName\":\"market\",\"contractAction\":\"buy\",\"contractPayload\":{\"symbol\":\"AFIT\",\"quantity\":\"" + quantity + "\",\"price\":\"" + targetPrice + "\"}}";
 		
-		client.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+		hive.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
 		  if (!err && result) {
 			console.log('success buyin');
 			console.log(result);
 			
 			json = "{\"contractName\":\"tokens\",\"contractAction\":\"transfer\",\"contractPayload\":{\"symbol\":\"AFIT\",\"to\":\"null\",\"quantity\":\"" + quantity + "\",\"memo\":\"\"}}";
 			//burn those tokens
-			client.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
+			hive.broadcast.customJson(config.active_key, [config.account], [], 'ssc-mainnet1', json, (err, result) => {
 				if (!err && result) {
 					console.log('success burnin');
 					console.log(result);
@@ -4341,9 +4340,6 @@ async function sendComment(post, retries, vote_weight, bchain_node) {
 						//useAppbaseApi: true
 					});*/
 				let chainLnk = hive;
-				if (bchain_node == 'STEEM'){
-					chainLnk = steem;
-				}
 				console.log(jsonMetadata);
 				const operations = [ 
 					   ['comment', 
@@ -4446,7 +4442,7 @@ function resteem(author, permlink) {
     permlink: permlink
   }]);
 
-  client.broadcast.customJson(config.posting_key, [], [config.account], 'follow', json, (err, result) => {
+  hive.broadcast.customJson(config.posting_key, [], [config.account], 'follow', json, (err, result) => {
     if (!err && result) {
       utils.log('Resteemed Post: @' + author + '/' + permlink);
     } else {
@@ -4479,17 +4475,9 @@ async function claimRewards(target_chain) {
 	if (!config.auto_claim_rewards)
 		return;
 	
-	let targetAccount = actSteemAccount;
-	
 	let claim_currency
 	let claim_currency_stable
 	let chainLnk
-	if (target_chain == 'STEEM'){
-		claim_currency = targetAccount.reward_steem_balance
-		claim_currency_stable = targetAccount.reward_sbd_balance
-		chainLnk = steem;
-	}
-	
 	if (target_chain == 'HIVE'){
 		targetAccount = account;
 		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");

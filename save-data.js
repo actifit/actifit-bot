@@ -1,6 +1,6 @@
 var utils = require('./utils');
 var mail = require('./mail');
-const dsteem = require('dsteem');
+const hive = require('@hiveio/hive-js');
 const { forEach } = require('p-iteration');
 
 const MongoClient = require('mongodb').MongoClient;
@@ -8,7 +8,7 @@ const assert = require('assert');
 
 
 var config = utils.getConfig();
-const client = new dsteem.Client(config.active_node);
+
 
 // Connection URL
 const url = config.mongo_uri;
@@ -77,7 +77,7 @@ async function getPosts(index) {
 	var banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
 	console.log('found banned users');
    
-  client.api.getDiscussionsByCreated(query, function (err, result) {
+  hive.api.getDiscussionsByCreated(query, function (err, result) {
   	if (result && !err) {
       if(result.length == 0 || !result[0]) {
           utils.log('No posts found for this tag: ' + config.main_tag, 'import');
@@ -237,7 +237,7 @@ async function processTransactions(posts) {
 			transactions.push(vote_transaction);
 			}
 		});
-		let reblogs = await client.api.getRebloggedByAsync(post.author, post.permlink);
+		let reblogs = await hive.api.getRebloggedByAsync(post.author, post.permlink);
 		console.log('------------------ REBLOGS --------------------');
 		console.log(reblogs);
 		reblogs.forEach(async reblog => {
@@ -295,7 +295,7 @@ async function processVotedPosts() {
 	let postsData = [];
 
 	await forEach(transactions, async (txs) => {
-		await client.api.getContentAsync(txs.author, txs.permlink)
+		await hive.api.getContentAsync(txs.author, txs.permlink)
 			.then(postObject => {
 							if	(utils.checkBeneficiary(postObject) || postObject.author == config.account) {
 									console.log('--- Post has correct beneficiaries or was posted by config account -----');
@@ -315,7 +315,7 @@ async function processVotedPosts() {
 
 async function getAccountVotes(account) {
 	let voteByAccount = []
-	await client.api.getAccountHistoryAsync(account, -1, 10000)
+	await hive.api.getAccountHistoryAsync(account, -1, 10000)
 			.filter( tx => tx[1].op[0] === 'vote' && tx[1].op[1].voter == account)
 			.each((transaction) => {
 					voteByAccount.push(transaction[1].op[1])
@@ -328,7 +328,7 @@ async function getAccountVotes(account) {
 async function getReblogs(post) {
 	console.log('----- Getting reblogs ----');
 	let res;
-	res = await client.api.getRebloggedByAsync(post.author, post.permlink);
+	res = await hive.api.getRebloggedByAsync(post.author, post.permlink);
 	console.log(res);
 	return res;
 }

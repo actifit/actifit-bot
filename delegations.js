@@ -589,15 +589,15 @@ async function testMove(){
 	//broadcast to BC
 	console.log('broadcast to BC');
 	
-	//sign key properly to function with dsteem requirement
-	let privateKey = dsteem.PrivateKey.fromString(
+	//sign key properly to function with dhive requirement
+	let privateKey = dhive.PrivateKey.fromString(
 		//config.token_dist_pkey
 		config.active_key
 	);
 	let entry = new Object();
 	
 	entry.user='mcfarhat';
-	client.broadcast.json({
+						hiveClient.broadcast.json({
 		required_auths: [config.account],
 		required_posting_auths: [],
 		id: 'ssc-mainnet1',
@@ -667,8 +667,8 @@ async function moveAFITToSE(testMode){
 		let poweringDown = await db.collection('powering_down_he').find().toArray();
 		//console.log (poweringDown)
 		
-		//sign key properly to function with dsteem requirement
-		let privateKey = dsteem.PrivateKey.fromString(
+		//sign key properly to function with dhive requirement
+		let privateKey = dhive.PrivateKey.fromString(
 			//config.token_dist_pkey
 			config.active_key
 		);
@@ -917,8 +917,8 @@ async function airdropAFITX(){
 			let totalAFITXSpent = 0;
 			let totalUsersRewarded = 0;
 			
-			//sign key properly to function with dsteem requirement
-			let privateKey = dsteem.PrivateKey.fromString(
+			//sign key properly to function with dhive requirement
+			let privateKey = dhive.PrivateKey.fromString(
 				//config.token_dist_pkey
 				config.active_key
 			);
@@ -958,7 +958,7 @@ async function airdropAFITX(){
 						console.log(json_data);
 						totalAFITXSpent += parseFloat(rewardAFITX);
 						totalUsersRewarded += 1;
-						client.broadcast.json({
+	hiveClient.broadcast.json({
 							//required_auths: [config.token_dist_account],
 							required_auths: [config.account],
 							required_posting_auths: [],
@@ -1071,7 +1071,7 @@ async function getBenefactorPosts (account, start) {
   }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   //console.log(properties);
-  const transactions = await client.database.call('get_account_history', [account, txStart, limit])
+  const transactions = await hiveClient.database.call('get_account_history', [account, txStart, limit])
   transactions.reverse()
   let foundTx = false;
   console.log("newestTxId:"+newestTxId);
@@ -1910,14 +1910,14 @@ async function updateUserTokens() {
 //function handles fetching account details for later use when claiming rewards
 async function grabAccountDetails(){
 	console.log('grabbing fund account details');
-	let account = await client.database.call('get_accounts', [[config.full_pay_benef_account]]);
+	let account = await hiveClient.database.call('get_accounts', [[config.full_pay_benef_account]]);
 	console.log(account);
 	return account[0];
 }
 //function handles claiming pending account rewards
 async function claimRewards(){
-	//sign key properly to function with dsteem requirement
-	let privateKey = dsteem.PrivateKey.fromString(
+	//sign key properly to function with dhive requirement
+	let privateKey = dhive.PrivateKey.fromString(
         config.full_pay_posting_key
     );
 	//fetch account details first to use correct values for claim
@@ -1936,7 +1936,7 @@ async function claimRewards(){
 				reward_vests: funds_account.reward_vesting_balance.split(' ')[0] + ' VESTS',
 			},
 		];
-		client.broadcast.sendOperations([op], privateKey).then(
+		hiveClient.broadcast.sendOperations([op], privateKey).then(
 			function(result) {
 				console.log(result);
 			},

@@ -1903,11 +1903,10 @@ app.get('/claimRewards', checkHdrs, async function (req, res){
 	
 	let userKey = receivedPlaintext;
 	
-	/*res.send({'hive': {'success': true}, 'steem': {'success': true}, 'blurt': {'success': true}});*/
+	/*res.send({'hive': {'success': true}, 'blurt': {'success': true}});*/
 	let outcHive = await utils.claimRewards(req.query.user, userKey, 'HIVE');
-	let outcSteem = await utils.claimRewards(req.query.user, userKey, 'STEEM');
 	let outcBlurt = await utils.claimRewards(req.query.user, userKey, 'BLURT');
-	res.send({'hive': outcHive, 'steem': outcSteem, 'blurt': outcBlurt});
+	res.send({'hive': outcHive, 'blurt': outcBlurt});
 });
 
 
