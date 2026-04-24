@@ -12,5 +12,5 @@ module.exports = {
   coverageReporters: ['text', 'lcov'],
   testTimeout: 10000,
   verbose: true,
-  resolver: undefined
+  resolver: undefined,
 };
