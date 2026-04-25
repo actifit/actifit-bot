@@ -6,7 +6,7 @@ const path = require('path');
  * from environment variables on Heroku.
  *
  * IMPORTANT: config.json is NOT committed to source control.
- * On Heroku it must be recreated from the CONFIG_JSON env var.
+ * On Heroku it must be recreated from CONFIG_JSON_B64 env var at build time.
  * Locally, if config.json already exists, this script skips recreation
  * so your local config is never overwritten.
  *
