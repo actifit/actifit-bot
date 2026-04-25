@@ -63,7 +63,8 @@ if (!configLoaded) {
             }
             
             // Write the resolved config back to config.json for runtime
-            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+            const configJsonStr = Buffer.from(rawEnv.trim(), 'base64').toString('utf8');
+            fs.writeFileSync(configPath, configJsonStr);
             console.log('Successfully created config.json from environment variable.');
             configLoaded = true;
         } catch (e) {
