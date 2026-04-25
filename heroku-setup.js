@@ -9,20 +9,26 @@ const path = require('path');
 console.log('--- Running Heroku Setup ---');
 
 // 1. Recreate config.json
-if (process.env.CONFIG_JSON) {
-    console.log('Recreating config.json from CONFIG_JSON env var...');
-    fs.writeFileSync(path.join(__dirname, 'config.json'), process.env.CONFIG_JSON);
-    console.log('Successfully created config.json');
+if (process.env.CONFIG_JSON && process.env.CONFIG_JSON.trim().length > 0) {
+    try {
+        // Validate it's actual JSON before writing
+        JSON.parse(process.env.CONFIG_JSON);
+        fs.writeFileSync(path.join(__dirname, 'config.json'), process.env.CONFIG_JSON);
+        console.log('Successfully created config.json');
+    } catch (e) {
+        console.error('ERROR: CONFIG_JSON env var contains invalid JSON:', e.message);
+        process.exit(1);
+    }
 } else {
-    console.warn('WARNING: CONFIG_JSON environment variable is not set.');
+    console.warn('WARNING: CONFIG_JSON environment variable is not set or is empty.');
 }
 
 // 2. Recreate Firebase Service Account file
-if (process.env.FIREBASE_KEY) {
+if (process.env.FIREBASE_KEY && process.env.FIREBASE_KEY.trim().length > 0) {
     console.log('Recreating Firebase Service Account file from FIREBASE_KEY env var...');
-    
+
     let firebasePath = 'firebase-adminsdk.json'; // Default fallback
-    
+
     // Try to get the path from the config we just wrote
     try {
         const configText = process.env.CONFIG_JSON || fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8');
@@ -37,7 +43,7 @@ if (process.env.FIREBASE_KEY) {
     fs.writeFileSync(path.join(__dirname, firebasePath), process.env.FIREBASE_KEY);
     console.log(`Successfully created Firebase key at: ${firebasePath}`);
 } else {
-    console.warn('WARNING: FIREBASE_KEY environment variable is not set.');
+    console.warn('WARNING: FIREBASE_KEY environment variable is not set or is empty.');
 }
 
 console.log('--- Heroku Setup Complete ---');
