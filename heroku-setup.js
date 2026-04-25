@@ -53,16 +53,18 @@ if (!configLoaded) {
     }
     
     if (rawEnv.trim().length > 0) {
+        let configJsonStr = '';
         try {
             // Check if it's base64 encoded (has base64 charset)
             if (rawEnv.match(/^[A-Za-z0-9+/=]+$/)) {
-                const configJsonStr = Buffer.from(rawEnv.trim(), 'base64').toString('utf8');
-                config = JSON.parse(configJsonStr);
+                configJsonStr = Buffer.from(rawEnv.trim(), 'base64').toString('utf8');
                 console.log('Loaded config from base64-encoded CONFIG_JSON_B64');
             } else {
-                config = JSON.parse(rawEnv);
+                configJsonStr = rawEnv;
                 console.log('Loaded config from plain CONFIG_JSON');
             }
+            
+            config = JSON.parse(configJsonStr);
             
             // Write the resolved config back to config.json for runtime
             fs.writeFileSync(configPath, configJsonStr);
