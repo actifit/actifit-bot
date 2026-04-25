@@ -49,7 +49,7 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
-var Web3 = require('web3');
+const { Web3 } = require('web3');
 
 const bscrpc = 'https://bsc-dataseed1.binance.org:443';
 
@@ -147,7 +147,9 @@ let fullSortedAFITList = [];
 
 //fetchAFITBal(0);
 
-launchHEFetch();
+if (process.env.NODE_ENV !== 'test') {
+  launchHEFetch();
+}
 //setTimeout(launchHEFetch, 10000);
 
 async function launchHEFetch(){
@@ -161,17 +163,19 @@ async function launchHEFetch(){
 
   
 //fetch new AFITX user account balance every 5 mins
-let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
-  //reset array
-  usersAFITBal = [];
-  usersAFITXBal = [];
-  //fetchAFITXBal(0);
-  
-  //fetchAFITBal(0);
-  
-  setTimeout(launchHEFetch, 10000);
-  
-  //reset to zero, might need to revisit this when reputting SE to action
+let scJob;
+if (process.env.NODE_ENV !== 'test') {
+  scJob = schedule.scheduleJob('*/5 * * * *', async function(){
+    //reset array
+    usersAFITBal = [];
+    usersAFITXBal = [];
+    //fetchAFITXBal(0);
+    
+    //fetchAFITBal(0);
+    
+    setTimeout(launchHEFetch, 10000);
+    
+    //reset to zero, might need to revisit this when reputting SE to action
   /*usersAFITBal = [];
   usersAFITXBal = [];
   
@@ -180,11 +184,12 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   fetchAFITBalHE(0);
   */
   
-  //only run cleanup on secondary thread to avoid duplication of effort and collision
-  if (process.env.BOT_THREAD == 'SECOND_API'){
-	disableUserLogin();
-  }
-});
+    //only run cleanup on secondary thread to avoid duplication of effort and collision
+    if (process.env.BOT_THREAD == 'SECOND_API'){
+      disableUserLogin();
+    }
+  });
+}
 
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
 //allows setting acceptable origins to be included across all function calls
@@ -1013,10 +1018,12 @@ async function disableUserLogin(){
 let exchangeAfitPrice = {};
 let priorExchangeAfitHivePrice = {};
 
-loadExchAfitPrice();
+if (process.env.NODE_ENV !== 'test') {
+  loadExchAfitPrice();
 
-//reload every 5 mins
-setInterval(loadExchAfitPrice, 5*60000);
+  //reload every 5 mins
+  setInterval(loadExchAfitPrice, 5*60000);
+}
 
 
 function switchHENode(){
@@ -1407,10 +1414,13 @@ grabProductInfo = async function(product_id){
 
 /* function handles generating a random password/access_token */
 generatePassword = function (multip) {
-	//generate random 11 characters password
+	const crypto = require('crypto');
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 	let passString = '';
-	for (let i=0;i<multip;i++){
-		passString += Math.random().toString(36).substr(2, 13);
+	const needed = multip * 13;
+	const bytes = crypto.randomBytes(needed);
+	for (let i = 0; i < needed; i++) {
+		passString += chars[bytes[i] % chars.length];
 	}
 	return passString;
   };

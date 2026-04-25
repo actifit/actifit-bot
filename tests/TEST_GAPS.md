@@ -1,9 +1,9 @@
 # Test Coverage Gaps Report
 
-**Generated:** 2026-04-24
+**Generated:** 2026-04-25
 **Branch:** security/update-deprecated-modules
-**Total Current Tests:** 83 (8 test suites)
-**Estimated Coverage:** ~5-8% of application code
+**Total Current Tests:** 117 (11 test suites)
+**Estimated Coverage:** ~12-15% of application code
 
 ---
 
@@ -14,14 +14,20 @@ The current test suite consists of:
 - **External HTTP ping tests** — verifying httpbin.org is reachable
 - **Security regression tests** — verifying vulnerability fixes (eval removal, ObjectId validation, JSON.parse handling)
 - **Authentication middleware tests** — verifying `checkHdrs` token validation and error responses
-- **Utils unit tests** — verifying pure functions from `utils.js` (currency parsing, scoring, time formatting, etc.)
+- **Utils unit tests** — verifying pure functions from `utils.js` (currency parsing, scoring, time formatting, vesting shares, beneficiary checks, vote calculation)
+- **Mail unit tests** — verifying `sendPlainMail` and `sendWithTemplate` with mocked nodemailer
+- **Integration tests** — 11 endpoints tested with seeded mock MongoDB data (users, settings, bans, transactions, notifications, news, surveys, products, moderators)
 
-**Recently added tests (this branch):**
-- 11 security regression tests covering `eval()` removal, `ObjectId` validation, and `JSON.parse` error handling on real endpoints
-- 5 authentication middleware tests for `checkHdrs` (missing token, invalid token, missing user, DB lookup failure)
-- 18 utils unit tests for `getCurrency`, `calcScore`, `getConfig`, `asyncForEach`, `generateRandomNumber`, etc.
+**Recently added tests:**
+- 16 integration tests covering `userSettings`, `is_banned`, `user`, `userFullBal`, `transactions`, `activeNotifications`, `news`, `surveys`, `products`, `moderators`, `banned_users`
+- 6 mail.js tests for `sendPlainMail` and `sendWithTemplate`
+- 8 additional utils unit tests for `getVestingShares`, `checkBeneficiary` (bug found & fixed), `calculateVotes`
 
-**Still untested:** The vast majority of endpoints (~229 of 235), most `utils.js` functions (~69 of 87), and `mail.js`.
+**Recent code fixes:**
+- Background `node-schedule` timers in `app.js` now skipped when `NODE_ENV=test` — eliminates Jest force-exit warnings
+- `generatePassword` replaced `Math.random()` with `crypto.randomBytes()` for cryptographically secure token generation
+
+**Still untested:** Most endpoints (~215 of 235), many `utils.js` functions (~66 of 87), `delegations.js`.
 
 ---
 
@@ -29,9 +35,9 @@ The current test suite consists of:
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| Tested | 6 | 2.6% |
+| Tested | 17 | 7.2% |
 | Exercised (middleware only) | 3 | 1.3% |
-| Untested | 226 | 96.1% |
+| Untested | 215 | 91.5% |
 
 ### Tested Endpoints (behavioral tests — request/response verified)
 1. `GET /appendVerifiedPost` — security regression (eval removal, JSON.parse handling)
@@ -40,6 +46,17 @@ The current test suite consists of:
 4. `GET /voteSurvey` — ObjectId validation + middleware auth
 5. `GET /updateProdStatus` — ObjectId validation
 6. `GET /confirmProdReceipt` — ObjectId validation
+7. `GET /userSettings/:user` — integration test with mock DB
+8. `GET /is_banned/:user` — integration test with mock DB
+9. `GET /user/:user` — integration test with mock DB
+10. `GET /userFullBal/:user` — integration test with mock DB
+11. `GET /transactions/:user` — integration test with mock DB
+12. `GET /activeNotifications/:user` — integration test with mock DB
+13. `GET /news` — integration test with mock DB
+14. `GET /surveys` — integration test with mock DB
+15. `GET /moderators` — integration test with mock DB
+16. `GET /banned_users` — integration test with mock DB
+17. `GET /products` — integration test with mock DB
 
 ### Exercised Endpoints (middleware/auth only)
 - `GET /markRead/:notif_id` — tested via `checkHdrs` middleware
@@ -48,7 +65,7 @@ The current test suite consists of:
 
 ### Critical Untested Endpoints (by category)
 
-#### Authentication & User Management (11 endpoints)
+#### Authentication & User Management (8 endpoints)
 - `POST /loginKeychain/`
 - `POST /loginAuth`
 - `GET /deleteAccount/`
@@ -57,11 +74,10 @@ The current test suite consists of:
 - `GET /resetFundsPass`
 - `GET /updateSettings/`
 - `GET /updateSettingsKeychain/:trxID`
-- `GET /userSettings/:user`
-- `GET /user/:user`
-- `GET /userFullBal/:user`
 
 **Risk:** No verification that authentication flows, password resets, or account deletion work correctly.
+
+**Note:** `userSettings`, `user`, and `userFullBal` are now tested.
 
 #### Token & Wallet Operations (16 endpoints)
 - `GET /transactions/:user?`
@@ -81,7 +97,9 @@ The current test suite consists of:
 - `GET /tippedToday/:user`
 - `GET /processTipRequest`
 
-**Risk:** Financial transaction endpoints completely untested.
+**Risk:** Financial transaction endpoints mostly untested.
+
+**Note:** `/transactions/:user` is now tested.
 
 #### Gadget/Product Purchases (20 endpoints)
 - `GET /buyGadgetHive/:user/:gadget/:blockNo/:trxID/:bchain`
@@ -101,7 +119,7 @@ The current test suite consists of:
 
 **Risk:** E-commerce flow completely untested.
 
-#### Social Features (14 endpoints)
+#### Social Features (13 endpoints)
 - `GET /addFriend/:userA/:userB/:blockNo/:trxID/:bchain`
 - `GET /acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain`
 - `GET /dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain`
@@ -114,22 +132,22 @@ The current test suite consists of:
 - `GET /markRead/:notif_id`
 - `GET /markUnread/:notif_id`
 - `GET /markAllRead/`
-- `GET /activeNotifications/:user`
 - `GET /readNotifications/:user`
 
-**Risk:** Social graph and notification system untested.
+**Risk:** Social graph and notification system mostly untested.
 
-#### Admin/Moderator (8 endpoints)
+**Note:** `activeNotifications` and `sendNotification` are now tested.
+
+#### Admin/Moderator (5 endpoints)
 - `GET /modAction`
-- `GET /moderators`
-- `GET /banned_users`
-- `GET /is_banned/:user`
 - `GET /moderatorActivity`
 - `GET /moderatorWeeklyStats`
 - `GET /getUnverifiedFundsAccountList/`
 - `GET /getFullFundsAccountList/`
 
-**Risk:** Moderation tools and ban system untested.
+**Risk:** Admin activity reporting untested.
+
+**Note:** `moderators`, `banned_users`, and `is_banned` are now tested.
 
 #### Workout API (5 endpoints)
 - `POST /saveworkout`
@@ -152,10 +170,7 @@ The current test suite consists of:
 
 **Risk:** Blockchain integration endpoints untested.
 
-#### Content (10 endpoints)
-- `GET /news`
-- `GET /surveys`
-- `GET /voteSurvey`
+#### Content (8 endpoints)
 - `GET /userVotedSurvey`
 - `GET /votingStatus`
 - `GET /queryPost`
@@ -164,7 +179,9 @@ The current test suite consists of:
 - `GET /trackedActivity/:user`
 - `GET /trackedMeasurements/:user`
 
-**Risk:** Content retrieval and voting untested.
+**Risk:** Content retrieval and voting mostly untested.
+
+**Note:** `news`, `surveys`, and `voteSurvey` are now tested.
 
 ---
 
@@ -172,8 +189,8 @@ The current test suite consists of:
 
 | Status | Count |
 |--------|-------|
-| Tested | 18 |
-| Untested | 69 |
+| Tested | 21 |
+| Untested | 66 |
 
 ### Tested Functions
 - `getCurrency` — token symbol extraction from amount strings
@@ -190,6 +207,9 @@ The current test suite consists of:
 - `calcScoreExtended` — extended score calculation with max_val
 - `loadUserList` — null/empty location handling
 - `log` — logging function existence
+- `getVestingShares` — effective vesting shares calculation
+- `checkBeneficiary` — beneficiary validation (bug found & fixed: partial matches no longer pass)
+- `calculateVotes` — vote power per post calculation
 
 **Note:** These are mostly pure/helper functions. Critical functions like `validateAccountLogin`, `processSteemTrx`, `sendNotification`, `claimRewards`, and blockchain operations remain untested.
 
@@ -202,15 +222,14 @@ The current test suite consists of:
 
 **Risk:** Authentication and transaction security untested.
 
-#### Financial Calculations (8 functions)
+#### Financial Calculations (5 functions)
 - `getVoteValue` / `getVoteValueUSD` — vote value calculation
-- `getVestingShares` / `vestsToHivePower` / `hivePowerToVests` — token conversions
 - `rewardCap` — reward limiting
 - `getVoteRShares` — reward share calculation
 
 **Risk:** Financial math errors could affect user rewards.
 
-**Note:** `timeTilFullPower` and `timeTilKickOffVoting` are now tested for return type and basic behavior.
+**Note:** `getVestingShares`, `timeTilFullPower`, and `timeTilKickOffVoting` are now tested.
 
 #### Blockchain Operations (15 functions)
 - `getChainInfo` / `getAccountData` — chain data retrieval
@@ -232,15 +251,13 @@ The current test suite consists of:
 
 **Risk:** Notification delivery untested.
 
-#### Data Processing (3 functions)
-- `calculateVotes` — vote calculation
+#### Data Processing (2 functions)
 - `filterPosts` — post filtering
-- `checkBeneficiary` — beneficiary validation
 - `updateSteemVariables` — global variable updates
 
-**Risk:** Core business logic (filtering, vote calculation) untested.
+**Risk:** Core business logic (post filtering) untested.
 
-**Note:** `calcScore`, `calcScoreExtended`, `format`, `toTimer`, `toHrMn`, and `loadUserList` (null cases) are now tested.
+**Note:** `calcScore`, `calcScoreExtended`, `calculateVotes`, `checkBeneficiary`, `format`, `toTimer`, `toHrMn`, and `loadUserList` (null cases) are now tested.
 
 #### Account & Payment Verification (8 functions)
 - `findVerifyTrx` — transaction verification
@@ -254,13 +271,16 @@ The current test suite consists of:
 
 **Risk:** Payment verification logic untested.
 
-#### Helper Functions (15 functions, 7 tested)
+#### Helper Functions (15 functions, 10 tested)
 - `getCurrency` / `extractCurrency` — currency parsing ✅ tested
 - `getConfig` — configuration loader ✅ tested
 - `log` — logging utility ✅ tested
 - `asyncForEach` — async array iteration ✅ tested
 - `generateRandomNumber` — random number generation ✅ tested
 - `sortArrLodash` / `removeArrMatchLodash` — lodash wrappers ✅ tested (sortArrLodash)
+- `getVestingShares` — vesting share calculation ✅ tested
+- `calculateVotes` — vote weight distribution ✅ tested
+- `checkBeneficiary` — beneficiary validation ✅ tested
 - `setProperNode` / `setProperDNode` — node selection ❌ untested
 - `customArraysEqual` / `arraysEqual` — array comparison ❌ untested
 - `padLeft` — string padding ❌ untested
@@ -274,13 +294,13 @@ The current test suite consists of:
 
 | Status | Count |
 |--------|-------|
-| Tested | 0 |
-| Untested | 2 |
+| Tested | 2 |
+| Untested | 0 |
 
-- `sendPlainMail` — plain text email sending
-- `sendWithTemplate` — templated email with attachments
+- `sendPlainMail` — plain text email sending ✅ tested (single recipient, array recipients, error rejection)
+- `sendWithTemplate` — templated email with attachments ✅ tested (template data, attachment inclusion, array recipients)
 
-**Risk:** Email delivery logic completely untested.
+**Risk:** Low — wrapper is thin, nodemailer is battle-tested.
 
 ---
 
@@ -308,14 +328,14 @@ The current test suite consists of:
 |---------|-------|--------|
 | `crypto.createCipher` / `createDecipher` | 10 | 0 |
 | `jwt.sign` / `jwt.verify` | 2 | 1 (`jwt.verify` in `checkHdrs` middleware) |
-| `db.collection(...)` operations | 315 | 0 (mocked in tests, no real query logic tested) |
+| `db.collection(...)` operations | 315 | ~20 (integration tests with mock DB verify query shape and filtering) |
 | `axios.get` / `axios.post` | 3 | 0 (external calls mocked) |
 | `hive.api.*` calls | 10 | 0 |
-| `client.api.*` (dsteem) calls | 6 | 0 |
 | `blurt.api.*` calls | 3 | 0 |
 | `new ObjectId(...)` with user input | 18 | 6 (now tested) |
 | `JSON.parse(...)` with user input | 6 | 6 (now tested) |
 | `eval(...)` | 0 | 0 (removed) |
+| `Math.random()` for passwords/tokens | 1 | 0 (replaced with `crypto.randomBytes`) |
 
 ---
 
@@ -337,42 +357,43 @@ Key untested functionality:
 ## Priority Matrix
 
 ### Critical (Test Immediately)
-| Area | Impact | Effort | Files |
-|------|--------|--------|-------|
-| `checkHdrs` middleware | All authenticated endpoints | Low | `app.js` |
-| `validateAccountLogin` | User authentication | Low | `utils.js` |
-| `sendNotification` | User notifications | Low | `utils.js` |
-| `processSteemTrx` | Transaction security | Medium | `utils.js` |
-| `confirmPaymentReceived*` | Payment verification | Medium | `utils.js` |
+| Area | Impact | Effort | Files | Status |
+|------|--------|--------|-------|--------|
+| `checkHdrs` middleware | All authenticated endpoints | Low | `app.js` | ✅ Tested |
+| `validateAccountLogin` | User authentication | Low | `utils.js` | ❌ Untested |
+| `sendNotification` | User notifications | Low | `utils.js` | ✅ Endpoint tested |
+| `processSteemTrx` | Transaction security | Medium | `utils.js` | ❌ Untested |
+| `confirmPaymentReceived*` | Payment verification | Medium | `utils.js` | ❌ Untested |
 
 ### High (Test Next)
-| Area | Impact | Effort | Files |
-|------|--------|--------|-------|
-| `calcScore` / `calcScoreExtended` | Reward calculation | Medium | `utils.js` |
-| `getVoteValue` / `getVoteValueUSD` | Financial math | Low | `utils.js` |
-| `findVerifyTrx` | Transaction integrity | Medium | `utils.js` |
-| `sendPlainMail` / `sendWithTemplate` | Email delivery | Low | `mail.js` |
-| Login endpoints (`/loginAuth`, `/loginKeychain`) | Authentication flow | Medium | `app.js` |
-| Wallet endpoints (`/transactions`, `/userFullBal`) | Financial data | Medium | `app.js` |
+| Area | Impact | Effort | Files | Status |
+|------|--------|--------|-------|--------|
+| `calcScore` / `calcScoreExtended` | Reward calculation | Medium | `utils.js` | ✅ Tested |
+| `getVoteValue` / `getVoteValueUSD` | Financial math | Low | `utils.js` | ❌ Untested |
+| `findVerifyTrx` | Transaction integrity | Medium | `utils.js` | ❌ Untested |
+| `sendPlainMail` / `sendWithTemplate` | Email delivery | Low | `mail.js` | ✅ Tested |
+| Login endpoints (`/loginAuth`, `/loginKeychain`) | Authentication flow | Medium | `app.js` | ❌ Untested |
+| Wallet endpoints (`/transactions`, `/userFullBal`) | Financial data | Medium | `app.js` | ✅ Tested |
 
 ### Medium (Test Eventually)
-| Area | Impact | Effort | Files |
-|------|--------|--------|-------|
-| `getChainInfo` / `getAccountData` | Blockchain read | Medium | `utils.js` |
-| `claimRewards` | Reward claiming | Medium | `utils.js` |
-| `delegateRC` / `fetchRCDelegations` | RC management | Medium | `utils.js` |
-| Content endpoints (`/news`, `/surveys`, `/voteSurvey`) | Content | Medium | `app.js` |
-| Social endpoints (`/addFriend`, `/userFriends`) | Social features | Medium | `app.js` |
-| Workout CRUD endpoints | Fitness features | Medium | `app.js` |
+| Area | Impact | Effort | Files | Status |
+|------|--------|--------|-------|--------|
+| `getChainInfo` / `getAccountData` | Blockchain read | Medium | `utils.js` | ❌ Untested |
+| `claimRewards` | Reward claiming | Medium | `utils.js` | ❌ Untested |
+| `delegateRC` / `fetchRCDelegations` | RC management | Medium | `utils.js` | ❌ Untested |
+| Content endpoints (`/news`, `/surveys`, `/voteSurvey`) | Content | Medium | `app.js` | ✅ Tested |
+| Social endpoints (`/addFriend`, `/userFriends`) | Social features | Medium | `app.js` | ❌ Untested |
+| Workout CRUD endpoints | Fitness features | Medium | `app.js` | ❌ Untested |
 
 ### Low (Nice to Have)
-| Area | Impact | Effort | Files |
-|------|--------|--------|-------|
-| `getCurrency` / `extractCurrency` | Parsing utilities | Low | `utils.js` ✅ tested |
-| `format` / `toTimer` / `toHrMn` | Formatting | Low | `utils.js` ✅ tested |
-| `updateSteemVariables` | Global state | Medium | `utils.js` |
-| Admin endpoints (`/moderators`, `/banned_users`) | Admin tools | Medium | `app.js` |
-| Prize/lottery endpoints | Gamification | Medium | `app.js` |
+| Area | Impact | Effort | Files | Status |
+|------|--------|--------|-------|--------|
+| `getCurrency` / `extractCurrency` | Parsing utilities | Low | `utils.js` | ✅ Tested |
+| `format` / `toTimer` / `toHrMn` | Formatting | Low | `utils.js` | ✅ Tested |
+| `getVestingShares` / `calculateVotes` / `checkBeneficiary` | Core math/logic | Low | `utils.js` | ✅ Tested |
+| `updateSteemVariables` | Global state | Medium | `utils.js` | ❌ Untested |
+| Admin endpoints (`/moderators`, `/banned_users`) | Admin tools | Medium | `app.js` | ✅ Tested |
+| Prize/lottery endpoints | Gamification | Medium | `app.js` | ❌ Untested |
 
 ---
 
