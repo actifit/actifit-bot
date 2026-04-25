@@ -84,6 +84,7 @@ if (!configLoaded) {
 // 2. Recreate Firebase Service Account file
 if (process.env.FIREBASE_KEY && process.env.FIREBASE_KEY.trim().length > 0) {
     let firebasePath = 'firebase-adminsdk.json';
+    let firebaseContent = process.env.FIREBASE_KEY;
 
     // Try to resolve the Firebase key path from config
     try {
@@ -94,7 +95,19 @@ if (process.env.FIREBASE_KEY && process.env.FIREBASE_KEY.trim().length > 0) {
         console.warn('Could not resolve Firebase key path from config, using default:', firebasePath);
     }
 
-    fs.writeFileSync(path.join(__dirname, firebasePath), process.env.FIREBASE_KEY);
+    // Decode base64 if the value looks like base64 (starts with common base64 chars)
+    if (firebaseContent.match(/^(ew|ey)[A-Za-z0-9+/=]+$/) || firebaseContent.match(/^[A-Za-z0-9+/=]{50,}$/)) {
+        try {
+            const decoded = Buffer.from(firebaseContent.trim(), 'base64').toString('utf8');
+            JSON.parse(decoded); // validate it parses
+            firebaseContent = decoded;
+            console.log('Firebase credentials decoded from base64');
+        } catch (e) {
+            // Not base64, write as-is
+        }
+    }
+
+    fs.writeFileSync(path.join(__dirname, firebasePath), firebaseContent);
     console.log(`Successfully created Firebase key at: ${firebasePath}`);
 } else {
     console.warn('WARNING: FIREBASE_KEY env var not set. Firebase will fail to initialize.');
