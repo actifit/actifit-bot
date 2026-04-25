@@ -42,28 +42,29 @@ if (fs.existsSync(configPath)) {
 if (!configLoaded) {
     console.log('config.json not found or invalid. Checking CONFIG_JSON env var...');
     
-    // Support both plain JSON and base64 encoded (for long config values)
-    const rawEnv = process.env.CONFIG_JSON || process.env.CONFIG_JSON_B64 || '';
+    // Prefer CONFIG_JSON_B64 if it has valid base64 content, otherwise check CONFIG_JSON
+    let rawEnv = '';
+    
+    // Check B64 first (it's longer and less likely to be a placeholder)
+    if (process.env.CONFIG_JSON_B64 && process.env.CONFIG_JSON_B64.trim().length > 100) {
+        rawEnv = process.env.CONFIG_JSON_B64;
+    } else if (process.env.CONFIG_JSON && process.env.CONFIG_JSON.trim().length > 10) {
+        rawEnv = process.env.CONFIG_JSON;
+    }
     
     if (rawEnv.trim().length > 0) {
         try {
-            // Check if it's base64 encoded
-            if (process.env.CONFIG_JSON_B64 || rawEnv.match(/^[A-Za-z0-9+/=]+$/)) {
-                try {
-                    config = JSON.parse(Buffer.from(rawEnv.trim(), 'base64').toString('utf8'));
-                    console.log('Loaded config from base64-encoded CONFIG_JSON_B64');
-                } catch (e) {
-                    // Not valid base64, try as plain JSON
-                    config = JSON.parse(rawEnv);
-                    console.log('Loaded config from plain CONFIG_JSON');
-                }
+            // Check if it's base64 encoded (has base64 charset)
+            if (rawEnv.match(/^[A-Za-z0-9+/=]+$/)) {
+                const configJsonStr = Buffer.from(rawEnv.trim(), 'base64').toString('utf8');
+                config = JSON.parse(configJsonStr);
+                console.log('Loaded config from base64-encoded CONFIG_JSON_B64');
             } else {
                 config = JSON.parse(rawEnv);
                 console.log('Loaded config from plain CONFIG_JSON');
             }
             
             // Write the resolved config back to config.json for runtime
-            const configJsonStr = Buffer.from(rawEnv.trim(), 'base64').toString('utf8');
             fs.writeFileSync(configPath, configJsonStr);
             console.log('Successfully created config.json from environment variable.');
             configLoaded = true;
