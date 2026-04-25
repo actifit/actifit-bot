@@ -1,14 +1,10 @@
-const dsteem = require('dsteem')
 const dhive = require('@hiveio/dhive')
-//const client = new dsteem.Client('https://steemd.privex.io')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
 const mail = require('./mail')
 
 const config = utils.getConfig()
-
-const client = new dsteem.Client(config.active_node)
 
 const hiveClient = new dhive.Client(config.active_hive_node)
 
@@ -19,15 +15,12 @@ const MongoClient = require('mongodb').MongoClient
 const testRun = false;
 
 const hive = require('@hiveio/hive-js');
+const axios = require('axios');
 
-const steem = require('steem');
-
-const steem_history_limit = 100;
 const hive_history_limit = 1000;
 
 //prepare BSC work
-const Web3 = require('web3');
-const targetToken = 'AFIT';
+const { Web3 } = require('web3');
 
 let fs = require('fs');
 let jsonFile = "./AFIT_abi.json";
@@ -45,34 +38,20 @@ web3.eth.accounts.wallet.add({
 // Get BEP20 Token contract instance
 let contract = new web3.eth.Contract(tokenAbi, config.afitAddress);
 
-
-//get balance of BEP20 token 
-/*contract.methods.balanceOf(config.bridgeWalletAdd).call().then(function (bal) {
-        console.log(bal);
-     })*/
-
-//return;
-
-//hive.config.set('rebranded_api','true');
-//hive.broadcast.updateOperations();
-
 hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node });
 
 let db
 let collection
-let bulk_delegation_entries
 let bulk_hive_delegation_entries
 
 const bulkOps = [];
 
 // Database Name
 const dbName = config.db_name
-const delegationTrxCol = 'delegation_transactions'
 const hiveDelegationTrxCol = 'hive_delegation_transactions'
 
-const actDelgCol = 'active_delegations'
 const hiveActDelgCol = 'hive_active_delegations'
 
 let properties
@@ -86,7 +65,6 @@ let newestTxId = -1;
 console.log('--- Delegations script initialized ---');
 console.log('envt variables:');
 console.log(process.env.BOT_THREAD);
-//return;
 
 let schedule = require('node-schedule')
 
@@ -165,7 +143,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//processGadgetBuyPrize();
 	//updateUserTokens();
 	//return;
-	runRewards(true, false);
+	runRewards(false, false);
 	//runRewards(false, false);
 	//moveAFITToSE(true);
 	/*let val = utils.rewardCap('HIVE');
@@ -611,15 +589,15 @@ async function testMove(){
 	//broadcast to BC
 	console.log('broadcast to BC');
 	
-	//sign key properly to function with dsteem requirement
-	let privateKey = dsteem.PrivateKey.fromString(
+	//sign key properly to function with dhive requirement
+	let privateKey = dhive.PrivateKey.fromString(
 		//config.token_dist_pkey
 		config.active_key
 	);
 	let entry = new Object();
 	
 	entry.user='mcfarhat';
-	client.broadcast.json({
+						hiveClient.broadcast.json({
 		required_auths: [config.account],
 		required_posting_auths: [],
 		id: 'ssc-mainnet1',
@@ -689,8 +667,8 @@ async function moveAFITToSE(testMode){
 		let poweringDown = await db.collection('powering_down_he').find().toArray();
 		//console.log (poweringDown)
 		
-		//sign key properly to function with dsteem requirement
-		let privateKey = dsteem.PrivateKey.fromString(
+		//sign key properly to function with dhive requirement
+		let privateKey = dhive.PrivateKey.fromString(
 			//config.token_dist_pkey
 			config.active_key
 		);
@@ -939,8 +917,8 @@ async function airdropAFITX(){
 			let totalAFITXSpent = 0;
 			let totalUsersRewarded = 0;
 			
-			//sign key properly to function with dsteem requirement
-			let privateKey = dsteem.PrivateKey.fromString(
+			//sign key properly to function with dhive requirement
+			let privateKey = dhive.PrivateKey.fromString(
 				//config.token_dist_pkey
 				config.active_key
 			);
@@ -980,7 +958,7 @@ async function airdropAFITX(){
 						console.log(json_data);
 						totalAFITXSpent += parseFloat(rewardAFITX);
 						totalUsersRewarded += 1;
-						client.broadcast.json({
+	hiveClient.broadcast.json({
 							//required_auths: [config.token_dist_account],
 							required_auths: [config.account],
 							required_posting_auths: [],
@@ -1022,7 +1000,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 
 		db = client.db(dbName)
 		// Get the documents collection
-		collection = db.collection(delegationTrxCol)
+		//collection = db.collection(delegationTrxCol)
 		
 		/**** copy a collection to another *****/
 		/*let documentsToMove = db.collection(delegationTrxCol).find({});
@@ -1041,7 +1019,7 @@ function runRewards(steemOnlyReward, updateDelegations){
 		//return;
 		
 		//run for one day
-		var delegation_days = 1;
+		var delegation_days = 2;
 		startProcess(delegation_days, steemOnlyReward, updateDelegations);
 
 		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
@@ -1093,7 +1071,7 @@ async function getBenefactorPosts (account, start) {
   }
   totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   //console.log(properties);
-  const transactions = await client.database.call('get_account_history', [account, txStart, limit])
+  const transactions = await hiveClient.database.call('get_account_history', [account, txStart, limit])
   transactions.reverse()
   let foundTx = false;
   console.log("newestTxId:"+newestTxId);
@@ -1203,43 +1181,28 @@ async function getBenefactorPosts (account, start) {
 }
 
 //function to load relevant STEEM and SBD prices, and proceed with AFIT token swap/reward process
-function loadSteemPrices() {
+async function loadSteemPrices() {
 
   console.log('-- start AFIT token swap process --')
 
-  // Require the "request" library for making HTTP requests
-  var request = require("request");
+  try {
+    const steemResponse = await axios.get('https://api.coinmarketcap.com/v1/ticker/steem/');
+    steemPrice = parseFloat(steemResponse.data[0].price_usd);
+    console.log("Loaded STEEM price: " + steemPrice);
 
-  // Load the price feed data
-  request.get('https://api.coinmarketcap.com/v1/ticker/steem/', function (e, r, data) {
-    try {
-      steemPrice = parseFloat(JSON.parse(data)[0].price_usd);
+    const sbdResponse = await axios.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/');
+    sbdPrice = parseFloat(sbdResponse.data[0].price_usd);
+    console.log("Loaded SBD price: " + sbdPrice);
 
-      console.log("Loaded STEEM price: " + steemPrice);
-	  
-	  // Load the price feed data
-	  request.get('https://api.coinmarketcap.com/v1/ticker/steem-dollars/', function (e, r, data) {
-		try {
-			sbdPrice = parseFloat(JSON.parse(data)[0].price_usd);
+    let afit_swap_days = 1;
+    let start = moment().utc().startOf('date').toDate()
+    let to = moment(start).subtract(afit_swap_days, 'days').toDate()
 
-			console.log("Loaded SBD price: " + sbdPrice);
-		  	
-			let afit_swap_days = 1;
-			let start = moment().utc().startOf('date').toDate()
-			let to = moment(start).subtract(afit_swap_days, 'days').toDate()
-		  
-			//bring the action
-			getBenefactorPosts(config.full_pay_benef_account, to);
-			
-		} catch (err) {
-		  console.log('Error loading SBD price: ' + err);
-		}
-	  });
-  
-    } catch (err) {
-      console.log('Error loading STEEM price: ' + err);
-    }
-  });
+    getBenefactorPosts(config.full_pay_benef_account, to);
+
+  } catch (err) {
+    console.log('Error loading prices: ' + err);
+  }
 }
 
 
@@ -1878,7 +1841,7 @@ function upsertRewardTransaction (reward) {
 
 async function updateProperties () {
   // Set STEEM global properties
-  properties = await client.database.getDynamicGlobalProperties()
+  properties = await hiveClient.database.getDynamicGlobalProperties()
   if (properties.total_vesting_fund_steem){
 	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
   }else{
@@ -1947,14 +1910,14 @@ async function updateUserTokens() {
 //function handles fetching account details for later use when claiming rewards
 async function grabAccountDetails(){
 	console.log('grabbing fund account details');
-	let account = await client.database.call('get_accounts', [[config.full_pay_benef_account]]);
+	let account = await hiveClient.database.call('get_accounts', [[config.full_pay_benef_account]]);
 	console.log(account);
 	return account[0];
 }
 //function handles claiming pending account rewards
 async function claimRewards(){
-	//sign key properly to function with dsteem requirement
-	let privateKey = dsteem.PrivateKey.fromString(
+	//sign key properly to function with dhive requirement
+	let privateKey = dhive.PrivateKey.fromString(
         config.full_pay_posting_key
     );
 	//fetch account details first to use correct values for claim
@@ -1973,7 +1936,7 @@ async function claimRewards(){
 				reward_vests: funds_account.reward_vesting_balance.split(' ')[0] + ' VESTS',
 			},
 		];
-		client.broadcast.sendOperations([op], privateKey).then(
+		hiveClient.broadcast.sendOperations([op], privateKey).then(
 			function(result) {
 				console.log(result);
 			},

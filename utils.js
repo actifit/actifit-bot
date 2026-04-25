@@ -1,5 +1,4 @@
 var fs = require("fs");
-const steem = require('steem');
 
 const hive = require('@hiveio/hive-js');
 
@@ -18,8 +17,6 @@ fbadmin.initializeApp({
 
 var _ = require('lodash');
 const axios = require('axios');
-const dsteem = require('dsteem');
-
 const dhive = require('@hiveio/dhive');
 
 const dblurt = require('dblurt');
@@ -28,7 +25,7 @@ const moment = require('moment')
 
 
 
-const client = new dsteem.Client(config.active_node);
+// const client = new dsteem.Client(config.active_node);
 const hiveClient = new dhive.Client(config.alt_hive_nodes);
 const blurtClient = new dblurt.Client(config.blurt_node);
 
@@ -37,7 +34,7 @@ var config;
 
 let th_id = -1;
 
-steem.api.setOptions({ url: config.active_node });
+// client.api.setOptions({ url: config.active_node });
 
 //useless now with newer version of hive-js
 //hive.config.set('rebranded_api', true)
@@ -75,9 +72,7 @@ var HOURS = 60 * 60;
  let totalHiveVests
  
  function setProperNode(bchain){
-	if (bchain == "STEEM"){
-		return steem
-	}else if (bchain == "BLURT"){
+	if (bchain == "BLURT"){
 		return blurt
 	}else{
 		return hive
@@ -85,9 +80,7 @@ var HOURS = 60 * 60;
  }
  
  function setProperDNode(bchain){
-	if (bchain == "STEEM"){
-		return client
-	}else if (bchain == "BLURT"){
+	if (bchain == "BLURT"){
 		return blurtClient
 	}else{
 		return hiveClient
@@ -100,8 +93,6 @@ var HOURS = 60 * 60;
 	if (!bchain || bchain == ''){
 		let chain_info = await hive.api.getDynamicGlobalPropertiesAsync();
 		data['HIVE']=chain_info;
-		chain_info = await steem.api.getDynamicGlobalPropertiesAsync();
-		data['STEEM']=chain_info;
 		chain_info = await blurt.api.getDynamicGlobalPropertiesAsync();
 		data['BLURT']=chain_info;
 	}else{
@@ -120,8 +111,6 @@ var HOURS = 60 * 60;
 	if (!bchain || bchain == ''){
 		let account_res = await hive.api.getAccountsAsync([account_name]); 
 		account['HIVE']=account_res[0];
-		account_res = await steem.api.getAccountsAsync([account_name]); 
-		account['STEEM']=account_res[0];
 		account_res = await blurt.api.getAccountsAsync([account_name]); 
 		account['BLURT']=account_res[0];
 	}else{
@@ -373,12 +362,7 @@ var HOURS = 60 * 60;
 					if (standardAfit == 1){
 						url = new URL(config.hive_engine_afit_trx);
 					}
-					if (bchain == 'STEEM'){
-						url = new URL(config.steem_engine_afitx_trx);
-						if (standardAfit == 1){
-							url = new URL(config.steem_engine_afit_trx);
-						}
-					}
+
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
 						let se_connector = await fetch(url);
@@ -414,11 +398,7 @@ var HOURS = 60 * 60;
 		let transId = 'ssc-mainnet-hive';
 		//let targetBchain = 'STEEM';
 		//other option is moving tokens from H-E to S-E
-		if (chain == 'STEEM'){
-		//if (this.cur_bchain == 'STEEM'){
-			transId = 'ssc-mainnet1';
-			//targetBchain = 'HIVE';
-		}
+
 		let tokenSymbol = 'AFITX';
 		if (standardAfit == 1){
 			tokenSymbol = 'AFIT';
@@ -556,9 +536,7 @@ var HOURS = 60 * 60;
 					console.log('Check AFIT Power Up');
 					//let's call the service by S-E
 					let url = new URL(config.hive_engine_trans_acct_his);
-					if (bchain == 'STEEM'){
-						url = new URL(config.steem_engine_trans_acct_his);
-					}
+
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
 						let se_connector = await fetch(url);
@@ -658,13 +636,9 @@ var HOURS = 60 * 60;
 					attempts += 1;
 					let chainLnk = await setProperNode(bchain);
 					console.log('check trx');
-					if (bchain == 'STEEM'){
-						matchTrx = await client.database.call('get_transaction', req.params.trxID);
-					}else{
-						//transactions = await hiveClient.database.call('get_transaction', req.query.txid);
-						matchTrx = await chainLnk.api.getTransactionAsync(req.params.trxID);
-						console.log(matchTrx);
-					}
+					//transactions = await hiveClient.database.call('get_transaction', req.query.txid);
+					matchTrx = await chainLnk.api.getTransactionAsync(req.params.trxID);
+					console.log(matchTrx);
 					
 					//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
 					
@@ -723,11 +697,7 @@ var HOURS = 60 * 60;
 				//transactions.reverse()
 				  
 				
-				if (bchain == 'STEEM'){
-					transactions = await client.database.call('get_account_history', [config.signup_account, -1, 20]);
-				}else{
-					transactions = await hiveClient.database.call('get_account_history', [config.signup_account, -1, 20]);
-				}
+				transactions = await hiveClient.database.call('get_account_history', [config.signup_account, -1, 20]);
 				
 				//chainLnk.api.getAccountHistory(config.signup_account, -1, 1000, (err, transactions) => {
 				let tx_id = '';
@@ -785,11 +755,7 @@ var HOURS = 60 * 60;
 				//transactions.reverse()
 				  
 				
-				if (bchain == 'STEEM'){
-					transactions = await client.database.call('get_account_history', [config.exchange_account, -1, 300]);
-				}else{
-					transactions = await hiveClient.database.call('get_account_history', [config.exchange_account, -1, 300]);
-				}
+				transactions = await hiveClient.database.call('get_account_history', [config.exchange_account, -1, 300]);
 				console.log("newestTxId:"+transactions[0][0]);
 
 					let tx_id = '';
@@ -831,11 +797,7 @@ var HOURS = 60 * 60;
 				//let chainLnk = await setProperNode(bchain);
 				
 				let transactions;
-				if (bchain == 'STEEM'){
-					transactions = await client.database.call('get_account_history', [config.buy_account, -1, 800]);
-				}else{
-					transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
-				}
+				transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
 				console.log("newestTxId:"+transactions[0][0]);
 
 					let tx_id = '';
@@ -891,22 +853,7 @@ var HOURS = 60 * 60;
 		const ops = [claim_op];
 		
 		let result = '';
-		let outcSteem = false;
 		let outcHive = false;
-		if (!chain || chain.includes('STEEM')){
-			
-			try{
-				const privateKey = dsteem.PrivateKey.fromString(
-							config.active_key
-						);
-				result = await client.broadcast.sendOperations(ops, privateKey);
-				console.log('success');
-				outcSteem = true;
-			}catch(err){
-				console.log(err);
-				outcSteem = false;
-			}
-		}
 		if (!chain || chain.includes('HIVE')){
 			try{
 				const privateKey = dhive.PrivateKey.fromString(
@@ -920,7 +867,7 @@ var HOURS = 60 * 60;
 				outcHive = false;
 			}
 		}
-		return (outcSteem || outcHive);
+		return outcHive;
 	}
 	
 	//function handles creating accounts via discounted claimed spots or normal paid method
@@ -929,17 +876,6 @@ var HOURS = 60 * 60;
 			getConfig();
 		}
 		
-		if (!chain || chain.includes('STEEM')){
-			//check if account exists		
-			const _account = await client.database.call('get_accounts', [[username]]);
-			//account not available to register
-			if (_account.length>0) {
-				console.log('account already exists');
-				console.log(_account);
-				return false;
-			}
-		}
-			
 		if (!chain || chain.includes('HIVE')){
 			//check if account exists		
 			const _account = await hiveClient.database.call('get_accounts', [[username]]);
@@ -973,88 +909,7 @@ var HOURS = 60 * 60;
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
 		
-		let steemAccountSuccess = false;
 		let hiveAccountSuccess = false;
-		
-		if (!chain || chain.includes('STEEM')){
-			
-			//create keys for new account
-			const ownerKey = dsteem.PrivateKey.fromLogin(username, password, 'owner');
-			const activeKey = dsteem.PrivateKey.fromLogin(username, password, 'active');
-			const postingKey = dsteem.PrivateKey.fromLogin(username, password, 'posting');
-			let memoKey = dsteem.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-			
-			//create auth values for passing to account creation
-			const ownerAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[ownerKey.createPublic(), 1]],
-			};
-			const activeAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[activeKey.createPublic(), 1]],
-			};
-			const postingAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[postingKey.createPublic(), 1]],
-			};
-			
-			
-			const _creator_account = await client.database.call('get_accounts', [
-				[creator],
-			]);
-			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
-			
-			if (_creator_account[0].pending_claimed_accounts > 0) {
-			
-				//the create discounted account operation
-				const create_op = [
-					'create_claimed_account',
-					{
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				ops.push(create_op);
-			}else{
-			
-				const create_op = [
-					'account_create',
-					{
-						fee: '3.000 STEEM',
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				ops.push(create_op);
-			}
-			
-			const privateKey = dhive.PrivateKey.fromString(config.active_key);
-			//proceed executing the selected operation(s)
-			let result = '';
-			try{
-				result = await client.broadcast.sendOperations(ops, privateKey);
-				console.log('success');
-				steemAccountSuccess = true;
-			}catch(err){
-				console.log(err);
-				steemAccountSuccess = false;
-			}
-		}
 		
 		if (!chain || chain.includes('HIVE')){
 			const _creator_account = await hiveClient.database.call('get_accounts', [
@@ -1194,7 +1049,7 @@ var HOURS = 60 * 60;
 				blurtAccountSuccess = false;
 			}
 		}
-		return (steemAccountSuccess || hiveAccountSuccess || blurtAccountSuccess);
+		return (hiveAccountSuccess || blurtAccountSuccess);
 	}
 
 	//function handles delegating to a specific account
@@ -1207,29 +1062,7 @@ var HOURS = 60 * 60;
 		);
 		
 		let result = '';
-		let steemDg = false;
 		let hiveDg = false;
-		if (!chain || chain.includes('STEEM')){
-			try{
-				//grab matching amount of Vests to delegate
-				let matchingVests = await steemPowerToVests(steemPowerAmount);
-				const op = [
-					'delegate_vesting_shares',
-					{
-						delegator: config.full_pay_benef_account,
-						delegatee: delegatee,
-						vesting_shares: matchingVests+' VESTS',
-					},
-				];
-				
-				result = await client.broadcast.sendOperations([op], privateKey);
-				console.log('Included in block:'+ result.block_num);
-				steemDg = true;
-			}catch(err){
-				console.log(err);
-				steemDg = false;
-			}
-		}
 		if (!chain || chain.includes('HIVE')){
 			
 			if (hiveHP == 1){
@@ -1265,7 +1098,7 @@ var HOURS = 60 * 60;
 			}
 			
 		}
-		return (steemDg || hiveDg);
+		return hiveDg;
 	}
 
  function getVoteRShares(voteWeight, account, power) {
@@ -1336,7 +1169,7 @@ function timeTilFullPower(cur_power){
    return amount.substr(amount.indexOf(' ') + 1);
  }
  
- function loadUserList(location, callback) {
+ async function loadUserList(location, callback) {
   if(!location) {
     if(callback)
       callback(null);
@@ -1345,20 +1178,17 @@ function timeTilFullPower(cur_power){
   }
 
   if (location.startsWith('http://') || location.startsWith('https://')) {
-    // Require the "request" library for making HTTP requests
-    var request = require("request");
-
-    request.get(location, function (e, r, data) {
-      try {
-        if(callback)
-          callback(data.replace(/[\r]/g, '').split('\n'));
-      } catch (err) {
-        console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
-
-        if(callback)
-          callback(null);
+    try {
+      const response = await axios.get(location);
+      if (callback) {
+        callback(response.data.replace(/[\r]/g, '').split('\n'));
       }
-    });
+    } catch (err) {
+      console.log('Error loading blacklist from: ' + location + ', Error: ' + err);
+      if (callback) {
+        callback(null);
+      }
+    }
   } else if (fs.existsSync(location)) {
     if(callback)
       callback(fs.readFileSync(location, "utf8").replace(/[\r]/g, '').split('\n'));
@@ -1487,10 +1317,10 @@ function format(n, c, d, t) {
        break;
      }
    }
-   if(!benefit)
-     return false;
+    if(benefit !== true)
+      return false;
 
-   return true;
+    return true;
 
  }
  
@@ -1667,9 +1497,7 @@ async function getAccountPayTransactions (account, start, end, period, chain) {
     
   // Query account history for delegations
   properties = await chainLnk.database.getDynamicGlobalProperties()
-  if (chain == 'STEEM'){
-	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
-  }else if (chain == 'HIVE'){
+  if (chain == 'HIVE'){
 	  totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
   }else if (chain == 'BLURT'){
 	  totalSteem = Number(properties.total_vesting_fund_blurt.split(' ')[0])
@@ -1711,9 +1539,7 @@ async function getAccountPayTransactions (account, start, end, period, chain) {
 		//console.log("steemInUSD:"+steemInUSD);
 				
 		let rewardedSTEEM = 0;
-		if (chain == 'STEEM'){
-			rewardedSTEEM = parseFloat(op[1].steem_payout.split(' ')[0])
-		}else if (chain == 'HIVE'){
+		if (chain == 'HIVE'){
 			rewardedSTEEM = parseFloat(op[1].hive_payout.split(' ')[0])
 		}else if (chain == 'BLURT'){
 			rewardedSTEEM = parseFloat(op[1].blurt_payout.split(' ')[0])
@@ -1725,9 +1551,7 @@ async function getAccountPayTransactions (account, start, end, period, chain) {
 
 		
 		let rewardedSBD = 0;
-		if (chain == 'STEEM'){
-			rewardedSBD = parseFloat(op[1].sbd_payout.split(' ')[0])
-		}else if (chain == 'HIVE'){
+		if (chain == 'HIVE'){
 			rewardedSBD = parseFloat(op[1].hbd_payout.split(' ')[0])
 		}
 		
@@ -1760,11 +1584,7 @@ async function getAccountPayTransactions (account, start, end, period, chain) {
 	    //console.log('caught one author_reward');
 		//console.log(op);
 		
-		if (chain=='STEEM'){
-			authorRewardedSBD += parseFloat(op[1].sbd_payout.split(' ')[0])
-			authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
-			authorRewardedSTEEM += parseFloat((op[1].steem_payout.split(' ')[0]))
-		}else if (chain == 'HIVE'){
+		if (chain == 'HIVE'){
 			authorRewardedSBD += parseFloat(op[1].hbd_payout.split(' ')[0])
 			authorRewardedSp += parseFloat(vestsToSteemPower(op[1].vesting_payout.split(' ')[0]).toFixed(3))
 			authorRewardedSTEEM += parseFloat((op[1].hive_payout.split(' ')[0]))			
@@ -1891,8 +1711,8 @@ function vestsToSteemPower (vests) {
 async function steemPowerToVests (steemPower) {
 
   if (isNaN(totalSteem) || isNaN(totalVests) ){
-	properties = await client.database.getDynamicGlobalProperties()
-	totalSteem = Number(properties.total_vesting_fund_steem.split(' ')[0])
+	properties = await hiveClient.database.getDynamicGlobalProperties()
+	totalSteem = Number(properties.total_vesting_fund_hive.split(' ')[0])
 	totalVests = Number(properties.total_vesting_shares.split(' ')[0])
   }
   return parseFloat(steemPower * totalVests / totalSteem).toFixed(6);
@@ -1949,11 +1769,7 @@ async function verifyAFITBuyTransaction(userA, amount, afit_amount, matching_afi
 	console.log('matching_afit:'+matching_afit);
 	//item_price_alt = 0.001;
 	try{
-		if (bchain == 'STEEM'){
-			trx = await client.database.getTransaction({id: tx_id, block_num: block_num});
-		}else{
-			trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
-		}
+		trx = await hiveClient.database.getTransaction({id: tx_id, block_num: block_num});
 		console.log(trx);
 		if (trx && trx.operations
 			&& trx.operations.length > 0){
@@ -2366,18 +2182,7 @@ async function claimRewards(target_account, p_key, target_chain) {
 	let claim_currency
 	let claim_currency_stable
 	let chainLnk
-	if (target_chain == 'STEEM'){
-		chainLnk = steem;
-		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
-		if (!targetAccount){
-			return {error: 'account not found'};
-		}
-		targetAccount = targetAccount[0];
-		//console.log(targetAccount);
-		claim_currency = targetAccount.reward_steem_balance
-		claim_currency_stable = targetAccount.reward_sbd_balance
-		
-	}else if (target_chain == 'HIVE'){
+	if (target_chain == 'HIVE'){
 		chainLnk = hive;
 		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
 		if (!targetAccount){
@@ -2483,14 +2288,7 @@ async function fetchChainTrx(trxId, blkNo, chain){
 					console.log('finding trx ' + attempts);
 					attempts += 1;
 					let trx;
-					if (chain == 'STEEM'){
-						trx = await client.database.getTransaction({id: trxId, block_num: blkNo});
-						//console.log(trx);
-						//resolve(null);
-					}else{
-					
-						trx = await chainLnk.api.getTransactionAsync(trxId);
-					}
+					trx = await chainLnk.api.getTransactionAsync(trxId);
 					if (trx && trx.operations){
 						let ops = trx.operations;
 						for (const i in ops) {

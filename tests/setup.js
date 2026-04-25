@@ -1,0 +1,21 @@
+// Mock native Node.js modules that Jest can't resolve
+jest.mock('node:fs', () => require('fs'));
+jest.mock('node:fs/promises', () => require('fs').promises || {});
+jest.mock('node:crypto', () => require('crypto'));
+jest.mock('node:events', () => require('events'));
+jest.mock('node:os', () => require('os'));
+jest.mock('node:path', () => require('path'));
+jest.mock('node:stream', () => require('stream'));
+jest.mock('node:string_decoder', () => require('string_decoder'));
+jest.mock('node:util', () => require('util'));
+jest.mock('node:url', () => require('url'));
+jest.mock('node:net', () => require('net'));
+jest.mock('node:child_process', () => require('child_process'));
+jest.mock('node:http', () => require('http'));
+jest.mock('node:https', () => require('https'));
+jest.mock('node:timers', () => require('timers'));
+jest.mock('node:zlib', () => require('zlib'));
+jest.mock('node:buffer', () => require('buffer'));
+jest.mock('node:dns', () => require('dns'));
+jest.mock('node:tls', () => require('tls'));
+jest.mock('node:assert', () => require('assert'));

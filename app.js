@@ -24,7 +24,7 @@ var config = utils.getConfig();
 
 let ObjectId = require('mongodb').ObjectId; 
 
-const request = require("request");
+const axios = require("axios");
 
 const ethutil = require('ethereumjs-util');
 
@@ -49,7 +49,7 @@ var collection;
 const db_name = config.db_name;
 const collection_name = 'user_tokens';
 
-var Web3 = require('web3');
+const { Web3 } = require('web3');
 
 const bscrpc = 'https://bsc-dataseed1.binance.org:443';
 
@@ -147,7 +147,9 @@ let fullSortedAFITList = [];
 
 //fetchAFITBal(0);
 
-launchHEFetch();
+if (process.env.NODE_ENV !== 'test') {
+  launchHEFetch();
+}
 //setTimeout(launchHEFetch, 10000);
 
 async function launchHEFetch(){
@@ -161,17 +163,19 @@ async function launchHEFetch(){
 
   
 //fetch new AFITX user account balance every 5 mins
-let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
-  //reset array
-  usersAFITBal = [];
-  usersAFITXBal = [];
-  //fetchAFITXBal(0);
-  
-  //fetchAFITBal(0);
-  
-  setTimeout(launchHEFetch, 10000);
-  
-  //reset to zero, might need to revisit this when reputting SE to action
+let scJob;
+if (process.env.NODE_ENV !== 'test') {
+  scJob = schedule.scheduleJob('*/5 * * * *', async function(){
+    //reset array
+    usersAFITBal = [];
+    usersAFITXBal = [];
+    //fetchAFITXBal(0);
+    
+    //fetchAFITBal(0);
+    
+    setTimeout(launchHEFetch, 10000);
+    
+    //reset to zero, might need to revisit this when reputting SE to action
   /*usersAFITBal = [];
   usersAFITXBal = [];
   
@@ -180,11 +184,12 @@ let scJob = schedule.scheduleJob('*/5 * * * *', async function(){
   fetchAFITBalHE(0);
   */
   
-  //only run cleanup on secondary thread to avoid duplication of effort and collision
-  if (process.env.BOT_THREAD == 'SECOND_API'){
-	disableUserLogin();
-  }
-});
+    //only run cleanup on secondary thread to avoid duplication of effort and collision
+    if (process.env.BOT_THREAD == 'SECOND_API'){
+      disableUserLogin();
+    }
+  });
+}
 
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
 //allows setting acceptable origins to be included across all function calls
@@ -945,21 +950,24 @@ app.get('/surveys', async function (req, res){
 
 
 //schedule restart intervals due to memory drain down
-function restartApiNode() {
-	request.post(
-		{
-			url: 'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/vnd.heroku+json; version=3',
-				'Authorization': 'Bearer ' + config.heroku_app_token
+async function restartApiNode() {
+	try {
+		const response = await axios.post(
+			'https://api.heroku.com/apps/' + config.heroku_app_id + '/dynos/' + config.heroku_app_dyno + '/actions/stop',
+			{},
+			{
+				headers: {
+					'Content-Type': 'application/json',
+					'Accept': 'application/vnd.heroku+json; version=3',
+					'Authorization': 'Bearer ' + config.heroku_app_token
+				}
 			}
-		},
-		function(error, response, body) {
-			console.log(response);
-			console.log(body);
-		}
-	);
+		);
+		console.log(response.status);
+		console.log(response.data);
+	} catch (error) {
+		console.error('Error restarting dyno:', error.message);
+	}
 }
 
 if (process.env.BOT_THREAD == 'MAIN'){
@@ -1010,10 +1018,12 @@ async function disableUserLogin(){
 let exchangeAfitPrice = {};
 let priorExchangeAfitHivePrice = {};
 
-loadExchAfitPrice();
+if (process.env.NODE_ENV !== 'test') {
+  loadExchAfitPrice();
 
-//reload every 5 mins
-setInterval(loadExchAfitPrice, 5*60000);
+  //reload every 5 mins
+  setInterval(loadExchAfitPrice, 5*60000);
+}
 
 
 function switchHENode(){
@@ -1391,17 +1401,26 @@ grabUserTokensFunc = async function (username, fullBal){
 
 /* function handles returning product specific data */
 grabProductInfo = async function(product_id){
-	let o_id = new ObjectId(product_id);
+	let o_id;
+	try {
+		o_id = new ObjectId(product_id);
+	} catch (e) {
+		console.log('Invalid product ID format: ' + product_id);
+		return null;
+	}
 	let product = await db.collection('products').findOne({_id: o_id});
 	return product;
 }
 
 /* function handles generating a random password/access_token */
 generatePassword = function (multip) {
-	//generate random 11 characters password
+	const crypto = require('crypto');
+	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 	let passString = '';
-	for (let i=0;i<multip;i++){
-		passString += Math.random().toString(36).substr(2, 13);
+	const needed = multip * 13;
+	const bytes = crypto.randomBytes(needed);
+	for (let i = 0; i < needed; i++) {
+		passString += chars[bytes[i] % chars.length];
 	}
 	return passString;
   };
@@ -1678,7 +1697,13 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 	}
 	
 	//find matching survey
-	let matching_survey = await db.collection('surveys').findOne({_id: new ObjectId(req.query.id)});
+	let matching_survey;
+	try {
+		matching_survey = await db.collection('surveys').findOne({_id: new ObjectId(req.query.id)});
+	} catch (e) {
+		res.send({'error': 'Invalid survey ID format'});
+		return;
+	}
 	console.log(matching_survey);
 	if (matching_survey){
 			
@@ -1760,7 +1785,12 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	console.log(req.body);
 	console.log(req.body.operation);
 	if (req.body && req.body.operation){
-		operation = JSON.parse(req.body.operation);
+		try {
+			operation = JSON.parse(req.body.operation);
+		} catch (e) {
+			res.send({error: 'Invalid operation format'});
+			return;
+		}
 		//operation = req.query.operation;
 	}else{
 		res.send({error: 'operation not supplied'});
@@ -1844,7 +1874,12 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 	let operation;
 	console.log(req.query.operation);
 	if (req.query && req.query.operation){
-		operation = JSON.parse(req.query.operation);
+		try {
+			operation = JSON.parse(req.query.operation);
+		} catch (e) {
+			res.send({error: 'Invalid operation format'});
+			return;
+		}
 		//operation = req.query.operation;
 	}else{
 		res.send({error: 'operation not supplied'});
@@ -1878,11 +1913,10 @@ app.get('/claimRewards', checkHdrs, async function (req, res){
 	
 	let userKey = receivedPlaintext;
 	
-	/*res.send({'hive': {'success': true}, 'steem': {'success': true}, 'blurt': {'success': true}});*/
+	/*res.send({'hive': {'success': true}, 'blurt': {'success': true}});*/
 	let outcHive = await utils.claimRewards(req.query.user, userKey, 'HIVE');
-	let outcSteem = await utils.claimRewards(req.query.user, userKey, 'STEEM');
 	let outcBlurt = await utils.claimRewards(req.query.user, userKey, 'BLURT');
-	res.send({'hive': outcHive, 'steem': outcSteem, 'blurt': outcBlurt});
+	res.send({'hive': outcHive, 'blurt': outcBlurt});
 });
 
 
@@ -2077,7 +2111,13 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 				return;
 			}
 			//cleanup json
-			let json = JSON.parse(conf_trx.operations[0][1].json)
+			let json;
+			try {
+				json = JSON.parse(conf_trx.operations[0][1].json);
+			} catch (e) {
+				res.send({status: 'error'});
+				return;
+			}
 			let setgs = await db.collection('user_settings').replaceOne({user: req.query.user}, {user: req.query.user, settings: json}, {upsert : true });
 			//console.log(setgs);
 			res.send({success: true});
@@ -2137,7 +2177,12 @@ app.get('/deleteAccount/', checkHdrs, async function (req, res) {
 app.get('/updateSettings/', checkHdrs, async function (req, res) {
 	let newSettings;
 	if (req.query && req.query.user && req.query.settings){
-		newSettings = JSON.parse(req.query.settings);
+		try {
+			newSettings = JSON.parse(req.query.settings);
+		} catch (e) {
+			res.send({error:'Invalid settings format'});
+			return;
+		}
 	}else{
 		res.send({error:'invalid request'})
 		return;
@@ -2997,10 +3042,16 @@ app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 					res.send({status: 'error'});
 					return;
 				} 
-				const ops = conf_trx.operations[0][1]; 
-				const json = JSON.parse(ops.json)
-				console.log(ops);
-				if (req.query.user != ops.required_posting_auths[0] || req.query.wallet != json.wallet){
+			const ops = conf_trx.operations[0][1];
+			let json;
+			try {
+				json = JSON.parse(ops.json);
+			} catch (e) {
+				res.send({status: 'error'});
+				return;
+			}
+			console.log(ops);
+			if (req.query.user != ops.required_posting_auths[0] || req.query.wallet != json.wallet){
 					res.send({status: 'error'});
 					return;
 				}
@@ -3354,9 +3405,15 @@ app.get('/userFriends/:user', async function (req, res) {
 
 /* end point for marking a notification as read */
 app.get('/markRead/:notif_id', checkHdrs, async function (req, res) {
-	let notif_to_update = {
-		_id: new ObjectId(req.params.notif_id),
-	};
+	let notif_to_update;
+	try {
+		notif_to_update = {
+			_id: new ObjectId(req.params.notif_id),
+		};
+	} catch (e) {
+		res.send({status: 'error'});
+		return;
+	}
 	try{
 		let transaction = await db.collection('notifications').updateOne(notif_to_update, { $set: {status: 'read'} } );
 		console.log('success updating notification status');
@@ -3369,9 +3426,15 @@ app.get('/markRead/:notif_id', checkHdrs, async function (req, res) {
 
 /* end point for marking a notification as Unread */
 app.get('/markUnread/:notif_id', checkHdrs, async function (req, res) {
-	let notif_to_update = {
-		_id: new ObjectId(req.params.notif_id),
-	};
+	let notif_to_update;
+	try {
+		notif_to_update = {
+			_id: new ObjectId(req.params.notif_id),
+		};
+	} catch (e) {
+		res.send({status: 'error'});
+		return;
+	}
 	try{
 		let transaction = await db.collection('notifications').updateOne(notif_to_update, { $set: {status: 'unread'} } );
 		console.log('success updating notification status');
@@ -3667,7 +3730,13 @@ app.get('/updateProdStatus', async function(req, res){
 		return;
 	}
 	let user = req.query.user;
-	let trx_id = new ObjectId(req.query.trx_id);
+	let trx_id;
+	try {
+		trx_id = new ObjectId(req.query.trx_id);
+	} catch (e) {
+		res.send({'error': 'Invalid transaction ID format'});
+		return;
+	}
 	let note = req.query.note;
 
 	let query = { user: req.query.user, _id: trx_id };
@@ -3742,7 +3811,13 @@ app.get('/confirmProdReceipt', checkHdrs, async function(req, res){
 		return;
 	}
 	let user = req.query.user;
-	let trx_id = new ObjectId(req.query.trx_id);
+	let trx_id;
+	try {
+		trx_id = new ObjectId(req.query.trx_id);
+	} catch (e) {
+		res.send({'error': 'Invalid transaction ID format'});
+		return;
+	}
 	let newStatus = 'delivered';
 	
 	let note = req.query.note;
@@ -7869,7 +7944,13 @@ app.get("/gadgetBought", async function(req, res) {
   }
   
   let user = req.query.user;
-  let gadget_id = new ObjectId(req.query.gadget_id);
+  let gadget_id;
+  try {
+	  gadget_id = new ObjectId(req.query.gadget_id);
+  } catch (e) {
+	  res.send({'error':'Invalid gadget ID format'});
+	  return;
+  }
   
   //check if the proper access token is valid for this user/product combination
   let gadget_match = await db.collection('user_gadgets').find(
@@ -8432,7 +8513,7 @@ app.get('/getRC', async function (req, res){
 //send notification
 app.get('/sendNotification', async function(req,res){
 	try {
-		let passed_var = eval("req.query."+config.verifyNotifParam);
+		let passed_var = req.query[config.verifyNotifParam];
 		console.log('sendnotification');
 		//console.log(passed_var);
 		//make sure needed security var is passed, and with proper value
@@ -8575,16 +8656,23 @@ app.get('/findUniqueUsers', async function(req,res){
 
 //function handles storing verified actifit posts to add additional security measures they came through our API and to avoid json metadata modifications
 app.get('/appendVerifiedPost', async function(req,res){
-	var passed_var = eval("req.query."+config.verifyParam);
+	var passed_var = req.query[config.verifyParam];
 	//console.log(passed_var);
 	//make sure needed security var is passed, and with proper value
 	if ((typeof passed_var == 'undefined') || passed_var != config.verifyPostToken){
 		res.send('{}');
 	}else{
+		let json_metadata;
+		try {
+			json_metadata = JSON.parse(req.query.json_metadata);
+		} catch (e) {
+			res.send('{}');
+			return;
+		}
 		let verified_post = {
 			author: req.query.author,
 			permlink: req.query.permlink,
-			json_metadata: JSON.parse(req.query.json_metadata),
+			json_metadata: json_metadata,
 			date: new Date(),
 		};
 		try{
@@ -9424,3 +9512,5 @@ function gk_add_commas(nStr) {
 
 let srvr = app.listen(appPort);
 srvr.setTimeout(120000);
+
+module.exports = app;
