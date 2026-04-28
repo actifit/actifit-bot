@@ -56,7 +56,6 @@
   "author": "cryptouru",
   "license": "MIT",
   "overrides": {
-    "ws": "^8.20.0",
-    "node": false
+    "ws": "^8.20.0"
   }
 }
