@@ -6604,6 +6604,123 @@ app.get('/getPostFullAFITPayReward', async function (req, res) {
 });
 
 
+/* Scoring rules and factors — keep in sync with actifitvoter/curation-bot.js and config.json */
+const REWARD_SCORING_RULES = {
+	activity: [[4999,0],[5999,0.20],[6999,0.35],[7999,0.50],[8999,0.65],[9999,0.80],[10000,1.00],[149999,1.00],[150000,0]],
+	content:  [[99,0],[399,0.20],[799,0.35],[1199,0.50],[1599,0.65],[1999,0.80],[2000,1.00]],
+	media:    [[0,0],[1,0.2],[2,0.4],[3,0.6],[4,0.8],[5,1]],
+	upvotes:  [[0,0],[10,0.2],[20,0.4],[30,0.6],[50,0.8],[100,1]],
+	comments: [[0,0],[2,0.2],[4,0.4],[6,0.6],[8,0.8],[10,1]]
+};
+const REWARD_SCORING_FACTORS = { activity: 25, content: 10, media: 10, upvotes: 10, comments: 10, rank: 25, moderator: 10 };
+const REWARD_MIN_AFIT_ELIG = 5000;
+
+/* end point for estimating a user's AFIT reward for their latest activity post.
+   Returns the actual rewarded amount if the curation bot has already processed the post,
+   otherwise runs the scoring formula against live Hive post data to produce an estimate. */
+app.get('/getEstimatedReward', async function(req, res) {
+	if (!req.query.user) {
+		return res.send({ error: 'user param required' });
+	}
+
+	const username = req.query.user.toLowerCase().replace('@', '');
+
+	try {
+		// 1. Latest verified post for this user
+		const latestPost = await db.collection('verified_posts')
+			.findOne({ author: username }, { sort: { date: -1 } });
+
+		if (!latestPost) {
+			return res.send({ estimated_afit: 0, status: 'no_post' });
+		}
+
+		const postUrl  = `/@${latestPost.author}/${latestPost.permlink}`;
+		const postDate = latestPost.date;
+
+		// 2. If curation bot already ran for this post, return the real number
+		const existingReward = await db.collection('token_transactions')
+			.findOne({ user: username, reward_activity: 'Post', url: postUrl });
+
+		if (existingReward) {
+			return res.send({
+				estimated_afit: parseFloat(existingReward.token_count.toFixed(4)),
+				already_rewarded: true,
+				post_url: postUrl,
+				post_date: postDate
+			});
+		}
+
+		// 3. Check AFIT balance eligibility before doing expensive calls
+		const userInfo   = await grabUserTokensFunc(username);
+		const tokenCount = parseFloat(userInfo.tokens);
+		if (tokenCount < REWARD_MIN_AFIT_ELIG) {
+			return res.send({ estimated_afit: 0, already_rewarded: false, status: 'insufficient_afit', post_url: postUrl, post_date: postDate });
+		}
+
+		// 4. Fetch Hive post content, replies, and moderator list in parallel
+		const [hivePost, hiveReplies, moderatorList] = await Promise.all([
+			utils.hive.api.getContentAsync(latestPost.author, latestPost.permlink),
+			utils.hive.api.getContentRepliesAsync(latestPost.author, latestPost.permlink),
+			moderatorsListFunc()
+		]);
+
+		// 5. Activity score — step count from verified post metadata
+		const stepCount    = (latestPost.json_metadata && latestPost.json_metadata.step_count) || 0;
+		const activityScore = utils.calcScore(REWARD_SCORING_RULES.activity, REWARD_SCORING_FACTORS.activity, stepCount);
+
+		// 6. Content score — plain-text length of post body
+		const bodyText     = (hivePost.body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+		const contentScore  = utils.calcScore(REWARD_SCORING_RULES.content, REWARD_SCORING_FACTORS.content, bodyText.length);
+
+		// 7. Media score — user images from verified post metadata (capped at 5)
+		const imgList   = (latestPost.json_metadata && Array.isArray(latestPost.json_metadata.image)) ? latestPost.json_metadata.image : [];
+		const imgCount  = Math.min(imgList.length, 5);
+		const mediaScore = utils.calcScore(REWARD_SCORING_RULES.media, REWARD_SCORING_FACTORS.media, imgCount);
+
+		// 8. Upvote score
+		const netVotes    = hivePost.net_votes || 0;
+		const upvoteScore  = utils.calcScore(REWARD_SCORING_RULES.upvotes, REWARD_SCORING_FACTORS.upvotes, netVotes);
+
+		// 9. Comment score — replies with meaningful content (> 50 chars)
+		const qualifyingComments = (hiveReplies || [])
+			.filter(c => (c.body || '').replace(/\s+/g, ' ').trim().length > 50).length;
+		const commentScore = utils.calcScore(REWARD_SCORING_RULES.comments, REWARD_SCORING_FACTORS.comments, qualifyingComments);
+
+		// 10. Moderator upvote score
+		const modNames       = moderatorList.map(m => m.name);
+		const hadModVote     = (hivePost.active_votes || []).some(v => modNames.includes(v.voter) && v.voter !== username);
+		const moderatorScore = hadModVote ? REWARD_SCORING_FACTORS.moderator : 0;
+
+		// 11. User rank score
+		const rankData      = await calcRank({ params: { user: username }, query: {} }, '');
+		const userRank      = parseFloat(rankData.user_rank) || 0;
+		const userRankScore = userRank * REWARD_SCORING_FACTORS.rank / 100;
+
+		// 12. Total estimated AFIT
+		const estimatedAfit = activityScore + contentScore + mediaScore + upvoteScore + commentScore + moderatorScore + userRankScore;
+
+		return res.send({
+			estimated_afit: parseFloat(estimatedAfit.toFixed(4)),
+			already_rewarded: false,
+			post_url: postUrl,
+			post_date: postDate,
+			score_breakdown: {
+				activity:  parseFloat(activityScore.toFixed(2)),
+				content:   parseFloat(contentScore.toFixed(2)),
+				media:     parseFloat(mediaScore.toFixed(2)),
+				upvotes:   parseFloat(upvoteScore.toFixed(2)),
+				comments:  parseFloat(commentScore.toFixed(2)),
+				moderator: moderatorScore,
+				user_rank: parseFloat(userRankScore.toFixed(2))
+			}
+		});
+
+	} catch (err) {
+		console.error('getEstimatedReward error:', err);
+		return res.send({ error: 'failed to calculate estimate' });
+	}
+});
+
 /* end point for returning total number of rewarded tokens to charities based upon user activity, along with unique user count who donated */
 app.get('/getCharityRewards', async function(req, res) {
 

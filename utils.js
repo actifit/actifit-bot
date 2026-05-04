@@ -2645,5 +2645,6 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    delegateRC: delegateRC,
    fetchRCDelegations: fetchRCDelegations,
    getRCHF26: getRCHF26,
-   listRCAccounts: listRCAccounts
+   listRCAccounts: listRCAccounts,
+   hive: hive
  }
