@@ -8477,7 +8477,8 @@ app.get("/downEbook", async function(req, res) {
  
  
 //function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
-app.get('/confirmPayment', async function(req,res){
+app.post('/confirmPayment', async function(req,res){
+	req.query = { ...req.body };
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
 	//if (false){
 		res.send('{}');
@@ -9626,6 +9627,185 @@ function gk_add_commas(nStr) {
 	}
 	return x1 + x2;
 }	
+
+
+/*************************** X BOOST REWARDS *************************/
+
+// In-memory cache for liking_users — refreshed at most once every 10 minutes
+let xLikersCache = { tweetId: null, likers: [], fetchedAt: 0 };
+
+// In-memory cache for the latest Actifit tweet — refreshed once per hour
+let xLatestTweetCache = { tweetId: null, tweetUrl: null, oembedHtml: null, fetchedAt: 0 };
+
+// Per-user attempt counter to block cache-miss spam (resets on server restart)
+let xClaimAttempts = {};
+
+async function getLatestActifitTweet() {
+	const ONE_HOUR = 60 * 60 * 1000;
+	if (xLatestTweetCache.tweetId && Date.now() - xLatestTweetCache.fetchedAt < ONE_HOUR) {
+		return xLatestTweetCache;
+	}
+	if (!config.x_bearer_token || !config.x_actifitapp_user_id) {
+		console.error('x_bearer_token or x_actifitapp_user_id not configured');
+		return null;
+	}
+	try {
+		// Fetch the latest tweet from @actifit_fitness
+		const tweetsResp = await axios.get(
+			`https://api.twitter.com/2/users/${config.x_actifitapp_user_id}/tweets?max_results=5&exclude=replies,retweets`,
+			{ headers: { Authorization: `Bearer ${config.x_bearer_token}` } }
+		);
+		const tweets = tweetsResp.data.data;
+		if (!tweets || tweets.length === 0) return null;
+
+		const tweet = tweets[0];
+		const tweetId = tweet.id;
+		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
+
+		// Fetch oEmbed HTML — free endpoint, no auth required
+		const oembedResp = await axios.get(
+			`https://publish.twitter.com/oembed?url=${encodeURIComponent(tweetUrl)}&omit_script=false`
+		);
+		const oembedHtml = oembedResp.data.html || '';
+
+		xLatestTweetCache = { tweetId, tweetUrl, oembedHtml, fetchedAt: Date.now() };
+		return xLatestTweetCache;
+	} catch (err) {
+		console.error('getLatestActifitTweet error:', err.message);
+		return xLatestTweetCache.tweetId ? xLatestTweetCache : null; // serve stale cache on error
+	}
+}
+
+async function getXLikers(tweetId) {
+	const TEN_MIN = 10 * 60 * 1000;
+	if (xLikersCache.tweetId === tweetId && Date.now() - xLikersCache.fetchedAt < TEN_MIN) {
+		return xLikersCache.likers;
+	}
+	if (!config.x_bearer_token) {
+		console.error('x_bearer_token not configured');
+		return [];
+	}
+	try {
+		const resp = await axios.get(
+			`https://api.twitter.com/2/tweets/${tweetId}/liking_users?max_results=1000`,
+			{ headers: { Authorization: `Bearer ${config.x_bearer_token}` } }
+		);
+		xLikersCache = { tweetId, likers: resp.data.data || [], fetchedAt: Date.now() };
+	} catch (err) {
+		console.error('X API liking_users error:', err.message);
+	}
+	return xLikersCache.likers;
+}
+
+/* Returns the latest Actifit X post details — fetched automatically, cached 1 hour */
+app.get('/latestXPost', async function (req, res) {
+	const tweet = await getLatestActifitTweet();
+	if (!tweet) {
+		return res.send({ error: 'Unable to fetch latest X post' });
+	}
+	res.send({
+		tweetId: tweet.tweetId,
+		tweetUrl: tweet.tweetUrl,
+		oembedHtml: tweet.oembedHtml
+	});
+});
+
+/* Links a user's X account — stores OAuth tokens server-side */
+app.post('/linkXAccount', checkHdrs, async function (req, res) {
+	const user = req.query.user;
+	const { xUserId, xUsername, accessToken, refreshToken } = req.body;
+
+	if (!xUserId || !xUsername || !accessToken) {
+		return res.send({ error: 'Missing required X account fields' });
+	}
+
+	try {
+		await db.collection('x_linked_accounts').updateOne(
+			{ user },
+			{ $set: { user, x_user_id: xUserId, x_username: xUsername, access_token: accessToken, refresh_token: refreshToken || '', linked_at: new Date() } },
+			{ upsert: true }
+		);
+		res.send({ success: true });
+	} catch (err) {
+		console.error('linkXAccount DB error:', err);
+		res.send({ error: 'Failed to link X account' });
+	}
+});
+
+/* Verifies that the user liked the latest Actifit X post and awards AFIT */
+app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
+	const user = req.query.user;
+	const tweetId = req.query.tweetId;
+
+	if (!tweetId) {
+		return res.send({ error: 'tweetId is required' });
+	}
+
+	// Check if user already claimed this tweet
+	const existing = await db.collection('x_engagement_claims').findOne({ user, tweet_id: tweetId });
+	if (existing) {
+		return res.send({ error: 'Already claimed for this post' });
+	}
+
+	// Rate-limit claim attempts per user per tweet
+	const attemptKey = user + '_' + tweetId;
+	xClaimAttempts[attemptKey] = (xClaimAttempts[attemptKey] || 0) + 1;
+	if (xClaimAttempts[attemptKey] > 3) {
+		return res.send({ error: 'Too many claim attempts. Please wait for the cache to refresh.' });
+	}
+
+	// Look up user's linked X account
+	const linkedAccount = await db.collection('x_linked_accounts').findOne({ user });
+	if (!linkedAccount) {
+		return res.send({ error: 'No linked X account found. Please link your X account first.' });
+	}
+
+	// Check cached liker list
+	const likers = await getXLikers(tweetId);
+	const hasLiked = likers.some(l => l.id === linkedAccount.x_user_id);
+
+	if (!hasLiked) {
+		return res.send({ success: false, retryInSeconds: 600, message: 'Like not detected yet. Cache refreshes every 10 minutes — please try again shortly.' });
+	}
+
+	// Calculate reward (1–5 AFIT, randomised)
+	const amount = Math.floor((Math.random() * 4 + 1) * 1000) / 1000;
+
+	try {
+		// Record claim to prevent double-claiming
+		await db.collection('x_engagement_claims').insertOne({
+			user,
+			tweet_id: tweetId,
+			amount,
+			claimed_at: new Date()
+		});
+
+		// Record to token_transactions (same pattern as AdMob rewards)
+		await db.collection('token_transactions').insertOne({
+			user,
+			token_count: amount,
+			reward_activity: 'X Engagement',
+			date: new Date(),
+			url: config.x_latest_tweet_url
+		});
+
+		// Reset attempt counter on successful claim
+		delete xClaimAttempts[attemptKey];
+
+		// Notify user
+		utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment',
+			`You received ${amount} AFIT for liking the Actifit X post!`,
+			config.x_latest_tweet_url
+		);
+
+		res.send({ success: true, amount });
+	} catch (err) {
+		console.error('claimXEngagementReward DB error:', err);
+		res.send({ error: 'Failed to record claim' });
+	}
+});
+
+/*************************** END X BOOST REWARDS *************************/
 
 let srvr = app.listen(appPort);
 srvr.setTimeout(120000);

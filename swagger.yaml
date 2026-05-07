@@ -5340,70 +5340,75 @@ paths:
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /confirmPayment:
-    get:
+    post:
       summary: Confirm signup payment
-      description: Confirms a new user signup payment (either via promo code or direct transfer) and initiates account creation and delegation.
-      parameters:
-        - in: query
-          name: confirm_payment_token
-          schema: { type: 'string', example: 'your_payment_confirmation_token' }
-          required: true
-          description: Security token to confirm payment.
-        - in: query
-          name: promo_code
-          schema: { type: 'string', example: 'FREEACCT123', nullable: true }
-          required: false
-          description: Optional promo code used for signup.
-        - in: query
-          name: new_account
-          schema: { type: 'string', example: 'new-user' }
-          required: true
-          description: The username for the new account.
-        - in: query
-          name: new_pass
-          schema: { type: 'string', example: 'generated-password' }
-          required: true
-          description: The password for the new account.
-        - in: query
-          name: cur_bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'] }
-          required: true
-          description: The blockchain for the new account.
-        - in: query
-          name: usd_invest
-          schema: { type: 'number', format: 'float', example: 1.0 }
-          required: false
-          description: USD amount invested.
-        - in: query
-          name: steem_invest
-          schema: { type: 'number', format: 'float', example: 5.0 }
-          required: false
-          description: STEEM amount invested.
-        - in: query
-          name: afit_reward
-          schema: { type: 'number', format: 'float', example: 100.0 }
-          required: false
-          description: AFIT reward for signup.
-        - in: query
-          name: memo
-          schema: { type: 'string', example: 'signup_memo_hash', nullable: true }
-          required: false
-          description: The memo from the payment transaction.
-        - in: query
-          name: confirming_tx
-          schema: { type: 'string', example: 'payment_tx_id_123', nullable: true }
-          required: false
-          description: The transaction ID confirming payment.
-        - in: query
-          name: referrer
-          schema: { type: 'string', example: 'actifit-referrer', nullable: true }
-          required: false
-          description: Optional referrer username.
-        - in: query
-          name: email
-          schema: { type: 'string', format: 'email', example: 'user@example.com', nullable: true }
-          required: false
-          description: Optional user email.
+      description: Confirms a new user signup payment (either via promo code or direct transfer) and initiates account creation and delegation. Credentials are sent in the request body to avoid exposure in server logs and browser history.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm_payment_token, new_account, new_pass, cur_bchain]
+              properties:
+                confirm_payment_token:
+                  type: string
+                  example: 'your_payment_confirmation_token'
+                  description: Security token to confirm payment.
+                promo_code:
+                  type: string
+                  example: 'FREEACCT123'
+                  nullable: true
+                  description: Optional promo code used for signup.
+                new_account:
+                  type: string
+                  example: 'new-user'
+                  description: The username for the new account.
+                new_pass:
+                  type: string
+                  example: 'generated-password'
+                  description: The password for the new account.
+                cur_bchain:
+                  type: string
+                  example: 'HIVE'
+                  enum: ['HIVE', 'STEEM']
+                  description: The blockchain for the new account.
+                usd_invest:
+                  type: number
+                  format: float
+                  example: 1.0
+                  description: USD amount invested.
+                steem_invest:
+                  type: number
+                  format: float
+                  example: 5.0
+                  description: STEEM amount invested.
+                afit_reward:
+                  type: number
+                  format: float
+                  example: 100.0
+                  description: AFIT reward for signup.
+                memo:
+                  type: string
+                  example: 'signup_memo_hash'
+                  nullable: true
+                  description: The memo from the payment transaction.
+                confirming_tx:
+                  type: string
+                  example: 'payment_tx_id_123'
+                  nullable: true
+                  description: The transaction ID confirming payment.
+                referrer:
+                  type: string
+                  example: 'actifit-referrer'
+                  nullable: true
+                  description: Optional referrer username.
+                email:
+                  type: string
+                  format: email
+                  example: 'user@example.com'
+                  nullable: true
+                  description: Optional user email.
       responses:
         '200':
           description: Payment confirmed and account creation initiated.
@@ -5412,6 +5417,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConfirmPaymentResponse'
         '400': { description: 'Invalid confirmation token or payment already processed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '405': { description: 'Method Not Allowed — endpoint only accepts POST.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /getRC:
