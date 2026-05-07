@@ -9397,12 +9397,19 @@ app.get('/rewardActifitWebComment/:user', async function(req,res){
 
 /* core function handling user rewards for various web related activities */
 rewardActifitTokenWeb = async function (req, reward_activity) {
-	//store outcome 
+	//store outcome
 	let rewarded = false;
-	
+
 	//make sure we have user and url params set
 	if (req.params.user && typeof req.query.url!= "undefined" && req.query.url!=null) {
 	  try{
+		// Refuse reward if the user does not exist on the Hive blockchain
+		const userExists = await utils.hiveAccountExists(req.params.user);
+		if (!userExists) {
+			console.log('rewardActifitTokenWeb: non-existent user rejected: ' + req.params.user);
+			return rewarded;
+		}
+
 		//let's reward this user for performing an edit using our web interface
 		let reward_date = new Date();
 		

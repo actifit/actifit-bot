@@ -2578,6 +2578,16 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
 	
 }
 
+async function hiveAccountExists(username) {
+	try {
+		const accounts = await hiveClient.database.call('get_accounts', [[username]]);
+		return Array.isArray(accounts) && accounts.length > 0;
+	} catch (err) {
+		console.error('hiveAccountExists error:', err);
+		return false;
+	}
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -2646,5 +2656,6 @@ async function delegateRC(delegator, posting_key, delegatees, max_rc) {
    fetchRCDelegations: fetchRCDelegations,
    getRCHF26: getRCHF26,
    listRCAccounts: listRCAccounts,
-   hive: hive
+   hive: hive,
+   hiveAccountExists: hiveAccountExists
  }
