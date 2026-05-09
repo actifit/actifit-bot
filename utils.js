@@ -2588,6 +2588,59 @@ async function hiveAccountExists(username) {
 	}
 }
 
+async function countActifitVotesToday(username) {
+	const todayStart = new Date();
+	todayStart.setUTCHours(0, 0, 0, 0);
+	try {
+		const history = await hiveClient.database.call('get_account_history', [username, -1, 1000]);
+		let count = 0;
+		for (const [, tx] of history) {
+			const [op_type, op] = tx.op;
+			if (op_type === 'custom_json' && op.id === 'actifit_vote') {
+				const ts = new Date(tx.timestamp + 'Z');
+				if (ts >= todayStart) count++;
+			}
+		}
+		return count;
+	} catch (err) {
+		console.error('countActifitVotesToday error:', err);
+		return 0;
+	}
+}
+
+async function verifyPostSuppEdit(author, permlink) {
+	try {
+		const post = await hiveClient.database.call('get_content', [author, permlink]);
+		if (!post || !post.author) return false;
+		let meta = {};
+		try { meta = JSON.parse(post.json_metadata); } catch {}
+		return meta.suppEdit === 'actifit.io';
+	} catch (err) {
+		console.error('verifyPostSuppEdit error:', err);
+		return false;
+	}
+}
+
+async function countUserCommentsToday(username) {
+	const todayStart = new Date();
+	todayStart.setUTCHours(0, 0, 0, 0);
+	try {
+		const history = await hiveClient.database.call('get_account_history', [username, -1, 1000]);
+		let count = 0;
+		for (const [, tx] of history) {
+			const [op_type, op] = tx.op;
+			if (op_type === 'comment' && op.parent_author && op.author === username) {
+				const ts = new Date(tx.timestamp + 'Z');
+				if (ts >= todayStart) count++;
+			}
+		}
+		return count;
+	} catch (err) {
+		console.error('countUserCommentsToday error:', err);
+		return 0;
+	}
+}
+
  module.exports = {
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
@@ -2657,5 +2710,8 @@ async function hiveAccountExists(username) {
    getRCHF26: getRCHF26,
    listRCAccounts: listRCAccounts,
    hive: hive,
-   hiveAccountExists: hiveAccountExists
+   hiveAccountExists: hiveAccountExists,
+   countActifitVotesToday: countActifitVotesToday,
+   verifyPostSuppEdit: verifyPostSuppEdit,
+   countUserCommentsToday: countUserCommentsToday
  }

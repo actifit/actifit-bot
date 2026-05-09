@@ -9395,6 +9395,15 @@ app.get('/rewardActifitWebComment/:user', async function(req,res){
 });
 
 
+function parseHivePostUrl(rawUrl) {
+	try {
+		const { pathname } = new URL(rawUrl);
+		const m = pathname.match(/\/@([a-z][a-z0-9.-]{2,15})\/([^/]+)/);
+		if (m) return { author: m[1], permlink: m[2] };
+	} catch {}
+	return null;
+}
+
 /* core function handling user rewards for various web related activities */
 rewardActifitTokenWeb = async function (req, reward_activity) {
 	//store outcome
@@ -9408,6 +9417,44 @@ rewardActifitTokenWeb = async function (req, reward_activity) {
 		if (!userExists) {
 			console.log('rewardActifitTokenWeb: non-existent user rejected: ' + req.params.user);
 			return rewarded;
+		}
+
+		// Verify the caller's token belongs to the user being rewarded
+		const userToken = (req.headers['x-acti-token'] || '').replace('Bearer ', '');
+		if (!userToken) {
+			console.log('rewardActifitTokenWeb: missing auth token for ' + req.params.user);
+			return rewarded;
+		}
+		const tokenEntry = await db.collection('user_login_token').findOne({ user: req.params.user, token: userToken });
+		if (!tokenEntry) {
+			console.log('rewardActifitTokenWeb: invalid token for user ' + req.params.user);
+			return rewarded;
+		}
+
+		// Blockchain verification: confirm the action was performed via the Actifit interface
+		if (reward_activity === 'Web Vote') {
+			const voteCount = await utils.countActifitVotesToday(req.params.user);
+			if (voteCount < 3) {
+				console.log('rewardActifitTokenWeb: insufficient actifit_vote ops for ' + req.params.user + ': ' + voteCount);
+				return rewarded;
+			}
+		} else if (reward_activity === 'Web Edit') {
+			const postRef = parseHivePostUrl(req.query.url);
+			if (!postRef || postRef.author !== req.params.user) {
+				console.log('rewardActifitTokenWeb: post URL author mismatch for ' + req.params.user);
+				return rewarded;
+			}
+			const edited = await utils.verifyPostSuppEdit(postRef.author, postRef.permlink);
+			if (!edited) {
+				console.log('rewardActifitTokenWeb: suppEdit not found for ' + req.params.user + ' at ' + req.query.url);
+				return rewarded;
+			}
+		} else if (reward_activity === 'Web Comment') {
+			const commentCount = await utils.countUserCommentsToday(req.params.user);
+			if (commentCount < 3) {
+				console.log('rewardActifitTokenWeb: insufficient comments for ' + req.params.user + ': ' + commentCount);
+				return rewarded;
+			}
 		}
 
 		//let's reward this user for performing an edit using our web interface
@@ -9642,7 +9689,7 @@ function gk_add_commas(nStr) {
 let xLikersCache = { tweetId: null, likers: [], fetchedAt: 0 };
 
 // In-memory cache for the latest Actifit tweet — refreshed once per hour
-let xLatestTweetCache = { tweetId: null, tweetUrl: null, oembedHtml: null, fetchedAt: 0 };
+let xLatestTweetCache = { tweetId: null, tweetUrl: null, oembedHtml: null, tweetText: null, createdAt: null, fetchedAt: 0 };
 
 // Per-user attempt counter to block cache-miss spam (resets on server restart)
 let xClaimAttempts = {};
@@ -9657,9 +9704,9 @@ async function getLatestActifitTweet() {
 		return null;
 	}
 	try {
-		// Fetch the latest tweet from @actifit_fitness
+		// Fetch the latest tweet from @actifit_fitness (include text and created_at)
 		const tweetsResp = await axios.get(
-			`https://api.twitter.com/2/users/${config.x_actifitapp_user_id}/tweets?max_results=5&exclude=replies,retweets`,
+			`https://api.twitter.com/2/users/${config.x_actifitapp_user_id}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text`,
 			{ headers: { Authorization: `Bearer ${config.x_bearer_token}` } }
 		);
 		const tweets = tweetsResp.data.data;
@@ -9667,6 +9714,8 @@ async function getLatestActifitTweet() {
 
 		const tweet = tweets[0];
 		const tweetId = tweet.id;
+		const tweetText = tweet.text || '';
+		const createdAt = tweet.created_at || null;
 		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
 
 		// Fetch oEmbed HTML — free endpoint, no auth required
@@ -9675,7 +9724,7 @@ async function getLatestActifitTweet() {
 		);
 		const oembedHtml = oembedResp.data.html || '';
 
-		xLatestTweetCache = { tweetId, tweetUrl, oembedHtml, fetchedAt: Date.now() };
+		xLatestTweetCache = { tweetId, tweetUrl, oembedHtml, tweetText, createdAt, fetchedAt: Date.now() };
 		return xLatestTweetCache;
 	} catch (err) {
 		console.error('getLatestActifitTweet error:', err.message);
@@ -9710,9 +9759,12 @@ app.get('/latestXPost', async function (req, res) {
 	if (!tweet) {
 		return res.send({ error: 'Unable to fetch latest X post' });
 	}
+	const tweetTimestamp = tweet.createdAt ? moment(tweet.createdAt).fromNow() : '';
 	res.send({
 		tweetId: tweet.tweetId,
 		tweetUrl: tweet.tweetUrl,
+		tweetText: tweet.tweetText || '',
+		tweetTimestamp,
 		oembedHtml: tweet.oembedHtml
 	});
 });
