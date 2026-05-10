@@ -1347,7 +1347,7 @@ async function fetchAFITBalHE(offset){
 
 
 /* function handles calculating and returning user token count */
-grabUserTokensFunc = async function (username, fullBal){
+const grabUserTokensFunc = async function (username, fullBal){
 	let user = await db.collection('user_tokens').findOne({_id: username});
 	console.log(user);
 	//fixing token amount display for 3 digits
@@ -1384,7 +1384,7 @@ grabUserTokensFunc = async function (username, fullBal){
 				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call();
 				
 				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
-				afitBSC = parseFloat(format);
+				const afitBSC = parseFloat(format);
 				//console.log(format);
 				user.tokens = parseFloat(user.tokens) + afitBSC;
 			}
@@ -1400,7 +1400,7 @@ grabUserTokensFunc = async function (username, fullBal){
 }
 
 /* function handles returning product specific data */
-grabProductInfo = async function(product_id){
+const grabProductInfo = async function(product_id){
 	let o_id;
 	try {
 		o_id = new ObjectId(product_id);
@@ -1413,7 +1413,7 @@ grabProductInfo = async function(product_id){
 }
 
 /* function handles generating a random password/access_token */
-generatePassword = function (multip) {
+const generatePassword = function (multip) {
 	const crypto = require('crypto');
 	const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 	let passString = '';
@@ -1450,7 +1450,7 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
-getTotalSupplyAFIT = async function (){
+const getTotalSupplyAFIT = async function (){
 	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey='+config.bscscan_api);
 	
 	try{
@@ -1521,7 +1521,7 @@ function setDecimals( number, decimals ){
 
 
 
-getAFITPCSPrice = async function (token, api){
+const getAFITPCSPrice = async function (token, api){
 	let tokenAddress = '0x4516bb582f59befcbc945d8c2dac63ef21fba9f6';//AFIT default
 	if (token == 'AFITX'){
 		tokenAddress = '0x246d22ff6e0b90f80f2278613e8db93ff7a09b95';
@@ -1586,7 +1586,7 @@ app.get('/circulatingSupplyAFIT', async function (req,res){
 		for (let i=0;i<config.actifitSpWallets.length;i++){
 			let result = await afitContract.methods.balanceOf(config.actifitSpWallets[i]).call(); // 29803630997051883414242659
 			let format = web3.utils.fromWei(result); // 29803630.997051883414242659
-			afitBSC = parseFloat(format);
+			const afitBSC = parseFloat(format);
 			cirSupply -= afitBSC;
 		}
 		res.send(''+Math.round(cirSupply))
@@ -2620,7 +2620,7 @@ app.get('/lastSignupClaimed/:user', async function (req, res){
 });
 
 
-userFreeSignupAccounts = async function(user){
+const userFreeSignupAccounts = async function(user){
 	let match = await db.collection('signup_promo_codes').find(
 		{
 			assigned_user: user, 
@@ -2632,7 +2632,7 @@ userFreeSignupAccounts = async function(user){
 	return 0;
 } 
 
-claimableAccountsCount = async function (req, res){
+const claimableAccountsCount = async function (req, res){
 	//check when last claim occurred
 	let user = req.params.user;
 	let entryFound = await db.collection('last_signups_claimed').findOne({user: user});
@@ -3120,7 +3120,7 @@ async function storeWalletAdd(username, wallet, walletChain){
 	};
 	try{
 		let transaction = await db.collection('user_wallet_address').replaceOne({user: username, chain: walletChain}, userWalletEntry, { upsert: true });
-		return result.acknowledged;
+		return transaction.acknowledged;
 	}catch(err){
 		console.log(err);
 		return false;
@@ -5569,7 +5569,7 @@ app.get('/topDelegators', async function (req, res) {
     res.send({steem: delegatorList, hive: hiveDelegatorList});
 });
 
-activeDelegationFunc = async function (userName){
+const activeDelegationFunc = async function (userName){
 	let user = await db.collection('hive_active_delegations').findOne({_id: userName}, {fields : { _id:0} });
 	console.log(user);
 	return user;
@@ -5582,7 +5582,7 @@ app.get('/delegation/:user', async function (req, res) {
 });
 
 
-isModerator = async function(userName){
+const isModerator = async function(userName){
 	let entryFound = false
 	let moderatorList = await db.collection('team').find({name: userName, title:'moderator', status:'active'}).toArray();
 	if (Array.isArray(moderatorList) && moderatorList.length>0){
@@ -5590,7 +5590,7 @@ isModerator = async function(userName){
 	}
 	return entryFound;
 }
-moderatorsListFunc = async function () {
+const moderatorsListFunc = async function () {
 	let moderatorList = await db.collection('team').find({title:'moderator', status:'active'}).sort({name: 1}).toArray();
 	return moderatorList;
 }
@@ -6058,7 +6058,7 @@ app.get('/tipAccount', async function(req, res){
 })
 
 
-tippedToday = async function (req, res){
+const tippedToday = async function (req, res){
 	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	//console.log("startDate:"+startDate+" endDate:"+endDate);
 	
@@ -6068,7 +6068,7 @@ tippedToday = async function (req, res){
 	
 	let endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
 	
-	query_json = {
+	const query_json = {
 			"reward_activity": "Send Tip",
 			"date": {
 					"$lte": new Date(endDate),
@@ -6183,7 +6183,7 @@ app.get('/rewardedPostCount', async function (req, res) {
 		var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
 		console.log("startDate:"+startDate+" endDate:"+endDate);
 		//adjust query to include dates
-		query_json = {
+		const query_json = {
 				"reward_activity": "Post",
 				"date": {
 						"$lte": new Date(endDate),
@@ -6206,7 +6206,7 @@ app.get('/rewardedPostCount', async function (req, res) {
 });
 
 /* refactored function to grab rewarded post count per user for use across get calls */
-userRewardedPostCountFunc = async function(req, res){
+const userRewardedPostCountFunc = async function(req, res){
 	var user = req.params.user;
 	//default query
 	var query_json = {
@@ -6270,7 +6270,7 @@ app.get('/userRewardedPostCount/:user', async function (req, res) {
 	}
 });
 
-calcRank = async function (req, res){
+const calcRank = async function (req, res){
 	//delegation calculation matrix
 	var delegation_rules = [
 		[9,0],
@@ -6506,7 +6506,7 @@ app.get('/getRank/:user', async function (req, res) {
 });
 
 /* function handles the backbone for grabbing Alt Account Status */
-getAltAccountStatusFunc = async function (user){
+const getAltAccountStatusFunc = async function (user){
 	let delegator_info = null;
 	if (typeof user!= "undefined" && user!=null){
 		//in this case, we check the status of a single user
@@ -6528,7 +6528,7 @@ getAltAccountStatusFunc = async function (user){
 }
 
 /* function handles checking if alt-account is linked to a delegator */
-getAltAccountByNameFunc = async function (targetUser){
+const getAltAccountByNameFunc = async function (targetUser){
 	let delegator_info = null;
 	if (typeof targetUser!= "undefined" && targetUser!=null){
 		//in this case, we check the status of a single user
@@ -6549,7 +6549,7 @@ app.get('/getAltAccountStatus/:user?', async function (req, res) {
 });
 
 /* function handles processing requests for getting AFIT token pay depending on reward activity type */
-getPostRewardFunc = async function(user, url, reward_activity){
+const getPostRewardFunc = async function(user, url, reward_activity){
 	var query_json = {
 			"reward_activity": reward_activity,
 			"user": user,
@@ -7860,7 +7860,7 @@ app.get('/processBuyOrder', async function(req, res){
 
 /* grab user token entry for user */
 
-matchProductTrans = async function (user, product_id){
+const matchProductTrans = async function (user, product_id){
   let token_match = await db.collection('user_product_key').findOne(
 	{ user: user, product_id: product_id },
 	{ user: 1, product_id: 1 }
@@ -7869,7 +7869,7 @@ matchProductTrans = async function (user, product_id){
   return token_match;
 }
 
-matchAccessToken = async function (user, product_id, access_token){
+const matchAccessToken = async function (user, product_id, access_token){
   let token_match = await db.collection('user_product_key').findOne({user: user, product_id: product_id, access_token: access_token});
   return token_match;
 }
@@ -8506,9 +8506,9 @@ app.post('/confirmPayment', async function(req,res){
 					
 					// only delegate if account created and delegation is enabled
 					if (accountCreated && promo_match.delegation) {
-						delegationSuccess = await utils.delegateToAccount(
-							req.query.new_account, 
-							spToDelegate, 
+						await utils.delegateToAccount(
+							req.query.new_account,
+							spToDelegate,
 							req.query.cur_bchain
 						);
 					}
@@ -8568,7 +8568,7 @@ app.post('/confirmPayment', async function(req,res){
 						try{
 							accountCreated = await claimAndCreateAccount(req);
 							if (accountCreated){
-								delegationSuccess = await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.bchain);
+								await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.bchain);
 							}
 						}catch(e){
 							console.log(e);
@@ -8589,7 +8589,7 @@ app.post('/confirmPayment', async function(req,res){
 });
 
 /* core function for discounted account claims and creation */
-claimAndCreateAccount = async function (req){
+const claimAndCreateAccount = async function (req){
 	let accountClaimed = false;
 	let accountCreated = false;
 	/*let results = '';
@@ -9053,7 +9053,7 @@ app.get('/getPendingTokenSwapTransCount/', async function(req, res){
 });
 
 
-getBannedAccountsArr = async function (){
+const getBannedAccountsArr = async function (){
 	//fetch banned accounts
 	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
@@ -9405,7 +9405,7 @@ function parseHivePostUrl(rawUrl) {
 }
 
 /* core function handling user rewards for various web related activities */
-rewardActifitTokenWeb = async function (req, reward_activity) {
+const rewardActifitTokenWeb = async function (req, reward_activity) {
 	//store outcome
 	let rewarded = false;
 
