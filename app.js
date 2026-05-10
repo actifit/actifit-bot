@@ -9700,15 +9700,17 @@ async function getLatestActifitTweet() {
 	if (xLatestTweetCache.tweetId && Date.now() - xLatestTweetCache.fetchedAt < ONE_HOUR) {
 		return xLatestTweetCache;
 	}
-	if (!config.x_bearer_token || !config.x_actifitapp_user_id) {
+	const bearerToken = config.x_bearer_token || process.env.X_BEARER_TOKEN;
+	const userId = config.x_actifitapp_user_id || process.env.X_ACTIFITAPP_USER_ID;
+	if (!bearerToken || !userId) {
 		console.error('x_bearer_token or x_actifitapp_user_id not configured');
 		return null;
 	}
 	try {
 		// Fetch the latest tweet from @actifit_fitness (include text and created_at)
 		const tweetsResp = await axios.get(
-			`https://api.twitter.com/2/users/${config.x_actifitapp_user_id}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text`,
-			{ headers: { Authorization: `Bearer ${config.x_bearer_token}` } }
+			`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text`,
+			{ headers: { Authorization: `Bearer ${bearerToken}` } }
 		);
 		const tweets = tweetsResp.data.data;
 		if (!tweets || tweets.length === 0) return null;
@@ -9732,14 +9734,15 @@ async function getXLikers(tweetId) {
 	if (xLikersCache.tweetId === tweetId && Date.now() - xLikersCache.fetchedAt < TEN_MIN) {
 		return xLikersCache.likers;
 	}
-	if (!config.x_bearer_token) {
+	const bearerToken = config.x_bearer_token || process.env.X_BEARER_TOKEN;
+	if (!bearerToken) {
 		console.error('x_bearer_token not configured');
 		return [];
 	}
 	try {
 		const resp = await axios.get(
 			`https://api.twitter.com/2/tweets/${tweetId}/liking_users?max_results=1000`,
-			{ headers: { Authorization: `Bearer ${config.x_bearer_token}` } }
+			{ headers: { Authorization: `Bearer ${bearerToken}` } }
 		);
 		xLikersCache = { tweetId, likers: resp.data.data || [], fetchedAt: Date.now() };
 	} catch (err) {
