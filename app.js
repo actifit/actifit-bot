@@ -6664,8 +6664,10 @@ app.get('/getEstimatedReward', async function(req, res) {
 			moderatorsListFunc()
 		]);
 
-		// 5. Activity score — step count from verified post metadata
-		const stepCount    = (latestPost.json_metadata && latestPost.json_metadata.step_count) || 0;
+		// 5. Activity score — use live step count from app if provided, else fall back to post metadata
+		const stepCount    = (req.query.steps && parseInt(req.query.steps) > 0)
+			? parseInt(req.query.steps)
+			: (latestPost.json_metadata && latestPost.json_metadata.step_count) || 0;
 		const activityScore = utils.calcScore(REWARD_SCORING_RULES.activity, REWARD_SCORING_FACTORS.activity, stepCount);
 
 		// 6. Content score — plain-text length of post body
