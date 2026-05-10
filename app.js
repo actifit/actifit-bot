@@ -1482,16 +1482,16 @@ async function calcSell( tokensToSell, tokenAddres){
     const BNBTokenAddress = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" //BNB
 
     let tokenRouter = await new web3.eth.Contract( tokenAbi, tokenAddres );
-    let tokenDecimals = await tokenRouter.methods.decimals().call();
-    
+    let tokenDecimals = Number(await tokenRouter.methods.decimals().call()); // Web3 v4 returns BigInt
+
     tokensToSell = setDecimals(tokensToSell, tokenDecimals);
     let amountOut;
     try {
         let router = await new web3.eth.Contract( pancakeSwapAbi, pancakeSwapContract );
         amountOut = await router.methods.getAmountsOut(tokensToSell, [tokenAddres ,BNBTokenAddress]).call();
-        amountOut =  web3.utils.fromWei(amountOut[1]);
-    } catch (error) {}
-    
+        amountOut = web3.utils.fromWei(amountOut[1].toString(), 'ether'); // Web3 v4: unit is required, BigInt needs toString()
+    } catch (error) { console.error('calcSell error:', error); }
+
     if(!amountOut) return 0;
     return amountOut;
 }
@@ -1499,13 +1499,13 @@ async function calcBNBPrice(){
     const web3 = new Web3("https://bsc-dataseed1.binance.org");
     const BNBTokenAddress = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c" //BNB
     const USDTokenAddress  = "0x55d398326f99059fF775485246999027B3197955" //USDT
-    let bnbToSell = web3.utils.toWei("1", "ether") ;
+    let bnbToSell = web3.utils.toWei("1", "ether").toString(); // Web3 v4 returns BigInt; toString() for compat
     let amountOut;
     try {
         let router = await new web3.eth.Contract( pancakeSwapAbi, pancakeSwapContract );
         amountOut = await router.methods.getAmountsOut(bnbToSell, [BNBTokenAddress ,USDTokenAddress]).call();
-        amountOut =  web3.utils.fromWei(amountOut[1]);
-    } catch (error) {}
+        amountOut = web3.utils.fromWei(amountOut[1].toString(), 'ether'); // Web3 v4: unit is required, BigInt needs toString()
+    } catch (error) { console.error('calcBNBPrice error:', error); }
     if(!amountOut) return 0;
     return amountOut;
 }
@@ -1597,18 +1597,18 @@ app.get('/circulatingSupplyAFIT', async function (req,res){
 
 app.get('/BNBPrice', async function (req, res){
 	let price = await calcBNBPrice()
-	res.send({token: 'BNB', price: parseFloat(price).toFixed(4)});
+	res.send({token: 'BNB', price: parseFloat(price).toFixed(6)});
 })
 
 app.get('/AFITBSCPrice', async function (req, res){
 	let price = await getAFITPCSPrice();
-	let jsonData = {token: 'AFIT', price: parseFloat(price.toFixed(4))};
+	let jsonData = {token: 'AFIT', price: parseFloat(price.toFixed(6))};
 	res.send(jsonData);
 })
 
 app.get('/AFITXBSCPrice', async function (req, res){
 	let price = await getAFITPCSPrice('AFITX');
-	let jsonData = {token: 'AFITX', price: parseFloat(price.toFixed(4))};
+	let jsonData = {token: 'AFITX', price: parseFloat(price.toFixed(6))};
 	res.send(jsonData);
 })
 
@@ -1619,7 +1619,7 @@ app.get('/dex-trade/afit-usdt', async function (req,res){
 	let price = await getAFITPCSPrice();
 	let jsonData = {
 	  "AFIT/USDT": {  // pair name
-		"price": parseFloat(price.toFixed(4)),//0.122, // central price
+		"price": parseFloat(price.toFixed(6)),//0.122, // central price
 		"up": 0.1, // percent deviation top line 15% = 0.15
 		"down": 0.05  // percent deviation bottom line 10% = 0.1
 	  }
