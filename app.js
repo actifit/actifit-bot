@@ -6927,7 +6927,7 @@ app.get('/curAFITPrice', async function(req, res) {
 });
 
 /* handles the process of creating accounts*/
-proceedAccountCreation = async function (req){
+const proceedAccountCreation = async function (req){
 	//let's create the account now
 	let accountCreated = false;
 	let transStored = false;
@@ -6937,7 +6937,7 @@ proceedAccountCreation = async function (req){
 		//proceed only if a proper referrer was sent
 		if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
 			if (!req.query.promo_proceed || (req.query.promo_proceed && req.query.referrer_reward)){
-				referralRewarded = await storeReferralReward(req);
+				await storeReferralReward(req);
 			}
 		}
 	}
@@ -6946,7 +6946,7 @@ proceedAccountCreation = async function (req){
 }
 
 /* handles saving data related to signup to db */
-storeSignupTransaction = async function (req){
+const storeSignupTransaction = async function (req){
 	console.log('reward new user');
 	let result = false;
 	//setup new reward transaction for user
@@ -7059,7 +7059,7 @@ storeSignupTransaction = async function (req){
 
 
 /* function handles saving referral info and reward if the signup came through a referral */
-storeReferralReward = async function (req){
+const storeReferralReward = async function (req){
 	console.log('reward referrer');
 	//setup new reward transaction for user
 	let refRewarded = false;
@@ -9651,7 +9651,7 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 						{ "json_metadata.bodyfat": {$exists: true} }
 					]
 				}
-	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	const posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
 	res.send(posts);
 });
 
@@ -9659,9 +9659,8 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 
 /* end point for fetching user's recorded activity records */
 app.get('/trackedActivity/:user', async function(req, res) {
-	let query = {"author": req.params.user,
-				}
-	posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	let query = {"author": req.params.user}
+	const posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
 	res.send(posts);
 });
 
