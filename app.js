@@ -9689,7 +9689,7 @@ function gk_add_commas(nStr) {
 let xLikersCache = { tweetId: null, likers: [], fetchedAt: 0 };
 
 // In-memory cache for the latest Actifit tweet — refreshed once per hour
-let xLatestTweetCache = { tweetId: null, tweetUrl: null, oembedHtml: null, tweetText: null, createdAt: null, fetchedAt: 0 };
+let xLatestTweetCache = { tweetId: null, tweetUrl: null, tweetText: null, createdAt: null, fetchedAt: 0 };
 
 // Per-user attempt counter to block cache-miss spam (resets on server restart)
 let xClaimAttempts = {};
@@ -9718,13 +9718,7 @@ async function getLatestActifitTweet() {
 		const createdAt = tweet.created_at || null;
 		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
 
-		// Fetch oEmbed HTML — free endpoint, no auth required
-		const oembedResp = await axios.get(
-			`https://publish.twitter.com/oembed?url=${encodeURIComponent(tweetUrl)}&omit_script=false`
-		);
-		const oembedHtml = oembedResp.data.html || '';
-
-		xLatestTweetCache = { tweetId, tweetUrl, oembedHtml, tweetText, createdAt, fetchedAt: Date.now() };
+		xLatestTweetCache = { tweetId, tweetUrl, tweetText, createdAt, fetchedAt: Date.now() };
 		return xLatestTweetCache;
 	} catch (err) {
 		console.error('getLatestActifitTweet error:', err.message);
@@ -9764,8 +9758,7 @@ app.get('/latestXPost', async function (req, res) {
 		tweetId: tweet.tweetId,
 		tweetUrl: tweet.tweetUrl,
 		tweetText: tweet.tweetText || '',
-		tweetTimestamp,
-		oembedHtml: tweet.oembedHtml
+		tweetTimestamp
 	});
 });
 
@@ -9840,12 +9833,13 @@ app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
 		});
 
 		// Record to token_transactions (same pattern as AdMob rewards)
+		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
 		await db.collection('token_transactions').insertOne({
 			user,
 			token_count: amount,
 			reward_activity: 'X Engagement',
 			date: new Date(),
-			url: config.x_latest_tweet_url
+			url: tweetUrl
 		});
 
 		// Reset attempt counter on successful claim
@@ -9854,7 +9848,7 @@ app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
 		// Notify user
 		utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment',
 			`You received ${amount} AFIT for liking the Actifit X post!`,
-			config.x_latest_tweet_url
+			tweetUrl
 		);
 
 		res.send({ success: true, amount });
