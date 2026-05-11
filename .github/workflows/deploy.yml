@@ -1,0 +1,24 @@
+name: Deploy to servers
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        server: [SERVER1_HOST, SERVER2_HOST]
+    steps:
+      - name: Deploy to ${{ matrix.server }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets[matrix.server] }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /home/actifit-bot
+            git pull origin master
+            npm install --production
+            pm2 restart app
