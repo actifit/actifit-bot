@@ -6349,25 +6349,17 @@ const calcRank = async function (req, res){
 	if (wallet_entry && wallet_entry.wallet){
 		console.log(wallet_entry.wallet);
 		//fetch wallet balance		
-		let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-		let format = web3.utils.fromWei(result); // 29803630.997051883414242659
-		afitBSC = parseFloat(format);
-		console.log(format);
-		
-		result = await afitxContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-		format = web3.utils.fromWei(result); // 29803630.997051883414242659
-		afitxBSC = parseFloat(format);
-		console.log(format);
-		
-		result = await afitBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-		format = web3.utils.fromWei(result); // 29803630.997051883414242659
-		afitBNBLPBSC = parseFloat(format);
-		console.log(format);		
-		
-		result = await afitxBNBLPContract.methods.balanceOf(wallet_entry.wallet).call(); // 29803630997051883414242659
-		format = web3.utils.fromWei(result); // 29803630.997051883414242659
-		afitxBNBLPBSC = parseFloat(format);
-		console.log(format);
+		let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call();
+		if (result != null) { let format = web3.utils.fromWei(result); afitBSC = parseFloat(format); console.log(format); }
+
+		result = await afitxContract.methods.balanceOf(wallet_entry.wallet).call();
+		if (result != null) { let format = web3.utils.fromWei(result); afitxBSC = parseFloat(format); console.log(format); }
+
+		result = await afitBNBLPContract.methods.balanceOf(wallet_entry.wallet).call();
+		if (result != null) { let format = web3.utils.fromWei(result); afitBNBLPBSC = parseFloat(format); console.log(format); }
+
+		result = await afitxBNBLPContract.methods.balanceOf(wallet_entry.wallet).call();
+		if (result != null) { let format = web3.utils.fromWei(result); afitxBNBLPBSC = parseFloat(format); console.log(format); }
 	}
 	}catch(err){
 		console.log(err);
