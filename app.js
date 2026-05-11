@@ -1545,19 +1545,15 @@ app.get('/verifyLoginCaptcha', async function (req, res){
 		res.send({error:'error'})
 	}
 	let recaptchaToken = req.query.token;
-	const response = await fetch(config.captchaVerifyUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
+	const response = await axios.post(config.captchaVerifyUrl,
+        new URLSearchParams({
           secret: config.captchaVerifySecret,
           response: recaptchaToken,
-          //remoteip: // optional, the user's IP address
-        })
-      })
+        }).toString(),
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      )
 
-	const data = await response.json()
+	const data = response.data
 	console.log(data)
 
 	if (data.success) {
@@ -9689,16 +9685,16 @@ function gk_add_commas(nStr) {
 // In-memory cache for liking_users — refreshed at most once every 10 minutes
 let xLikersCache = { tweetId: null, likers: [], fetchedAt: 0 };
 
-// In-memory cache for the latest Actifit tweet — refreshed once per hour
-let xLatestTweetCache = { tweetId: null, tweetUrl: null, tweetText: null, createdAt: null, fetchedAt: 0 };
+// In-memory cache for up to 2 latest Actifit tweets — refreshed once per hour
+let xLatestTweetCache = { tweets: [], fetchedAt: 0 };
 
 // Per-user attempt counter to block cache-miss spam (resets on server restart)
 let xClaimAttempts = {};
 
 async function getLatestActifitTweet() {
 	const ONE_HOUR = 60 * 60 * 1000;
-	if (xLatestTweetCache.tweetId && Date.now() - xLatestTweetCache.fetchedAt < ONE_HOUR) {
-		return xLatestTweetCache;
+	if (xLatestTweetCache.tweets.length > 0 && Date.now() - xLatestTweetCache.fetchedAt < ONE_HOUR) {
+		return xLatestTweetCache.tweets;
 	}
 	const bearerToken = config.x_bearer_token || process.env.X_BEARER_TOKEN;
 	const userId = config.x_actifitapp_user_id || process.env.X_ACTIFITAPP_USER_ID;
@@ -9707,7 +9703,7 @@ async function getLatestActifitTweet() {
 		return null;
 	}
 	try {
-		// Fetch latest tweet with text, media attachments, and author profile image
+		// Fetch latest tweets with text, media attachments, and author profile image
 		const tweetsResp = await axios.get(
 			`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text,attachments&expansions=author_id,attachments.media_keys&user.fields=profile_image_url&media.fields=url,preview_image_url,type`,
 			{ headers: { Authorization: `Bearer ${bearerToken}` } }
@@ -9715,26 +9711,33 @@ async function getLatestActifitTweet() {
 		const tweets = tweetsResp.data.data;
 		if (!tweets || tweets.length === 0) return null;
 
-		const tweet = tweets[0];
-		const tweetId = tweet.id;
-		const tweetText = tweet.text || '';
-		const createdAt = tweet.created_at || null;
-		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
-
 		const authorUser = tweetsResp.data.includes?.users?.[0];
 		const rawProfileImg = authorUser?.profile_image_url || '';
 		const profileImageUrl = rawProfileImg.replace('_normal', '_400x400');
-
-		// Use tweet photo if available, otherwise fall back to profile image
 		const mediaItems = tweetsResp.data.includes?.media || [];
-		const photo = mediaItems.find(m => m.type === 'photo');
-		const tweetImageUrl = photo?.url || photo?.preview_image_url || profileImageUrl;
 
-		xLatestTweetCache = { tweetId, tweetUrl, tweetText, createdAt, profileImageUrl, tweetImageUrl, fetchedAt: Date.now() };
-		return xLatestTweetCache;
+		const result = [];
+		for (let i = 0; i < Math.min(2, tweets.length); i++) {
+			const tweet = tweets[i];
+			const tweetId = tweet.id;
+			const tweetText = tweet.text || '';
+			const createdAt = tweet.created_at || null;
+			const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
+
+			// Match media to this specific tweet via its media keys
+			const mediaKeys = tweet.attachments?.media_keys || [];
+			const tweetMedia = mediaItems.filter(m => mediaKeys.includes(m.media_key));
+			const photo = tweetMedia.find(m => m.type === 'photo');
+			const tweetImageUrl = photo?.url || photo?.preview_image_url || profileImageUrl;
+
+			result.push({ tweetId, tweetUrl, tweetText, createdAt, profileImageUrl, tweetImageUrl });
+		}
+
+		xLatestTweetCache = { tweets: result, fetchedAt: Date.now() };
+		return result;
 	} catch (err) {
 		console.error('getLatestActifitTweet error:', err.message);
-		return xLatestTweetCache.tweetId ? xLatestTweetCache : null; // serve stale cache on error
+		return xLatestTweetCache.tweets.length > 0 ? xLatestTweetCache.tweets : null;
 	}
 }
 
@@ -9760,19 +9763,20 @@ async function getXLikers(tweetId) {
 	return xLikersCache.likers;
 }
 
-/* Returns the latest Actifit X post details — fetched automatically, cached 1 hour */
+/* Returns up to 2 latest Actifit X post details — fetched automatically, cached 1 hour */
 app.get('/latestXPost', async function (req, res) {
-	const tweet = await getLatestActifitTweet();
-	if (!tweet) {
+	const tweets = await getLatestActifitTweet();
+	if (!tweets || tweets.length === 0) {
 		return res.send({ error: 'Unable to fetch latest X post' });
 	}
-	const tweetTimestamp = tweet.createdAt ? moment(tweet.createdAt).fromNow() : '';
 	res.send({
-		tweetId: tweet.tweetId,
-		tweetUrl: tweet.tweetUrl,
-		tweetText: tweet.tweetText || '',
-		tweetTimestamp,
-		tweetImageUrl: tweet.tweetImageUrl || tweet.profileImageUrl || ''
+		tweets: tweets.map(tweet => ({
+			tweetId: tweet.tweetId,
+			tweetUrl: tweet.tweetUrl,
+			tweetText: tweet.tweetText || '',
+			tweetTimestamp: tweet.createdAt ? moment(tweet.createdAt).fromNow() : '',
+			tweetImageUrl: tweet.tweetImageUrl || tweet.profileImageUrl || ''
+		}))
 	});
 });
 
