@@ -9707,9 +9707,9 @@ async function getLatestActifitTweet() {
 		return null;
 	}
 	try {
-		// Fetch the latest tweet from @actifit_fitness (include text and created_at)
+		// Fetch the latest tweet from @actifit_fitness (include text, created_at, and author profile image)
 		const tweetsResp = await axios.get(
-			`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text`,
+			`https://api.twitter.com/2/users/${userId}/tweets?max_results=5&exclude=replies,retweets&tweet.fields=created_at,text&expansions=author_id&user.fields=profile_image_url`,
 			{ headers: { Authorization: `Bearer ${bearerToken}` } }
 		);
 		const tweets = tweetsResp.data.data;
@@ -9721,7 +9721,11 @@ async function getLatestActifitTweet() {
 		const createdAt = tweet.created_at || null;
 		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
 
-		xLatestTweetCache = { tweetId, tweetUrl, tweetText, createdAt, fetchedAt: Date.now() };
+		const authorUser = tweetsResp.data.includes?.users?.[0];
+		const rawProfileImg = authorUser?.profile_image_url || '';
+		const profileImageUrl = rawProfileImg.replace('_normal', '_400x400');
+
+		xLatestTweetCache = { tweetId, tweetUrl, tweetText, createdAt, profileImageUrl, fetchedAt: Date.now() };
 		return xLatestTweetCache;
 	} catch (err) {
 		console.error('getLatestActifitTweet error:', err.message);
@@ -9762,7 +9766,8 @@ app.get('/latestXPost', async function (req, res) {
 		tweetId: tweet.tweetId,
 		tweetUrl: tweet.tweetUrl,
 		tweetText: tweet.tweetText || '',
-		tweetTimestamp
+		tweetTimestamp,
+		profileImageUrl: tweet.profileImageUrl || ''
 	});
 });
 
