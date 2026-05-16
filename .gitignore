@@ -91,6 +91,7 @@ HIVErewards*.json
 
 # Firebase credentials (MUST NOT be committed)
 *firebase-adminsdk*.json
+actifit-io-*.json
 
 # Node modules (installed via npm, too large for git)
 node_modules/
