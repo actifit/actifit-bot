@@ -93,6 +93,9 @@ HIVErewards*.json
 *firebase-adminsdk*.json
 actifit-io-*.json
 
+# Internal security review (not for public repo)
+SECURITY-REVIEW.md
+
 # Node modules (installed via npm, too large for git)
 node_modules/
 
