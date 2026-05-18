@@ -4,6 +4,7 @@ const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const moment = require('moment')
 var crypto = require('crypto');
+const rateLimit = require('express-rate-limit');
 
 const swaggerUi = require('swagger-ui-express');
 const YAML = require('yamljs');
@@ -252,13 +253,11 @@ let checkHdrs = (req, res, next) => {
 				let db_col = db.collection('user_login_token');
 				//find existing login entry in DB
 				let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
-				console.log(user_tkn);
 				if (!Array.isArray(user_tkn) || user_tkn.length == 0){
 					console.error('Authentication failed. Key not found');
 					return res.send({error: 'Authentication failed. Key not found'});
 				}
 				//TODO adjust in coming iterations to stick solely with req.user in next() functions
-				console.log(user);
 				req.user = { _id: user }; // Attach username
 				req.ppkey = user_tkn[0].ppkey;
 				req.decoded = decoded;
@@ -1554,7 +1553,6 @@ app.get('/verifyLoginCaptcha', async function (req, res){
       )
 
 	const data = response.data
-	console.log(data)
 
 	if (data.success) {
         // continue with form submission
@@ -2219,7 +2217,9 @@ app.get('/notificationTypes/', async function (req, res) {
 	res.send(config.notificationTypes);
 });
 
-app.post('/loginKeychain/', async function (req, res) {
+const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+
+app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
 	try{
 		console.log('loginkeychain');
 		//const username = sanitize(req.body.username);
@@ -2250,7 +2250,7 @@ app.post('/loginKeychain/', async function (req, res) {
 	}
 });
 
-app.post('/loginAuth', async function (req, res) {
+app.post('/loginAuth', loginRateLimit, async function (req, res) {
 	console.log('login');
 	let username = null;
 	if (req.body && req.body.username){
