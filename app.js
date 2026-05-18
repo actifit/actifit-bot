@@ -1449,6 +1449,27 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
+function encryptFundsPass(plaintext) {
+	const iv = crypto.randomBytes(16);
+	const cipher = crypto.createCipheriv(config.funds_encr_mode, Buffer.from(config.funds_encr_key), iv);
+	let enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
+	return iv.toString('hex') + ':' + enc;
+}
+
+function verifyFundsPass(plaintext, stored) {
+	if (stored && stored.includes(':')) {
+		const [ivHex, ciphertext] = stored.split(':');
+		const iv = Buffer.from(ivHex, 'hex');
+		const cipher = crypto.createCipheriv(config.funds_encr_mode, Buffer.from(config.funds_encr_key), iv);
+		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
+		return enc === ciphertext;
+	}
+	// legacy: stored value has no IV prefix
+	const cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+	const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
+	return enc === stored;
+}
+
 const getTotalSupplyAFIT = async function (){
 	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey='+config.bscscan_api);
 	
@@ -2751,18 +2772,14 @@ app.get('/modAction', async function (req, res) {
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
+			if (!verifyFundsPass(fundsPass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
 		}
-		
+
 		let result = '';
-		
+
 		//store every moderator transaction as log
 		let modTrans = {
 			"moderator": req.query.moderator,
@@ -5700,18 +5717,14 @@ app.get('/cancelAFITMoveSE', async function(req, res){
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
+			if (!verifyFundsPass(fundsPass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
 		}
-		
+
 		//reached here, we're fine
-		
+
 		try{
 			let result = await db.collection('powering_down_he').deleteMany({user: req.query.user});
 			res.send({'status': 'Success'});
@@ -5762,22 +5775,18 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
+			if (!verifyFundsPass(fundsPass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
 		}
-		
+
 		//reached here, we're fine
-		
+
 		//confirm proper AFIT token balance. Test against target amount to be sent
 		let user_info = await grabUserTokensFunc (user);
 		console.log(user_info);
-		let cur_sender_token_count = parseFloat(user_info.tokens);	
+		let cur_sender_token_count = parseFloat(user_info.tokens);
 		
 		if (cur_sender_token_count < amount){
 			res.send({'error': 'Account does not have enough AFIT funds'});
@@ -5913,18 +5922,14 @@ app.get('/tipAccount', async function(req, res){
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(fundsPass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
+			if (!verifyFundsPass(fundsPass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
 		}
-		
+
 		//reached here, we're fine
-		
+
 		//confirm proper AFIT token balance. Test against target amount to be sent
 		let user_info = await grabUserTokensFunc (user);
 		console.log(user_info);
@@ -8342,14 +8347,7 @@ app.get("/validatePassForDownload", async function(req, res) {
 		res.send({'error': 'Account\'s funds password not verified'});
 		return;
 	}else{
-	  // 1. Password Verification
-		// WARNING: createCipher is deprecated and insecure. 
-		// Consider switching to createCipheriv with a salt in the future.
-		var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
-		encr_pass += cipher.final('hex');
-
-		if (entryFound.pass !== encr_pass) {
+		if (!verifyFundsPass(req.query.pass, entryFound.pass)) {
 			res.send({ 'error': 'Incorrect username and/or funds password' });
 			return;
 		}
@@ -8852,10 +8850,8 @@ app.get('/setUserFundsPass/:user/:pass', async function (req, res) {
 		if (proceed){
 		
 		  //create encrypted version of the password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(req.params.pass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			
+		  let encr_pass = encryptFundsPass(req.params.pass);
+
 		  //store pass with unverified status
 		  let new_pass_entry = {user: req.params.user, pass: encr_pass, passVerified: false, date: new Date()};
 		  try{
@@ -9121,16 +9117,12 @@ app.get('/performAfitSteemExchange', async function(req, res){
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
+		  if (!verifyFundsPass(req.query.pass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
 		}
-	
+
 		//confirm proper AFIT token count. Test against our own minimum, and the request's minimum
 		let user_info = await grabUserTokensFunc (user);
 		console.log(user_info);
