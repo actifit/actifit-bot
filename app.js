@@ -1449,9 +1449,16 @@ function decrypt(text) {
  return decrypted.toString();
 }
 
+function _fundsKey() {
+	// Derive a key of exactly the length the configured cipher requires.
+	// SHA-256 gives 32 bytes; we slice to match keyLength (16/24/32 for aes-128/192/256).
+	const keyLen = (crypto.getCipherInfo(config.funds_encr_mode) || {}).keyLength || 32;
+	return crypto.createHash('sha256').update(config.funds_encr_key).digest().slice(0, keyLen);
+}
+
 function encryptFundsPass(plaintext) {
 	const iv = crypto.randomBytes(16);
-	const cipher = crypto.createCipheriv(config.funds_encr_mode, Buffer.from(config.funds_encr_key), iv);
+	const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
 	let enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
 	return iv.toString('hex') + ':' + enc;
 }
@@ -1460,11 +1467,11 @@ function verifyFundsPass(plaintext, stored) {
 	if (stored && stored.includes(':')) {
 		const [ivHex, ciphertext] = stored.split(':');
 		const iv = Buffer.from(ivHex, 'hex');
-		const cipher = crypto.createCipheriv(config.funds_encr_mode, Buffer.from(config.funds_encr_key), iv);
+		const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
 		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
 		return enc === ciphertext;
 	}
-	// legacy: stored value has no IV prefix
+	// legacy: stored value has no IV prefix (old createCipher format)
 	const cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
 	const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
 	return enc === stored;
@@ -1997,57 +2004,32 @@ app.get('/afitMarkets', async function (req, res){
 
 app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 	if (req.query && req.query.user){
-	
 		let user = req.query.user;
-		let trx = await db.collection('token_transactions').aggregate([
-		{
-			$match: {user: user}
-		},
-		{
-		   $group:
-			{
-			   _id: null,
-			   token_balance: { $sum: "$token_count" },
-			}
-		}
-	   ]).toArray(async function(err, results) {
-		var output = 'user'+user+ 'tokens:'+results[0].token_balance;
-		
-		let user_info = await grabUserTokensFunc(user);
-		console.log(user_info);
-
-		// Ensure user_info isn't null to avoid crashes
-		if (!user_info) {
-			user_info = { user: user, tokens: 0 };
-		}
-
-		// Update the balance from your results array
-		user_info.tokens = parseFloat(results[0].token_balance);
-
-		// Safety check for negative balances
-		if (user_info.tokens < 0) {
-			user_info.tokens = 0;
-		}
-
-		// Recalculate and store user token count
 		try {
-			// Replace .save() with .replaceOne()
-			// We filter by user to handle cases where the object might be new
-			let trans = await db.collection('user_tokens').replaceOne(
-				{ user: user }, 
-				user_info, 
-				{ upsert: true }
-			);
-			
-			console.log('success updating user token count');
+			let results = await db.collection('token_transactions').aggregate([
+				{ $match: {user: user} },
+				{ $group: { _id: null, token_balance: { $sum: "$token_count" } } }
+			]).toArray();
+
+			let user_info = await grabUserTokensFunc(user);
+			if (!user_info) {
+				user_info = { user: user, tokens: 0 };
+			}
+
+			if (results.length > 0) {
+				user_info.tokens = parseFloat(results[0].token_balance);
+			}
+
+			if (user_info.tokens < 0) {
+				user_info.tokens = 0;
+			}
+
+			await db.collection('user_tokens').replaceOne({ user: user }, user_info, { upsert: true });
 			res.send('success recalculating & updating user token count: ' + user_info.tokens);
-			console.log(results);
 		} catch (err) {
 			console.error('Database Error:', err);
 			res.status(500).send('Error updating tokens');
 		}
-		
-	   });
 	}else{
 		res.send({error: 'error'});
 	}
