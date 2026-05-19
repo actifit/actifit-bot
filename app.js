@@ -1995,7 +1995,7 @@ app.get('/afitMarkets', async function (req, res){
 });
 
 
-app.get('/recalculateUserTokens', async function (req, res){
+app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 	if (req.query && req.query.user){
 	
 		let user = req.query.user;
@@ -2239,6 +2239,7 @@ app.get('/notificationTypes/', async function (req, res) {
 });
 
 const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+const modActionRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false });
 
 app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
 	try{
@@ -2748,12 +2749,12 @@ app.get('/claimableFreeAccounts/:user', async function (req, res){
 
 
 /* end point for user total token count display */
-app.get('/modAction', async function (req, res) {
-	if (!req.query.moderator || !req.query.fundsPass || !req.query.targetAction){
+app.post('/modAction', modActionRateLimit, async function (req, res) {
+	if (!req.body.moderator || !req.body.fundsPass || !req.body.targetAction){
 		res.send({'error':'Missing Data'});
 	}else{
-		let moderator = req.query.moderator;
-		let fundsPass = req.query.fundsPass;
+		let moderator = req.body.moderator;
+		let fundsPass = req.body.fundsPass;
 		
 		//confirm matching funds password
 		let query = {user: moderator};
@@ -2782,66 +2783,66 @@ app.get('/modAction', async function (req, res) {
 
 		//store every moderator transaction as log
 		let modTrans = {
-			"moderator": req.query.moderator,
-			"action": req.query.targetAction,
+			"moderator": req.body.moderator,
+			"action": req.body.targetAction,
 			"date": new Date(),
 		};
-		
-		switch(req.query.targetAction){
-		
-			case 'ban': 			
-						modTrans.user = req.query.banuser.trim().toLowerCase();
+
+		switch(req.body.targetAction){
+
+			case 'ban':
+						modTrans.user = req.body.banuser.trim().toLowerCase();
 						collection = db.collection('banned_accounts')
 						//var dt = new Date().toJSON()
 						//dt.substring(0,dt.indexOf("."));
-						
+
 						if (modTrans.user == ''){
 							res.send({'error': 'Cannot ban empty user'});
 							return;
 						}
-						result = await collection.insertOne({   
+						result = await collection.insertOne({
 							"user": modTrans.user,
 							"ban_date": new Date(),
-							"ban_length": req.query.ban_length,
+							"ban_length": req.body.ban_length,
 							"ban_status": 'active',
-							"ban_reason": req.query.ban_reason
+							"ban_reason": req.body.ban_reason
 						});
-						console.log(req.query.banuser+" banned ");
+						console.log(req.body.banuser+" banned ");
 						result.status='success';
 						break;
 			case 'unban':
-						
-						modTrans.user = req.query.unbanuser.trim().toLowerCase();
+
+						modTrans.user = req.body.unbanuser.trim().toLowerCase();
 						collection = db.collection('banned_accounts')
-		
+
 						if (modTrans.user == ''){
 							res.send({'error': 'Cannot unban empty user'});
 							return;
 						}
-		
+
 						result = await collection.updateMany(
-							{   "user": modTrans.user }, 
+							{   "user": modTrans.user },
 							{
 								$set: {
 									"ban_status": "inactive",
 									}
 							}
 						);
-						console.log(req.query.unbanuser+" ban removed! ");
+						console.log(req.body.unbanuser+" ban removed! ");
 						result.status='success';
 						break;
-						
+
 			case 'resetpass':
-						modTrans.user = req.query.resetuser.trim().toLowerCase();
-						
+						modTrans.user = req.body.resetuser.trim().toLowerCase();
+
 						collection = db.collection('account_funds_pass')
-						
+
 						if (modTrans.user == ''){
 							res.send({'error': 'Cannot resetpass empty user'});
 							return;
 						}
-		
-						let user = req.query.resetuser.trim().toLowerCase();
+
+						let user = req.body.resetuser.trim().toLowerCase();
 						result = 'no change';
 						if (user!=''){
 							result = await collection.deleteMany({
@@ -2854,54 +2855,54 @@ app.get('/modAction', async function (req, res) {
 						break;
 						
 			case 'reward':
-						modTrans.fullurl = req.query.fullurl.trim().toLowerCase();
-						modTrans.vp = req.query.power;
+						modTrans.fullurl = req.body.fullurl.trim().toLowerCase();
+						modTrans.vp = req.body.power;
 						if (modTrans.fullurl == ''){
 							res.send({'error': 'Need to send URL to vote'});
 							return;
 						}
-						
+
 						if (isNaN(modTrans.vp)){
 							res.send({'error': 'VP needs to be numeric'});
 							return;
 						}
-						let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
+						let bchain = (req.body&&req.body.bchain?req.body.bchain:'');
 						result = await utils.rewardPost(modTrans.fullurl, modTrans.vp, bchain)
 						console.log(result);
 						result.status='success';
 						break;
-						
-			case 'verifynewbie': 			
-						modTrans.user = req.query.account.trim().toLowerCase();
+
+			case 'verifynewbie':
+						modTrans.user = req.body.account.trim().toLowerCase();
 						collection = db.collection('verified_newbie')
 						//var dt = new Date().toJSON()
 						//dt.substring(0,dt.indexOf("."));
-						
+
 						if (modTrans.user == ''){
 							res.send({'error': 'Cannot verify empty user'});
 							return;
 						}
-						result = await collection.insertOne({   
+						result = await collection.insertOne({
 							"user": modTrans.user,
 							"verify_date": new Date(),
-							"sm_verif_lnk": req.query.verif_link,
+							"sm_verif_lnk": req.body.verif_link,
 							"verif_mod": moderator
 						});
 						console.log(modTrans.user+" verified ");
 						result.status='success';
 						break;
-						
-			case 'freesignup': 			
+
+			case 'freesignup':
 						collection = db.collection('signup_promo_codes')
 						//var dt = new Date().toJSON()
 						//dt.substring(0,dt.indexOf("."));
-						
+
 						if (modTrans.user == ''){
 							res.send({'error': 'Cannot verify empty user'});
 							return;
 						}
-						modTrans.signusername = req.query.signusername;
-						modTrans.txlink = req.query.txlink;
+						modTrans.signusername = req.body.signusername;
+						modTrans.txlink = req.body.txlink;
 						let randomCode = generatePassword(1);
 						result = await collection.insertOne({   
 							"code": randomCode,
@@ -5483,7 +5484,10 @@ app.get('/luckyWinnerList/', async function (req, res) {
 });
 
 /* claim this badge and store it for this user */
-app.get('/claimBadge/', async function (req, res) {
+app.get('/claimBadge/', checkHdrs, async function (req, res) {
+	if (!req.query.user || req.query.user !== req.user._id) {
+		return res.send({status: 'error'});
+	}
 	if (req.query.user && req.query.badge){
 		const iso_badge = 'iso';
 		const rew_activity_badge = 'rewarded_activity_lev_';
@@ -8825,35 +8829,38 @@ app.get('/userHasFundsPassSet/:user', async function (req, res) {
 });
 
 /* end point for setting a user's funds pass */
-app.get('/setUserFundsPass/:user/:pass', async function (req, res) {
-	let query = {user: req.params.user};
-	console.log(query);
+app.post('/setUserFundsPass', checkHdrs, async function (req, res) {
+	const user = req.user._id;
+	const pass = req.body.pass;
+	if (!pass) {
+		return res.send({'error': 'Missing password'});
+	}
+	let query = {user: user};
 	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
-	
+
 	let proceed = true;
 	//password can be set/replaced only if none exists, or its not verified already and has not been 10 mins since setting first attempt
-	if (entryFound == null || 
+	if (entryFound == null ||
 		(!entryFound.passVerified)){
 		if (entryFound != null){
-		  
-		  //checking last entry date 
+
+		  //checking last entry date
 		  var now = moment(new Date()); //todays date
 		  var end = moment(entryFound.date); // last update date
 		  var duration = moment.duration(now.diff(end));
 		  var mins = duration.asMinutes();
-		  console.log(mins);
 		  if (mins < 10){
 			  res.send({'error': 'You can only update your funds pass once every 10 minutes'});
 			  proceed = false;
 		  }
 		}
 		if (proceed){
-		
+
 		  //create encrypted version of the password
-		  let encr_pass = encryptFundsPass(req.params.pass);
+		  let encr_pass = encryptFundsPass(pass);
 
 		  //store pass with unverified status
-		  let new_pass_entry = {user: req.params.user, pass: encr_pass, passVerified: false, date: new Date()};
+		  let new_pass_entry = {user: user, pass: encr_pass, passVerified: false, date: new Date()};
 		  try{
 		    let transaction = await db.collection('account_funds_pass')
 				.replaceOne(query, new_pass_entry, { upsert: true });
@@ -8866,7 +8873,7 @@ app.get('/setUserFundsPass/:user/:pass', async function (req, res) {
 	}else{
 		res.send({'error': 'You cannot change your verified funds password. Please contact us on discord if you wish to do so.'});
 	}
-	
+
 });
 
 
