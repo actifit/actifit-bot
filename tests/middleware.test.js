@@ -184,7 +184,8 @@ describe('Authentication Middleware (checkHdrs)', () => {
     expect(res.body.message).toBe('Token is not valid');
   });
 
-  test('rejects request with missing user param', async () => {
+  test('rejects token with missing username in payload', async () => {
+    // JWT signed without the username field (old tokens / malformed)
     const validToken = jwt.sign({ user: 'testuser' }, TEST_SECRET);
 
     const res = await request(app)
@@ -192,29 +193,28 @@ describe('Authentication Middleware (checkHdrs)', () => {
       .set('Authorization', 'Bearer ' + validToken)
       .query({ id: 'test-id', option: '1' });
 
-    // When user is missing from req.query, it returns error
-    expect(res.body.error).toBe('user not supplied');
+    expect(res.body.error).toBe('Invalid token payload');
   });
 
   test('rejects valid token when DB login token not found', async () => {
-    const validToken = jwt.sign({ user: 'testuser' }, TEST_SECRET);
+    const validToken = jwt.sign({ username: 'testuser' }, TEST_SECRET);
 
     const res = await request(app)
       .get('/voteSurvey')
       .set('Authorization', 'Bearer ' + validToken)
-      .query({ user: 'testuser', id: 'test-id', option: '1' });
+      .query({ id: 'test-id', option: '1' });
 
     // DB is mocked to return empty array, so auth should fail
     expect(res.body.error).toBe('Authentication failed. Key not found');
   });
 
   test('handles x-acti-token header with same validation', async () => {
-    const validToken = jwt.sign({ user: 'testuser' }, TEST_SECRET);
+    const validToken = jwt.sign({ username: 'testuser' }, TEST_SECRET);
 
     const res = await request(app)
       .get('/voteSurvey')
       .set('x-acti-token', validToken)
-      .query({ user: 'testuser', id: 'test-id', option: '1' });
+      .query({ id: 'test-id', option: '1' });
 
     // Same as above - valid token but no DB entry
     expect(res.body.error).toBe('Authentication failed. Key not found');

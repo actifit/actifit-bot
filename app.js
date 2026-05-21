@@ -5703,12 +5703,12 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
-app.post('/initiateAFITMoveSE', modActionRateLimit, async function(req, res){
-	if (!req.body.user || !req.body.amount || !req.body.fundsPass) {
+app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(req, res){
+	if (!req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.body.user;
+		let user = req.user._id;
 		let amount = parseFloat(req.body.amount);
 		let fundsPass = req.body.fundsPass;
 		
@@ -5853,12 +5853,12 @@ app.post('/initiateAFITMoveSE', modActionRateLimit, async function(req, res){
 })
 
 /* function handles the processing of a buy order */
-app.post('/tipAccount', modActionRateLimit, async function(req, res){
-	if (!req.body.user || !req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
+app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
+	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.body.user;
+		let user = req.user._id;
 		let targetUser = req.body.targetUser.replace('@','');
 		let amount = parseFloat(req.body.amount);
 		let fundsPass = req.body.fundsPass;
