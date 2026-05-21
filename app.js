@@ -238,31 +238,27 @@ let checkHdrs = (req, res, next) => {
 			  message: 'Token is not valid'
 			});
 		  } else {
-			let user;
-			
-			if (req.query && req.query.user){
-				user = req.query.user;
-				
-			//}else if(req.user){
-			//	user = (req.user._id || req.user.userId);
-			}else{
-				return res.send({error: 'user not supplied'});
+			if (!decoded.username) {
+				return res.send({error: 'Invalid token payload'});
 			}
-			//if (user){
-				//check if user is validated with stored encrypted posting key
-				let db_col = db.collection('user_login_token');
-				//find existing login entry in DB
-				let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
-				if (!Array.isArray(user_tkn) || user_tkn.length == 0){
-					console.error('Authentication failed. Key not found');
-					return res.send({error: 'Authentication failed. Key not found'});
-				}
-				//TODO adjust in coming iterations to stick solely with req.user in next() functions
-				req.user = { _id: user }; // Attach username
-				req.ppkey = user_tkn[0].ppkey;
-				req.decoded = decoded;
-				next();
-			//}
+			const user = decoded.username;
+			// if caller also supplies ?user=, it must match the token identity
+			if (req.query && req.query.user && req.query.user !== user) {
+				return res.send({error: 'User mismatch'});
+			}
+			//check if user is validated with stored encrypted posting key
+			let db_col = db.collection('user_login_token');
+			//find existing login entry in DB
+			let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
+			if (!Array.isArray(user_tkn) || user_tkn.length == 0){
+				console.error('Authentication failed. Key not found');
+				return res.send({error: 'Authentication failed. Key not found'});
+			}
+			req.user = { _id: user };
+			req.query.user = user; // ensure handlers always see the verified identity
+			req.ppkey = user_tkn[0].ppkey;
+			req.decoded = decoded;
+			next();
 		  }
 		});
 	  } else {
