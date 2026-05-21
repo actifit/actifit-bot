@@ -9201,6 +9201,7 @@ app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, re
 
 /* end point handling cancelling outdated exchange transactions for AFIT/STEEM upvote exchange */
 app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
+	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	//grab list of pending & outdated exchange requests
 	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	let endDate = moment(moment(startDate).utc().subtract(config.exchange_refund_max_days, 'days').toDate()).format('YYYY-MM-DD');
