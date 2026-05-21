@@ -293,8 +293,6 @@ app.post('/saveworkout', checkHdrs, async function (req, res){
             return res.status(401).json({ success: false, error: 'Authenticated user not identified.' });
         }
 		
-		console.log(req.body);
-
         // --- 2. Receive Workout Data from Request Body ---
         // bodyParser.json() middleware makes req.body available
         // Now expect 'workoutName' along with 'description' and 'exercises'
@@ -303,7 +301,7 @@ app.post('/saveworkout', checkHdrs, async function (req, res){
         // Basic validation - Add workoutName check
         if (!workoutName || typeof workoutName !== 'string' || workoutName.trim().length === 0 || // Check for non-empty string name
             !description || !exercises || !Array.isArray(exercises)) {
-             console.warn("Invalid request body format, missing or invalid required fields:", req.body);
+             console.warn("Invalid request body format: missing or invalid required fields");
              return res.status(400).json({ success: false, error: 'Invalid request data. Missing workout name, description, or exercises array, or workout name is empty.' });
         }
 
@@ -499,7 +497,7 @@ app.put('/workouts/:workoutId', checkHdrs, async function (req, res) {
         if (!workoutName || typeof workoutName !== 'string' || workoutName.trim().length === 0 ||
             !description || typeof description !== 'string' || description.trim().length === 0 ||
             !exercises || !Array.isArray(exercises) || exercises.length === 0) { // Ensure exercises is a non-empty array
-            console.warn("Invalid request body format for update, missing or invalid required fields:", req.body);
+            console.warn("Invalid request body format for update, missing or invalid required fields");
             return res.status(400).json({ success: false, error: 'Invalid request data. Missing workout name, description, or non-empty exercises array, or workout name/description is empty.' });
         }
 
@@ -1795,8 +1793,6 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	let userKey = receivedPlaintext;
 	
 	let operation;
-	console.log(req.body);
-	console.log(req.body.operation);
 	if (req.body && req.body.operation){
 		try {
 			operation = JSON.parse(req.body.operation);
@@ -1808,17 +1804,12 @@ app.post('/performTrxPost', checkHdrs, async function (req, res) {
 	}else{
 		res.send({error: 'operation not supplied'});
 	}
-	
+
 	if (req.query.bchain){
 		bchain = req.query.bchain;
 	}
-	
+
 	let match_arr = Object.entries(operation);
-	//console.log(user);
-	console.log(operation);
-	console.log((typeof operation));
-	console.log(match_arr);
-	console.log(match_arr[0][1]);
 	
 	//res.send({error: true, trx: performTrx});
 	//return;
@@ -4191,7 +4182,6 @@ app.get('/realProductsBought/', checkHdrs, async function (req, res) {
 
 /* end point for purchasing real products */
 app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
-	console.log(req.body);
 	if (!req.query.user){
 		res.send({'error': 'User not found'});
 		return;
