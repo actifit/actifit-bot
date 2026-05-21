@@ -3200,6 +3200,7 @@ app.get('/airdropResults', async function (req, res){
 })
 
 app.get('/sendAirdropResultsNotif', async function (req, res){
+	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	let entries = await db.collection('afit_bsc_hive_airdrop').find().toArray();
 	let delay = 0;
 	for (let entry of entries){
@@ -5684,12 +5685,12 @@ app.get('/poweringDownList/', async function (req, res) {
 	res.send(poweringDown);
 });
 
-app.get('/cancelAFITMoveSE', async function(req, res){
-	if (!req.query.user || !req.query.fundsPass){
+app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
+	if (!req.body.user || !req.body.fundsPass){
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.query.user;
-		let fundsPass = req.query.fundsPass;
+		let user = req.body.user;
+		let fundsPass = req.body.fundsPass;
 		
 		//confirm matching funds password
 		let query = {user: user};
@@ -5712,7 +5713,7 @@ app.get('/cancelAFITMoveSE', async function(req, res){
 		//reached here, we're fine
 
 		try{
-			let result = await db.collection('powering_down_he').deleteMany({user: req.query.user});
+			let result = await db.collection('powering_down_he').deleteMany({user: user});
 			res.send({'status': 'Success'});
 		}catch(err){
 			console.log(err);
@@ -5721,14 +5722,14 @@ app.get('/cancelAFITMoveSE', async function(req, res){
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
-app.get('/initiateAFITMoveSE', async function(req, res){
-	if (!req.query.user || !req.query.amount || !req.query.fundsPass) {
+app.post('/initiateAFITMoveSE', modActionRateLimit, async function(req, res){
+	if (!req.body.user || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.query.user;
-		let amount = parseFloat(req.query.amount);
-		let fundsPass = req.query.fundsPass;
+		let user = req.body.user;
+		let amount = parseFloat(req.body.amount);
+		let fundsPass = req.body.fundsPass;
 		
 		
 		//check first if user is banned, as he wont be able to move funds
@@ -5871,16 +5872,16 @@ app.get('/initiateAFITMoveSE', async function(req, res){
 })
 
 /* function handles the processing of a buy order */
-app.get('/tipAccount', async function(req, res){ 
-	if (!req.query.user || !req.query.targetUser || !req.query.amount || !req.query.fundsPass) {
+app.post('/tipAccount', modActionRateLimit, async function(req, res){
+	if (!req.body.user || !req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.query.user;
-		let targetUser = req.query.targetUser.replace('@','');
-		let amount = parseFloat(req.query.amount);
-		let fundsPass = req.query.fundsPass;
-		let note = req.query.note;
+		let user = req.body.user;
+		let targetUser = req.body.targetUser.replace('@','');
+		let amount = parseFloat(req.body.amount);
+		let fundsPass = req.body.fundsPass;
+		let note = req.body.note;
 		
 		//check first if user is banned, as he wont be able to tip
 		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
@@ -5927,7 +5928,7 @@ app.get('/tipAccount', async function(req, res){
 		}
 		
 		//check how much the user has tipped today
-		let totalTipAmount = await tippedToday(req, res);
+		let totalTipAmount = await tippedToday({ query: { user }, params: {} }, res);
 		if (parseFloat(totalTipAmount) >= parseFloat(config.max_allowed_tips_per_day)){
 			res.send({'error': 'User cannot tip more today. Max tips per day is set at '+config.max_allowed_tips_per_day + ' AFIT'});
 			return;
@@ -7077,8 +7078,9 @@ const storeReferralReward = async function (req){
 };
 
 app.get('/confirmAFITSEBulk', async function(req,res){
+	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	//let's call the service by S-E
-	
+
 	let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 		
 	let url = new URL(config.hive_engine_trans_acct_his);
@@ -7196,6 +7198,7 @@ app.get('/availableTipBalance', async function (req, res){
 })
 
 app.get('/processTipRequest', async function (req, res){
+	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	if (!req.query.trxId || !req.query.blkNo){
 		res.send({status: "error", error: "missing data"});
 		return;
@@ -7281,7 +7284,7 @@ app.get('/updateTipBalances', async function (req, res){
 })
 
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
-app.get('/confirmAFITSEReceipt', async function(req,res){
+app.get('/confirmAFITSEReceipt', checkHdrs, async function(req,res){
 	if (!req.query.user){
 		res.send('{}');
 	}else{
@@ -8916,7 +8919,12 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 
 
 //function handles the process of confirming buy event for AFIT via STEEM
-app.get('/confirmBuyAction', async function(req,res){
+app.get('/confirmBuyAction', checkHdrs, async function(req,res){
+	if (!req.query.from || req.query.from !== req.user._id) {
+		res.write(JSON.stringify({error: 'Forbidden'}));
+		res.end();
+		return;
+	}
 	let match_trx = '';
 	let statusUpdated = false;
 	//keeping request alive to avoid timeouts
@@ -9085,15 +9093,15 @@ app.get('/getFullFundsAccountList/', async function(req, res){
 });
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange */
-app.get('/performAfitSteemExchange', async function(req, res){
-	if ((typeof req.query.user == 'undefined') || req.query.user == '' ||
-		(typeof req.query.pass == 'undefined') || req.query.pass == '' ||
-		(typeof req.query.tokens == 'undefined') || req.query.tokens == '') {
+app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, res){
+	if ((typeof req.body.user == 'undefined') || req.body.user == '' ||
+		(typeof req.body.pass == 'undefined') || req.body.pass == '' ||
+		(typeof req.body.tokens == 'undefined') || req.body.tokens == '') {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
-		let user = req.query.user;
-		let paid_tokens = req.query.tokens;
+		let user = req.body.user;
+		let paid_tokens = req.body.tokens;
 		//confirm matching funds password
 		let query = {user: user};
 		
@@ -9106,7 +9114,7 @@ app.get('/performAfitSteemExchange', async function(req, res){
 			res.send({'error': 'Account\'s funds password not verified'});
 			return;
 		}else{
-		  if (!verifyFundsPass(req.query.pass, entryFound.pass)){
+		  if (!verifyFundsPass(req.body.pass, entryFound.pass)){
 				res.send({'error': 'Incorrect username and/or funds password'});
 				return;
 			}
@@ -9193,7 +9201,8 @@ app.get('/performAfitSteemExchange', async function(req, res){
 
 /* end point handling cancelling outdated exchange transactions for AFIT/STEEM upvote exchange */
 app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
-	//grab list of pending & outdated exchange requests 
+	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
+	//grab list of pending & outdated exchange requests
 	let startDate = moment(moment().utc().startOf('date').toDate()).format('YYYY-MM-DD');
 	let endDate = moment(moment(startDate).utc().subtract(config.exchange_refund_max_days, 'days').toDate()).format('YYYY-MM-DD');
 	let transQuery = {
