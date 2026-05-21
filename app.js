@@ -347,8 +347,7 @@ app.post('/saveworkout', checkHdrs, async function (req, res){
         // Send an error response
         res.status(500).json({
             success: false,
-            error: 'Internal server error saving workout plan.',
-            details: err.message // Include error message for debugging (remove in production)
+            error: 'Internal server error saving workout plan.'
         });
     }
 });
@@ -394,8 +393,7 @@ app.get('/workouts', checkHdrs, async function(req, res) {
           console.error('Server error fetching user workouts list:', err);
          res.status(500).json({
              success: false,
-             error: 'Internal server error fetching workout list.',
-             details: err.message
+             error: 'Internal server error fetching workout list.'
          });
      }
 });
@@ -460,8 +458,7 @@ app.get('/workouts/:workoutId', checkHdrs, async function(req, res) {
           console.error('Server error fetching specific workout:', err);
          res.status(500).json({
              success: false,
-             error: 'Internal server error fetching workout.',
-             details: err.message
+             error: 'Internal server error fetching workout.'
          });
      }
 });
@@ -560,8 +557,7 @@ app.put('/workouts/:workoutId', checkHdrs, async function (req, res) {
         console.error('Server error updating workout:', err);
         res.status(500).json({
             success: false,
-            error: 'Internal server error updating workout.',
-            details: err.message
+            error: 'Internal server error updating workout.'
         });
     }
 });
@@ -625,8 +621,7 @@ app.delete('/workouts/:workoutId', checkHdrs, async function (req, res) {
         console.error('Server error deleting workout:', err);
         res.status(500).json({
             success: false,
-            error: 'Internal server error deleting workout.',
-            details: err.message
+            error: 'Internal server error deleting workout.'
         });
     }
 });
@@ -2719,7 +2714,7 @@ app.get('/claimFreeSignupAccounts/:user', async function (req, res) {
 
     } catch (err) {
         console.error("Claim Error:", err);
-        return res.status(500).send({ error: err.message || "Internal Server Error" });
+        return res.status(500).send({ error: "Internal Server Error" });
     }
 });
 
@@ -5357,7 +5352,7 @@ async function performAcceptFriendTrx(req) {
 
     } catch (err) {
         console.error('Error in performAcceptFriendTrx:', err);
-        return { status: 'error', details: err.message };
+        return { status: 'error', details: 'Internal server error' };
     }
 }
 /* end point for cancelling friend request */
@@ -6156,7 +6151,7 @@ app.get('/upvoteCount', async function (req, res) {
 			res.send(JSON.stringify({ upvote_count: upvote_count }));
 		} catch (err) {
 			console.error("Error during count:", err.message);
-			res.status(500).send({ error: err.message });
+			res.status(500).send({ error: "Internal server error" });
 		}
 });
 
