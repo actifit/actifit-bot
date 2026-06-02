@@ -2006,7 +2006,7 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 				user_info.tokens = 0;
 			}
 
-			await db.collection('user_tokens').replaceOne({ user: user }, user_info, { upsert: true });
+			await db.collection('user_tokens').replaceOne({ _id: user }, user_info, { upsert: true });
 			res.send('success recalculating & updating user token count: ' + user_info.tokens);
 		} catch (err) {
 			console.error('Database Error:', err);
@@ -3547,7 +3547,7 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 		// We filter by user name to be safe, but you could also use { _id: user_info._id } 
 		// if you are certain the _id exists.
 		let trans = await db.collection('user_tokens').replaceOne(
-			{ user: user }, 
+			{ _id: user },
 			user_info, 
 			{ upsert: true }
 		);
@@ -3610,9 +3610,9 @@ app.get('/cancelAFITBuy', async function(req, res){
 
 	try {
 		// 3. Replace .save() with replaceOne
-		// We filter by 'user' to ensure we update the correct record
+		// user_tokens is keyed by _id (username); filter by _id
 		await db.collection('user_tokens').replaceOne(
-			{ user: user }, 
+			{ _id: user },
 			user_info, 
 			{ upsert: true }
 		);
@@ -3683,10 +3683,9 @@ app.get('/refundPurchase', async function(req, res){
 
 	try {
 		// 3. Swap .save() for .replaceOne()
-		// Using { user: user } as the filter ensures we hit the right record 
-		// even if the _id isn't present in a new object.
+		// user_tokens is keyed by _id (username); filter by _id
 		await db.collection('user_tokens').replaceOne(
-			{ user: user }, 
+			{ _id: user },
 			user_info, 
 			{ upsert: true }
 		);
@@ -4354,9 +4353,9 @@ app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
 
 			try {
 				// Replace .save() with replaceOne
-				// We use { user: user } or { _id: user_info._id } to identify the user record
+				// user_tokens is keyed by _id (username); filter by _id
 				await db.collection('user_tokens').replaceOne(
-					{ user: user_info.user }, 
+					{ _id: user_info._id },
 					user_info, 
 					{ upsert: true }
 				);
@@ -4802,9 +4801,9 @@ async function performMultiBuyTrx(req){
 
 		try {
 			// Replace .save() with .replaceOne()
-			// Using { user: user_info.user } is safer if _id is somehow missing
+			// user_tokens is keyed by _id (username); filter by _id
 			await db.collection('user_tokens').replaceOne(
-				{ user: user_info.user }, 
+				{ _id: user_info._id },
 				user_info, 
 				{ upsert: true }
 			);
@@ -5980,8 +5979,8 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
 		try {
 			// Replace .save() with replaceOne
 			await db.collection('user_tokens').replaceOne(
-				{ user: user_info.user }, 
-				user_info, 
+				{ _id: user_info._id },
+				user_info,
 				{ upsert: true }
 			);
 			console.log('success updating sender token count');
@@ -6013,8 +6012,8 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
 		try {
 			// Replace .save() with replaceOne
 			await db.collection('user_tokens').replaceOne(
-				{ user: targetUser }, 
-				target_user_info, 
+				{ _id: targetUser },
+				target_user_info,
 				{ upsert: true }
 			);
 			console.log('success updating target user token count');
@@ -7102,55 +7101,43 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 					date: new Date(entry.timestamp * 1000) //timestamp linux convert to seconds first
 				}
 				try{
-					console.log(tokenExchangeTrans);
-					//insert the query ensuring we do not write it twice
-					// 1. Update the transaction record
-					// Changed .update() to .replaceOne()
-					let transaction = await db.collection('token_transactions').replaceOne(
-						tokenExchangeTransQuery, 
-						tokenExchangeTrans, 
-						{ upsert: true }
-					);
-
-					// 2. Check for success (Modern driver returns metadata directly)
-					console.log(transaction);
-
-					// In the new driver, we check 'upsertedCount' instead of 'result.upserted'
-					if (transaction.upsertedCount > 0) {
-						// we have a new entry, increase user token count
+					// Idempotency guard: only process if this trx has NOT been recorded before.
+					// We credit the balance FIRST, then write the dedup record, so a failed
+					// credit does not permanently strand the deposit (it is retried next run).
+					let existingTrx = await db.collection('token_transactions').findOne(tokenExchangeTransQuery);
+					if (!existingTrx) {
+						// new entry, increase user token count
 						let user_info = await grabUserTokensFunc(user);
-						
-						let cur_user_token_count = 0;
 						if (user_info) {
-							cur_user_token_count = parseFloat(user_info.tokens) || 0;
-							
+							let cur_user_token_count = parseFloat(user_info.tokens) || 0;
+
 							// update current user's token balance & store to db
 							let afit_amount = parseFloat(entry.quantity) || 0;
 							let new_token_count = cur_user_token_count + afit_amount;
 							user_info.tokens = new_token_count;
-							
+
 							console.log('new_token_count:' + new_token_count);
-							
-							try {
-								// FIX: Replace .save() with .replaceOne()
-								await db.collection('user_tokens').replaceOne(
-									{ user: user_info.user }, 
-									user_info, 
-									{ upsert: true }
-								);
-								console.log('success adding AFIT tokens to user balance');
-							} catch (err) {
-								console.error('Error saving user tokens:', err);
-								return;
-							}
+
+							// 1. Credit the user balance. user_tokens is keyed by _id (username),
+							//    so we MUST filter by _id, not by a non-existent 'user' field.
+							await db.collection('user_tokens').replaceOne(
+								{ _id: user },
+								user_info,
+								{ upsert: true }
+							);
+							console.log('success adding AFIT tokens to user balance');
+
+							// 2. Only after a successful credit, record the dedup transaction
+							await db.collection('token_transactions').replaceOne(
+								tokenExchangeTransQuery,
+								tokenExchangeTrans,
+								{ upsert: true }
+							);
+							console.log(tokenExchangeTrans);
 						}
 					}
-					
 				}catch(err){
 					console.log(err);
-					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
-					res.end();
-					return;
 				}
 			}
 		});
@@ -7337,8 +7324,8 @@ app.get('/confirmAFITSEReceipt', checkHdrs, async function(req,res){
 								// FIX: Replace .save() with .replaceOne()
 								// We filter by user to ensure we hit the right record
 								await db.collection('user_tokens').replaceOne(
-									{ user: targetUser }, 
-									user_info, 
+									{ _id: targetUser },
+									user_info,
 									{ upsert: true }
 								);
 								console.log('success adding AFIT tokens to user balance');
