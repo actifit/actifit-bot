@@ -7070,10 +7070,11 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 	//console.log(config.steem_engine_trans_acct_his_lrg);
 	//connect with our service to confirm AFIT received to proper wallet
 	try{
-		let se_connector = await fetch(url);
+		//15s timeout so an unreachable/slow history node fails fast instead of hanging the request
+		let se_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
 		let trx_entries = await se_connector.json();
-		
-		
+
+
 		//console.log(trx_entries);
 		trx_entries.forEach( async function(entry){
 			console.log(entry);
@@ -7144,9 +7145,15 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		
 		res.write(JSON.stringify({'status': 'done updating AFIT SE moves'}));
 		res.end();
-		
+
 	}catch(err){
+		//respond on failure (history fetch/parse error) instead of leaving the request hanging
 		console.log(err);
+		if (!res.headersSent){
+			res.status(500).send({'error': 'confirmAFITSEBulk failed', 'detail': String(err && err.message || err)});
+		} else {
+			try { res.end(); } catch(e) {}
+		}
 	}
 })
 

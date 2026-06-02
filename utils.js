@@ -365,7 +365,7 @@ var HOURS = 60 * 60;
 
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
-						let se_connector = await fetch(url);
+						let se_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
 						let trx_entries = await se_connector.json();
 						console.log(trx_entries);
 						let match_trx;
@@ -434,7 +434,7 @@ var HOURS = 60 * 60;
 		let url = new URL(config.hive_engine_tip_trans_his);
 		//connect with our service to confirm AFIT received to proper wallet
 		try{
-			let he_connector = await fetch(url);
+			let he_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
 			let trx_entries = await he_connector.json();
 			
 			for (const entry of trx_entries){
@@ -539,7 +539,7 @@ var HOURS = 60 * 60;
 
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
-						let se_connector = await fetch(url);
+						let se_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
 						let trx_entries = await se_connector.json();
 						
 						let match_trx;
