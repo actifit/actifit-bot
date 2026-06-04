@@ -18,7 +18,12 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            set -e
             cd /home/actifit-bot
+            # npm install --production rewrites package-lock.json on the server, leaving the
+            # working tree dirty and blocking git pull whenever a release touches the lock.
+            # discard that churn (only the lock) so the pull always applies cleanly.
+            git checkout -- package-lock.json || true
             git pull origin master
             npm install --production
             pm2 restart app
