@@ -2236,6 +2236,63 @@ app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
 	}
 });
 
+/* second phase of keychain login: verify the decrypted challenge and issue a session JWT.
+   /loginKeychain hands the client an encrypted-memo challenge; the client decrypts it via
+   Hive Keychain (proving it holds the private posting key) and posts the result back here.
+   Keychain logins store no posting key, so this issues a longer-lived token used purely for
+   authenticating checkHdrs API calls (e.g. setUserFundsPass). */
+app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
+	try {
+		const username = req.body.username;
+		const decrypted = req.body.decrypted;
+		let bchain = req.body.bchain ? req.body.bchain : 'HIVE';
+
+		if (!username || username.length >= 20 || username.length <= 3 || !decrypted) {
+			return res.send({ success: false, message: 'Authentication failed! Please check the request' });
+		}
+
+		// do not allow login for deleted accounts
+		let deleted = await db.collection('deleted_accounts').findOne({ user: username });
+		if (deleted) {
+			return res.send({ success: false, message: 'error' });
+		}
+
+		// recompute the challenge for this account's posting public key
+		let account = await utils.getAccountData(username, bchain);
+		let pubKey = account[bchain].posting.key_auths[0][0];
+		let expected = encrypt(username + pubKey);
+
+		// the client returns the keychain-decrypted memo; normalize any leading '#'
+		let provided = String(decrypted).trim().replace(/^#/, '');
+		if (provided !== expected) {
+			return res.send({ success: false, message: 'Keychain verification failed' });
+		}
+
+		// proof valid -> issue a session token (no posting key is stored for keychain logins)
+		let token = jwt.sign({ username: username }, config.secret, { expiresIn: '30d' });
+
+		let db_col = db.collection('user_login_token');
+		// preserve any existing record fields (e.g. a previously stored ppkey) and just refresh the token
+		let user_tkn = await db_col.findOne({ user: username });
+		if (!user_tkn) {
+			user_tkn = {};
+		}
+		user_tkn.user = username;
+		user_tkn.token = token;
+		user_tkn.lastlogin = new Date();
+		user_tkn.loginsrc = 'keychain';
+
+		await db_col.replaceOne({ user: username }, user_tkn, { upsert: true });
+
+		// return both `userdata` (used by LoginModal) and the chain-keyed account
+		// (spread, so callers relying on e.g. json.HIVE keep working)
+		res.send(Object.assign({ success: true, message: 'Authentication successful!', token: token, userdata: account[bchain] }, account));
+	} catch (err) {
+		console.log(err);
+		res.send({ success: false, message: 'error' });
+	}
+});
+
 app.post('/loginAuth', loginRateLimit, async function (req, res) {
 	console.log('login');
 	let username = null;
