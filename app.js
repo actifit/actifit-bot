@@ -15,7 +15,17 @@ const app = express();
 
 const swaggerDocument = YAML.load('./swagger.yaml');
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+// Serve Swagger docs with the server URL resolved dynamically from the incoming
+// request, so "Try it out" calls hit the instance the docs are served from
+// (instead of the hardcoded localhost in swagger.yaml).
+app.use('/api-docs', swaggerUi.serve, (req, res) => {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const dynamicDocument = Object.assign({}, swaggerDocument, {
+        servers: [{ url: protocol + '://' + host, description: 'Current server' }]
+    });
+    res.send(swaggerUi.generateHTML(dynamicDocument));
+});
 
 
 app.engine('handlebars', exphbs({defaultLayout: 'main'}));
