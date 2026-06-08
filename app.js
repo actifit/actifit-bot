@@ -15,7 +15,17 @@ const app = express();
 
 const swaggerDocument = YAML.load('./swagger.yaml');
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+// Serve Swagger docs with the server URL resolved dynamically from the incoming
+// request, so "Try it out" calls hit the instance the docs are served from
+// (instead of the hardcoded localhost in swagger.yaml).
+app.use('/api-docs', swaggerUi.serve, (req, res) => {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const dynamicDocument = Object.assign({}, swaggerDocument, {
+        servers: [{ url: protocol + '://' + host, description: 'Current server' }]
+    });
+    res.send(swaggerUi.generateHTML(dynamicDocument));
+});
 
 
 app.engine('handlebars', exphbs({defaultLayout: 'main'}));
@@ -132,6 +142,7 @@ let rule = new schedule.RecurrenceRule();
 
 //tracking AFITX data
 let usersAFITXBal = [];
+let usersAFITXBalSE = [];
 let usersAFITXBalHE = [];
 let fullSortedAFITXList = [];
 
@@ -139,6 +150,7 @@ let fullSortedAFITXList = [];
 
 //similarly fetch AFIT data
 let usersAFITBal = [];
+let usersAFITBalSE = [];
 let usersAFITBalHE = [];
 let fullSortedAFITList = [];
 
@@ -155,9 +167,9 @@ if (process.env.NODE_ENV !== 'test') {
 
 async function launchHEFetch(){
 	console.log('looking up HE data')
-	fetchAFITXBalHE(0);
+	fetchAFITXBalHE();
 
-	fetchAFITBalHE(0);	
+	fetchAFITBalHE();
 }
 
 
@@ -167,13 +179,14 @@ async function launchHEFetch(){
 let scJob;
 if (process.env.NODE_ENV !== 'test') {
   scJob = schedule.scheduleJob('*/5 * * * *', async function(){
-    //reset array
-    usersAFITBal = [];
-    usersAFITXBal = [];
+    //NOTE: do NOT clear usersAFITBal / usersAFITXBal here. The HE fetchers
+    //below build a complete list and swap it in atomically only on success,
+    //so a failed/partial refresh keeps the last known-good balances live
+    //instead of zeroing everyone out for that round.
     //fetchAFITXBal(0);
-    
+
     //fetchAFITBal(0);
-    
+
     setTimeout(launchHEFetch, 10000);
     
     //reset to zero, might need to revisit this when reputting SE to action
@@ -1112,14 +1125,14 @@ async function fetchAFITXBal(offset){
   if (offset == 0 && tempArr.length > 0){
 	  console.log('>>Found new results, reset older ones');
 	  //reset existing data if we have fresh new data
-	  usersAFITXBal = [];
+	  usersAFITXBalSE = [];
   }
-  usersAFITXBal = usersAFITXBal.concat(tempArr);
-  
+  usersAFITXBalSE = usersAFITXBalSE.concat(tempArr);
+
   if (tempArr.length > 999){
 	//we possibly have more entries, let's call again
 	setTimeout(function(){
-		fetchAFITXBal(usersAFITXBal.length);
+		fetchAFITXBal(usersAFITXBalSE.length);
 	}, 1000);
   }else{
 	//if we were not able to fetch entries, we need to try API again
@@ -1147,70 +1160,109 @@ async function fetchAFITXBal(offset){
   //console.log(usersAFITXBal);
 }
 
-async function fetchAFITXBalHE(offset){
-  try{
-  console.log('--- Fetch new AFITX token balance ---');
-  console.log(offset);
-  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFITX' }, 1000, offset, '', false);/*.catch((err)=>{
-				console.log(err)
-				if (err.message.includes('timeout')){
-					switchHENode();
-				}
-			}); //max amount, offset, */
-  if (offset == 0 && tempArr.length > 0){
-	  console.log('>>Found new results, reset older ones');
-	  //reset existing data if we have fresh new data
-	  usersAFITXBalHE = [];
-  }
-  usersAFITXBalHE = usersAFITXBalHE.concat(tempArr);
-  
-  if (tempArr.length > 999){
-	//we possibly have more entries, let's call again
-	setTimeout(function(){
-		fetchAFITXBalHE(usersAFITXBalHE.length);
-	}, 1000);
-  }else{
-	//if we were not able to fetch entries, we need to try API again
-	if (offset == 0 && tempArr.length < 1){
-		console.log('no AFITX data HE, fetch again in 30 secs');
-		setTimeout(function(){
-			fetchAFITXBalHE(0);
-		}, 30000);
-	}else{
-		//done, let's merge both SE & HE lists
-		for (let i=0;i<usersAFITXBal.length;i++){
-			usersAFITXBal[i].seholder = true;
-			let match = usersAFITXBalHE.find(entry => entry.account === usersAFITXBal[i].account);
-			if (match){
-				usersAFITXBal[i].sebalance = usersAFITXBal[i].balance;
-				usersAFITXBal[i].hebalance = match.balance;
-				usersAFITXBal[i].balance = parseFloat(usersAFITXBal[i].balance) + parseFloat(match.balance);
-				usersAFITXBal[i].heholder = true;
+function heSleep(ms){ return new Promise(resolve => setTimeout(resolve, ms)); }
+
+/* Fetch a single page of token balances from Hive-Engine, retrying transient
+   failures (timeouts / node errors / non-array responses) on the SAME offset.
+   Throws if every retry fails, so the caller can abort the run rather than
+   silently building an incomplete list. */
+async function heFindBalancesPage(symbol, offset, limit, maxRetries){
+	for (let attempt = 1; attempt <= maxRetries; attempt++){
+		try{
+			let page = await hsc.find('tokens', 'balances', { symbol : symbol }, limit, offset, '', false);
+			if (!Array.isArray(page)){
+				throw new Error('non-array response from HE node');
 			}
-		}
-		//append HE holdings
-		for (let i=0;i<usersAFITXBalHE.length;i++){
-			usersAFITXBalHE[i].heholder = true;
-			let match = usersAFITXBal.find(entry => entry.account === usersAFITXBalHE[i].account);
-			if (!match){
-				usersAFITXBal.push(usersAFITXBalHE[i]);
-				//usersAFITXBal[i].hebalance = match.balance;
-				//usersAFITXBal[i].balance = parseFloat(usersAFITXBal[i].balance) + parseFloat(match.balance);
+			return page;
+		}catch(err){
+			console.log('HE balance fetch error ['+symbol+'] offset '+offset+' attempt '+attempt+': '+err);
+			if (err && typeof err.message === 'string' && err.message.includes('timeout')){
+				switchHENode();
 			}
+			if (attempt === maxRetries){
+				throw err;
+			}
+			await heSleep(2000);
 		}
-		
 	}
-  }
-  }catch(err){
-	  console.log(err);
-	  if (offset == 0){
-		console.log('no AFITX data HE, fetch again in 30 secs');
-		setTimeout(function(){
-			fetchAFITXBalHE(0);
-		}, 30000);
-	  }
-  }
-  //console.log(usersAFITXBal);
+}
+
+/* Fetch the COMPLETE set of balances for a token symbol from Hive-Engine by
+   paging until the final (short) page. Guards against the historical bug where
+   a flaky empty/short response mid-pagination was misread as "end of list",
+   silently dropping the highest-_id (newest) holders. Returns the full array,
+   or throws if a complete run can't be achieved. */
+async function fetchAllHEBalances(symbol){
+	const LIMIT = 1000;
+	const MAX_RETRIES = 4;
+	const MAX_PAGES = 1000; // safety cap (1M holders) against a runaway loop
+	let rows = [];
+	let offset = 0;
+	for (let pageNum = 0; pageNum < MAX_PAGES; pageNum++){
+		let page = await heFindBalancesPage(symbol, offset, LIMIT, MAX_RETRIES);
+		// An empty page partway through is far more likely a node hiccup than a
+		// real end-of-list; retry the same offset before trusting it.
+		if (page.length === 0 && offset > 0){
+			let recovered = false;
+			for (let attempt = 1; attempt <= MAX_RETRIES; attempt++){
+				await heSleep(2000);
+				page = await heFindBalancesPage(symbol, offset, LIMIT, MAX_RETRIES);
+				if (page.length > 0){ recovered = true; break; }
+			}
+			if (!recovered){ break; } // genuinely the end of the list
+		}
+		rows = rows.concat(page);
+		if (page.length < LIMIT){
+			break; // reached the final (partial) page
+		}
+		offset = rows.length;
+		await heSleep(1000);
+	}
+	return rows;
+}
+
+/* Merge a Steem-Engine base list with a Hive-Engine list into a single
+   per-account balance list (SE+HE combined). Reproduces the original merge
+   semantics without mutating the SE source array. */
+function mergeSEandHE(seList, heList){
+	let merged = seList.map(e => Object.assign({}, e));
+	for (let i = 0; i < merged.length; i++){
+		merged[i].seholder = true;
+		let match = heList.find(entry => entry.account === merged[i].account);
+		if (match){
+			merged[i].sebalance = merged[i].balance;
+			merged[i].hebalance = match.balance;
+			merged[i].balance = parseFloat(merged[i].balance) + parseFloat(match.balance);
+			merged[i].heholder = true;
+		}
+	}
+	//append HE-only holders
+	for (let i = 0; i < heList.length; i++){
+		heList[i].heholder = true;
+		if (!merged.find(entry => entry.account === heList[i].account)){
+			merged.push(heList[i]);
+		}
+	}
+	return merged;
+}
+
+async function fetchAFITXBalHE(){
+	console.log('--- Fetch new AFITX token balance (HE) ---');
+	try{
+		let newHE = await fetchAllHEBalances('AFITX');
+		if (newHE.length < 1){
+			//a fully-empty result is treated as a failed refresh, not a real wipe
+			throw new Error('empty AFITX HE balance list');
+		}
+		//commit atomically only once we have a complete, non-empty list
+		usersAFITXBalHE = newHE;
+		usersAFITXBal = mergeSEandHE(usersAFITXBalSE, usersAFITXBalHE);
+		console.log('AFITX HE balances refreshed: '+usersAFITXBalHE.length+' HE holders, '+usersAFITXBal.length+' merged total');
+	}catch(err){
+		console.log('AFITX HE refresh failed, keeping previous list of '+usersAFITXBal.length+' holders: '+err);
+		//retry soon; the last known-good list stays live in the meantime
+		setTimeout(fetchAFITXBalHE, 30000);
+	}
 }
 
 async function getAFITXUserData(user){
@@ -1230,14 +1282,14 @@ async function fetchAFITBal(offset){
   if (offset == 0 && tempArr.length > 0){
 	  console.log('>>Found new results, reset older ones');
 	  //reset existing data if we have fresh new data
-	  usersAFITBal = [];
+	  usersAFITBalSE = [];
   }
-  usersAFITBal = usersAFITBal.concat(tempArr);
-  
+  usersAFITBalSE = usersAFITBalSE.concat(tempArr);
+
   if (tempArr.length > 999){
 	//we possibly have more entries, let's call again
 	setTimeout(function(){
-		fetchAFITBal(usersAFITBal.length);
+		fetchAFITBal(usersAFITBalSE.length);
 	}, 1000);
   }else{
 	//if we were not able to fetch entries, we need to try API again
@@ -1265,70 +1317,23 @@ async function fetchAFITBal(offset){
   //console.log(usersAFITBal);
 }
 
-async function fetchAFITBalHE(offset){
-  try{
-  console.log('--- Fetch new AFIT token balance ---');
-  console.log(offset);
-  let tempArr = await hsc.find('tokens', 'balances', { symbol : 'AFIT' }, 1000, offset, '', false); /*.catch((err)=>{
-				console.log(err)
-				if (err.message.includes('timeout')){
-					switchHENode();
-				}
-			}); //max amount, offset, */
-  if (offset == 0 && tempArr.length > 0){
-	  console.log('>>Found new results, reset older ones');
-	  //reset existing data if we have fresh new data
-	  usersAFITBalHE = [];
-  }
-  usersAFITBalHE = usersAFITBalHE.concat(tempArr);
-  
-  if (tempArr.length > 999){
-	//we possibly have more entries, let's call again
-	setTimeout(function(){
-		fetchAFITBalHE(usersAFITBalHE.length);
-	}, 1000);
-  }else{
-	//if we were not able to fetch entries, we need to try API again
-	if (offset == 0 && tempArr.length < 1){
-		console.log('no AFIT data HE, fetch again in 30 secs');
-		setTimeout(function(){
-			fetchAFITBalHE(0);
-		}, 30000);
-	}else{
-		//done, let's merge both SE & HE lists
-		for (let i=0;i<usersAFITBal.length;i++){
-			usersAFITBal[i].seholder = true;
-			let match = usersAFITBalHE.find(entry => entry.account === usersAFITBal[i].account);
-			if (match){
-				usersAFITBal[i].sebalance = usersAFITBal[i].balance;
-				usersAFITBal[i].hebalance = match.balance;
-				usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
-				usersAFITBal[i].heholder = true;
-			}
+async function fetchAFITBalHE(){
+	console.log('--- Fetch new AFIT token balance (HE) ---');
+	try{
+		let newHE = await fetchAllHEBalances('AFIT');
+		if (newHE.length < 1){
+			//a fully-empty result is treated as a failed refresh, not a real wipe
+			throw new Error('empty AFIT HE balance list');
 		}
-		//append HE holdings
-		for (let i=0;i<usersAFITBalHE.length;i++){
-			usersAFITBalHE[i].heholder = true;
-			let match = usersAFITBal.find(entry => entry.account === usersAFITBalHE[i].account);
-			if (!match){
-				usersAFITBal.push(usersAFITBalHE[i]);
-				//usersAFITBal[i].hebalance = match.balance;
-				//usersAFITBal[i].balance = parseFloat(usersAFITBal[i].balance) + parseFloat(match.balance);
-			}
-		}
-		
+		//commit atomically only once we have a complete, non-empty list
+		usersAFITBalHE = newHE;
+		usersAFITBal = mergeSEandHE(usersAFITBalSE, usersAFITBalHE);
+		console.log('AFIT HE balances refreshed: '+usersAFITBalHE.length+' HE holders, '+usersAFITBal.length+' merged total');
+	}catch(err){
+		console.log('AFIT HE refresh failed, keeping previous list of '+usersAFITBal.length+' holders: '+err);
+		//retry soon; the last known-good list stays live in the meantime
+		setTimeout(fetchAFITBalHE, 30000);
 	}
-  }
-  }catch(err){
-	  console.log(err);
-	  if (offset == 0){
-		console.log('no AFIT data HE, fetch again in 30 secs');
-		setTimeout(function(){
-			fetchAFITBalHE(0);
-		}, 30000);
-	  }
-  }
-  //console.log(usersAFITBal);
 }
 
 

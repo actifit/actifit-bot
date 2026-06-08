@@ -4,8 +4,10 @@ info:
   version: 1.0.0
   description: API for connecting to Actifit end points
 servers:
-  - url: http://localhost:3120 # Adjust to your server URL
-    description: Development server
+  # Relative URL — resolves to whatever host serves the docs. The running app
+  # (app.js) also overrides this dynamically per request with the live host.
+  - url: /
+    description: Current server
 components:
   securitySchemes:
     bearerAuth:
