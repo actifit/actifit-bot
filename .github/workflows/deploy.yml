@@ -26,4 +26,10 @@ jobs:
             git checkout -- package-lock.json || true
             git pull origin master
             npm install --production
-            pm2 restart app
+            # restart every pm2-managed process this bot runs, not just the web
+            # 'app' - the daily AFIT move / rewards worker (api-delegations, see
+            # delegationsconfig.js) runs as a separate process and must reload too.
+            # 'restart all' only touches processes already running on that host,
+            # so it won't start a duplicate delegation worker on servers that
+            # don't run one.
+            pm2 restart all
