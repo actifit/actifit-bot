@@ -5878,7 +5878,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(re
 		let tokenPowerDownTrans = {
 			user: user,
 			daily_afit_transfer: amount,
-			min_afitx: (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio,
+			min_afitx: Math.max(0, (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio),
 			date: new Date(),
 		}
 		

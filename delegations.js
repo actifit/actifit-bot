@@ -88,29 +88,33 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 	
 }else */
+// Only auto-run the scheduler / reward pipeline when executed directly
+// (node delegations.js / pm2). When required by a test, skip bootstrap so the
+// exported functions can be exercised in isolation.
+if (require.main === module) {
 if (process.env.BOT_THREAD == 'MAIN'){
-	
+
 	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
 	
-	var j = schedule.scheduleJob({hour: 08, minute: 00}, function(){
+	var j = schedule.scheduleJob({hour: 8, minute: 0}, function(){
 	  console.log('--- Start delegators reward ---');
 	  runRewards(false, true);//param steemOnlyReward, updateDelegations
 	});
 	
 	//let's schedule the AFIT to S-E token move event at 10:00 
-	let moveJob = schedule.scheduleJob({hour: 10, minute: 00}, function(){
+	let moveJob = schedule.scheduleJob({hour: 10, minute: 0}, function(){
 	  console.log('--- Start AFIT to S-E Move ---');
 	  moveAFITToSE(false);//param test
 	});
 	
 	//schedule the prize event at 00:00 every X days
-	let prizeJob = schedule.scheduleJob({hour: 00, minute: 01}, function(){
+	let prizeJob = schedule.scheduleJob({hour: 0, minute: 1}, function(){
 	  console.log('--- Reward Gadget Buy Contest ---');
 	  processGadgetBuyPrize();//param test
 	});
 	
 	//schedule the delegation cancellation event at 11:00 every day
-	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 00}, function(){
+	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 0}, function(){
 	  console.log('--- Cancel outdated delegations ---');
 	  utils.redeemDelegations();
 	});
@@ -152,9 +156,10 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	console.log(val);*/
 	//testFetchHistory();
 	//processBSCTransfers();
-	
-	
+
+
 }
+} // end require.main bootstrap guard
 /*
 async function testFetchHistory(){
 	let from = -1
@@ -307,7 +312,8 @@ async function updateTrxDetails(entry, trxHash, afitAmnt, hbdAmnt){
 	entry.hbdLockedAmount = pendingHbd;
 	entry.trfDate = new Date();
 	try{
-		let trans = await db.collection('bsc_bridge_queue').save(entry);
+		//driver 5.x: .save() removed - replace the existing doc by _id
+		let trans = await db.collection('bsc_bridge_queue').replaceOne({_id: entry._id}, entry);
 		console.log('success updating BSC transfer trx');
 	}catch(err){
 		console.log(err);
@@ -624,7 +630,8 @@ async function testMove(){
 async function rollBackTrans(moveTrans){
 	console.log('roll back')
 	try{
-		let transaction = await db.collection('token_transactions').remove(moveTrans);
+		//driver 5.x: .remove() removed - delete the doc inserted for this move
+		let transaction = await db.collection('token_transactions').deleteOne({_id: moveTrans._id});
 	}catch(err){
 		console.log(err);
 	}
@@ -639,7 +646,8 @@ async function updateUserCount(entry){
 	user_info.tokens = new_token_count;
 	console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
 	try{
-		let trans = await db.collection('user_tokens').save(user_info);
+		//driver 5.x: .save() removed - replace the user's token doc by _id
+		let trans = await db.collection('user_tokens').replaceOne({_id: user_info._id}, user_info);
 		console.log('success updating user token count');
 	}catch(err){
 		console.log(err);
@@ -685,7 +693,17 @@ async function moveAFITToSE(testMode){
 		console.log(afit_av_bal);
 		//loop through entries, and send over AFIT
 		poweringDown.forEach(async function(entry){
-			
+
+			//expire stale requests (older than the powerdown window) WITHOUT moving funds,
+			//so month-old leftovers get cleaned up instead of lingering / moving indefinitely
+			let winStart = moment().utc().startOf('date').toDate();
+			let expiryCutoff = moment(winStart).subtract(config.afit_powerdown_days || 7, 'days').format();
+			if (moment(new Date(entry.date)).format() < expiryCutoff){
+				console.log('expiring stale AFIT power down request for ' + entry.user + ' (dated ' + entry.date + ')');
+				await cancelDailyAFITPowerDown(entry, testMode, null);
+				return;
+			}
+
 			//let's make sure user is not banned
 			let user_banned = false;
 			for (let n = 0; n < banned_users.length; n++) {
@@ -852,7 +870,20 @@ async function moveAFITToSE(testMode){
 					}, delay+=4500);
 				}else{
 					console.log('error - user does not have enough funds');
-					await deactivateDailyAFITPowerDown(entry, testMode);
+					//work out which balance fell short so we can tell the user precisely
+					let cancelMsg;
+					let neededAfitx = (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio;
+					if (amount > config.free_movable_afit_day && neededAfitx > afitx_tot_bal){
+						cancelMsg = 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: moving that ' +
+							'amount requires at least ' + neededAfitx.toFixed(3) + ' AFITX, but you only hold ' +
+							afitx_tot_bal + ' AFITX. Top up your AFITX and set up the move again.';
+					}else{
+						cancelMsg = 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: your Actifit ' +
+							'AFIT balance (' + cur_user_token_count + ') is below the requested ' + amount +
+							' AFIT/day. Earn or top up more AFIT and set up the move again.';
+					}
+					//notify the user and remove the request so it stops retrying daily
+					await cancelDailyAFITPowerDown(entry, testMode, cancelMsg);
 					return;
 				}
 			}else{
@@ -872,8 +903,8 @@ async function deactivateDailyAFITPowerDown(entry, testMode){
 	let start = moment().utc().startOf('date').toDate()
 	
 	//7 days running timeframe
-	let to = moment(start).subtract(7, 'days').toDate()
-	
+	let to = moment(start).subtract(config.afit_powerdown_days || 7, 'days').toDate()
+
 	let maxDate = moment(to).format()
 	
 	let transDate = moment(new Date(entry.date)).format();
@@ -886,10 +917,33 @@ async function deactivateDailyAFITPowerDown(entry, testMode){
     if (transDate < maxDate) {// || entry.user=='mcfarhat'
 		console.log('need to cancel out transaction')
 		if (!testMode){// || entry.user=='mcfarhat'
-			let stts = await db.collection('powering_down_he').remove(entry);
+			//driver 5.x: .remove() no longer exists, use deleteOne by _id
+			let stts = await db.collection('powering_down_he').deleteOne({_id: entry._id});
 		}
 	}
-	
+
+}
+
+//immediately cancel a pending daily AFIT move (e.g. insufficient funds / stale) and
+//optionally notify the user why. Unlike deactivateDailyAFITPowerDown this does not wait
+//for the 7-day window - the request is removed right away so it stops retrying daily.
+async function cancelDailyAFITPowerDown(entry, testMode, message){
+	console.log('cancelling daily AFIT power down for ' + entry.user + (message ? ' : ' + message : ''));
+	if (testMode) return;
+	try{
+		//remove the pending request first so it stops retrying every day
+		await db.collection('powering_down_he').deleteOne({_id: entry._id});
+		//notify the user why it was cancelled (skip for silent expiry cleanups)
+		if (message){
+			await utils.sendNotification(
+				db, entry.user, 'actifit',
+				'afit_move_cancelled', 'afit_move_cancelled',
+				message, 'https://actifit.io/@' + entry.user
+			);
+		}
+	}catch(err){
+		console.log('error cancelling daily AFIT power down: ' + err);
+	}
 }
 
 /*
@@ -1948,3 +2002,15 @@ async function claimRewards(){
 		console.log('no rewards to claim for now');
 	}
 }
+
+// Exported for testing. The bootstrap above is guarded by require.main so this
+// module can be required in tests without launching the scheduler/pipeline.
+module.exports = {
+	moveAFITToSE,
+	deactivateDailyAFITPowerDown,
+	cancelDailyAFITPowerDown,
+	updateUserCount,
+	rollBackTrans,
+	// inject a (mock) db into the module-level `db` used by the functions above
+	__setTestDb: (mockDb) => { db = mockDb; },
+};

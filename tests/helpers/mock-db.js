@@ -59,6 +59,14 @@ function createMockCollection(initialData = []) {
       }
       return Promise.resolve({ modifiedCount: idx !== -1 ? 1 : 0, upsertedCount: opts.upsert && idx === -1 ? 1 : 0 });
     }),
+    deleteOne: jest.fn((query) => {
+      const idx = data.findIndex((doc) => matchQuery(doc, query));
+      if (idx !== -1) {
+        data.splice(idx, 1);
+        return Promise.resolve({ deletedCount: 1 });
+      }
+      return Promise.resolve({ deletedCount: 0 });
+    }),
     deleteMany: jest.fn((query) => {
       const before = data.length;
       data = data.filter((doc) => !matchQuery(doc, query));
