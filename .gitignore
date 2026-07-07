@@ -4,6 +4,7 @@ logs
 npm-debug.log*
 state.json
 config.json
+rc_delegations_config.json
 
 # Runtime data
 pids

@@ -1,0 +1,31 @@
+{
+  "_comment": "Copy this file to rc_delegations_config.json and fill in the real posting key. RC delegation is authorized by the POSTING key of the delegating account (required_posting_auths). rc_delegations_config.json is gitignored.",
+
+  "pay_account": "actifit.pay",
+  "pay_account_posting_key": "PUT_ACTIFIT_PAY_PRIVATE_POSTING_KEY_HERE",
+
+  "active_hive_node": "https://api.hive.blog",
+  "alt_hive_nodes": [
+    "https://api.hive.blog/",
+    "https://hiveapi.actifit.io",
+    "https://api.openhive.network",
+    "https://api.deathwing.me",
+    "https://rpc.mahdiyari.info"
+  ],
+
+  "excludeList": [
+    "vevita", "actifit.s-e", "actifit.h-e", "afitx.s-e", "afitx.h-e",
+    "afit.h-e", "afit.s-e", "actifit-dlux", "actifit.sports", "actifit-he",
+    "hdev.fund", "hdev", "actifit.liquid", "actifit.vsc", "chiuzzu81",
+    "tradelicious", "hivescan.info", "hive.pulse"
+  ],
+
+  "min_total_to_run": 60,
+  "keep_recent": 20,
+  "delay_ms": 3000,
+  "dry_run": true,
+
+  "_order_comment": "'account' = alphabetical by delegatee (RC API default order). 'recent' = reconstruct chronological order from account history so keep_recent keeps the genuinely newest delegations and cancellation drains oldest-first. history_scan_limit caps how many history ops to scan when order=recent.",
+  "order": "recent",
+  "history_scan_limit": 100000
+}

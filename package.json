@@ -47,6 +47,7 @@
     "test:coverage": "jest --coverage",
     "heroku-postbuild": "node heroku-setup.js",
     "delegate": "node delegations.js",
+    "rc-cancel": "node rc_delegations_cancel.js",
     "api": "node app.js",
     "all": "node app.js | node delegations.js ",
     "start": "node app.js"
