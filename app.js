@@ -1376,7 +1376,7 @@ const grabUserTokensFunc = async function (username, fullBal){
 				//fetch wallet balance		
 				let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call();
 				
-				let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+				let format = web3.utils.fromWei(result.toString(), 'ether'); // Web3 v4: unit is required, BigInt needs toString()
 				const afitBSC = parseFloat(format);
 				//console.log(format);
 				user.tokens = parseFloat(user.tokens) + afitBSC;
@@ -1601,7 +1601,7 @@ app.get('/circulatingSupplyAFIT', async function (req,res){
 		//grab balances of well-known actifit wallets, and deduct balance from total supply
 		for (let i=0;i<config.actifitSpWallets.length;i++){
 			let result = await afitContract.methods.balanceOf(config.actifitSpWallets[i]).call(); // 29803630997051883414242659
-			let format = web3.utils.fromWei(result); // 29803630.997051883414242659
+			let format = web3.utils.fromWei(result.toString(), 'ether'); // Web3 v4: unit is required, BigInt needs toString()
 			const afitBSC = parseFloat(format);
 			cirSupply -= afitBSC;
 		}
@@ -6384,16 +6384,16 @@ const calcRank = async function (req, res){
 		console.log(wallet_entry.wallet);
 		//fetch wallet balance		
 		let result = await afitContract.methods.balanceOf(wallet_entry.wallet).call();
-		if (result != null) { let format = web3.utils.fromWei(result); afitBSC = parseFloat(format); console.log(format); }
+		if (result != null) { let format = web3.utils.fromWei(result.toString(), 'ether'); afitBSC = parseFloat(format); console.log(format); }
 
 		result = await afitxContract.methods.balanceOf(wallet_entry.wallet).call();
-		if (result != null) { let format = web3.utils.fromWei(result); afitxBSC = parseFloat(format); console.log(format); }
+		if (result != null) { let format = web3.utils.fromWei(result.toString(), 'ether'); afitxBSC = parseFloat(format); console.log(format); }
 
 		result = await afitBNBLPContract.methods.balanceOf(wallet_entry.wallet).call();
-		if (result != null) { let format = web3.utils.fromWei(result); afitBNBLPBSC = parseFloat(format); console.log(format); }
+		if (result != null) { let format = web3.utils.fromWei(result.toString(), 'ether'); afitBNBLPBSC = parseFloat(format); console.log(format); }
 
 		result = await afitxBNBLPContract.methods.balanceOf(wallet_entry.wallet).call();
-		if (result != null) { let format = web3.utils.fromWei(result); afitxBNBLPBSC = parseFloat(format); console.log(format); }
+		if (result != null) { let format = web3.utils.fromWei(result.toString(), 'ether'); afitxBNBLPBSC = parseFloat(format); console.log(format); }
 	}
 	}catch(err){
 		console.log(err);
