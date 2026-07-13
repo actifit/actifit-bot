@@ -88,10 +88,16 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	
 	
 }else */
-// Only auto-run the scheduler / reward pipeline when executed directly
-// (node delegations.js / pm2). When required by a test, skip bootstrap so the
-// exported functions can be exercised in isolation.
-if (require.main === module) {
+// Auto-run the scheduler / reward pipeline everywhere EXCEPT under test, where we
+// only want to require() the module and exercise its exported functions.
+//
+// Do NOT use `require.main === module` here: pm2's fork mode does not run the script
+// directly, it require()s it from its own wrapper (ProcessContainerFork), so
+// require.main is pm2's wrapper and the check is always false. That silently skipped
+// the entire bootstrap - no schedulers, no timers - so the event loop emptied, the
+// process exited, and pm2 crash-looped it (taking the box down with it).
+// Jest sets NODE_ENV=test automatically; production/pm2 does not.
+if (process.env.NODE_ENV !== 'test') {
 if (process.env.BOT_THREAD == 'MAIN'){
 
 	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
