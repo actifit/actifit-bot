@@ -109,10 +109,23 @@ var HOURS = 60 * 60;
  async function getAccountData(account_name, bchain){
 	let account = {};
 	if (!bchain || bchain == ''){
-		let account_res = await hive.api.getAccountsAsync([account_name]); 
-		account['HIVE']=account_res[0];
-		account_res = await blurt.api.getAccountsAsync([account_name]); 
-		account['BLURT']=account_res[0];
+		// A node hiccup can return null/empty here. Indexing [0] blind threw
+		// "Cannot read properties of null (reading '0')" as an UNHANDLED rejection,
+		// which kills the API process (node 20). Guard it, like the else-branch does.
+		try{
+			let account_res = await hive.api.getAccountsAsync([account_name]);
+			account['HIVE'] = (Array.isArray(account_res) && account_res.length) ? account_res[0] : null;
+		}catch(err){
+			console.log('getAccountData HIVE failed: ' + (err && err.message ? err.message : err));
+			account['HIVE'] = null;
+		}
+		try{
+			let account_res = await blurt.api.getAccountsAsync([account_name]);
+			account['BLURT'] = (Array.isArray(account_res) && account_res.length) ? account_res[0] : null;
+		}catch(err){
+			console.log('getAccountData BLURT failed: ' + (err && err.message ? err.message : err));
+			account['BLURT'] = null;
+		}
 	}else{
 		let chainLnk = await setProperNode(bchain);
 		//attempt to load account data
@@ -291,6 +304,13 @@ var HOURS = 60 * 60;
  
 	//fixed implementation of proper voting power calculation
 	function getVotingPower(account) {
+		// Account data is missing whenever the node call above failed. Dereferencing it
+		// blind threw "Cannot read properties of undefined (reading 'vesting_shares')" as
+		// an UNHANDLED rejection, killing the API process. Return 0 instead.
+		if (!account || !account.vesting_shares || !account.voting_manabar) {
+			console.log('getVotingPower: no account data (node call likely failed) - returning 0');
+			return 0;
+		}
 		const totalShares = parseFloat(account.vesting_shares) + parseFloat(account.received_vesting_shares) - parseFloat(account.delegated_vesting_shares) - parseFloat(account.vesting_withdraw_rate);
 
             const elapsed = Math.floor(Date.now() / 1000) - account.voting_manabar.last_update_time;
