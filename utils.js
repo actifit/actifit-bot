@@ -106,35 +106,49 @@ var HOURS = 60 * 60;
 	return data;
  }
   
+// hive-js/blurt-js have NO request timeout. When a node stalls, the call never settles:
+// the Express request hangs forever (that is what left /loginAuth spinning for 60s with
+// zero bytes), and hive-js never fails over, because failover fires on an *error* and a
+// hang produces none. Race every node read against a timeout so it fails fast instead.
+const NODE_CALL_TIMEOUT_MS = 10000;
+
+function withTimeout(promise, ms, label){
+	let t;
+	const timer = new Promise(function(_, reject){
+		t = setTimeout(function(){
+			reject(new Error('node call timed out after ' + ms + 'ms: ' + (label || 'hive call')));
+		}, ms);
+	});
+	return Promise.race([promise, timer]).finally(function(){ clearTimeout(t); });
+}
+
+// Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
+// answers 200 OK with result: null. Returns the account object, or null.
+async function fetchOneAccount(chainLnk, account_name, label){
+	try{
+		let account_res = await withTimeout(
+			chainLnk.api.getAccountsAsync([account_name]),
+			NODE_CALL_TIMEOUT_MS,
+			label + ' getAccounts(' + account_name + ')'
+		);
+		if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+		// a broken/desynced node can answer 200 OK with result: null
+		console.log(label + ': node returned no account data for ' + account_name);
+		return null;
+	}catch(err){
+		console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
+		return null;
+	}
+}
+
  async function getAccountData(account_name, bchain){
 	let account = {};
 	if (!bchain || bchain == ''){
-		// A node hiccup can return null/empty here. Indexing [0] blind threw
-		// "Cannot read properties of null (reading '0')" as an UNHANDLED rejection,
-		// which kills the API process (node 20). Guard it, like the else-branch does.
-		try{
-			let account_res = await hive.api.getAccountsAsync([account_name]);
-			account['HIVE'] = (Array.isArray(account_res) && account_res.length) ? account_res[0] : null;
-		}catch(err){
-			console.log('getAccountData HIVE failed: ' + (err && err.message ? err.message : err));
-			account['HIVE'] = null;
-		}
-		try{
-			let account_res = await blurt.api.getAccountsAsync([account_name]);
-			account['BLURT'] = (Array.isArray(account_res) && account_res.length) ? account_res[0] : null;
-		}catch(err){
-			console.log('getAccountData BLURT failed: ' + (err && err.message ? err.message : err));
-			account['BLURT'] = null;
-		}
+		account['HIVE'] = await fetchOneAccount(hive, account_name, 'getAccountData HIVE');
+		account['BLURT'] = await fetchOneAccount(blurt, account_name, 'getAccountData BLURT');
 	}else{
 		let chainLnk = await setProperNode(bchain);
-		//attempt to load account data
-		try{
-			let account_res = await chainLnk.api.getAccountsAsync([account_name]); 
-			account[bchain]=account_res[0];
-		}catch(err){
-			console.log(err);
-		}
+		account[bchain] = await fetchOneAccount(chainLnk, account_name, 'getAccountData ' + bchain);
 	}
 	return account;
  }
@@ -142,14 +156,21 @@ var HOURS = 60 * 60;
  async function validateAccountLogin(username, priv_pkey, bchain){
 	let chainLnk = await setProperNode(bchain);
 	console.log('validateAccountLogin');
-	let account_res = await chainLnk.api.getAccountsAsync([username]);
-	console.log(account_res[0]);
-	let pub_pkey = account_res[0].posting.key_auths[0][0];
-	try{ 
+	// This lookup used to be unbounded and unguarded: a stalled node hung the login
+	// request forever, and a node answering 200 OK with result: null threw
+	// "Cannot read properties of null (reading '0')" and killed the API process.
+	let acct = await fetchOneAccount(chainLnk, username, 'validateAccountLogin');
+	if (!acct || !acct.posting || !acct.posting.key_auths || !acct.posting.key_auths.length){
+		// node problem, not a bad password - fail fast rather than hanging the request
+		console.log('validateAccountLogin: no usable account data for ' + username + ' (node issue?)');
+		return {result: false, node_error: true};
+	}
+	let pub_pkey = acct.posting.key_auths[0][0];
+	try{
 		let res = await chainLnk.auth.wifIsValid(priv_pkey, pub_pkey);
 		console.log(res);
-		return {result: res, account: account_res[0]};
-	}catch(err){ 
+		return {result: res, account: acct};
+	}catch(err){
 		console.log(err);
 		return {result:false};
 	}
