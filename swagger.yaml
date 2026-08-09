@@ -5422,6 +5422,87 @@ paths:
         '405': { description: 'Method Not Allowed — endpoint only accepts POST.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
+  /app/confirmPayment:
+    post:
+      summary: Confirm signup payment (mobile app)
+      description: >-
+        App-facing variant of /confirmPayment. Identical behaviour and response,
+        except the caller does NOT supply confirm_payment_token — the server
+        injects it. This exists so the mobile app never has to ship the payment
+        token inside its APK, where it would be extractable. Rate limited to 20
+        requests per 15 minutes per IP. afit_reward is capped server-side to the
+        amount the recorded payment entitles the user to.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_account, new_pass, cur_bchain]
+              properties:
+                promo_code:
+                  type: string
+                  example: 'FREEACCT123'
+                  nullable: true
+                  description: Optional promo code used for signup.
+                new_account:
+                  type: string
+                  example: 'new-user'
+                  description: The username for the new account.
+                new_pass:
+                  type: string
+                  example: 'generated-password'
+                  description: The master password for the new account.
+                cur_bchain:
+                  type: string
+                  example: 'HIVE|'
+                  description: Target blockchain marker, as built by the clients (e.g. 'HIVE|').
+                sent_cur:
+                  type: string
+                  example: 'HIVE'
+                  enum: ['HIVE', 'HBD', 'STEEM', 'SBD']
+                  description: Currency the user actually paid in.
+                usd_invest:
+                  type: number
+                  format: float
+                  example: 2.0
+                  description: USD amount invested (0 when a promo code is used).
+                steem_invest:
+                  type: number
+                  format: float
+                  example: 33.898
+                  description: Crypto amount sent, matching sent_cur.
+                afit_reward:
+                  type: number
+                  format: float
+                  example: 100.0
+                  description: Requested AFIT reward. Capped server-side; never trusted as sent.
+                memo:
+                  type: string
+                  example: 'ABCD234XYZ'
+                  nullable: true
+                  description: The memo used in the payment transaction.
+                referrer:
+                  type: string
+                  example: 'actifit-referrer'
+                  nullable: true
+                  description: Optional referrer username. Omit the key entirely when there is no referrer.
+                email:
+                  type: string
+                  format: email
+                  example: 'user@example.com'
+                  nullable: true
+                  description: Optional user email.
+      responses:
+        '200':
+          description: Payment confirmed and account creation initiated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfirmPaymentResponse'
+        '429': { description: 'Too many requests from this IP.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
   /getRC:
     get:
       summary: Get user's Resource Credits (RC)

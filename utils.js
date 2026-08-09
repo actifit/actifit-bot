@@ -729,8 +729,18 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	//function handles confirming if payment was received
 	async function confirmPaymentReceived (req, bchain) {
 		getConfig();
+		//stop polling after a bounded window. without this a memo that is never
+		//paid leaves an interval hammering the chain forever, and the caller's
+		//await never returns (so its keep-alive interval never clears either).
+		const pollDeadline = Date.now() + ((config.signupPaymentTimeoutMins || 15) * 60 * 1000);
 		return new Promise((resolve, reject) => {
 			th_id = setInterval(async function(){
+				if (Date.now() > pollDeadline){
+					console.log('signup payment poll timed out for memo '+req.query.memo);
+					clearInterval(th_id);
+					resolve('');
+					return;
+				}
 				//let chainLnk = await setProperNode(bchain);
 				console.log('check funds');
 				
@@ -765,6 +775,13 @@ async function fetchOneAccount(chainLnk, account_name, label){
 							//transaction needs to have been concluded within 5 hours.
 							if (hrs < 5){
 								tx_id = txs[1].trx_id;
+								//record what was ACTUALLY received on chain. callers must
+								//anchor any reward calculation to this, never to a
+								//client-supplied amount.
+								req.verified_payment = {
+									amount: parseFloat(sentAmount),
+									currency: sentCur
+								};
 								paymentFound = true;
 								break;
 							}
