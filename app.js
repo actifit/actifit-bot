@@ -14,21 +14,39 @@ var appPort = process.env.PORT || 3120;
 const app = express();
 
 /*
- * Express sits behind a reverse proxy in every deployed environment, so
- * req.ip would otherwise resolve to the proxy rather than the caller. That
+ * This API is served through Cloudflare -> nginx -> node (confirmed: api/
+ * api2.actifit.io return CF-RAY; node itself listens on plain HTTP :3120), so
+ * req.ip would otherwise resolve to a proxy rather than the caller. That
  * silently breaks every express-rate-limit bucket in this file
- * (loginRateLimit, modActionRateLimit, appSignupRateLimit): with one shared
- * key the limits either throttle all users collectively or stop protecting
- * anything, and express-rate-limit v7+ raises ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
- * when it detects the mismatch.
+ * (loginRateLimit, modActionRateLimit, appSignupRateLimit), and
+ * express-rate-limit v7+ raises ERR_ERL_UNEXPECTED_X_FORWARDED_FOR on the
+ * mismatch. req.protocol/req.secure also need this to reflect the original
+ * https request rather than the internal http hop.
  *
- * Set to the NUMBER OF PROXY HOPS in front of the app, never `true`. `true`
- * trusts the whole X-Forwarded-For chain, which a client can forge to spoof
- * its address and evade the limiter entirely. Override per environment with
- * TRUST_PROXY_HOPS; 1 matches a single nginx/Heroku-style router.
+ * Set to the NUMBER OF PROXY HOPS, never `true` (which trusts the whole
+ * X-Forwarded-For chain and lets a client forge its address). 2 = Cloudflare +
+ * nginx; override per environment with TRUST_PROXY_HOPS. Note the rate limiters
+ * key off CF-Connecting-IP (see clientIpKey) so they stay correct even if this
+ * hop count is slightly off; this setting mainly governs req.ip/req.protocol.
  */
 const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS, 10);
-app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 2);
+
+/*
+ * Rate-limit key: the real client IP. Because the API sits behind Cloudflare,
+ * CF-Connecting-IP always carries the true visitor address regardless of how
+ * many proxy hops are in front, so keying on it keeps the limiters correct
+ * without depending on an exact trust-proxy hop count. Falls back to req.ip for
+ * direct/local callers that do not go through Cloudflare.
+ *
+ * Only as trustworthy as the origin's network lockdown: if the origin can be
+ * reached directly, bypassing Cloudflare, both CF-Connecting-IP and
+ * X-Forwarded-For can be forged. Restrict the origin firewall to Cloudflare's
+ * published IP ranges to close that.
+ */
+const clientIpKey = function (req) {
+	return req.headers['cf-connecting-ip'] || req.ip;
+};
 
 const swaggerDocument = YAML.load('./swagger.yaml');
 
@@ -2224,8 +2242,8 @@ app.get('/notificationTypes/', async function (req, res) {
 	res.send(config.notificationTypes);
 });
 
-const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
-const modActionRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false });
+const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+const modActionRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
 
 app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
 	try{
@@ -8600,7 +8618,7 @@ const promoSignupAfitReward = function (promoMatch, requestedReward) {
 };
 
 /* rate limiter for the app-facing signup route (no shared secret to gate it) */
-const appSignupRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+const appSignupRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
 
 /*
  * Handles confirming payment receipt, then proceeds with account creation,
