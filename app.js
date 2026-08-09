@@ -8490,13 +8490,56 @@ app.get("/downEbook", async function(req, res) {
 })
  
  
-//function handles the process of confirming payment receipt, and then proceeds with account creation, reward and delegation
-app.post('/confirmPayment', async function(req,res){
+/*
+ * Signup AFIT reward is derived from what the user actually paid, mirroring the
+ * web client's getMatchingAFIT(): one "lot" per $5 (minimum one), each lot
+ * capped at 100 AFIT, and never more than the USD paid converts to at the
+ * current AFIT price.
+ *
+ * We only ever CAP the client-supplied figure, never raise it, and we leave it
+ * untouched when no ceiling can be derived (promo signups pay $0, and the AFIT
+ * price is unavailable until the first exchange poll completes). That keeps
+ * existing promo behaviour exactly as-is while removing the ability to mint an
+ * arbitrary amount by editing the request body.
+ */
+const SIGNUP_AFIT_USD_PER_LOT = 5;
+const SIGNUP_AFIT_PER_LOT = 100;
+
+const capSignupAfitReward = function (usdInvest, requestedReward) {
+	const requested = parseFloat(requestedReward);
+	if (!isFinite(requested) || requested <= 0) {
+		return requested;
+	}
+	const usd = parseFloat(usdInvest);
+	const afitUsdPrice = parseFloat(exchangeAfitPrice.afitHiveLastUsdPrice);
+	//no derivable ceiling (promo signup, or price not yet polled) -> leave as sent
+	if (!isFinite(usd) || usd <= 0 || !isFinite(afitUsdPrice) || afitUsdPrice <= 0) {
+		return requested;
+	}
+	const lots = Math.max(1, Math.floor(usd / SIGNUP_AFIT_USD_PER_LOT));
+	const ceiling = Math.floor(Math.min(usd / afitUsdPrice, SIGNUP_AFIT_PER_LOT * lots));
+	if (requested > ceiling) {
+		console.log('capping signup afit_reward from ' + requested + ' to ' + ceiling);
+		return ceiling;
+	}
+	return requested;
+};
+
+/* rate limiter for the app-facing signup route (no shared secret to gate it) */
+const appSignupRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+
+/*
+ * Handles confirming payment receipt, then proceeds with account creation,
+ * reward and delegation. Shared by two routes -- see the registrations below.
+ */
+const handleConfirmPayment = async function(req,res){
 	req.query = { ...req.body };
 	if (req.query.confirm_payment_token != config.confirmPaymentToken){
 	//if (false){
 		res.send('{}');
 	}else{
+		//never trust a client-supplied reward figure; cap it at what was paid for
+		req.query.afit_reward = capSignupAfitReward(req.query.usd_invest, req.query.afit_reward);
 		let paymentReceivedTx = '';
 		let accountCreated = false;
 		let spToDelegate = 10;
@@ -8600,6 +8643,26 @@ app.post('/confirmPayment', async function(req,res){
 		clearInterval(intID);
 		
 	}
+};
+
+/*
+ * Server-to-server route. Caller supplies confirm_payment_token itself -- used
+ * by the website, which injects the secret in its own server-side proxy so it
+ * is never exposed to the browser.
+ */
+app.post('/confirmPayment', handleConfirmPayment);
+
+/*
+ * App-facing route. The mobile app cannot hold confirmPaymentToken: anything
+ * shipped in an APK is extractable, so we inject it here instead and the app
+ * sends no secret at all. Rate limited because there is no shared secret in
+ * front of it; the real protections are that account creation still requires a
+ * matching on-chain payment, promo codes are validated against the database
+ * with a decrementing entry count, and afit_reward is now capped server-side.
+ */
+app.post('/app/confirmPayment', appSignupRateLimit, async function(req,res){
+	req.body = Object.assign({}, req.body, { confirm_payment_token: config.confirmPaymentToken });
+	return handleConfirmPayment(req, res);
 });
 
 /* core function for discounted account claims and creation */
