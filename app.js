@@ -13,6 +13,23 @@ var appPort = process.env.PORT || 3120;
 
 const app = express();
 
+/*
+ * Express sits behind a reverse proxy in every deployed environment, so
+ * req.ip would otherwise resolve to the proxy rather than the caller. That
+ * silently breaks every express-rate-limit bucket in this file
+ * (loginRateLimit, modActionRateLimit, appSignupRateLimit): with one shared
+ * key the limits either throttle all users collectively or stop protecting
+ * anything, and express-rate-limit v7+ raises ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+ * when it detects the mismatch.
+ *
+ * Set to the NUMBER OF PROXY HOPS in front of the app, never `true`. `true`
+ * trusts the whole X-Forwarded-For chain, which a client can forge to spoof
+ * its address and evade the limiter entirely. Override per environment with
+ * TRUST_PROXY_HOPS; 1 matches a single nginx/Heroku-style router.
+ */
+const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS, 10);
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
+
 const swaggerDocument = YAML.load('./swagger.yaml');
 
 // Serve Swagger docs with the server URL resolved dynamically from the incoming
