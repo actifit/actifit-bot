@@ -4,7 +4,7 @@ const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const moment = require('moment')
 var crypto = require('crypto');
-const rateLimit = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 
 const swaggerUi = require('swagger-ui-express');
 const YAML = require('yamljs');
@@ -43,9 +43,16 @@ app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ?
  * reached directly, bypassing Cloudflare, both CF-Connecting-IP and
  * X-Forwarded-For can be forged. Restrict the origin firewall to Cloudflare's
  * published IP ranges to close that.
+ *
+ * The chosen IP is normalised through ipKeyGenerator: IPv4 is returned as-is,
+ * IPv6 is collapsed to its subnet. Without this an IPv6 client (a /56-/64 is
+ * standard on residential/mobile) could rotate the low bits to get a fresh
+ * bucket per request and evade the limiter entirely -- which matters because
+ * appSignupRateLimit is the only control in front of the unauthenticated,
+ * AFIT-minting /app/confirmPayment route.
  */
 const clientIpKey = function (req) {
-	return req.headers['cf-connecting-ip'] || req.ip;
+	return ipKeyGenerator(req.headers['cf-connecting-ip'] || req.ip);
 };
 
 const swaggerDocument = YAML.load('./swagger.yaml');
