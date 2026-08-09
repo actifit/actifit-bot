@@ -8491,36 +8491,93 @@ app.get("/downEbook", async function(req, res) {
  
  
 /*
- * Signup AFIT reward is derived from what the user actually paid, mirroring the
- * web client's getMatchingAFIT(): one "lot" per $5 (minimum one), each lot
- * capped at 100 AFIT, and never more than the USD paid converts to at the
- * current AFIT price.
+ * Signup AFIT reward ceiling.
  *
- * We only ever CAP the client-supplied figure, never raise it, and we leave it
- * untouched when no ceiling can be derived (promo signups pay $0, and the AFIT
- * price is unavailable until the first exchange poll completes). That keeps
- * existing promo behaviour exactly as-is while removing the ability to mint an
- * arbitrary amount by editing the request body.
+ * IMPORTANT: this must be anchored to the amount actually observed on chain
+ * (utils.confirmPaymentReceived records it on req.verified_payment), never to
+ * a client-supplied figure. usd_invest is never validated anywhere -- a caller
+ * that inflates both usd_invest and afit_reward would otherwise lift its own
+ * ceiling and mint arbitrary AFIT, which matters because /app/confirmPayment
+ * has no shared secret in front of it.
+ *
+ * Mirrors the web client's getMatchingAFIT(): one "lot" per $5 paid (minimum
+ * one), each lot worth up to 100 AFIT, and never more than the paid USD buys
+ * at the current AFIT price.
  */
 const SIGNUP_AFIT_USD_PER_LOT = 5;
 const SIGNUP_AFIT_PER_LOT = 100;
+const PROMO_MAX_AFIT_REWARD_DEFAULT = 100;
 
-const capSignupAfitReward = function (usdInvest, requestedReward) {
+/* USD price of one unit of the currency the user actually paid in */
+const cryptoUsdPrice = function (currency) {
+	const cur = (currency || '').toUpperCase();
+	if (cur === 'HBD' || cur === 'SBD') {
+		//dollar-pegged tokens
+		return 1;
+	}
+	if (cur === 'HIVE') {
+		return exchangeAfitPrice.afitHiveLastUsdPrice / exchangeAfitPrice.afitHiveLastPrice;
+	}
+	if (cur === 'STEEM') {
+		return exchangeAfitPrice.afitSteemLastUsdPrice / exchangeAfitPrice.afitSteemLastPrice;
+	}
+	return NaN;
+};
+
+/*
+ * Cap a requested reward against the verified payment. Returns the requested
+ * value untouched when it is already within the ceiling. Returns 0 when no
+ * verified payment is available, since without one there is nothing to justify
+ * a reward on the paid path.
+ */
+const capSignupAfitReward = function (requestedReward, verifiedPayment) {
 	const requested = parseFloat(requestedReward);
 	if (!isFinite(requested) || requested <= 0) {
-		return requested;
+		return 0;
 	}
-	const usd = parseFloat(usdInvest);
+	if (!verifiedPayment || !isFinite(parseFloat(verifiedPayment.amount))) {
+		console.log('no verified payment recorded; refusing signup afit_reward of ' + requested);
+		return 0;
+	}
+	const unitUsd = cryptoUsdPrice(verifiedPayment.currency);
 	const afitUsdPrice = parseFloat(exchangeAfitPrice.afitHiveLastUsdPrice);
-	//no derivable ceiling (promo signup, or price not yet polled) -> leave as sent
-	if (!isFinite(usd) || usd <= 0 || !isFinite(afitUsdPrice) || afitUsdPrice <= 0) {
-		return requested;
+	if (!isFinite(unitUsd) || unitUsd <= 0 || !isFinite(afitUsdPrice) || afitUsdPrice <= 0) {
+		console.log('cannot price ' + verifiedPayment.currency + '; refusing signup afit_reward of ' + requested);
+		return 0;
 	}
-	const lots = Math.max(1, Math.floor(usd / SIGNUP_AFIT_USD_PER_LOT));
-	const ceiling = Math.floor(Math.min(usd / afitUsdPrice, SIGNUP_AFIT_PER_LOT * lots));
+	const verifiedUsd = parseFloat(verifiedPayment.amount) * unitUsd;
+	const lots = Math.max(1, Math.floor(verifiedUsd / SIGNUP_AFIT_USD_PER_LOT));
+	const ceiling = Math.floor(Math.min(verifiedUsd / afitUsdPrice, SIGNUP_AFIT_PER_LOT * lots));
 	if (requested > ceiling) {
-		console.log('capping signup afit_reward from ' + requested + ' to ' + ceiling);
+		console.log('capping signup afit_reward from ' + requested + ' to ' + ceiling
+			+ ' (verified ' + verifiedPayment.amount + ' ' + verifiedPayment.currency + ')');
 		return ceiling;
+	}
+	return requested;
+};
+
+/*
+ * Promo signups pay nothing, so there is no on-chain amount to anchor to. The
+ * amount must therefore come from the promo record, not the request body.
+ * Existing promo documents only carry boolean gates (signup_reward /
+ * referrer_reward), so fall back to a server-side maximum rather than trusting
+ * whatever the caller asked for.
+ */
+const promoSignupAfitReward = function (promoMatch, requestedReward) {
+	const maxAllowed = parseFloat(config.promoMaxAfitReward) > 0
+		? parseFloat(config.promoMaxAfitReward)
+		: PROMO_MAX_AFIT_REWARD_DEFAULT;
+	const fromRecord = parseFloat(promoMatch && promoMatch.signup_reward_amount);
+	if (isFinite(fromRecord) && fromRecord >= 0) {
+		return Math.min(fromRecord, maxAllowed);
+	}
+	const requested = parseFloat(requestedReward);
+	if (!isFinite(requested) || requested <= 0) {
+		return 0;
+	}
+	if (requested > maxAllowed) {
+		console.log('capping promo afit_reward from ' + requested + ' to ' + maxAllowed);
+		return maxAllowed;
 	}
 	return requested;
 };
@@ -8538,8 +8595,6 @@ const handleConfirmPayment = async function(req,res){
 	//if (false){
 		res.send('{}');
 	}else{
-		//never trust a client-supplied reward figure; cap it at what was paid for
-		req.query.afit_reward = capSignupAfitReward(req.query.usd_invest, req.query.afit_reward);
 		let paymentReceivedTx = '';
 		let accountCreated = false;
 		let spToDelegate = 10;
@@ -8558,6 +8613,9 @@ const handleConfirmPayment = async function(req,res){
 				req.query.promo_proceed = true;
 				req.query.signup_reward = promo_match.signup_reward;
 				req.query.referrer_reward = promo_match.referrer_reward;
+				//no payment to anchor to on the promo path, so the amount comes from
+				//the promo record (or a server-side maximum), never from the request
+				req.query.afit_reward = promoSignupAfitReward(promo_match, req.query.afit_reward);
 				try {
 					accountCreated = await claimAndCreateAccount(req);
 					
@@ -8621,6 +8679,8 @@ const handleConfirmPayment = async function(req,res){
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
 						req.query.confirming_tx = paymentReceivedTx;
+						//anchor the reward to what was actually received on chain
+						req.query.afit_reward = capSignupAfitReward(req.query.afit_reward, req.verified_payment);
 						console.log(req.query);
 						try{
 							accountCreated = await claimAndCreateAccount(req);
