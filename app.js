@@ -6992,6 +6992,18 @@ app.get('/curAFITPrice', async function(req, res) {
 	res.send(curAFITPrice);
 });
 
+/*
+ * Returns the caller's own resolved client IP, as express derives it from the
+ * `trust proxy` setting. Used to confirm the per-box trust_proxy_hops is correct
+ * across the mixed fleet (Cloudflare VPS = 2, Heroku = 1): the IP shown should be
+ * the real visitor, not a Cloudflare edge (104.x/172.x) or a proxy (127.0.0.1).
+ * Exposes only the caller's own address, no internal topology, so it is safe to
+ * keep in place.
+ */
+app.get('/whoami', function(req, res) {
+	res.send({ ip: req.ip });
+});
+
 /* handles the process of creating accounts*/
 const proceedAccountCreation = async function (req){
 	//let's create the account now
