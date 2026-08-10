@@ -13,50 +13,6 @@ var appPort = process.env.PORT || 3120;
 
 const app = express();
 
-/*
- * This app runs on a MIXED fleet with two different proxy topologies:
- *   - api / api2.actifit.io : Cloudflare -> nginx -> node  (2 hops)
- *   - actifitbot.herokuapp.com : client -> heroku-router -> dyno (1 hop)
- * node itself listens on plain HTTP :3120. Without trust proxy set, req.ip
- * resolves to a proxy rather than the caller, which silently breaks every
- * express-rate-limit bucket in this file (loginRateLimit, modActionRateLimit,
- * appSignupRateLimit) and raises ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
- * req.protocol/req.secure also need this to reflect the original https request.
- *
- * Set to the NUMBER OF PROXY HOPS, never `true` (which trusts the whole
- * X-Forwarded-For chain and lets a client forge its address). Because the hop
- * count differs per platform this MUST be set per environment via
- * TRUST_PROXY_HOPS:
- *   - Cloudflare VPS boxes (api/api2): TRUST_PROXY_HOPS=2
- *   - Heroku dyno: TRUST_PROXY_HOPS=1 (or leave the default)
- * The default is 1, chosen to FAIL CLOSED: if it is wrong on a 2-hop box req.ip
- * degrades to the Cloudflare edge IP (coarse limiting, still not spoofable),
- * whereas a default of 2 on the 1-hop Heroku path would let a forged
- * X-Forwarded-For resolve req.ip to an attacker value (a real bypass).
- */
-const trustProxyHops = parseInt(process.env.TRUST_PROXY_HOPS, 10);
-app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
-
-/*
- * Rate-limit key: the real client IP as resolved by express from trust proxy
- * above. We deliberately do NOT read CF-Connecting-IP here: it is only set (and
- * overwritten) by Cloudflare on the api/api2 path, but on the direct Heroku
- * path nothing strips it, so a client could send CF-Connecting-IP: <random> per
- * request and evade every limiter. req.ip, with a correct per-platform hop
- * count, is un-forgeable once the Cloudflare origin is locked to CF ranges and
- * is inherently trustworthy on Heroku (the dyno is only reachable via the
- * router). See the origin-lockdown note on the PR.
- *
- * Normalised through ipKeyGenerator: IPv4 as-is, IPv6 collapsed to its subnet.
- * Without this an IPv6 client (a /56-/64 is standard on residential/mobile)
- * could rotate the low bits for a fresh bucket per request and evade the
- * limiter -- which matters because appSignupRateLimit is the only control in
- * front of the unauthenticated, AFIT-minting /app/confirmPayment route.
- */
-const clientIpKey = function (req) {
-	return ipKeyGenerator(req.ip);
-};
-
 const swaggerDocument = YAML.load('./swagger.yaml');
 
 // Serve Swagger docs with the server URL resolved dynamically from the incoming
@@ -77,7 +33,49 @@ app.set('view engine', 'handlebars');
 
 var config = utils.getConfig();
 
-let ObjectId = require('mongodb').ObjectId; 
+/*
+ * Trust proxy + rate-limit client-IP key. Placed here (after config loads) so
+ * the hop count can come from config.json, which is maintained PER BOX -- the
+ * cleanest fit for a mixed fleet with different topologies:
+ *   - api / api2.actifit.io    : Cloudflare -> nginx -> node       (2 hops)
+ *   - actifitbot.herokuapp.com : client -> heroku-router -> dyno   (1 hop)
+ * node listens on plain HTTP :3120; without this req.ip resolves to a proxy,
+ * silently breaking every express-rate-limit bucket (login/modAction/appSignup)
+ * and raising ERR_ERL_UNEXPECTED_X_FORWARDED_FOR. req.protocol/req.secure also
+ * rely on it. Set the NUMBER OF PROXY HOPS, never `true` (which trusts the whole
+ * X-Forwarded-For chain and lets a client forge its address):
+ *   - config.json "trust_proxy_hops": 2 on api/api2, 1 on Heroku
+ *   - env TRUST_PROXY_HOPS overrides only when the config key is absent
+ *   - otherwise defaults to 1
+ * Default 1 FAILS CLOSED: wrong on a 2-hop box, req.ip degrades to the CF edge
+ * IP (coarse limiting, still not spoofable); a default of 2 on the 1-hop Heroku
+ * path would let a forged X-Forwarded-For resolve req.ip to an attacker value.
+ */
+const trustProxyRaw = (config && config.trust_proxy_hops != null)
+	? config.trust_proxy_hops
+	: process.env.TRUST_PROXY_HOPS;
+const trustProxyHops = parseInt(trustProxyRaw, 10);
+app.set('trust proxy', Number.isInteger(trustProxyHops) && trustProxyHops >= 0 ? trustProxyHops : 1);
+
+/*
+ * Rate-limit key: the real client IP as resolved by express from trust proxy.
+ * We deliberately do NOT read CF-Connecting-IP: Cloudflare sets/overwrites it on
+ * the api/api2 path, but on the direct Heroku path nothing strips it, so a
+ * client could send CF-Connecting-IP: <random> per request and evade every
+ * limiter. req.ip, with a correct per-platform hop count, is un-forgeable once
+ * the Cloudflare origin is locked to CF ranges and is inherently trustworthy on
+ * Heroku (the dyno is only reachable via the router).
+ *
+ * Normalised through ipKeyGenerator: IPv4 as-is, IPv6 collapsed to its subnet,
+ * so an IPv6 client cannot rotate the low bits for a fresh bucket per request --
+ * which matters because appSignupRateLimit is the only control in front of the
+ * unauthenticated, AFIT-minting /app/confirmPayment route.
+ */
+const clientIpKey = function (req) {
+	return ipKeyGenerator(req.ip);
+};
+
+let ObjectId = require('mongodb').ObjectId;
 
 const axios = require("axios");
 
