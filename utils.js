@@ -32,8 +32,6 @@ const blurtClient = new dblurt.Client(config.blurt_node);
 		
 var config;
 
-let th_id = -1;
-
 // client.api.setOptions({ url: config.active_node });
 
 //useless now with newer version of hive-js
@@ -415,7 +413,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && parseFloat(trx.quantity) == parseFloat(amount) && trx.transactionId == txid))) {
 							//found match, let's make sure transaction is recent enough
 							console.log('found match');
-							paymentFound = true;
+							let paymentFound = true;
 							if (paymentFound){
 								//need to look again
 								console.log('found');
@@ -589,7 +587,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 						if (match_trx = trx_entries.find(trx => trx.from == targetUser)) {
 							//found match, let's make sure transaction is recent enough
 							console.log('found match');
-							paymentFound = true;
+							let paymentFound = true;
 							if (paymentFound){
 								//need to look again
 								console.log('found');
