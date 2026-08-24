@@ -394,7 +394,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let attempts = 1;
 		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
+			let th_id = setInterval(async function(){
 				if (attempts < max_attempts){
 					attempts += 1;
 					console.log('Check Move');
@@ -571,7 +571,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let attempts = 1;
 		let max_attempts = 15;
 		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
+			let th_id = setInterval(async function(){
 				if (attempts < max_attempts){
 					attempts += 1;
 					console.log('Check AFIT Power Up');
@@ -734,7 +734,11 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		//await never returns (so its keep-alive interval never clears either).
 		const pollDeadline = Date.now() + ((config.signupPaymentTimeoutMins || 15) * 60 * 1000);
 		return new Promise((resolve, reject) => {
-			th_id = setInterval(async function(){
+			//th_id MUST be local: a shared/global interval handle means one call's
+			//clearInterval() clears a *different* concurrent call's interval, leaving
+			//the original as an immortal zombie that re-logs its timeout every 5s and
+			//kills every newer signup poll (no 'check funds', no match, no account).
+			let th_id = setInterval(async function(){
 				if (Date.now() > pollDeadline){
 					console.log('signup payment poll timed out for memo '+req.query.memo);
 					clearInterval(th_id);
