@@ -34,8 +34,14 @@ describe('Compliance — house-rule invariants I1–I7', () => {
     expect(merits.CREDIT_REASONS).toEqual(['challenge_reward', 'season_chest', 'admin_adjust']);
   });
 
-  test('I4 — Merits are non-transferable (no user→user transfer exists)', () => {
+  test('I4 — Merits are non-transferable (no transfer export; admin_adjust is privileged)', async () => {
+    // No transfer primitive exists...
     expect(Object.keys(merits).some((k) => /transfer|gift|send|trade/i.test(k))).toBe(false);
+    // ...and the only value-moving reason (admin_adjust) is gated to an authorized
+    // caller, so value cannot move between users without an operator.
+    const db = createMockDb();
+    expect((await merits.award(db, { user: 'a', amount: 100, reason: 'admin_adjust', at: AT })).ok).toBe(false);
+    expect((await merits.award(db, { user: 'a', amount: 100, reason: 'admin_adjust', authorized: true, at: AT })).ok).toBe(true);
   });
 
   test('I5 — no random/loot-box shop item', async () => {

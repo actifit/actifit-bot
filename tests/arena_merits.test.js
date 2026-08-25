@@ -43,12 +43,52 @@ describe('arena_merits.award (credit / I3 / emission cap)', () => {
     expect(await merits.balanceOf(db, 'a')).toBe(1000);
   });
 
-  test('admin_adjust is exempt from the emission cap', async () => {
+  test('admin_adjust (authorized) is exempt from the emission cap', async () => {
     const db = createMockDb();
     await merits.award(db, { user: 'a', amount: 1000, reason: 'challenge_reward', at: AT });
-    const res = await merits.award(db, { user: 'a', amount: 5000, reason: 'admin_adjust', at: AT });
+    const res = await merits.award(db, { user: 'a', amount: 5000, reason: 'admin_adjust', authorized: true, at: AT });
     expect(res.ok).toBe(true);
     expect(await merits.balanceOf(db, 'a')).toBe(6000);
+  });
+
+  test('admin_adjust WITHOUT authorization is rejected (privileged path)', async () => {
+    const db = createMockDb();
+    const res = await merits.award(db, { user: 'a', amount: 5000, reason: 'admin_adjust', at: AT });
+    expect(res).toMatchObject({ ok: false });
+    expect(res.reason).toMatch(/authorization/);
+    expect(await merits.balanceOf(db, 'a')).toBe(0);
+  });
+
+  test('reports requested/emitted/dropped when capped', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 800, reason: 'challenge_reward', at: AT });
+    const res = await merits.award(db, { user: 'a', amount: 400, reason: 'challenge_reward', at: AT });
+    expect(res).toMatchObject({ requested: 400, emitted: 200, dropped: 200 });
+  });
+
+  test('the emission cap resets on the next UTC day', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 1000, reason: 'challenge_reward', at: '2026-08-25T23:00:00Z' });
+    const next = await merits.award(db, { user: 'a', amount: 1000, reason: 'challenge_reward', at: '2026-08-26T01:00:00Z' });
+    expect(next.ok).toBe(true);
+    expect(next.capped).toBeUndefined();
+    expect(await merits.balanceOf(db, 'a')).toBe(2000);
+  });
+
+  test('ledger rows carry a stable led_ id and balance_after reconciles with balanceOf', async () => {
+    const db = createMockDb();
+    const r1 = await merits.award(db, { user: 'a', amount: 500, reason: 'challenge_reward', at: AT });
+    const r2 = await merits.spend(db, { user: 'a', amount: 200, ref: 'sh', at: AT });
+    const r3 = await merits.award(db, { user: 'a', amount: 100, reason: 'season_chest', at: AT });
+    expect(r1.entry.id).toBe('led_a_0');
+    expect([r1.entry.balance_after, r2.entry.balance_after, r3.entry.balance_after]).toEqual([500, 300, 400]);
+    expect(r3.entry.balance_after).toBe(await merits.balanceOf(db, 'a'));
+    expect(r1.entry.immutable).toBe(true);
+  });
+
+  test('rejects an invalid at timestamp', async () => {
+    const db = createMockDb();
+    expect((await merits.award(db, { user: 'a', amount: 10, reason: 'challenge_reward', at: 'not-a-date' })).ok).toBe(false);
   });
 });
 
@@ -112,10 +152,26 @@ describe('arena_merits shop (I5)', () => {
     expect((await db.collection('rewards_shop').findOne({ id: 'pricey' })).stock).toBe(5);
   });
 
-  test('ensureMeritsIndexes declares a unique index on shop id', async () => {
+  test('a free (0-cost) item is purchasable (no debit, still records + decrements)', async () => {
+    const db = createMockDb();
+    await merits.addShopItem(db, { id: 'freebie', kind: 'badge', cost_merits: 0, stock: 2 });
+    const res = await merits.purchase(db, { user: 'a', itemId: 'freebie', at: AT });
+    expect(res).toMatchObject({ ok: true, ledger: null });
+    expect((await db.collection('rewards_shop').findOne({ id: 'freebie' })).stock).toBe(1);
+    expect(await db.collection('merits_purchases').find({ user: 'a' }).toArray()).toHaveLength(1);
+    expect(await merits.balanceOf(db, 'a')).toBe(0);
+  });
+
+  test('purchase of an unknown item fails cleanly', async () => {
+    const db = createMockDb();
+    expect((await merits.purchase(db, { user: 'a', itemId: 'nope', at: AT })).ok).toBe(false);
+  });
+
+  test('ensureMeritsIndexes declares a unique shop id index and a ledger user+at index', async () => {
     const calls = { rewards_shop: [], merits_ledger: [] };
     const db = { collection: (name) => ({ createIndex: (spec, opts) => { calls[name].push({ spec, opts }); return Promise.resolve(); } }) };
     await merits.ensureMeritsIndexes(db);
     expect(calls.rewards_shop).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { id: 1 }, opts: { unique: true } })]));
+    expect(calls.merits_ledger).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { user: 1, at: 1 } })]));
   });
 });

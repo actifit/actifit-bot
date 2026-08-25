@@ -22,6 +22,17 @@
  * Anti-sybil emission cap: system-funded Merit emission is capped per user per
  * day, so a sybil can't farm Merits by spawning fake challenges among alts.
  *
+ * admin_adjust is a PRIVILEGED reason (requires opts.authorized) — the caller
+ * must gate it to an operator. I4 (non-transferable) depends on that, since a
+ * privileged +/- pair is the only way value can move between users. `at` must be
+ * server-set (never user-controlled) so the daily cap can't be gamed.
+ *
+ * ⚠️ SINGLE-WRITER for now: balance / emission / stock are read-then-write (no
+ * atomic counter or transaction yet), so this is NOT concurrency-safe against
+ * parallel spends/purchases of the same user or item. It has no callers yet;
+ * BEFORE wiring to concurrent routes (F5/F6), move balance and stock to guarded
+ * `$inc` counters / a transaction (tracked on #178). See the deferred follow-ups.
+ *
  * F4 slice scope; DEFERRED to F5: pool-funded AFIT payout (I2 pool funding) and
  * I7 (funder ≠ paid participant) live in the pools/resolution module.
  *
@@ -48,7 +59,8 @@ const SHOP_KINDS = ['cosmetic', 'boost', 'badge', 'fixed_bundle'];
 const DEFAULT_DAILY_EMISSION_CAP = 1000;
 
 function dayKey(iso) {
-	return new Date(iso).toISOString().slice(0, 10);
+	const d = new Date(iso);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
 /** Current Merit balance = sum of all ledger deltas (double-entry reconciles). */
@@ -67,8 +79,10 @@ async function emittedOn(db, user, at) {
 }
 
 async function appendLedger(db, row) {
-	const balance_before = await balanceOf(db, row.user);
+	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: row.user }).toArray();
+	const balance_before = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const entry = {
+		id: `led_${row.user}_${rows.length}`, // stable per-user sequence (append-only)
 		user: row.user,
 		delta: row.delta,
 		reason: row.reason,
@@ -91,19 +105,27 @@ async function award(db, params) {
 	const at = params.at || new Date().toISOString();
 	if (!user) return { ok: false, reason: 'missing user' };
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
+	if (dayKey(at) === null) return { ok: false, reason: 'invalid at timestamp' };
 	// I3 — only whitelisted credit reasons; no buy/deposit path exists.
 	if (!CREDIT_REASONS.includes(reason)) return { ok: false, reason: `credit reason "${reason}" not allowed (invariant I3)` };
+	// admin_adjust is privileged: cap-exempt and able to move value, so the caller
+	// MUST assert authorization. Guards the emission cap and I4.
+	if (reason === 'admin_adjust' && !params.authorized) {
+		return { ok: false, reason: 'admin_adjust requires authorization' };
+	}
 
-	// Anti-sybil daily emission cap on system-funded rewards (admin_adjust exempt).
+	// Anti-sybil daily emission cap on system-funded rewards (privileged
+	// admin_adjust is exempt).
 	if (reason !== 'admin_adjust') {
 		const cap = params.dailyCap || DEFAULT_DAILY_EMISSION_CAP;
 		const already = await emittedOn(db, user, at);
 		if (already + Number(amount) > cap) {
 			const room = Math.max(0, cap - already);
-			if (room <= 0) return { ok: false, capped: true, reason: 'daily emission cap reached' };
-			// Emit up to the cap; the remainder is dropped (logged by the caller).
+			const requested = Number(amount);
+			// Emit up to the cap; report the dropped remainder so the caller can log/carry-over.
+			if (room <= 0) return { ok: false, capped: true, reason: 'daily emission cap reached', requested, emitted: 0, dropped: requested };
 			const entry = await appendLedger(db, { user, delta: room, reason, ref, at });
-			return { ok: true, entry, capped: true };
+			return { ok: true, entry, capped: true, requested, emitted: room, dropped: requested - room };
 		}
 	}
 	const entry = await appendLedger(db, { user, delta: Number(amount), reason, ref, at });
@@ -120,7 +142,11 @@ async function spend(db, params) {
 	const at = params.at || new Date().toISOString();
 	if (!user) return { ok: false, reason: 'missing user' };
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
+	if (dayKey(at) === null) return { ok: false, reason: 'invalid at timestamp' };
 	if (!DEBIT_REASONS.includes(reason)) return { ok: false, reason: `debit reason "${reason}" not allowed` };
+	if (reason === 'admin_adjust' && !params.authorized) {
+		return { ok: false, reason: 'admin_adjust requires authorization' };
+	}
 	const balance = await balanceOf(db, user);
 	if (balance < Number(amount)) return { ok: false, reason: 'insufficient merits' };
 	const entry = await appendLedger(db, { user, delta: -Number(amount), reason, ref, at });
@@ -160,14 +186,19 @@ async function purchase(db, params) {
 	if (item.random) return { ok: false, reason: 'random item cannot be purchased (invariant I5)' };
 	if (item.stock !== 'unlimited' && !(Number(item.stock) > 0)) return { ok: false, reason: 'out of stock' };
 
-	const debit = await spend(db, { user, amount: item.cost_merits, reason: 'shop_purchase', ref: item.id, at });
-	if (!debit.ok) return debit;
+	// Free items (cost_merits === 0) skip the debit — spend() rejects a 0 amount.
+	let ledger = null;
+	if (Number(item.cost_merits) > 0) {
+		const debit = await spend(db, { user, amount: item.cost_merits, reason: 'shop_purchase', ref: item.id, at });
+		if (!debit.ok) return debit;
+		ledger = debit.entry;
+	}
 
 	if (item.stock !== 'unlimited') {
 		await shop.updateOne({ id: item.id }, { $set: { stock: Number(item.stock) - 1 } });
 	}
-	await db.collection(COLLECTIONS.PURCHASES).insertOne({ user, item_id: item.id, cost_merits: item.cost_merits, at });
-	return { ok: true, item_id: item.id, ledger: debit.entry };
+	await db.collection(COLLECTIONS.PURCHASES).insertOne({ user, item_id: item.id, cost_merits: Number(item.cost_merits), at });
+	return { ok: true, item_id: item.id, ledger };
 }
 
 /** Indexes the ledger/shop rely on. Safe no-op where createIndex is unavailable. */
