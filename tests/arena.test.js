@@ -154,7 +154,7 @@ describe('arena.indexArenaOp — lifecycle', () => {
 
   test('challenge_update enforces the state machine and authorisation', async () => {
     await create();
-    const illegal = await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'settled' }, 'alice'));
+    const illegal = await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'resolving' }, 'alice'));
     expect(illegal.ok).toBe(false);
     expect(illegal.reason).toMatch(/illegal transition/);
 
@@ -210,5 +210,109 @@ describe('arena.indexArenaOp — lifecycle', () => {
     await arena.indexArenaOp(db, chainOp({ op: 'settle', challenge_id: 'ch_1', standings: [], rewards: [] }, 'actifit'));
     const res = await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'late'));
     expect(res.ok).toBe(false);
+  });
+});
+
+// Fixes from the 3-agent review of PR #50.
+describe('arena.indexArenaOp — review hardening (B1–B4)', () => {
+  let db;
+  beforeEach(() => { db = createMockDb(); });
+  const create = (over, signer = 'alice', extra) => arena.indexArenaOp(db, chainOp(createBody(over), signer, extra));
+
+  // B1 — settle must not resurrect a terminal challenge.
+  test('B1: settle cannot resurrect a cancelled challenge', async () => {
+    await create();
+    await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'cancelled' }, 'alice'));
+    const res = await arena.indexArenaOp(db, chainOp({ op: 'settle', challenge_id: 'ch_1', standings: [], rewards: [] }, 'actifit'));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/cannot settle a cancelled/);
+    expect((await db.collection('challenges').findOne({ id: 'ch_1' })).state).toBe('cancelled');
+  });
+
+  // B2 — a creator must not self-drive into a terminal state via challenge_update.
+  test('B2: creator cannot reach settled/archived via challenge_update; official settle still works', async () => {
+    await create();
+    await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'active' }, 'alice'));
+    await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'resolving' }, 'alice'));
+
+    const selfSettle = await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'settled' }, 'alice'));
+    expect(selfSettle.ok).toBe(false);
+    expect(selfSettle.reason).toMatch(/only via the settle op/);
+
+    const selfArchive = await arena.indexArenaOp(db, chainOp({ op: 'challenge_update', id: 'ch_1', state: 'archived' }, 'alice'));
+    expect(selfArchive.ok).toBe(false);
+    expect(selfArchive.reason).toMatch(/only the official account may archive/);
+
+    expect((await db.collection('challenges').findOne({ id: 'ch_1' })).state).toBe('resolving');
+
+    const settled = await arena.indexArenaOp(db, chainOp({ op: 'settle', challenge_id: 'ch_1', standings: [], rewards: [] }, 'actifit'));
+    expect(settled.ok).toBe(true);
+  });
+
+  // B3 — no monetary field may ride on an entry, and unknown fields are stripped.
+  test('B3: validateArenaOp rejects a monetary entry field (invariant I1)', () => {
+    const r = arena.validateArenaOp(createBody({ entry: { mode: 'free', stake: 5 } }));
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/monetary/);
+  });
+
+  test('B3: entry.fee is rejected and not persisted', async () => {
+    const res = await create({ entry: { mode: 'free', fee: 100 } });
+    expect(res.ok).toBe(false);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
+  test('B3: unknown entry fields are stripped from the stored doc', async () => {
+    await create({ entry: { mode: 'free', foo: 'bar' } });
+    expect((await db.collection('challenges').findOne({ id: 'ch_1' })).entry).toEqual({ mode: 'free' });
+  });
+
+  // B4 — replays are idempotent no-ops, not rejections.
+  test('B4: replaying the same challenge_create is a no-op; a different op reusing the id is rejected', async () => {
+    const body = createBody();
+    const first = await arena.indexArenaOp(db, chainOp(body, 'alice', { trx_id: 't_create' }));
+    expect(first).toMatchObject({ ok: true, action: 'challenge_created' });
+    expect(first.noop).toBeUndefined();
+
+    const replay = await arena.indexArenaOp(db, chainOp(body, 'alice', { trx_id: 't_create' }));
+    expect(replay).toMatchObject({ ok: true, noop: true });
+
+    const collision = await arena.indexArenaOp(db, chainOp(body, 'alice', { trx_id: 't_other' }));
+    expect(collision.ok).toBe(false);
+  });
+
+  test('B4: replaying the same join is a no-op (no duplicate participant)', async () => {
+    await create();
+    const j = { op: 'join', challenge_id: 'ch_1' };
+    const first = await arena.indexArenaOp(db, chainOp(j, 'bob', { trx_id: 't_join' }));
+    expect(first).toMatchObject({ ok: true, action: 'joined' });
+    const replay = await arena.indexArenaOp(db, chainOp(j, 'bob', { trx_id: 't_join' }));
+    expect(replay).toMatchObject({ ok: true, noop: true });
+    expect(await db.collection('challenge_participants').find({ challenge_id: 'ch_1' }).toArray()).toHaveLength(1);
+  });
+
+  test('B4: a replayed challenge_update onto the current state is a no-op, not an error', async () => {
+    await create();
+    const up = { op: 'challenge_update', id: 'ch_1', state: 'active' };
+    expect((await arena.indexArenaOp(db, chainOp(up, 'alice'))).ok).toBe(true);
+    expect(await arena.indexArenaOp(db, chainOp(up, 'alice'))).toMatchObject({ ok: true, noop: true });
+  });
+
+  test('B4: replaying the same settle is a no-op', async () => {
+    await create();
+    const s = { op: 'settle', challenge_id: 'ch_1', standings: [], rewards: [] };
+    const first = await arena.indexArenaOp(db, chainOp(s, 'actifit', { trx_id: 't_settle' }));
+    expect(first).toMatchObject({ ok: true, action: 'settled' });
+    const replay = await arena.indexArenaOp(db, chainOp(s, 'actifit', { trx_id: 't_settle' }));
+    expect(replay).toMatchObject({ ok: true, noop: true });
+  });
+
+  // Confirms the whole-object $set fix (dotted paths did not nest in the mock).
+  test('settle nests audit + source metadata correctly', async () => {
+    await create();
+    await arena.indexArenaOp(db, chainOp({ op: 'settle', challenge_id: 'ch_1', standings: [], rewards: [] }, 'actifit', { trx_id: 't_s', timestamp: '2026-08-25T12:00:00' }));
+    const ch = await db.collection('challenges').findOne({ id: 'ch_1' });
+    expect(ch.audit.settled_at).toBe('2026-08-25T12:00:00');
+    expect(ch.source.settle_trx_id).toBe('t_s');
   });
 });

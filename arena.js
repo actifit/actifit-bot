@@ -87,8 +87,29 @@ function canTransition(from, to) {
 
 // ---- helpers -------------------------------------------------------------
 
+// Terminal states — no op (not even settle) may move a challenge out of these.
+const TERMINAL_STATES = ['settled', 'archived', 'cancelled'];
+
+// Monetary keys that must never ride on an entry (house rule: no fee/stake/wager
+// — invariant I1). Rejected at validation AND stripped by the stored-doc whitelist.
+const FORBIDDEN_ENTRY_KEYS = ['fee', 'entry_fee', 'stake', 'buy_in', 'buyin', 'wager', 'ante', 'pot'];
+
 function isNonEmptyString(v) {
 	return typeof v === 'string' && v.length > 0;
+}
+
+/** Shallow-pick only the allowed keys from an object (drops unknown fields). */
+function pick(obj, keys) {
+	const out = {};
+	if (obj && typeof obj === 'object') {
+		for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
+	}
+	return out;
+}
+
+/** True for a MongoDB duplicate-key (unique index) error. */
+function isDuplicateKeyError(e) {
+	return !!e && (e.code === 11000 || e.code === 11001 || /E11000/.test(String(e && e.message)));
 }
 
 function isValidWindow(w) {
@@ -149,6 +170,11 @@ function validateArenaOp(op) {
 			// I1 — entry is skill/goal, never a fee.
 			if (entry.mode !== undefined && !ENTRY_MODES.includes(entry.mode)) {
 				errors.push(`challenge_create: entry.mode "${entry.mode}" not allowed (no fee entry — invariant I1)`);
+			}
+			// I1 — reject any monetary field smuggled onto the entry, even when mode is valid.
+			const monetary = Object.keys(entry).filter((k) => FORBIDDEN_ENTRY_KEYS.includes(k));
+			if (monetary.length) {
+				errors.push(`challenge_create: entry may not carry monetary field(s) "${monetary.join(', ')}" (no fee/stake/wager — invariant I1)`);
 			}
 			const scoring = op.scoring || {};
 			if (!isNonEmptyString(scoring.metric)) errors.push('challenge_create: missing scoring.metric');
@@ -228,11 +254,17 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			if (origin_tier === 'official' && signer !== officialAccount) {
 				return { ok: false, reason: 'official challenge must be signed by the official account' };
 			}
-			// Idempotent: a challenge id is created once.
 			const existing = await challenges.findOne({ id: op.id });
-			if (existing) return { ok: false, reason: 'challenge id already exists' };
+			if (existing) {
+				// Idempotent: the same broadcast re-tailed is a no-op success; a
+				// DIFFERENT op reusing the id is a genuine collision -> reject.
+				if (existing.source && existing.source.trx_id === trx_id) {
+					return { ok: true, action: 'challenge_created', noop: true };
+				}
+				return { ok: false, reason: 'challenge id already exists' };
+			}
 
-			await challenges.insertOne({
+			const doc = {
 				id: op.id,
 				type: op.type,
 				title: op.title || null,
@@ -241,16 +273,25 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				visibility: op.visibility || 'public',
 				community: op.community || null,
 				participants_kind: op.participants_kind || 'user',
-				window: op.window,
-				entry: op.entry || { mode: 'free' },
-				scoring: op.scoring,
+				// Only whitelisted sub-fields are stored — an attacker's extra keys
+				// (e.g. a smuggled entry.fee) never reach the on-chain-of-record index.
+				window: pick(op.window, ['start', 'end', 'tz']),
+				entry: { mode: 'free', ...pick(op.entry, ['mode', 'gate']) },
+				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
 				pool_ref: op.pool_ref || null,
 				parent_id: op.parent_id || null,
 				created_by: signer,
 				source: { trx_id, block_num },
 				audit: { created_at: at },
-			});
+			};
+			try {
+				await challenges.insertOne(doc);
+			} catch (e) {
+				// Unique-index race (a concurrent tailer pass beat us): treat as no-op.
+				if (isDuplicateKeyError(e)) return { ok: true, action: 'challenge_created', noop: true };
+				throw e;
+			}
 			return { ok: true, action: 'challenge_created' };
 		}
 
@@ -260,6 +301,21 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			// Only the creator or the official account may drive state.
 			if (signer !== ch.created_by && signer !== officialAccount) {
 				return { ok: false, reason: 'not authorised to update challenge' };
+			}
+			// Idempotent: a replayed update landing on the current state is a no-op,
+			// not an "illegal self-transition".
+			if (ch.state === op.state) {
+				return { ok: true, action: 'challenge_updated', noop: true };
+			}
+			// Terminal states are authoritative: `settled` is reached ONLY via the
+			// official settle op, and only the official account may archive. This stops
+			// a (Friendly-tier) creator from self-settling and pre-empting official
+			// settlement.
+			if (op.state === 'settled') {
+				return { ok: false, reason: 'settled is reached only via the settle op' };
+			}
+			if (op.state === 'archived' && signer !== officialAccount) {
+				return { ok: false, reason: 'only the official account may archive a challenge' };
 			}
 			if (!canTransition(ch.state, op.state)) {
 				return { ok: false, reason: `illegal transition ${ch.state} -> ${op.state}` };
@@ -277,20 +333,31 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			// The participant is whoever SIGNED the join — never a self-asserted name.
 			const entity = signer;
 			const already = await participants.findOne({ challenge_id: op.challenge_id, entity });
-			if (already) return { ok: false, reason: 'already joined' };
+			if (already) {
+				// Same broadcast re-tailed -> no-op success; a distinct re-join -> reject.
+				if (already.source && already.source.trx_id === trx_id) {
+					return { ok: true, action: 'joined', noop: true };
+				}
+				return { ok: false, reason: 'already joined' };
+			}
 
-			await participants.insertOne({
-				challenge_id: op.challenge_id,
-				entity_kind: ch.participants_kind || 'user',
-				entity,
-				cohort: op.cohort || null,
-				score: null,
-				state: 'enrolled',
-				result: null,
-				flags: [],
-				source: { trx_id, block_num },
-				joined_at: at,
-			});
+			try {
+				await participants.insertOne({
+					challenge_id: op.challenge_id,
+					entity_kind: ch.participants_kind || 'user',
+					entity,
+					cohort: op.cohort || null,
+					score: null,
+					state: 'enrolled',
+					result: null,
+					flags: [],
+					source: { trx_id, block_num },
+					joined_at: at,
+				});
+			} catch (e) {
+				if (isDuplicateKeyError(e)) return { ok: true, action: 'joined', noop: true };
+				throw e;
+			}
 			return { ok: true, action: 'joined' };
 		}
 
@@ -341,8 +408,14 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			}
 			const ch = await challenges.findOne({ id: op.challenge_id });
 			if (!ch) return { ok: false, reason: 'unknown challenge' };
-			if (ch.state === 'settled' || ch.state === 'archived') {
-				return { ok: false, reason: 'already settled' };
+			// Idempotent: the same settle broadcast re-tailed is a no-op success.
+			if (ch.source && ch.source.settle_trx_id === trx_id) {
+				return { ok: true, action: 'settled', noop: true };
+			}
+			// A challenge can only be settled from a LIVE state — never resurrected
+			// from a terminal state (cancelled / settled / archived).
+			if (TERMINAL_STATES.includes(ch.state)) {
+				return { ok: false, reason: `cannot settle a ${ch.state} challenge` };
 			}
 
 			// Record each participant's final rank/outcome + reward reference.
@@ -366,9 +439,15 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 					} }
 				);
 			}
+			// Whole-object $set (not dotted paths) so `audit`/`source` nest correctly
+			// and the settle_trx_id replay-guard above is readable back.
 			await challenges.updateOne(
 				{ id: op.challenge_id },
-				{ $set: { state: 'settled', 'audit.settled_at': at, 'source.settle_trx_id': trx_id } }
+				{ $set: {
+					state: 'settled',
+					audit: { ...(ch.audit || {}), settled_at: at },
+					source: { ...(ch.source || {}), settle_trx_id: trx_id },
+				} }
 			);
 			return { ok: true, action: 'settled' };
 		}
