@@ -9,6 +9,7 @@
 const { createMockDb } = require('./helpers/mock-db');
 const arena = require('../arena');
 const merits = require('../arena_merits');
+const pools = require('../arena_pools');
 
 const AT = '2026-08-25T10:00:00Z';
 const validCreate = (over = {}) => ({
@@ -60,8 +61,23 @@ describe('Compliance — house-rule invariants I1–I7', () => {
     expect(arena.SCORING_RULES).toEqual(['max', 'threshold', 'head_to_head']);
   });
 
-  // I2 (reward pool funding ∈ {sponsor,dhf,treasury}) and I7 (a pool's funder is
-  // not a paid participant) are enforced in the pools/resolution module (F5, #179).
-  it.todo('I2 — reward pool funding is sponsor/DHF/treasury only (F5, #179)');
-  it.todo('I7 — a pool funder cannot be a paid participant of a challenge it rewards (F5, #179)');
+  test('I2 — reward pool funding is sponsor/DHF/treasury only (no participant stake)', async () => {
+    const db = createMockDb();
+    for (const funding of ['stake', 'entry_fee', 'participant', 'wager']) {
+      expect((await pools.createPool(db, { id: 'p', funding, budget: 100 })).ok).toBe(false);
+    }
+    expect(pools.POOL_FUNDING).toEqual(['sponsor', 'dhf', 'treasury']);
+    expect((await pools.createPool(db, { id: 'ok', funding: 'treasury', budget: 100 })).ok).toBe(true);
+  });
+
+  test('I7 — a pool funder cannot be a paid participant of a challenge it rewards', async () => {
+    const db = createMockDb();
+    await pools.createPool(db, { id: 'pool', funding: 'sponsor', sponsor: 'funderX', budget: 1000 });
+    const res = await pools.resolveChallenge(db, {
+      challengeId: 'ch', poolId: 'pool',
+      standings: [{ entity: 'funderX', rank: 1 }], prizes: [{ rank: 1, afit: 500 }], asOf: AT,
+    });
+    expect(res.excludedFunder).toBe('funderX');
+    expect(res.paidAfit).toBe(0);
+  });
 });
