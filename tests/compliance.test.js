@@ -73,11 +73,13 @@ describe('Compliance — house-rule invariants I1–I7', () => {
   test('I7 — a pool funder cannot be a paid participant of a challenge it rewards', async () => {
     const db = createMockDb();
     await pools.createPool(db, { id: 'pool', funding: 'sponsor', sponsor: 'funderX', budget: 1000 });
+    // funderX is enrolled AND finishes first — must still be excluded from payout.
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch', entity: 'funderX', flags: [] }]);
     const res = await pools.resolveChallenge(db, {
       challengeId: 'ch', poolId: 'pool',
       standings: [{ entity: 'funderX', rank: 1 }], prizes: [{ rank: 1, afit: 500 }], asOf: AT,
     });
-    expect(res.excludedFunder).toBe('funderX');
+    expect(res.excludedFunders).toEqual(['funderX']);
     expect(res.paidAfit).toBe(0);
   });
 });
