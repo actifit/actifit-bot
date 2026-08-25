@@ -15,6 +15,13 @@
  * restart resumes where it left off; re-processing a block is safe because
  * indexArenaOp is idempotent (a re-tailed op returns {ok:true, noop:true}).
  *
+ * Reorg-safe: indexes up to the LAST-IRREVERSIBLE block, not the reversible head,
+ * so an op is only recorded once its block can no longer be orphaned. Cold start
+ * snaps to the current target (tails new ops) unless an explicit start block is
+ * configured for a backfill. Single-instance: run the tailer on ONE instance —
+ * two instances share the one cursor doc and would double-poll (the index stays
+ * correct via idempotency, but it wastes node calls).
+ *
  * Load-time safe: requires only `arena` (no config/Firebase) and `@hiveio/dhive`
  * (a library). No hive client is built until startArenaTailer() runs.
  */
@@ -71,9 +78,10 @@ async function processArenaBlock(db, block, blockNum, opts = {}) {
 	return results;
 }
 
-async function loadCursor(db, startBlock) {
+/** The stored cursor (last block fully processed), or null if none exists yet. */
+async function loadCursor(db) {
 	const doc = await db.collection(TAILER_STATE).findOne({ _id: CURSOR_ID });
-	return (doc && Number.isInteger(doc.block_num)) ? doc.block_num : (startBlock || 0);
+	return (doc && Number.isInteger(doc.block_num)) ? doc.block_num : null;
 }
 
 async function saveCursor(db, blockNum) {
@@ -85,20 +93,45 @@ async function saveCursor(db, blockNum) {
 }
 
 /**
- * Process every block from the saved cursor up to the current head (bounded to
+ * The highest block the tailer should index up to. Prefers **last-irreversible**
+ * (reorg-safe: an op only counts once its block can no longer be orphaned, which
+ * matters for a system-of-record); falls back to the head block if the client
+ * cannot report LIB.
+ */
+async function getTargetBlock(hiveClient) {
+	if (hiveClient.database && typeof hiveClient.database.getDynamicGlobalProperties === 'function') {
+		const props = await hiveClient.database.getDynamicGlobalProperties();
+		const lib = props && props.last_irreversible_block_num;
+		if (Number.isInteger(lib)) return lib;
+	}
+	return hiveClient.blockchain.getCurrentBlockNum();
+}
+
+/**
+ * Process every block from the saved cursor up to the current target (bounded to
  * `maxBlocksPerTick`), persisting the cursor after each block so a crash resumes
  * cleanly. Returns { from, to, processed }.
+ *
+ * Cold start: with no stored cursor, begin at `opts.startBlock` when it is set
+ * to a positive block, otherwise **snap to the current target** — so enabling
+ * the tailer tails NEW ops rather than crawling from genesis.
  */
 async function catchUpOnce(db, hiveClient, opts = {}) {
 	const maxBatch = opts.maxBlocksPerTick || 100;
-	const cursor = await loadCursor(db, opts.startBlock || 0);
-	const head = await hiveClient.blockchain.getCurrentBlockNum();
-	if (!Number.isInteger(head) || head <= cursor) {
+	const target = await getTargetBlock(hiveClient);
+
+	let cursor = await loadCursor(db);
+	if (cursor === null) {
+		cursor = (Number.isInteger(opts.startBlock) && opts.startBlock > 0) ? opts.startBlock : target;
+		await saveCursor(db, cursor);
+	}
+
+	if (!Number.isInteger(target) || target <= cursor) {
 		return { from: cursor + 1, to: cursor, processed: 0 };
 	}
-	const target = Math.min(head, cursor + maxBatch);
+	const stopAt = Math.min(target, cursor + maxBatch);
 	let processed = 0;
-	for (let n = cursor + 1; n <= target; n++) {
+	for (let n = cursor + 1; n <= stopAt; n++) {
 		const block = await hiveClient.database.getBlock(n);
 		if (!block) break; // not available yet — stop, retry next tick
 		await processArenaBlock(db, block, n, opts);
@@ -144,6 +177,7 @@ module.exports = {
 	processArenaBlock,
 	loadCursor,
 	saveCursor,
+	getTargetBlock,
 	catchUpOnce,
 	startArenaTailer,
 };
