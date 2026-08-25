@@ -56,9 +56,79 @@ describe('arena_standings.computeStandings', () => {
       { a: { entity: 'a', score: 5000 }, b: { entity: 'b', score: 3000 } },
       { a: { entity: 'b', score: 6000 }, b: { entity: 'c', score: 1000 } },
     ], { mode: 'head_to_head' });
-    // a: 3pts, b: 3pts, c: 0 — a/b tie on points, a wins the entity tiebreak
-    expect(s[0]).toMatchObject({ entity: 'a', points: 3, rank: 1 });
+    // a: 3pts/score 5000, b: 3pts/score 9000 — tie on points, b wins the SCORE tiebreak
+    expect(s[0]).toMatchObject({ entity: 'b', points: 3, rank: 1 });
     expect(s.find((x) => x.entity === 'c').points).toBe(0);
+  });
+});
+
+// Fixes from the 2-agent review of PR #53.
+describe('arena_standings — review hardening', () => {
+  test('rankRows: overlapping promote/relegate zones — promote wins, no double movement', () => {
+    const r = standings.rankRows([{ entity: 'a', score: 10 }, { entity: 'b', score: 20 }], { key: 'score', promotion: { up: 2, down: 2 } });
+    expect(r.every((x) => x.movement === 'promote')).toBe(true);
+  });
+
+  test('score mode emits a `points` field mirroring score (uniform §3.3 row shape)', () => {
+    const s = standings.computeStandings([{ entity: 'a', score: 100 }], { mode: 'score' });
+    expect(s[0]).toMatchObject({ entity: 'a', score: 100, points: 100 });
+  });
+
+  test('fixturePoints skips a self-fixture', () => {
+    expect(standings.fixturePoints([{ a: { entity: 'x', score: 5 }, b: { entity: 'x', score: 5 } }])).toEqual([]);
+  });
+
+  test('standingsId separates programs and is stable', () => {
+    const poliac = standings.standingsId('season', { kind: 'season', index: 1, program: 'poliac' }, 'gold');
+    const squads = standings.standingsId('season', { kind: 'season', index: 1, program: 'squads' }, 'gold');
+    expect(poliac).not.toBe(squads);
+    expect(poliac).toBe(standings.standingsId('season', { kind: 'season', index: 1, program: 'poliac' }, 'gold'));
+  });
+
+  test('buildStandings: a hold in ANY leg excludes the whole entity', async () => {
+    const db = createMockDb();
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'ch1', entity: 'a', cohort: 'g', score: { verified: 18000 }, flags: [] },
+      { challenge_id: 'ch2', entity: 'a', cohort: 'g', score: { verified: 5000 }, flags: ['anticheat_review'] },
+      { challenge_id: 'ch1', entity: 'b', cohort: 'g', score: { verified: 12000 }, flags: [] },
+    ]);
+    const res = await standings.buildStandings(db, { challengeIds: ['ch1', 'ch2'], cohort: 'g' });
+    expect(res).toMatchObject({ ok: true, ranked: 1, held: 1 });
+    const doc = await db.collection('standings').findOne({ id: res.id });
+    expect(doc.rows.map((r) => r.entity)).toEqual(['b']); // a excluded despite a clean leg
+  });
+
+  test('buildStandings: a participant with no score field defaults to 0', async () => {
+    const db = createMockDb();
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch1', entity: 'x', cohort: 'g', flags: [] }]);
+    const res = await standings.buildStandings(db, { challengeIds: ['ch1'], cohort: 'g' });
+    expect(res.ranked).toBe(1);
+    const doc = await db.collection('standings').findOne({ id: res.id });
+    expect(doc.rows[0]).toMatchObject({ entity: 'x', score: 0 });
+  });
+
+  test('buildStandings: a cohort with no participants writes an empty standings doc', async () => {
+    const db = createMockDb();
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch1', entity: 'a', cohort: 'g', score: { verified: 1 }, flags: [] }]);
+    const res = await standings.buildStandings(db, { challengeIds: ['ch1'], cohort: 'nope' });
+    expect(res).toMatchObject({ ok: true, ranked: 0 });
+    const doc = await db.collection('standings').findOne({ id: res.id });
+    expect(doc.rows).toEqual([]);
+  });
+
+  test('buildStandings: computed_at defaults to an ISO timestamp when asOf is omitted', async () => {
+    const db = createMockDb();
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch1', entity: 'a', cohort: 'g', score: { verified: 1 }, flags: [] }]);
+    const res = await standings.buildStandings(db, { challengeIds: ['ch1'], cohort: 'g' });
+    const doc = await db.collection('standings').findOne({ id: res.id });
+    expect(doc.computed_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+  });
+
+  test('ensureStandingsIndexes declares a unique index on id', async () => {
+    const calls = [];
+    const db = { collection: () => ({ createIndex: (spec, opts) => { calls.push({ spec, opts }); return Promise.resolve(); } }) };
+    await standings.ensureStandingsIndexes(db);
+    expect(calls).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { id: 1 }, opts: { unique: true } })]));
   });
 });
 

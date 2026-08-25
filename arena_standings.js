@@ -22,12 +22,20 @@
  *   - buildStandings(db, params)    — read participant scores, compute, upsert a
  *                                     `standings` doc (idempotent)
  *
- * Excludes participants held for anti-cheat review (flags include
- * `anticheat_review`) from the ranked table, so a flagged score never takes a
- * prize slot before it's cleared.
+ * Excludes any ENTITY held for anti-cheat review (a flag in any of its legs)
+ * from the ranked table, so a flagged score never takes a prize slot before it's
+ * cleared — exclusion is per-entity, not per-challenge-leg.
  *
  * Idempotent: buildStandings recomputes from the current participant scores and
- * upserts the one standings doc for (scope, window, cohort) — safe to re-run.
+ * upserts the one standings doc for (scope, window, cohort) — safe to re-run
+ * (relies on the unique index from ensureStandingsIndexes).
+ *
+ * F3 slice scope / DEFERRED (follow-ups): the scheduled daily rollup (immutable
+ * per-day audit rows), the season aggregator (close → tiers → reward chests) and
+ * the `seasons` collection (§3.4), a `head_to_head` PERSISTENCE path in
+ * buildStandings (it is score-mode only here; POLIAC fixtures are assembled by
+ * the caller and only computeStandings ranks them), and the `delta` row field
+ * (rank change vs the prior window — needs prior-window lookback).
  *
  * Load-time safe: requires nothing (no config/Firebase); dependency-injected db.
  */
@@ -43,17 +51,27 @@ const COLLECTIONS = {
 
 const POINTS = { win: 3, draw: 1, loss: 0 };
 
-/** Stable id for a standings read-model row (one per scope+window+cohort). */
+/**
+ * Stable id for a standings read-model row (one per program+scope+window+cohort).
+ * Includes `window.program` so two programs (leagues / poliac / squads) with
+ * independent season numbering don't collide on the same (scope, index, cohort).
+ */
 function standingsId(scope, window, cohort) {
 	const w = window || {};
-	return `std_${scope || 'league'}_${w.kind || 'window'}_${w.index != null ? w.index : (w.start || '')}_${cohort || 'all'}`;
+	const prog = w.program || 'default';
+	const win = w.index != null ? `i${w.index}` : (w.start || 'w');
+	return `std_${scope || 'league'}_${prog}_${w.kind || 'window'}_${win}_${cohort || 'all'}`;
 }
 
 /**
  * Rank rows by `key` (desc) and stamp rank + promote/hold/relegate movement.
- * Pure. `rows`: [{ entity, ...metrics }]. `opts.key` the sort field (default
- * 'score'); `opts.promotion` = { up, down } cohort promote/relegate counts.
- * Ties share the metric but get distinct ranks by a stable entity tiebreak.
+ * Pure. `rows`: [{ entity, score, ...metrics }]. `opts.key` the sort field
+ * (default 'score'); `opts.promotion` = { up, down } cohort promote/relegate
+ * counts. Tie-break order: `key` desc, then aggregate `score` desc (the
+ * documented "goals-for" tiebreak for a points tie), then `entity` ascending —
+ * so ties still get DISTINCT ranks and a promotion cutoff is never ambiguous.
+ * When the promote/relegate zones overlap (up + down > n), promote takes
+ * precedence and a row is never both.
  */
 function rankRows(rows, opts = {}) {
 	const key = opts.key || 'score';
@@ -62,7 +80,10 @@ function rankRows(rows, opts = {}) {
 
 	const sorted = [...rows].sort((a, b) => {
 		const d = (b[key] || 0) - (a[key] || 0);
-		return d !== 0 ? d : String(a.entity).localeCompare(String(b.entity));
+		if (d !== 0) return d;
+		const s = (b.score || 0) - (a.score || 0);
+		if (s !== 0) return s;
+		return a.entity < b.entity ? -1 : (a.entity > b.entity ? 1 : 0);
 	});
 
 	const n = sorted.length;
@@ -87,6 +108,7 @@ function fixturePoints(fixtures) {
 	};
 	for (const f of fixtures || []) {
 		if (!f || !f.a || !f.b) continue;
+		if (!f.a.entity || !f.b.entity || f.a.entity === f.b.entity) continue; // no self-fixtures
 		const A = ensure(f.a.entity);
 		const B = ensure(f.b.entity);
 		A.played++; B.played++;
@@ -111,8 +133,10 @@ function computeStandings(input, opts = {}) {
 		const rows = fixturePoints(input);
 		return rankRows(rows, { key: 'points', promotion: opts.promotion });
 	}
-	// score mode: input is [{ entity, score }]
-	return rankRows(input, { key: 'score', promotion: opts.promotion });
+	// score mode: input is [{ entity, score }]. Mirror `score` into `points` so
+	// the standings row shape is uniform with head_to_head and matches §3.3.
+	const rows = (input || []).map((r) => ({ ...r, points: r.score || 0 }));
+	return rankRows(rows, { key: 'score', promotion: opts.promotion });
 }
 
 /** Is a participant excluded from the ranked table (held for anti-cheat)? */
@@ -138,16 +162,21 @@ async function buildStandings(db, params = {}) {
 	const parts = await db.collection(COLLECTIONS.PARTICIPANTS)
 		.find({ challenge_id: { $in: challengeIds } }).toArray();
 
+	const inCohort = (p) => !cohort || p.cohort === cohort;
+	// Anti-cheat hold is per-ENTITY: a flag in ANY leg suppresses the whole entity
+	// (its clean legs must not take a prize slot while a hold is open).
+	const heldEntities = new Set(parts.filter((p) => inCohort(p) && isHeld(p)).map((p) => p.entity));
+
 	// Aggregate a participant's verified score across the given challenges,
 	// keyed by entity (a season spans many fixture-challenges).
 	const byEntity = new Map();
-	let held = 0;
 	for (const p of parts) {
-		if (cohort && p.cohort !== cohort) continue;
-		if (!includeHeld && isHeld(p)) { held++; continue; }
+		if (!inCohort(p)) continue;
+		if (!includeHeld && heldEntities.has(p.entity)) continue;
 		const verified = (p.score && Number(p.score.verified)) || 0;
 		byEntity.set(p.entity, (byEntity.get(p.entity) || 0) + verified);
 	}
+	const held = includeHeld ? 0 : heldEntities.size;
 
 	const rows = [...byEntity.entries()].map(([entity, score]) => ({ entity, score }));
 	const ranked = computeStandings(rows, { mode: 'score', promotion });
@@ -162,6 +191,19 @@ async function buildStandings(db, params = {}) {
 	return { ok: true, id, ranked: ranked.length, held };
 }
 
+/**
+ * Ensure the unique index the standings upsert relies on. Without it, two
+ * concurrent rebuilds of the same (scope, window, cohort) could both upsert and
+ * create duplicate docs. Safe no-op where createIndex is unavailable (mock).
+ */
+async function ensureStandingsIndexes(db) {
+	const col = db.collection(COLLECTIONS.STANDINGS);
+	if (typeof col.createIndex === 'function') {
+		await col.createIndex({ id: 1 }, { unique: true });
+		await col.createIndex({ scope: 1, cohort: 1 });
+	}
+}
+
 module.exports = {
 	COLLECTIONS,
 	POINTS,
@@ -171,4 +213,5 @@ module.exports = {
 	computeStandings,
 	isHeld,
 	buildStandings,
+	ensureStandingsIndexes,
 };
