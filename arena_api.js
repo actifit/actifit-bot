@@ -15,6 +15,15 @@
  * The HTTP routes in app.js are thin wrappers over these functions; keeping the
  * logic here makes it testable without the config/Firebase-bound server.
  *
+ * Surface notes / DEFERRED: reads default to PUBLIC challenges (visibility
+ * scoping) and sanitize filter values to primitives (no Mongo-operator
+ * injection). `seasons/:program/current` (§8) has no reader yet — the `seasons`
+ * collection is deferred to F3; the Season-ladder default is typed
+ * `league_fixture` because a `season` wrapper is not a challenge type. The
+ * scheduled emitters that FIRE notifications from lifecycle (F3/F5), the HTTP
+ * routes, and a "refresh" job that rolls the default-contest windows forward
+ * (re-seed is a no-op on the fixed ids) are the remaining wiring.
+ *
  * Load-time safe: requires only ./arena (config/Firebase-free).
  */
 
@@ -40,42 +49,64 @@ const EVENT_TYPES = [
 
 // ---- READ models (§8) ----------------------------------------------------
 
-/** Browse challenges by optional type / state / community / entity filters. */
+/** Only accept a primitive string value into a query — blocks Mongo-operator
+ *  injection (e.g. `{$ne:null}`) from request-supplied filters. */
+function scalar(v) {
+	return typeof v === 'string' ? v : undefined;
+}
+
+/** A participant view safe for public reads — strips internal anti-cheat state. */
+function publicParticipant(p) {
+	const { flags, source, ...rest } = p; // eslint-disable-line no-unused-vars
+	return rest;
+}
+
+/** Browse challenges by optional type / state / community / entity filters.
+ *  Returns PUBLIC challenges only unless `filter.includeNonPublic` is set. */
 async function listChallenges(db, filter = {}) {
 	const q = {};
-	for (const k of ['type', 'state', 'community', 'origin_tier']) if (filter[k]) q[k] = filter[k];
+	for (const k of ['type', 'state', 'community', 'origin_tier']) {
+		const v = scalar(filter[k]);
+		if (v !== undefined) q[k] = v;
+	}
+	if (!filter.includeNonPublic) q.visibility = 'public';
 	let rows = await db.collection(COLLECTIONS.CHALLENGES).find(q).toArray();
-	if (filter.entity) {
-		const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ entity: filter.entity }).toArray();
+	const entity = scalar(filter.entity);
+	if (entity) {
+		const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ entity }).toArray();
 		const ids = new Set(parts.map((p) => p.challenge_id));
 		rows = rows.filter((c) => ids.has(c.id));
 	}
 	return rows;
 }
 
-/** One challenge + its current participant standings snapshot. */
+/** One challenge + its participants (internal flags/source projected out). */
 async function getChallenge(db, id) {
-	const challenge = await db.collection(COLLECTIONS.CHALLENGES).findOne({ id });
+	const challenge = await db.collection(COLLECTIONS.CHALLENGES).findOne({ id: scalar(id) });
 	if (!challenge) return null;
-	const participants = await db.collection(COLLECTIONS.PARTICIPANTS).find({ challenge_id: id }).toArray();
-	return { challenge, participants };
+	const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ challenge_id: challenge.id }).toArray();
+	return { challenge, participants: parts.map(publicParticipant) };
 }
 
-/** A materialized standings table (weekly/season) by scope/window/cohort. */
+/** A materialized standings table (weekly/season) by id or scope/cohort. */
 async function getStandings(db, params = {}) {
-	if (params.id) return db.collection(COLLECTIONS.STANDINGS).findOne({ id: params.id });
+	const id = scalar(params.id);
+	if (id) return db.collection(COLLECTIONS.STANDINGS).findOne({ id });
 	const q = {};
-	for (const k of ['scope', 'cohort']) if (params[k]) q[k] = params[k];
+	for (const k of ['scope', 'cohort']) {
+		const v = scalar(params[k]);
+		if (v !== undefined) q[k] = v;
+	}
 	return db.collection(COLLECTIONS.STANDINGS).find(q).toArray();
 }
 
-/** A user's Merit balance + a page of their ledger. */
+/** A user's Merit balance + a page of their ledger (newest first). */
 async function getMerits(db, user, opts = {}) {
-	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user }).toArray();
+	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: scalar(user) }).toArray();
 	const balance = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
-	const sorted = rows.slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	const limit = opts.limit || 50;
-	return { user, balance, ledger: sorted.slice(-limit) };
+	return { user, balance, ledger: sorted.slice(0, limit) };
 }
 
 /** The rewards-shop catalog (optionally only in-stock items). */
@@ -92,9 +123,17 @@ async function getPool(db, id) {
 
 // ---- NOTIFICATIONS (§9) --------------------------------------------------
 
-/** Append one arena event to the stream. Unknown event types are rejected. */
+const MAX_EVENT_DATA_CHARS = 4096;
+
+/** Append one arena event to the stream. Unknown event types + oversized data
+ *  are rejected. */
 async function emitEvent(db, event) {
 	if (!event || !EVENT_TYPES.includes(event.type)) return { ok: false, reason: `unknown event type "${event && event.type}"` };
+	if (event.data !== undefined && event.data !== null) {
+		let size = 0;
+		try { size = JSON.stringify(event.data).length; } catch (e) { return { ok: false, reason: 'unserializable event data' }; }
+		if (size > MAX_EVENT_DATA_CHARS) return { ok: false, reason: 'event data too large' };
+	}
 	const doc = {
 		type: event.type,
 		user: event.user || null,
@@ -106,11 +145,17 @@ async function emitEvent(db, event) {
 	return { ok: true, event: doc };
 }
 
-/** List a user's recent arena events (their notification feed). */
+/** List a user's recent arena events (their notification feed, newest first). */
 async function listEvents(db, user, opts = {}) {
-	const rows = await db.collection(COLLECTIONS.EVENTS).find({ user }).toArray();
+	const rows = await db.collection(COLLECTIONS.EVENTS).find({ user: scalar(user) }).toArray();
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	return sorted.slice(0, opts.limit || 50);
+}
+
+/** Index the append-only, per-user-polled event stream. Safe no-op if absent. */
+async function ensureEventsIndexes(db) {
+	const col = db.collection(COLLECTIONS.EVENTS);
+	if (typeof col.createIndex === 'function') await col.createIndex({ user: 1, at: -1 });
 }
 
 // ---- SEED default contest set (§7.5) -------------------------------------
@@ -174,7 +219,7 @@ async function seedDefaultContests(db, opts = {}) {
 		const res = await arena.indexArenaOp(db, chainOp, { officialAccount });
 		results.push({ id: body.id, ...res });
 	}
-	return { ok: true, seeded: results.filter((r) => r.ok && !r.noop).length, results };
+	return { ok: results.every((r) => r.ok), seeded: results.filter((r) => r.ok && !r.noop).length, results };
 }
 
 module.exports = {
@@ -188,6 +233,7 @@ module.exports = {
 	getPool,
 	emitEvent,
 	listEvents,
+	ensureEventsIndexes,
 	defaultContests,
 	seedDefaultContests,
 };
