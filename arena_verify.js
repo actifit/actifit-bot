@@ -26,8 +26,13 @@
  * `anticheat_review` flag fresh — so a late correction (e.g. a revoked post)
  * re-settles cleanly, and re-running never duplicates flags.
  *
- * F2 scope: window score + anti-cheat/anti-sybil hooks. NOT resolution/payout
- * (F5) — this only produces the trusted score the resolver reads.
+ * F2 scope: window score + anti-cheat hooks. Cross-participant sybil /
+ * duplicate-signer detection is DEFERRED to Vertical B (squads); the signed-join
+ * anti-sybil is already enforced at F1 ingest. Anti-cheat here is SUPPLEMENTARY
+ * to the root of trust — a patient under-cap, evenly-spread fabricator is caught
+ * by Actifit's upstream reward-eligibility / manual-entry filter on
+ * verified_posts, not by these flags. NOT resolution/payout (F5) — this only
+ * produces the trusted score the resolver reads.
  *
  * Load-time safe: requires nothing (no config/Firebase); dependency-injected db.
  */
@@ -45,10 +50,20 @@ const ANTICHEAT_FLAG = 'anticheat_review';
 // Anti-cheat defaults (overridable via opts).
 const DEFAULT_SPIKE_FACTOR = 5;       // a day > N× the participant's own median = spike
 const DEFAULT_MAX_DAILY_STEPS = 200000; // implausible single-day activity (hard cap)
+const DEFAULT_DAY_RATIO = 30;         // max/min active-day ratio that trips a short-window spike
 
 function toDayKey(date) {
-	// UTC calendar day — a user may post more than once a day.
+	// UTC calendar day — a user may post more than once a day. Consistent with the
+	// rest of the app, which buckets on moment().utc().startOf('date').
 	return new Date(date).toISOString().slice(0, 10);
+}
+
+/** A usable challenge window: both bounds present, parseable, and start < end. */
+function hasValidWindow(window) {
+	if (!window) return false;
+	const start = Date.parse(window.start);
+	const end = Date.parse(window.end);
+	return !Number.isNaN(start) && !Number.isNaN(end) && start < end;
 }
 
 function median(values) {
@@ -61,6 +76,10 @@ function median(values) {
 /** The activity value of one verified post for the requested metric. */
 function metricValue(record, metric) {
 	switch (metric) {
+		// UNCONFIRMED source field: workout_minutes is not present on production
+		// verified_posts today (only step_count is), so this yields 0 until
+		// confirmed with the backend owner. Do NOT ship a challenge scored on this
+		// metric until the field exists — the safe 0 default would zero everyone.
 		case 'workout_minutes':
 			return Number(record.workout_minutes) || 0;
 		case 'goal_hit':
@@ -86,7 +105,9 @@ function computeWindowScore(records, scoring) {
 		byDay.set(day, (byDay.get(day) || 0) + metricValue(r, metric));
 	}
 	const per_day = [...byDay.entries()]
-		.map(([day, value]) => ({ day, value }))
+		// goal_hit is boolean per day — a day is either hit or not, never counted
+		// per-post — so clamp the daily aggregate to 0/1.
+		.map(([day, value]) => ({ day, value: metric === 'goal_hit' ? (value > 0 ? 1 : 0) : value }))
 		.sort((a, b) => (a.day < b.day ? -1 : 1));
 	const total = per_day.reduce((s, d) => s + d.value, 0);
 	const best_day = per_day.reduce((m, d) => Math.max(m, d.value), 0);
@@ -118,6 +139,18 @@ function flagAnomalies(score, opts = {}) {
 			}
 		}
 	}
+
+	// Short-window guard: the median-spike check is bypassed with < 3 active days
+	// (duels / daily_focus / weekend events), so also flag an extreme max/min
+	// active-day ratio, which is meaningful from 2 active days up.
+	if (values.length >= 2) {
+		const dayRatio = opts.dayRatioFactor || DEFAULT_DAY_RATIO;
+		const max = Math.max(...values);
+		const min = Math.min(...values);
+		if (min > 0 && max / min > dayRatio) {
+			flags.push({ type: 'day_ratio', max, min, ratio: max / min });
+		}
+	}
 	return flags;
 }
 
@@ -127,12 +160,16 @@ function flagAnomalies(score, opts = {}) {
  * post to { date, step_count, workout_minutes, permlink }.
  */
 async function fetchVerifiedActivity(db, entity, window) {
-	const query = { author: entity };
-	if (window && (window.start || window.end)) {
-		query.date = {};
-		if (window.start) query.date.$gte = new Date(window.start);
-		if (window.end) query.date.$lte = new Date(window.end);
+	// Fail CLOSED: an unbounded (or half-bounded) query would sum the
+	// participant's ENTIRE post history into one challenge — a pool-draining
+	// score. Never issue it; require a complete window.
+	if (!hasValidWindow(window)) {
+		throw new Error('fetchVerifiedActivity: challenge window is missing or invalid');
 	}
+	const query = {
+		author: entity,
+		date: { $gte: new Date(window.start), $lte: new Date(window.end) },
+	};
 	const posts = await db.collection(COLLECTIONS.VERIFIED_POSTS).find(query).toArray();
 	return posts.map((p) => {
 		const meta = p.json_metadata || {};
@@ -157,6 +194,8 @@ async function verifyParticipant(db, challenge, participant, opts = {}) {
 		verified: score.total,
 		best_day: score.best_day,
 		days: score.days,
+		// raw == verified until an advisory, client-submitted score exists (F5);
+		// then raw carries the reported number and verified the engine-computed one.
 		raw: score.total,
 		metric: score.metric,
 		source: COLLECTIONS.VERIFIED_POSTS,
@@ -177,6 +216,8 @@ async function verifyChallenge(db, challengeId, opts = {}) {
 
 	const challenge = await challenges.findOne({ id: challengeId });
 	if (!challenge) return { ok: false, reason: 'unknown challenge' };
+	// Fail closed on a windowless challenge — never score against unbounded history.
+	if (!hasValidWindow(challenge.window)) return { ok: false, reason: 'challenge has no valid window' };
 
 	const asOf = opts.asOf || new Date().toISOString();
 	const parts = await participantsC.find({ challenge_id: challengeId }).toArray();

@@ -162,3 +162,107 @@ describe('arena_verify.verifyChallenge', () => {
     expect(res.ok).toBe(false);
   });
 });
+
+// Fixes from the 2-agent review of PR #52.
+describe('arena_verify — review hardening', () => {
+  test('fetchVerifiedActivity FAILS CLOSED on a missing/partial window', async () => {
+    await expect(verify.fetchVerifiedActivity(createMockDb(), 'alice', null)).rejects.toThrow(/window/);
+    await expect(verify.fetchVerifiedActivity(createMockDb(), 'alice', { start: WINDOW.start })).rejects.toThrow(/window/);
+    await expect(verify.fetchVerifiedActivity(createMockDb(), 'alice', { end: WINDOW.end })).rejects.toThrow(/window/);
+  });
+
+  test('verifyChallenge rejects a windowless challenge and writes nothing', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch_nowin', scoring: { metric: 'activity_count' } }]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch_nowin', entity: 'alice', flags: [] }]);
+    const res = await verify.verifyChallenge(db, 'ch_nowin');
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/window/);
+    expect((await db.collection('challenge_participants').findOne({ entity: 'alice' })).score).toBeUndefined();
+  });
+
+  test('goal_hit aggregates to 0/1 per day, not per post', () => {
+    const s = verify.computeWindowScore([
+      { date: '2026-08-10T01:00:00Z', step_count: 5000 },
+      { date: '2026-08-10T20:00:00Z', step_count: 1000 }, // 2nd post same day
+      { date: '2026-08-11T10:00:00Z', step_count: 6000 },
+    ], { metric: 'goal_hit' });
+    expect(s.per_day.find((d) => d.day === '2026-08-10').value).toBe(1);
+    expect(s.total).toBe(2); // two days hit, not three posts
+    expect(s.best_day).toBe(1);
+  });
+
+  test('a short-window (2-day) extreme jump is flagged by day_ratio', () => {
+    const s = verify.computeWindowScore([
+      { date: '2026-08-10T10:00:00Z', step_count: 1000 },
+      { date: '2026-08-11T10:00:00Z', step_count: 199000 },
+    ], { metric: 'activity_count' });
+    expect(verify.flagAnomalies(s).some((f) => f.type === 'day_ratio')).toBe(true);
+  });
+
+  test('a modest 2-day ratio is not flagged', () => {
+    const s = verify.computeWindowScore([
+      { date: '2026-08-10T10:00:00Z', step_count: 3000 },
+      { date: '2026-08-11T10:00:00Z', step_count: 9000 },
+    ], { metric: 'activity_count' });
+    expect(verify.flagAnomalies(s)).toEqual([]);
+  });
+
+  test('verifyParticipant returns the score shape and writes nothing to the DB', async () => {
+    const db = createMockDb();
+    db.collection('verified_posts').__seed([post('alice', '2026-08-10T10:00:00Z', 5000)]);
+    const v = await verify.verifyParticipant(db, { window: WINDOW, scoring: { metric: 'activity_count' } }, { entity: 'alice' });
+    expect(v).toMatchObject({ verified: 5000, raw: 5000, days: 1, best_day: 5000, metric: 'activity_count', source: 'verified_posts' });
+    expect(v.anomalies).toEqual([]);
+    expect(await db.collection('challenge_participants').find({}).toArray()).toHaveLength(0);
+  });
+
+  test('a participant with no verified posts scores zero and is not flagged', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch_z', window: WINDOW, scoring: { metric: 'activity_count' } }]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch_z', entity: 'ghost', flags: [] }]);
+    const res = await verify.verifyChallenge(db, 'ch_z');
+    expect(res).toMatchObject({ ok: true, participants: 1, flagged: 0 });
+    const p = await db.collection('challenge_participants').findOne({ entity: 'ghost' });
+    expect(p.score).toMatchObject({ verified: 0, days: 0, best_day: 0 });
+    expect(p.flags).toEqual([]);
+  });
+
+  test('flag merge preserves an unrelated pre-existing flag; persists best_day + metric', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch_f', window: WINDOW, scoring: { metric: 'activity_count' } }]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'ch_f', entity: 'bob', flags: ['vip'] }]);
+    db.collection('verified_posts').__seed([
+      post('bob', '2026-08-10T10:00:00Z', 5000),
+      post('bob', '2026-08-11T10:00:00Z', 6000),
+      post('bob', '2026-08-12T10:00:00Z', 300000),
+    ]);
+    await verify.verifyChallenge(db, 'ch_f');
+    let bob = await db.collection('challenge_participants').findOne({ entity: 'bob' });
+    expect(bob.flags).toEqual(expect.arrayContaining(['vip', 'anticheat_review']));
+    expect(bob.score.best_day).toBe(300000);
+    expect(bob.score.metric).toBe('activity_count');
+
+    db.collection('verified_posts').deleteOne({ author: 'bob', permlink: 'p-2026-08-12T10:00:00Z' });
+    await verify.verifyChallenge(db, 'ch_f');
+    bob = await db.collection('challenge_participants').findOne({ entity: 'bob' });
+    expect(bob.flags).toContain('vip');
+    expect(bob.flags).not.toContain('anticheat_review');
+  });
+
+  test('verifyChallenge scopes writes to its own challenge_id', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'ch_a', window: WINDOW, scoring: { metric: 'activity_count' } },
+      { id: 'ch_b', window: WINDOW, scoring: { metric: 'activity_count' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'ch_a', entity: 'alice', flags: [] },
+      { challenge_id: 'ch_b', entity: 'alice', flags: [] },
+    ]);
+    db.collection('verified_posts').__seed([post('alice', '2026-08-10T10:00:00Z', 5000)]);
+    await verify.verifyChallenge(db, 'ch_a');
+    expect((await db.collection('challenge_participants').findOne({ challenge_id: 'ch_a', entity: 'alice' })).score.verified).toBe(5000);
+    expect((await db.collection('challenge_participants').findOne({ challenge_id: 'ch_b', entity: 'alice' })).score).toBeUndefined();
+  });
+});
