@@ -156,10 +156,27 @@ client.connect()
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
-	  
+
 	  //clearCorruptData();
-	  
+
 	  //disableUserLogin();
+
+	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
+	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
+	  try {
+	    if (config.arena_tailer_enabled) {
+	      const arenaTailer = require('./arena_tailer');
+	      arenaTailer.startArenaTailer(db, {
+	        nodes: config.alt_hive_nodes,
+	        officialAccount: config.arena_official_account || config.account || 'actifit',
+	        startBlock: config.arena_tailer_start_block || 0,
+	        log: (m) => utils.log(m, 'arena'),
+	      });
+	      console.log('Arena tailer started');
+	    }
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
 	})
 	.catch(err => {
 		utils.log(err, 'api');
