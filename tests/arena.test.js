@@ -316,3 +316,95 @@ describe('arena.indexArenaOp — review hardening (B1–B4)', () => {
     expect(ch.source.settle_trx_id).toBe('t_s');
   });
 });
+
+// Fixes from the second (2-agent) review of PR #50.
+describe('arena — review round 2 hardening (M1 + coverage)', () => {
+  let db;
+  beforeEach(() => { db = createMockDb(); });
+  const create = (over, signer = 'alice', extra) => arena.indexArenaOp(db, chainOp(createBody(over), signer, extra));
+
+  // M1 — a monetary field nested inside entry.gate must not survive (B3, one level deeper).
+  test('M1: a monetary field nested in entry.gate is rejected (invariant I1)', async () => {
+    const res = await create({ entry: { mode: 'free', gate: { min_activity: 5000, fee: 100 } } });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/monetary/);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
+  test('M1: unknown entry.gate keys are stripped from the stored doc', async () => {
+    await create({ entry: { mode: 'activity_gated', gate: { min_activity: 5000, foo: 'bar' } } });
+    expect((await db.collection('challenges').findOne({ id: 'ch_1' })).entry)
+      .toEqual({ mode: 'activity_gated', gate: { min_activity: 5000 } });
+  });
+
+  test('rejects an invalid visibility', () => {
+    expect(arena.validateArenaOp(createBody({ visibility: 'secret' })).valid).toBe(false);
+  });
+
+  test('rejects an unsupported op version and persists a valid one', async () => {
+    expect(arena.validateArenaOp(createBody({ v: 2 })).valid).toBe(false);
+    expect(arena.validateArenaOp(createBody({ v: 0 })).valid).toBe(false);
+    await create({ v: 1 });
+    expect((await db.collection('challenges').findOne({ id: 'ch_1' })).v).toBe(1);
+  });
+
+  // indexArenaOp guard branches that the happy-path tests never reach.
+  const rawOp = (over = {}) => ({
+    id: arena.ARENA_JSON_ID,
+    json: JSON.stringify(createBody()),
+    required_posting_auths: ['alice'],
+    required_auths: [],
+    trx_id: 't',
+    ...over,
+  });
+
+  test('rejects an op whose id is not actifit_arena', async () => {
+    expect((await arena.indexArenaOp(db, rawOp({ id: 'something_else' }))).ok).toBe(false);
+  });
+
+  test('rejects an op with unparseable json', async () => {
+    expect((await arena.indexArenaOp(db, rawOp({ json: '{not valid' }))).ok).toBe(false);
+  });
+
+  test('rejects an op with no signer', async () => {
+    const res = await arena.indexArenaOp(db, rawOp({ required_posting_auths: [], required_auths: [] }));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/no signer/);
+  });
+
+  test('rejects an op with no trx_id', async () => {
+    const res = await arena.indexArenaOp(db, rawOp({ trx_id: undefined }));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/no trx_id/);
+  });
+
+  test('opSigner falls back to the active auth when no posting auth is present', () => {
+    expect(arena.opSigner({ required_posting_auths: [], required_auths: ['boss'] })).toBe('boss');
+  });
+
+  // ensureArenaIndexes: the shared mock has no createIndex, so drive a bespoke one.
+  test('ensureArenaIndexes declares the unique id + participant indexes', async () => {
+    const calls = { challenges: [], challenge_participants: [] };
+    const idxDb = { collection: (name) => ({ createIndex: (spec, opts) => { calls[name].push({ spec, opts }); return Promise.resolve(); } }) };
+    await arena.ensureArenaIndexes(idxDb);
+    expect(calls.challenges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ spec: { id: 1 }, opts: { unique: true } }),
+    ]));
+    expect(calls.challenge_participants).toEqual(expect.arrayContaining([
+      expect.objectContaining({ spec: { challenge_id: 1, entity: 1 }, opts: { unique: true } }),
+    ]));
+  });
+
+  // The dup-key catch branch: unreachable via the shared mock (it never throws),
+  // so inject a collection whose insertOne rejects with E11000 after findOne misses.
+  test('a duplicate-key insert race is treated as an idempotent no-op', async () => {
+    const raceDb = {
+      collection: () => ({
+        findOne: () => Promise.resolve(null),
+        insertOne: () => { const e = new Error('E11000 duplicate key'); e.code = 11000; return Promise.reject(e); },
+      }),
+    };
+    const res = await arena.indexArenaOp(raceDb, chainOp(createBody(), 'alice', { trx_id: 't_race' }));
+    expect(res).toMatchObject({ ok: true, action: 'challenge_created', noop: true });
+  });
+});

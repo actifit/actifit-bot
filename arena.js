@@ -57,11 +57,17 @@ const CHALLENGE_TYPES = [
 ];
 const ORIGIN_TIERS = ['friendly', 'community', 'official'];
 const ENTITY_KINDS = ['user', 'squad'];
+const VISIBILITIES = ['public', 'community', 'private'];
 
 // I1 — entry is never a fee (no `fee` here, by construction).
 const ENTRY_MODES = ['free', 'activity_gated'];
+// The only sub-keys an activity-gate may carry (keeps monetary fields out — I1).
+const GATE_ALLOWED_KEYS = ['min_activity'];
 // I6 — outcomes are decided by verified effort/goal, never chance.
 const SCORING_RULES = ['max', 'threshold', 'head_to_head'];
+
+// Highest `op.v` (§3.10) this build understands; newer major versions are rejected.
+const SUPPORTED_OP_VERSION = 1;
 
 // ---- lifecycle state machine (§3.1) --------------------------------------
 
@@ -103,6 +109,18 @@ function pick(obj, keys) {
 	const out = {};
 	if (obj && typeof obj === 'object') {
 		for (const k of keys) if (obj[k] !== undefined) out[k] = obj[k];
+	}
+	return out;
+}
+
+/**
+ * Build the stored `entry` sub-doc, whitelisting BOTH the entry and its nested
+ * `gate` so no monetary field (even one buried in gate) reaches the index (I1).
+ */
+function buildEntry(entry) {
+	const out = { mode: 'free', ...pick(entry, ['mode']) };
+	if (entry && typeof entry.gate === 'object' && entry.gate !== null) {
+		out.gate = pick(entry.gate, GATE_ALLOWED_KEYS);
 	}
 	return out;
 }
@@ -153,6 +171,11 @@ function validateArenaOp(op) {
 	if (!OP_NAMES.includes(op.op)) {
 		return { valid: false, errors: [`unknown op "${op.op}"`] };
 	}
+	// §3.10/§12.9 — every op carries a version; reject a newer major we can't parse.
+	if (op.v !== undefined) {
+		if (!Number.isInteger(op.v) || op.v < 1) errors.push(`invalid op version "${op.v}"`);
+		else if (op.v > SUPPORTED_OP_VERSION) errors.push(`unsupported op version ${op.v} (max ${SUPPORTED_OP_VERSION})`);
+	}
 
 	switch (op.op) {
 		case OPS.CHALLENGE_CREATE: {
@@ -164,6 +187,9 @@ function validateArenaOp(op) {
 			if (op.participants_kind !== undefined && !ENTITY_KINDS.includes(op.participants_kind)) {
 				errors.push(`challenge_create: invalid participants_kind "${op.participants_kind}"`);
 			}
+			if (op.visibility !== undefined && !VISIBILITIES.includes(op.visibility)) {
+				errors.push(`challenge_create: invalid visibility "${op.visibility}"`);
+			}
 			if (!isValidWindow(op.window)) errors.push('challenge_create: invalid window (need start<end ISO)');
 
 			const entry = op.entry || {};
@@ -171,10 +197,14 @@ function validateArenaOp(op) {
 			if (entry.mode !== undefined && !ENTRY_MODES.includes(entry.mode)) {
 				errors.push(`challenge_create: entry.mode "${entry.mode}" not allowed (no fee entry — invariant I1)`);
 			}
-			// I1 — reject any monetary field smuggled onto the entry, even when mode is valid.
-			const monetary = Object.keys(entry).filter((k) => FORBIDDEN_ENTRY_KEYS.includes(k));
+			// I1 — reject any monetary field smuggled onto the entry OR its nested gate,
+			// even when mode is valid.
+			const monetary = [
+				...Object.keys(entry),
+				...(entry.gate && typeof entry.gate === 'object' ? Object.keys(entry.gate) : []),
+			].filter((k) => FORBIDDEN_ENTRY_KEYS.includes(k));
 			if (monetary.length) {
-				errors.push(`challenge_create: entry may not carry monetary field(s) "${monetary.join(', ')}" (no fee/stake/wager — invariant I1)`);
+				errors.push(`challenge_create: entry may not carry monetary field(s) "${[...new Set(monetary)].join(', ')}" (no fee/stake/wager — invariant I1)`);
 			}
 			const scoring = op.scoring || {};
 			if (!isNonEmptyString(scoring.metric)) errors.push('challenge_create: missing scoring.metric');
@@ -224,8 +254,9 @@ function validateArenaOp(op) {
  * @param {object} [opts]    { officialAccount = 'actifit' } — the account allowed
  *                           to sign official/system ops (enroll, settle, official
  *                           challenge creation, state updates).
- * @returns {Promise<{ ok: boolean, action?: string, reason?: string }>}
- *          A non-conforming op is NOT written (ok:false) — the invariants gate
+ * @returns {Promise<{ ok: boolean, action?: string, reason?: string, noop?: boolean, count?: number }>}
+ *          `ok:true` with `noop:true` is a benign idempotent replay. A
+ *          non-conforming op is NOT written (ok:false) — the invariants gate
  *          what "counts" even though anyone can post a raw custom_json.
  */
 async function indexArenaOp(db, chainOp, opts = {}) {
@@ -243,6 +274,11 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 	const trx_id = chainOp.trx_id || null;
 	const block_num = chainOp.block_num || null;
 	const at = chainOp.timestamp || null;
+
+	// The trx_id is the idempotency key; refuse an op that lacks one rather than
+	// let a null key collapse the replay checks below (two distinct null-trx ops
+	// on the same natural key would look like a replay).
+	if (!trx_id) return { ok: false, reason: 'op has no trx_id' };
 
 	const challenges = db.collection(COLLECTIONS.CHALLENGES);
 	const participants = db.collection(COLLECTIONS.PARTICIPANTS);
@@ -266,6 +302,7 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 
 			const doc = {
 				id: op.id,
+				v: op.v || 1,
 				type: op.type,
 				title: op.title || null,
 				state: 'open',
@@ -274,9 +311,10 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				community: op.community || null,
 				participants_kind: op.participants_kind || 'user',
 				// Only whitelisted sub-fields are stored — an attacker's extra keys
-				// (e.g. a smuggled entry.fee) never reach the on-chain-of-record index.
+				// (e.g. a smuggled entry.fee, incl. one nested under entry.gate)
+				// never reach the on-chain-of-record index.
 				window: pick(op.window, ['start', 'end', 'tz']),
-				entry: { mode: 'free', ...pick(op.entry, ['mode', 'gate']) },
+				entry: buildEntry(op.entry),
 				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
 				pool_ref: op.pool_ref || null,
