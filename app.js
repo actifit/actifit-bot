@@ -750,6 +750,9 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 // arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
 // Rate-limited: these are public, unauthenticated reads.
 const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+// NOTE: no `resolveTier` is wired yet, so POST /arena/ops/validate treats EVERY
+// caller as the safe 'friendly' floor (community/official creates won't validate
+// until tier derivation from getRank/role is added — tracked on #180).
 arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){

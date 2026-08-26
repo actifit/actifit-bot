@@ -113,4 +113,45 @@ describe('arena_routes (HTTP)', () => {
     await request(limited).get('/arena/shop');
     expect(hits).toBe(1);
   });
+
+  test('POST /arena/ops/validate validates a proposed op at the friendly floor', async () => {
+    const window = { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' };
+    const goodOp = { op: 'challenge_create', v: 1, id: 'c1', type: 'duel', origin_tier: 'friendly', window, entry: { mode: 'free' }, scoring: { metric: 'activity_count', rule: 'head_to_head' } };
+    const ok = await request(app).post('/arena/ops/validate').send({ op: goodOp });
+    expect(ok.body.ok).toBe(true);
+    // a client-claimed official tier is ignored — server floor is friendly
+    const bad = await request(app).post('/arena/ops/validate').send({ op: { ...goodOp, origin_tier: 'official' } });
+    expect(bad.body.ok).toBe(false);
+    expect(bad.body.errors.join(' ')).toMatch(/tier/);
+  });
+
+  test('POST /arena/ops/validate derives tier via opts.resolveTier', async () => {
+    const off = express();
+    registerArenaRoutes(off, () => db, { resolveTier: () => 'official' });
+    const window = { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' };
+    const op = { op: 'challenge_create', v: 1, id: 'c2', type: 'duel', origin_tier: 'official', window, entry: { mode: 'free' }, scoring: { metric: 'steps', rule: 'max' } };
+    const r = await request(off).post('/arena/ops/validate').send({ op });
+    expect(r.body.ok).toBe(true);
+  });
+
+  test('POST /arena/ops/validate with a missing body returns a clean {ok:false} 200', async () => {
+    const r = await request(app).post('/arena/ops/validate').send({});
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(false);
+  });
+
+  test('POST /arena/ops/validate with malformed JSON returns 400 {error}, no stack', async () => {
+    const r = await request(app).post('/arena/ops/validate').set('content-type', 'application/json').send('{bad json');
+    expect(r.status).toBe(400);
+    expect(r.body).toEqual({ error: 'invalid request body' });
+  });
+
+  test('POST /arena/ops/validate is behind the limiter and validates a join op', async () => {
+    let hits = 0;
+    const limited = express();
+    registerArenaRoutes(limited, () => db, { limiter: (req, res, next) => { hits++; next(); } });
+    const r = await request(limited).post('/arena/ops/validate').send({ op: { op: 'join', v: 1, challenge_id: 'ch1' } });
+    expect(hits).toBe(1);
+    expect(r.body.ok).toBe(true);
+  });
 });
