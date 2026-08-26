@@ -2,6 +2,13 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+// Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
+var arena = require('./arena');
+var arenaApi = require('./arena_api');
+var arenaStandings = require('./arena_standings');
+var arenaMerits = require('./arena_merits');
+var arenaPools = require('./arena_pools');
+var arenaRoutes = require('./arena_routes');
 const moment = require('moment')
 var crypto = require('crypto');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -160,6 +167,17 @@ client.connect()
 	  //clearCorruptData();
 
 	  //disableUserLogin();
+
+	  // Challenge Engine (Trello #171): ensure the arena collection indexes.
+	  try {
+	    arena.ensureArenaIndexes(db);
+	    arenaStandings.ensureStandingsIndexes(db);
+	    arenaMerits.ensureMeritsIndexes(db);
+	    arenaPools.ensurePoolsIndexes(db);
+	    arenaApi.ensureEventsIndexes(db);
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
 
 	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
@@ -727,6 +745,12 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 	let results = await db.collection('gadget_transactions_hive').find(query).sort({date: -1}).toArray();
 	res.send(results);
 })
+
+// Challenge Engine (Arena) — public READ API (#180, §8). Thin wrappers over
+// arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
+// Rate-limited: these are public, unauthenticated reads.
+const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){
 	let refetch = false;
