@@ -43,6 +43,7 @@ function createMockCollection(initialData = []) {
       if (opts.upsert) {
         const doc = {};
         for (const k of Object.keys(query)) { if (typeof query[k] !== 'object' || query[k] === null) doc[k] = query[k]; }
+        if (update.$setOnInsert) Object.assign(doc, update.$setOnInsert);
         if (update.$set) Object.assign(doc, update.$set);
         if (update.$inc) applyInc(doc);
         data.push(doc);

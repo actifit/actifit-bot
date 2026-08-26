@@ -28,14 +28,23 @@
  * server-set (never user-controlled) so the daily cap can't be gamed.
  *
  * Concurrency (#178): the live balance is a guarded `$inc` COUNTER in
- * `merits_balances`, not a ledger scan — so a spend is an atomic conditional
- * decrement (`updateOne({user, balance:{$gte:amount}}, {$inc:{balance:-amount}})`)
- * that cannot overdraw under parallel requests, and shop stock is reserved by the
- * same atomic conditional `$inc` (with a refund if the debit then fails). The
- * `merits_ledger` remains the append-only double-entry audit log; the counter and
- * the ledger sum stay in lock-step (both updated per operation). The daily
- * emission cap is still a ledger read (a small over-emit race is tolerable; it
- * never overdraws).
+ * `merits_balances` (the AUTHORITATIVE source), not a ledger scan — so a spend is
+ * an atomic conditional decrement
+ * (`updateOne({user, balance:{$gte:amount}}, {$inc:{balance:-amount}})`) that
+ * cannot overdraw under parallel requests, and shop stock is reserved by the same
+ * atomic conditional `$inc` (with a refund if the debit then fails or throws). A
+ * user's counter is backfilled from their prior ledger sum on first touch
+ * (`ensureCounter`, `$setOnInsert`), so legacy balances are neither lost nor
+ * frozen. The `merits_ledger` remains the append-only double-entry audit log; its
+ * `balance_after`/`id` are best-effort under true concurrency (two simultaneous
+ * succeeding ops may record equal values) and are reconciled by the counter — do
+ * NOT read them for decisions. The daily emission cap is a ledger read (a small
+ * over-emit race is tolerable; it never overdraws).
+ *
+ * Deferred (tracked #178): wrap counter+ledger (and reserve+debit+purchase) in a
+ * Mongo transaction for exact audit consistency + crash safety, and a real
+ * (mongodb-memory-server) integration test — the mock proves guard-wiring, not
+ * the DB's single-document atomicity.
  *
  * F4 slice scope; DEFERRED to F5: pool-funded AFIT payout (I2 pool funding) and
  * I7 (funder ≠ paid participant) live in the pools/resolution module.
@@ -86,16 +95,33 @@ async function emittedOn(db, user, at) {
 		.reduce((s, r) => s + Number(r.delta), 0);
 }
 
+/**
+ * Ensure a user has a balance counter, BACKFILLING it from their existing ledger
+ * sum on first touch (users predating the counter). `$setOnInsert` makes this
+ * idempotent + race-safe: only the first upsert seeds the balance; a concurrent
+ * caller (or any later call) no-ops once the doc exists. Must run before the
+ * first award/spend so a legacy balance is never lost or frozen.
+ */
+async function ensureCounter(db, user) {
+	if (await db.collection(COLLECTIONS.BALANCES).findOne({ user })) return;
+	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user }).toArray();
+	const seed = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
+	await db.collection(COLLECTIONS.BALANCES).updateOne({ user }, { $setOnInsert: { user, balance: seed } }, { upsert: true });
+}
+
+/** Append one immutable double-entry row. `balance_after` is the authoritative
+ *  post-op counter value (best-effort under concurrency — the counter is the
+ *  source of truth; two simultaneous succeeding ops may record equal ids /
+ *  balance_after, reconciled by the counter). */
 async function appendLedger(db, row) {
 	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: row.user }).toArray();
-	const balance_before = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const entry = {
-		id: `led_${row.user}_${rows.length}`, // stable per-user sequence (append-only)
+		id: `led_${row.user}_${rows.length}`,
 		user: row.user,
 		delta: row.delta,
 		reason: row.reason,
 		ref: row.ref || null,
-		balance_after: balance_before + row.delta,
+		balance_after: row.balance_after,
 		at: row.at,
 		immutable: true,
 	};
@@ -138,9 +164,10 @@ async function award(db, params) {
 			capMeta = { capped: true, requested, emitted: room, dropped: requested - room };
 		}
 	}
-	// Atomic credit to the counter, then the double-entry ledger row.
+	// Backfill any prior ledger balance into the counter, then atomic credit.
+	await ensureCounter(db, user);
 	await db.collection(COLLECTIONS.BALANCES).updateOne({ user }, { $inc: { balance: creditAmount } }, { upsert: true });
-	const entry = await appendLedger(db, { user, delta: creditAmount, reason, ref, at });
+	const entry = await appendLedger(db, { user, delta: creditAmount, reason, ref, at, balance_after: await balanceOf(db, user) });
 	return { ok: true, entry, ...(capMeta || {}) };
 }
 
@@ -159,6 +186,8 @@ async function spend(db, params) {
 	if (reason === 'admin_adjust' && !params.authorized) {
 		return { ok: false, reason: 'admin_adjust requires authorization' };
 	}
+	// Backfill any prior ledger balance so a legacy user can spend it.
+	await ensureCounter(db, user);
 	// Atomic guarded decrement — cannot overdraw under concurrent spends: the
 	// {balance:{$gte:amount}} condition + $inc is a single-document atomic update.
 	const r = await db.collection(COLLECTIONS.BALANCES).updateOne(
@@ -166,7 +195,7 @@ async function spend(db, params) {
 		{ $inc: { balance: -Number(amount) } }
 	);
 	if (!r.modifiedCount) return { ok: false, reason: 'insufficient merits' };
-	const entry = await appendLedger(db, { user, delta: -Number(amount), reason, ref, at });
+	const entry = await appendLedger(db, { user, delta: -Number(amount), reason, ref, at, balance_after: await balanceOf(db, user) });
 	return { ok: true, entry };
 }
 
@@ -209,20 +238,23 @@ async function purchase(db, params) {
 		const r = await shop.updateOne({ id: item.id, stock: { $gt: 0 } }, { $inc: { stock: -1 } });
 		if (!r.modifiedCount) return { ok: false, reason: 'out of stock' };
 	}
+	const refundStock = async () => { if (limited) await shop.updateOne({ id: item.id }, { $inc: { stock: 1 } }); };
 
-	// Free items (cost_merits === 0) skip the debit — spend() rejects a 0 amount.
-	let ledger = null;
-	if (Number(item.cost_merits) > 0) {
-		const debit = await spend(db, { user, amount: item.cost_merits, reason: 'shop_purchase', ref: item.id, at });
-		if (!debit.ok) {
-			if (limited) await shop.updateOne({ id: item.id }, { $inc: { stock: 1 } }); // refund the reservation
-			return debit;
+	try {
+		// Free items (cost_merits === 0) skip the debit — spend() rejects a 0 amount.
+		let ledger = null;
+		if (Number(item.cost_merits) > 0) {
+			const debit = await spend(db, { user, amount: item.cost_merits, reason: 'shop_purchase', ref: item.id, at });
+			if (!debit.ok) { await refundStock(); return debit; }
+			ledger = debit.entry;
 		}
-		ledger = debit.entry;
+		await db.collection(COLLECTIONS.PURCHASES).insertOne({ user, item_id: item.id, cost_merits: Number(item.cost_merits), at });
+		return { ok: true, item_id: item.id, ledger };
+	} catch (e) {
+		// A throw after the reservation (DB error) must not leak the reserved unit.
+		await refundStock();
+		throw e;
 	}
-
-	await db.collection(COLLECTIONS.PURCHASES).insertOne({ user, item_id: item.id, cost_merits: Number(item.cost_merits), at });
-	return { ok: true, item_id: item.id, ledger };
 }
 
 /** Indexes the ledger/shop rely on. Safe no-op where createIndex is unavailable. */

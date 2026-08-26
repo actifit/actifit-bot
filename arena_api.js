@@ -36,6 +36,7 @@ const COLLECTIONS = {
 	PARTICIPANTS: 'challenge_participants',
 	STANDINGS: 'standings',
 	LEDGER: 'merits_ledger',
+	BALANCES: 'merits_balances',
 	SHOP: 'rewards_shop',
 	POOLS: 'pools',
 	EVENTS: 'arena_events',
@@ -112,7 +113,7 @@ function pageLimit(v) {
 async function getMerits(db, user, opts = {}) {
 	const u = scalar(user);
 	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: u }).toArray();
-	const bal = await db.collection('merits_balances').findOne({ user: u });
+	const bal = await db.collection(COLLECTIONS.BALANCES).findOne({ user: u });
 	const balance = (bal && Number.isFinite(bal.balance)) ? bal.balance : rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };

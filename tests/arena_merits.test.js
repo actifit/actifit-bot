@@ -209,4 +209,32 @@ describe('arena_merits — atomicity (#178)', () => {
     expect((await db.collection('merits_balances').findOne({ user: 'a' })).balance).toBe(180);
     expect(await merits.balanceOf(db, 'a')).toBe(180);
   });
+
+  // Migration: users with ledger history but no counter doc (predating #178).
+  test('award on a legacy user seeds the FULL prior balance, not just the new delta', async () => {
+    const db = createMockDb();
+    db.collection('merits_ledger').__seed([{ user: 'old', delta: 5000, reason: 'challenge_reward', at: '2026-08-20T10:00:00Z' }]);
+    await merits.award(db, { user: 'old', amount: 100, reason: 'challenge_reward', at: AT });
+    expect(await merits.balanceOf(db, 'old')).toBe(5100); // 5000 backfilled + 100
+  });
+
+  test('spend on a legacy user works (counter backfilled from the ledger)', async () => {
+    const db = createMockDb();
+    db.collection('merits_ledger').__seed([{ user: 'old', delta: 5000, reason: 'challenge_reward', at: '2026-08-20T10:00:00Z' }]);
+    const r = await merits.spend(db, { user: 'old', amount: 300, at: AT });
+    expect(r.ok).toBe(true);
+    expect(await merits.balanceOf(db, 'old')).toBe(4700);
+  });
+
+  test('purchase refunds the stock reservation when the debit fails (stock:1)', async () => {
+    const db = createMockDb();
+    await merits.addShopItem(db, { id: 'one', kind: 'cosmetic', cost_merits: 100, stock: 1 });
+    const broke = await merits.purchase(db, { user: 'broke', itemId: 'one', at: AT });
+    expect(broke.ok).toBe(false);
+    expect((await db.collection('rewards_shop').findOne({ id: 'one' })).stock).toBe(1); // reservation refunded
+    await merits.award(db, { user: 'rich', amount: 500, reason: 'challenge_reward', at: AT });
+    const rich = await merits.purchase(db, { user: 'rich', itemId: 'one', at: AT });
+    expect(rich.ok).toBe(true);
+    expect((await db.collection('rewards_shop').findOne({ id: 'one' })).stock).toBe(0);
+  });
 });
