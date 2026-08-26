@@ -23,15 +23,17 @@ function intOr(v, dflt) {
 function registerArenaRoutes(app, getDb, opts = {}) {
 	const log = typeof opts.log === 'function' ? opts.log : () => {};
 	const fail = (res, name, err) => { log(err, 'api'); res.status(500).send({ error: name }); };
+	// Optional rate-limit middleware for these public, unauthenticated reads.
+	const mw = typeof opts.limiter === 'function' ? [opts.limiter] : [];
 
-	app.get('/arena/challenges', async (req, res) => {
+	app.get('/arena/challenges', ...mw, async (req, res) => {
 		try {
 			const { type, state, community, origin_tier, entity } = req.query;
 			res.send(await arenaApi.listChallenges(getDb(), { type, state, community, origin_tier, entity }));
 		} catch (err) { fail(res, 'arena_challenges', err); }
 	});
 
-	app.get('/arena/challenges/:id', async (req, res) => {
+	app.get('/arena/challenges/:id', ...mw, async (req, res) => {
 		try {
 			const c = await arenaApi.getChallenge(getDb(), req.params.id);
 			if (!c) return res.status(404).send({ error: 'not found' });
@@ -39,26 +41,26 @@ function registerArenaRoutes(app, getDb, opts = {}) {
 		} catch (err) { fail(res, 'arena_challenge', err); }
 	});
 
-	app.get('/arena/standings', async (req, res) => {
+	app.get('/arena/standings', ...mw, async (req, res) => {
 		try {
 			const { id, scope, cohort } = req.query;
 			res.send(await arenaApi.getStandings(getDb(), { id, scope, cohort }));
 		} catch (err) { fail(res, 'arena_standings', err); }
 	});
 
-	app.get('/arena/merits/:user', async (req, res) => {
+	app.get('/arena/merits/:user', ...mw, async (req, res) => {
 		try {
 			res.send(await arenaApi.getMerits(getDb(), req.params.user, { limit: intOr(req.query.limit) }));
 		} catch (err) { fail(res, 'arena_merits', err); }
 	});
 
-	app.get('/arena/shop', async (req, res) => {
+	app.get('/arena/shop', ...mw, async (req, res) => {
 		try {
 			res.send(await arenaApi.getShop(getDb(), { inStockOnly: req.query.inStockOnly === 'true' }));
 		} catch (err) { fail(res, 'arena_shop', err); }
 	});
 
-	app.get('/arena/pools/:id', async (req, res) => {
+	app.get('/arena/pools/:id', ...mw, async (req, res) => {
 		try {
 			const p = await arenaApi.getPool(getDb(), req.params.id);
 			if (!p) return res.status(404).send({ error: 'not found' });
@@ -66,7 +68,7 @@ function registerArenaRoutes(app, getDb, opts = {}) {
 		} catch (err) { fail(res, 'arena_pool', err); }
 	});
 
-	app.get('/arena/events/:user', async (req, res) => {
+	app.get('/arena/events/:user', ...mw, async (req, res) => {
 		try {
 			res.send(await arenaApi.listEvents(getDb(), req.params.user, { limit: intOr(req.query.limit) }));
 		} catch (err) { fail(res, 'arena_events', err); }

@@ -100,13 +100,19 @@ async function getStandings(db, params = {}) {
 	return db.collection(COLLECTIONS.STANDINGS).find(q).toArray();
 }
 
+// Hard cap on a returned page — bounds the response for public reads.
+const MAX_PAGE = 200;
+function pageLimit(v) {
+	const n = Number(v);
+	return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), MAX_PAGE) : 50;
+}
+
 /** A user's Merit balance + a page of their ledger (newest first). */
 async function getMerits(db, user, opts = {}) {
 	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: scalar(user) }).toArray();
 	const balance = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
-	const limit = opts.limit || 50;
-	return { user, balance, ledger: sorted.slice(0, limit) };
+	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };
 }
 
 /** The rewards-shop catalog (optionally only in-stock items). */
@@ -118,7 +124,7 @@ async function getShop(db, opts = {}) {
 
 /** A pool's public status (budget/committed/paid) — funding transparency. */
 async function getPool(db, id) {
-	return db.collection(COLLECTIONS.POOLS).findOne({ id });
+	return db.collection(COLLECTIONS.POOLS).findOne({ id: scalar(id) });
 }
 
 // ---- NOTIFICATIONS (§9) --------------------------------------------------
@@ -149,7 +155,7 @@ async function emitEvent(db, event) {
 async function listEvents(db, user, opts = {}) {
 	const rows = await db.collection(COLLECTIONS.EVENTS).find({ user: scalar(user) }).toArray();
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
-	return sorted.slice(0, opts.limit || 50);
+	return sorted.slice(0, pageLimit(opts.limit));
 }
 
 /** Index the append-only, per-user-polled event stream. Safe no-op if absent. */

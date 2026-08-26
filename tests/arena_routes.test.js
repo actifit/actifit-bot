@@ -79,4 +79,38 @@ describe('arena_routes (HTTP)', () => {
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body)).toBe(true);
   });
+
+  test('GET /arena/standings?id= returns the single doc', async () => {
+    const r = await request(app).get('/arena/standings?id=std1');
+    expect(r.body.id).toBe('std1');
+  });
+
+  test('GET /arena/merits/:user?limit= caps the ledger page', async () => {
+    db.collection('merits_ledger').__seed([
+      { user: 'alice', delta: 10, at: '2026-08-26T02:00:00Z' },
+      { user: 'alice', delta: 20, at: '2026-08-26T03:00:00Z' },
+    ]);
+    const r = await request(app).get('/arena/merits/alice?limit=2');
+    expect(r.body.ledger).toHaveLength(2);
+    expect(r.body.ledger[0].delta).toBe(20); // newest first
+    expect(r.body.balance).toBe(130); // full balance, not just the page
+  });
+
+  test('a getDb failure yields 500 {error} and logs (no internal leak)', async () => {
+    const logged = [];
+    const bad = express();
+    registerArenaRoutes(bad, () => { throw new Error('db down'); }, { log: (e) => logged.push(e) });
+    const r = await request(bad).get('/arena/challenges');
+    expect(r.status).toBe(500);
+    expect(r.body).toEqual({ error: 'arena_challenges' }); // no stack/internal
+    expect(logged.length).toBe(1);
+  });
+
+  test('an opts.limiter middleware is applied to the routes', async () => {
+    let hits = 0;
+    const limited = express();
+    registerArenaRoutes(limited, () => db, { limiter: (req, res, next) => { hits++; next(); } });
+    await request(limited).get('/arena/shop');
+    expect(hits).toBe(1);
+  });
 });

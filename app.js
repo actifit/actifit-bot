@@ -748,7 +748,9 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 
 // Challenge Engine (Arena) — public READ API (#180, §8). Thin wrappers over
 // arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
-arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log });
+// Rate-limited: these are public, unauthenticated reads.
+const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){
 	let refetch = false;
