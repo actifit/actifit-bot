@@ -107,10 +107,13 @@ function pageLimit(v) {
 	return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), MAX_PAGE) : 50;
 }
 
-/** A user's Merit balance + a page of their ledger (newest first). */
+/** A user's Merit balance (authoritative counter, ledger-sum fallback) + a page
+ *  of their ledger (newest first). */
 async function getMerits(db, user, opts = {}) {
-	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: scalar(user) }).toArray();
-	const balance = rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
+	const u = scalar(user);
+	const rows = await db.collection(COLLECTIONS.LEDGER).find({ user: u }).toArray();
+	const bal = await db.collection('merits_balances').findOne({ user: u });
+	const balance = (bal && Number.isFinite(bal.balance)) ? bal.balance : rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };
 }

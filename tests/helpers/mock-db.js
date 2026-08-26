@@ -31,13 +31,24 @@ function createMockCollection(initialData = []) {
       data.push(...docs);
       return Promise.resolve({ insertedCount: docs.length });
     }),
-    updateOne: jest.fn((query, update) => {
+    updateOne: jest.fn((query, update, opts = {}) => {
+      const applyInc = (doc) => { for (const k of Object.keys(update.$inc)) doc[k] = (Number(doc[k]) || 0) + update.$inc[k]; };
       const idx = data.findIndex((doc) => matchQuery(doc, query));
       if (idx !== -1) {
         if (update.$set) Object.assign(data[idx], update.$set);
-        else Object.assign(data[idx], update);
+        if (update.$inc) applyInc(data[idx]);
+        if (!update.$set && !update.$inc) Object.assign(data[idx], update);
+        return Promise.resolve({ modifiedCount: 1, upsertedCount: 0 });
       }
-      return Promise.resolve({ modifiedCount: idx !== -1 ? 1 : 0 });
+      if (opts.upsert) {
+        const doc = {};
+        for (const k of Object.keys(query)) { if (typeof query[k] !== 'object' || query[k] === null) doc[k] = query[k]; }
+        if (update.$set) Object.assign(doc, update.$set);
+        if (update.$inc) applyInc(doc);
+        data.push(doc);
+        return Promise.resolve({ modifiedCount: 0, upsertedCount: 1 });
+      }
+      return Promise.resolve({ modifiedCount: 0, upsertedCount: 0 });
     }),
     updateMany: jest.fn((query, update) => {
       let count = 0;
