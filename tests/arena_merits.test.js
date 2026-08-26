@@ -167,11 +167,74 @@ describe('arena_merits shop (I5)', () => {
     expect((await merits.purchase(db, { user: 'a', itemId: 'nope', at: AT })).ok).toBe(false);
   });
 
-  test('ensureMeritsIndexes declares a unique shop id index and a ledger user+at index', async () => {
-    const calls = { rewards_shop: [], merits_ledger: [] };
+  test('ensureMeritsIndexes declares shop id + ledger + balances indexes', async () => {
+    const calls = { rewards_shop: [], merits_ledger: [], merits_balances: [] };
     const db = { collection: (name) => ({ createIndex: (spec, opts) => { calls[name].push({ spec, opts }); return Promise.resolve(); } }) };
     await merits.ensureMeritsIndexes(db);
     expect(calls.rewards_shop).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { id: 1 }, opts: { unique: true } })]));
     expect(calls.merits_ledger).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { user: 1, at: 1 } })]));
+    expect(calls.merits_balances).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { user: 1 }, opts: { unique: true } })]));
+  });
+});
+
+describe('arena_merits — atomicity (#178)', () => {
+  test('an atomic guarded decrement prevents overdraw when two spends contend', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 100, reason: 'challenge_reward', at: AT });
+    const [r1, r2] = await Promise.all([
+      merits.spend(db, { user: 'a', amount: 100, at: AT }),
+      merits.spend(db, { user: 'a', amount: 100, at: AT }),
+    ]);
+    expect([r1.ok, r2.ok].filter(Boolean)).toHaveLength(1); // exactly one succeeds
+    expect(await merits.balanceOf(db, 'a')).toBe(0); // never negative
+  });
+
+  test('a stock:1 item cannot be oversold by two concurrent buyers', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 500, reason: 'challenge_reward', at: AT });
+    await merits.award(db, { user: 'b', amount: 500, reason: 'challenge_reward', at: AT });
+    await merits.addShopItem(db, { id: 'rare', kind: 'cosmetic', cost_merits: 10, stock: 1 });
+    const [r1, r2] = await Promise.all([
+      merits.purchase(db, { user: 'a', itemId: 'rare', at: AT }),
+      merits.purchase(db, { user: 'b', itemId: 'rare', at: AT }),
+    ]);
+    expect([r1.ok, r2.ok].filter(Boolean)).toHaveLength(1); // only one buyer wins
+    expect((await db.collection('rewards_shop').findOne({ id: 'rare' })).stock).toBe(0);
+  });
+
+  test('balanceOf reads the authoritative counter; ledger stays in lock-step', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 300, reason: 'challenge_reward', at: AT });
+    await merits.spend(db, { user: 'a', amount: 120, at: AT });
+    expect((await db.collection('merits_balances').findOne({ user: 'a' })).balance).toBe(180);
+    expect(await merits.balanceOf(db, 'a')).toBe(180);
+  });
+
+  // Migration: users with ledger history but no counter doc (predating #178).
+  test('award on a legacy user seeds the FULL prior balance, not just the new delta', async () => {
+    const db = createMockDb();
+    db.collection('merits_ledger').__seed([{ user: 'old', delta: 5000, reason: 'challenge_reward', at: '2026-08-20T10:00:00Z' }]);
+    await merits.award(db, { user: 'old', amount: 100, reason: 'challenge_reward', at: AT });
+    expect(await merits.balanceOf(db, 'old')).toBe(5100); // 5000 backfilled + 100
+  });
+
+  test('spend on a legacy user works (counter backfilled from the ledger)', async () => {
+    const db = createMockDb();
+    db.collection('merits_ledger').__seed([{ user: 'old', delta: 5000, reason: 'challenge_reward', at: '2026-08-20T10:00:00Z' }]);
+    const r = await merits.spend(db, { user: 'old', amount: 300, at: AT });
+    expect(r.ok).toBe(true);
+    expect(await merits.balanceOf(db, 'old')).toBe(4700);
+  });
+
+  test('purchase refunds the stock reservation when the debit fails (stock:1)', async () => {
+    const db = createMockDb();
+    await merits.addShopItem(db, { id: 'one', kind: 'cosmetic', cost_merits: 100, stock: 1 });
+    const broke = await merits.purchase(db, { user: 'broke', itemId: 'one', at: AT });
+    expect(broke.ok).toBe(false);
+    expect((await db.collection('rewards_shop').findOne({ id: 'one' })).stock).toBe(1); // reservation refunded
+    await merits.award(db, { user: 'rich', amount: 500, reason: 'challenge_reward', at: AT });
+    const rich = await merits.purchase(db, { user: 'rich', itemId: 'one', at: AT });
+    expect(rich.ok).toBe(true);
+    expect((await db.collection('rewards_shop').findOne({ id: 'one' })).stock).toBe(0);
   });
 });
