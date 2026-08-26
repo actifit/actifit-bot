@@ -133,4 +133,25 @@ describe('arena_routes (HTTP)', () => {
     const r = await request(off).post('/arena/ops/validate').send({ op });
     expect(r.body.ok).toBe(true);
   });
+
+  test('POST /arena/ops/validate with a missing body returns a clean {ok:false} 200', async () => {
+    const r = await request(app).post('/arena/ops/validate').send({});
+    expect(r.status).toBe(200);
+    expect(r.body.ok).toBe(false);
+  });
+
+  test('POST /arena/ops/validate with malformed JSON returns 400 {error}, no stack', async () => {
+    const r = await request(app).post('/arena/ops/validate').set('content-type', 'application/json').send('{bad json');
+    expect(r.status).toBe(400);
+    expect(r.body).toEqual({ error: 'invalid request body' });
+  });
+
+  test('POST /arena/ops/validate is behind the limiter and validates a join op', async () => {
+    let hits = 0;
+    const limited = express();
+    registerArenaRoutes(limited, () => db, { limiter: (req, res, next) => { hits++; next(); } });
+    const r = await request(limited).post('/arena/ops/validate').send({ op: { op: 'join', v: 1, challenge_id: 'ch1' } });
+    expect(hits).toBe(1);
+    expect(r.body.ok).toBe(true);
+  });
 });

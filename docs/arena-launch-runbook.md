@@ -60,6 +60,20 @@ curl https://api2.actifit.io/arena/events/<user>
 They return empty collections until steps 3–4 populate data. No rollback (reads
 are inert).
 
+There is also a **prepare/validate** write endpoint (chain-first: the client
+broadcasts the signed op; the server only validates it up front):
+
+```
+curl -X POST https://api2.actifit.io/arena/ops/validate \
+  -H 'content-type: application/json' \
+  -d '{"op":{"op":"join","v":1,"challenge_id":"<id>"}}'
+```
+
+⚠️ Until tier derivation from `getRank`/role is wired, every caller is treated as
+the **friendly** tier — so `community`/`official` challenge creates won't validate
+yet (tracked, #180). The named REST write endpoints (`/join`, `/leave`, create,
+`/sponsor`, `/score`) and the broadcast of official ops are also still to come.
+
 ---
 
 ## 3. Seed the default contest set (§7.5)
@@ -89,8 +103,10 @@ rows in staging). The fixed ids make a re-seed a no-op, so re-running is safe.
 
 Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
 
-1. Set `arena_tailer_start_block` to the **current head block** (NOT 0 — 0 now
-   means "start at head" via cold-start snap, but set it explicitly to be safe).
+1. Set `arena_tailer_start_block` to a **recent block** (NOT 0 — 0 now means
+   "start at the current target" via cold-start snap, but set it explicitly to be
+   safe). The tailer indexes up to the **last-irreversible** block, not the
+   reversible head, so a start block above LIB simply waits.
 2. Set `arena_tailer_enabled: true`.
 3. Restart the process. Expect a `Arena tailer started` log line, then
    `arena blk <n> <trx>: <action>` lines as ops land.

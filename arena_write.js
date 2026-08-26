@@ -23,12 +23,18 @@
 
 const arena = require('./arena');
 
+const KNOWN_TIERS = ['friendly', 'community', 'official'];
 // Which origin_tiers a caller of the given tier may create.
 const TIER_MAY_CREATE = {
 	friendly: ['friendly'],
 	community: ['friendly', 'community'],
 	official: ['friendly', 'community', 'official'],
 };
+// A friendly-tier challenge is badge/Merit only — these are the ONLY reward keys
+// it may carry (whitelist; anything else, incl. hive/hbd/afit, is rejected).
+const FRIENDLY_REWARD_KEYS = ['merits', 'badges'];
+// Ops only the @actifit official account may sign (per the F1 ingest checks).
+const OFFICIAL_ONLY_OPS = ['enroll', 'settle'];
 
 function buildJoinOp(challengeId) {
 	return { op: 'join', v: 1, challenge_id: challengeId };
@@ -60,20 +66,37 @@ function buildCreateOp(p = {}) {
  * @param {object} [opts]      { callerTier = 'friendly' } — SERVER-derived
  */
 function validateProposedOp(op, opts = {}) {
-	const callerTier = opts.callerTier || 'friendly';
+	// Normalize an unknown/misconfigured tier down to the safe floor (never MORE
+	// permissive than friendly).
+	let callerTier = opts.callerTier || 'friendly';
+	if (!KNOWN_TIERS.includes(callerTier)) callerTier = 'friendly';
+
 	const { valid, errors } = arena.validateArenaOp(op);
 	const errs = valid ? [] : errors.slice();
+	if (!op || typeof op !== 'object') return { ok: errs.length === 0, errors: errs, op };
 
-	if (op && op.op === 'challenge_create') {
+	// Official-only ops: a non-official caller who broadcasts these is silently
+	// rejected at ingest — the validate endpoint must say so up front, not mislead.
+	if (OFFICIAL_ONLY_OPS.includes(op.op) && callerTier !== 'official') {
+		errs.push(`op "${op.op}" is official-only (caller tier "${callerTier}")`);
+	}
+	// A state update INTO a terminal state is official/settle-only.
+	if (op.op === 'challenge_update' && (op.state === 'settled' || op.state === 'archived') && callerTier !== 'official') {
+		errs.push(`challenge_update to "${op.state}" is official-only`);
+	}
+
+	if (op.op === 'challenge_create') {
 		const wanted = op.origin_tier || 'friendly';
 		const allowed = TIER_MAY_CREATE[callerTier] || TIER_MAY_CREATE.friendly;
 		if (!allowed.includes(wanted)) {
 			errs.push(`caller tier "${callerTier}" may not create an "${wanted}" challenge (§7.4)`);
 		}
-		// Friendly tier is badge/Merit only — no AFIT pool / afit rewards.
-		if (callerTier === 'friendly') {
-			if (op.pool_ref) errs.push('friendly-tier challenges may not attach an AFIT pool (§7.4)');
-			if (op.rewards && Number(op.rewards.afit) > 0) errs.push('friendly-tier challenges may not offer AFIT rewards (§7.4)');
+		// A FRIENDLY-tier challenge is badge/Merit only — keyed on the CHALLENGE's
+		// tier (not the caller), and a whitelist so no other value reward slips in.
+		if (wanted === 'friendly') {
+			if (op.pool_ref) errs.push('friendly-tier challenges may not attach a pool (§7.4)');
+			const extra = (op.rewards && typeof op.rewards === 'object') ? Object.keys(op.rewards).filter((k) => !FRIENDLY_REWARD_KEYS.includes(k)) : [];
+			if (extra.length) errs.push(`friendly-tier challenges may only reward ${FRIENDLY_REWARD_KEYS.join('/')}, not "${extra.join(', ')}" (§7.4)`);
 		}
 	}
 	return { ok: errs.length === 0, errors: errs, op };

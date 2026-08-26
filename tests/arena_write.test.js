@@ -54,4 +54,51 @@ describe('arena_write.validateProposedOp', () => {
 		// no callerTier → safe 'friendly' floor → official create rejected
 		expect(write.validateProposedOp(createBody({ origin_tier: 'official' })).ok).toBe(false);
 	});
+
+	test('a non-create op (join) passes the tier gate untouched', () => {
+		expect(write.validateProposedOp(write.buildJoinOp('ch1'), { callerTier: 'friendly' }).ok).toBe(true);
+		expect(write.validateProposedOp(write.buildLeaveOp('ch1'), { callerTier: 'friendly' }).ok).toBe(true);
+	});
+
+	test('an unknown op type is rejected by the underlying schema check', () => {
+		const r = write.validateProposedOp({ op: 'bogus', v: 1 });
+		expect(r.ok).toBe(false);
+		expect(r.errors.join(' ')).toMatch(/unknown op/);
+	});
+
+	test('a null/undefined op is handled gracefully', () => {
+		expect(write.validateProposedOp(null).ok).toBe(false);
+		expect(write.validateProposedOp(undefined).ok).toBe(false);
+	});
+
+	test('D — official-only ops (enroll/settle) are rejected for a non-official caller', () => {
+		expect(write.validateProposedOp({ op: 'enroll', v: 1, challenge_id: 'c', entities: ['a'] }, { callerTier: 'friendly' }).ok).toBe(false);
+		expect(write.validateProposedOp({ op: 'settle', v: 1, challenge_id: 'c', standings: [], rewards: [] }, { callerTier: 'community' }).ok).toBe(false);
+		expect(write.validateProposedOp({ op: 'settle', v: 1, challenge_id: 'c', standings: [], rewards: [] }, { callerTier: 'official' }).ok).toBe(true);
+	});
+
+	test('challenge_update into a terminal state is official-only', () => {
+		expect(write.validateProposedOp({ op: 'challenge_update', id: 'c', state: 'settled' }, { callerTier: 'friendly' }).ok).toBe(false);
+		expect(write.validateProposedOp({ op: 'challenge_update', id: 'c', state: 'active' }, { callerTier: 'friendly' }).ok).toBe(true); // creator-drivable
+	});
+
+	test('B — friendly reward gate is a whitelist: non-AFIT value rewards are rejected', () => {
+		expect(write.validateProposedOp(createBody({ rewards: { hive: 100 } }), { callerTier: 'friendly' }).ok).toBe(false);
+		expect(write.validateProposedOp(createBody({ rewards: { hbd: 5 } }), { callerTier: 'friendly' }).ok).toBe(false);
+		expect(write.validateProposedOp(createBody({ rewards: { merits: 50, badges: ['x'] } }), { callerTier: 'friendly' }).ok).toBe(true);
+	});
+
+	test('C — a friendly-tier challenge may not carry a pool even from a higher-tier caller', () => {
+		expect(write.validateProposedOp(createBody({ origin_tier: 'friendly', pool_ref: 'p' }), { callerTier: 'community' }).ok).toBe(false);
+	});
+
+	test('C — an unknown caller tier is normalized down to the friendly floor', () => {
+		expect(write.validateProposedOp(createBody({ origin_tier: 'official' }), { callerTier: 'admin' }).ok).toBe(false);
+		expect(write.validateProposedOp(createBody({ pool_ref: 'p' }), { callerTier: 'admin' }).ok).toBe(false); // pool block still applies
+	});
+
+	test('community caller may create a friendly challenge (downward) but not official', () => {
+		expect(write.validateProposedOp(createBody({ origin_tier: 'friendly' }), { callerTier: 'community' }).ok).toBe(true);
+		expect(write.validateProposedOp(createBody({ origin_tier: 'official' }), { callerTier: 'community' }).ok).toBe(false);
+	});
 });

@@ -9,7 +9,8 @@
  * Reads are public and sanitized in arena_api; `includeNonPublic` is NEVER
  * forwarded from the query string, so private challenges don't leak.
  *
- * Load-time safe: requires only ./arena_api (config/Firebase-free).
+ * Load-time safe: requires only ./arena_api, ./arena_write (config/Firebase-free)
+ * and express (a library).
  */
 
 'use strict';
@@ -80,8 +81,11 @@ function registerArenaRoutes(app, getDb, opts = {}) {
 	// it by the caller's tier; the CLIENT broadcasts the returned op (signed by
 	// their key). callerTier is derived server-side via opts.resolveTier (never
 	// trusted from the request); defaults to the safe 'friendly' floor.
-	const json = express.json();
-	app.post('/arena/ops/validate', ...mw, json, async (req, res) => {
+	const json = express.json({ limit: '16kb' }); // op bodies are tiny
+	// Convert a body-parser error (malformed JSON / too large) into the clean
+	// {error} envelope instead of Express's default stack-leaking handler.
+	const jsonErr = (err, req, res, next) => (err ? res.status(400).send({ error: 'invalid request body' }) : next());
+	app.post('/arena/ops/validate', ...mw, json, jsonErr, async (req, res) => {
 		try {
 			const op = req.body && req.body.op;
 			const callerTier = typeof opts.resolveTier === 'function' ? await opts.resolveTier(req) : 'friendly';
