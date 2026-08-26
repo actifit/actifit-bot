@@ -113,4 +113,24 @@ describe('arena_routes (HTTP)', () => {
     await request(limited).get('/arena/shop');
     expect(hits).toBe(1);
   });
+
+  test('POST /arena/ops/validate validates a proposed op at the friendly floor', async () => {
+    const window = { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' };
+    const goodOp = { op: 'challenge_create', v: 1, id: 'c1', type: 'duel', origin_tier: 'friendly', window, entry: { mode: 'free' }, scoring: { metric: 'activity_count', rule: 'head_to_head' } };
+    const ok = await request(app).post('/arena/ops/validate').send({ op: goodOp });
+    expect(ok.body.ok).toBe(true);
+    // a client-claimed official tier is ignored — server floor is friendly
+    const bad = await request(app).post('/arena/ops/validate').send({ op: { ...goodOp, origin_tier: 'official' } });
+    expect(bad.body.ok).toBe(false);
+    expect(bad.body.errors.join(' ')).toMatch(/tier/);
+  });
+
+  test('POST /arena/ops/validate derives tier via opts.resolveTier', async () => {
+    const off = express();
+    registerArenaRoutes(off, () => db, { resolveTier: () => 'official' });
+    const window = { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' };
+    const op = { op: 'challenge_create', v: 1, id: 'c2', type: 'duel', origin_tier: 'official', window, entry: { mode: 'free' }, scoring: { metric: 'steps', rule: 'max' } };
+    const r = await request(off).post('/arena/ops/validate').send({ op });
+    expect(r.body.ok).toBe(true);
+  });
 });
