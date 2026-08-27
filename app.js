@@ -8773,7 +8773,7 @@ const handleConfirmPayment = async function(req,res){
 							bchain = 'HIVE';
 						}
 					}
-					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain);
+					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain, hivePrice);
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
 						req.query.confirming_tx = paymentReceivedTx;

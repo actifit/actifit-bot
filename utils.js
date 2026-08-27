@@ -729,9 +729,16 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	// The required crypto amount is computed from OUR signup cost + a live USD price, never from the
 	// client-supplied steem_invest (a tampered APK could send any figure and create an account for
 	// ~nothing). Prices cached ~5 min so the per-signup 5s poll doesn't hammer the price API.
-	let _sgPriceCache = { ts: 0, hive: null, hbd: null };
+	let _sgPriceCache = { ts: 0, hive: null, hbd: null, failTs: 0 };
 	async function signupUsdPrices () {
-		if ((Date.now() - _sgPriceCache.ts) < 5 * 60 * 1000 && _sgPriceCache.hive) {
+		const now = Date.now();
+		// serve a fresh success from cache (5 min)
+		if (_sgPriceCache.hive && (now - _sgPriceCache.ts) < 5 * 60 * 1000) {
+			return _sgPriceCache;
+		}
+		// negative cache: after a failure, don't re-hit CoinGecko (or stall 8s) again for 45s.
+		// This stops a burst of concurrent signups stampeding the API during an outage.
+		if (!_sgPriceCache.hive && _sgPriceCache.failTs && (now - _sgPriceCache.failTs) < 45 * 1000) {
 			return _sgPriceCache;
 		}
 		try {
@@ -740,38 +747,55 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			let d = await q.json();
 			let hive = (d && d.hive) ? d.hive.usd : null;
 			let hbd = (d && d.hive_dollar) ? d.hive_dollar.usd : null;
-			if (hive) { _sgPriceCache = { ts: Date.now(), hive: hive, hbd: hbd || 1.0 }; }
+			if (hive) { _sgPriceCache = { ts: Date.now(), hive: hive, hbd: hbd || 1.0, failTs: 0 }; }
+			else { _sgPriceCache = Object.assign({}, _sgPriceCache, { failTs: Date.now() }); }
 		} catch (e) {
+			_sgPriceCache = Object.assign({}, _sgPriceCache, { failTs: Date.now() });
 			console.log('signup price fetch failed: ' + (e && e.message));
 		}
 		return _sgPriceCache;
 	}
 
-	// Returns the minimum acceptable on-chain amount for the signup currency.
-	async function signupRequiredCrypto (sentCur, clientSteemInvest) {
-		const costUsd = (config && config.signupCostUsd != null) ? parseFloat(config.signupCostUsd) : 2.0;
+	// Returns the minimum acceptable on-chain amount for the signup currency. The figure is
+	// derived ENTIRELY server-side (our USD cost + a server-sourced price); the client's
+	// steem_invest is never trusted. botHivePrice is app.js's regularly-refreshed hivePrice
+	// global ({hive:{usd}}), used as a fallback so we rarely need the blind floor.
+	async function signupRequiredCrypto (sentCur, botHivePrice) {
+		// Validate the configured cost: a non-numeric value would make requiredCrypto NaN and
+		// silently reject EVERY signup (stuck-verifying); 0/negative would open the gate to dust.
+		const cfgCost = parseFloat(config && config.signupCostUsd);
+		const costUsd = (isFinite(cfgCost) && cfgCost > 0) ? cfgCost : 2.0;
 		const TOLERANCE = 0.10; // absorb price drift (send -> confirm) + the client's 3-dp rounding
+		const isHbd = (sentCur === 'HBD' || sentCur === 'SBD');
 		const prices = await signupUsdPrices();
-		const unit = (sentCur === 'HBD' || sentCur === 'SBD') ? prices.hbd : prices.hive;
+		let unit = isHbd ? prices.hbd : prices.hive;
+		// Fallback 1 (HIVE): the bot's own recently-refreshed price (server-side, never the client).
+		if ((!unit || unit <= 0) && !isHbd && botHivePrice && botHivePrice.hive
+			&& isFinite(parseFloat(botHivePrice.hive.usd))) {
+			unit = parseFloat(botHivePrice.hive.usd);
+		}
+		// Fallback 2 (HBD): HBD is dollar-pegged; assume ~$1 when no live quote is available.
+		if ((!unit || unit <= 0) && isHbd) {
+			unit = 1.0;
+		}
 		if (unit && unit > 0) {
 			return (costUsd / unit) * (1 - TOLERANCE);
 		}
-		// Price unavailable: fall back to the client figure but never below a hard floor, so a
-		// tampered client still cannot create an account for ~nothing while the price API is down.
-		const floor = (sentCur === 'HBD' || sentCur === 'SBD') ? 1.5 : 5.0;
-		const clientVal = parseFloat(clientSteemInvest);
-		return Math.max(floor, isFinite(clientVal) ? (clientVal - 0.1) : floor);
+		// Last resort: no price anywhere (CoinGecko AND the bot's cached price both unavailable).
+		// Require a conservative floor derived from cost at a deliberately high assumed HIVE price
+		// so a legitimate payer is not rejected; the client figure is still never trusted.
+		return costUsd / 0.50; // e.g. $2 -> 4 HIVE
 	}
 
-	async function confirmPaymentReceived (req, bchain) {
+	async function confirmPaymentReceived (req, bchain, botHivePrice) {
 		getConfig();
 		//stop polling after a bounded window. without this a memo that is never
 		//paid leaves an interval hammering the chain forever, and the caller's
 		//await never returns (so its keep-alive interval never clears either).
 		const pollDeadline = Date.now() + ((config.signupPaymentTimeoutMins || 15) * 60 * 1000);
 		// SERVER decides sufficiency — compute the required amount ONCE (not per 5s poll tick),
-		// from our cost + a live price, never from the client's steem_invest.
-		const requiredCrypto = await signupRequiredCrypto(req.query.sent_cur, req.query.steem_invest);
+		// from our cost + a server-sourced price, never from the client's steem_invest.
+		const requiredCrypto = await signupRequiredCrypto(req.query.sent_cur, botHivePrice);
 		console.log('signup required (server, ' + req.query.sent_cur + '): ' + requiredCrypto
 			+ ' | client steem_invest=' + req.query.steem_invest);
 		return new Promise((resolve, reject) => {
