@@ -778,13 +778,15 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		if ((!unit || unit <= 0) && isHbd) {
 			unit = 1.0;
 		}
-		if (unit && unit > 0) {
-			return (costUsd / unit) * (1 - TOLERANCE);
+		// Last resort (HIVE): no price anywhere (CoinGecko AND the bot's cached price both down).
+		// Assume a deliberately LOW HIVE price so the requirement stays close to the USD cost
+		// instead of collapsing to a sub-dollar floor. Config-overridable; revisit if HIVE moves
+		// a lot (HIVE ~= $0.044 today -> $0.05 assumption ~= 36 HIVE for a $2 signup).
+		if (!unit || unit <= 0) {
+			const fbHive = parseFloat(config && config.signupFallbackHiveUsd);
+			unit = (isFinite(fbHive) && fbHive > 0) ? fbHive : 0.05;
 		}
-		// Last resort: no price anywhere (CoinGecko AND the bot's cached price both unavailable).
-		// Require a conservative floor derived from cost at a deliberately high assumed HIVE price
-		// so a legitimate payer is not rejected; the client figure is still never trusted.
-		return costUsd / 0.50; // e.g. $2 -> 4 HIVE
+		return (costUsd / unit) * (1 - TOLERANCE);
 	}
 
 	async function confirmPaymentReceived (req, bchain, botHivePrice) {

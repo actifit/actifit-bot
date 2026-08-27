@@ -25,6 +25,7 @@
   "promoMaxAfitReward": 100,
   "signupPaymentTimeoutMins": 15,
   "signupCostUsd": 2.0,
+  "signupFallbackHiveUsd": 0.05,
   "alt_hive_nodes": ["https://api.hive.blog", "https://api.deathwing.me"],
   "arena_tailer_enabled": false,
   "arena_tailer_start_block": 0,
