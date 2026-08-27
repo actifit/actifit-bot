@@ -757,16 +757,9 @@ const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHe
 // until tier derivation from getRank/role is added — tracked on #180).
 arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
-// Actifitter of the Month (Trello #110) — public read of the editorial spotlight.
-// Returns the sanitized featured doc, or null when nothing is set (web hides it).
-app.get('/featuredActifitter', arenaReadRateLimit, async function (req, res) {
-	try {
-		res.send(await featured.getFeaturedActifitter(db));
-	} catch (err) {
-		utils.log(err, 'api');
-		res.status(500).send({ error: 'featured_actifitter' });
-	}
-});
+// Actifitter of the Month (Trello #110) — public read of the editorial spotlight
+// (sanitized doc, or null when unset so the web section hides). Rate-limited.
+featured.registerFeaturedRoute(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){
 	let refetch = false;
