@@ -2,6 +2,13 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+// Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
+var arena = require('./arena');
+var arenaApi = require('./arena_api');
+var arenaStandings = require('./arena_standings');
+var arenaMerits = require('./arena_merits');
+var arenaPools = require('./arena_pools');
+var arenaRoutes = require('./arena_routes');
 const moment = require('moment')
 var crypto = require('crypto');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -156,10 +163,38 @@ client.connect()
 
 	  // Get the documents collection
 	  collection = db.collection(collection_name);
-	  
+
 	  //clearCorruptData();
-	  
+
 	  //disableUserLogin();
+
+	  // Challenge Engine (Trello #171): ensure the arena collection indexes.
+	  try {
+	    arena.ensureArenaIndexes(db);
+	    arenaStandings.ensureStandingsIndexes(db);
+	    arenaMerits.ensureMeritsIndexes(db);
+	    arenaPools.ensurePoolsIndexes(db);
+	    arenaApi.ensureEventsIndexes(db);
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
+
+	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
+	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
+	  try {
+	    if (config.arena_tailer_enabled) {
+	      const arenaTailer = require('./arena_tailer');
+	      arenaTailer.startArenaTailer(db, {
+	        nodes: config.alt_hive_nodes,
+	        officialAccount: config.arena_official_account || config.account || 'actifit',
+	        startBlock: config.arena_tailer_start_block || 0,
+	        log: (m) => utils.log(m, 'arena'),
+	      });
+	      console.log('Arena tailer started');
+	    }
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
 	})
 	.catch(err => {
 		utils.log(err, 'api');
@@ -710,6 +745,15 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 	let results = await db.collection('gadget_transactions_hive').find(query).sort({date: -1}).toArray();
 	res.send(results);
 })
+
+// Challenge Engine (Arena) — public READ API (#180, §8). Thin wrappers over
+// arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
+// Rate-limited: these are public, unauthenticated reads.
+const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+// NOTE: no `resolveTier` is wired yet, so POST /arena/ops/validate treats EVERY
+// caller as the safe 'friendly' floor (community/official creates won't validate
+// until tier derivation from getRank/role is added — tracked on #180).
+arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){
 	let refetch = false;
