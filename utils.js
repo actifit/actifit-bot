@@ -725,12 +725,55 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	
 	
 	//function handles confirming if payment was received
+	// --- signup payment amount: SERVER-SIDE gate --------------------------------------------------
+	// The required crypto amount is computed from OUR signup cost + a live USD price, never from the
+	// client-supplied steem_invest (a tampered APK could send any figure and create an account for
+	// ~nothing). Prices cached ~5 min so the per-signup 5s poll doesn't hammer the price API.
+	let _sgPriceCache = { ts: 0, hive: null, hbd: null };
+	async function signupUsdPrices () {
+		if ((Date.now() - _sgPriceCache.ts) < 5 * 60 * 1000 && _sgPriceCache.hive) {
+			return _sgPriceCache;
+		}
+		try {
+			let q = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive,hive_dollar&vs_currencies=usd',
+				{ signal: AbortSignal.timeout(8000) });
+			let d = await q.json();
+			let hive = (d && d.hive) ? d.hive.usd : null;
+			let hbd = (d && d.hive_dollar) ? d.hive_dollar.usd : null;
+			if (hive) { _sgPriceCache = { ts: Date.now(), hive: hive, hbd: hbd || 1.0 }; }
+		} catch (e) {
+			console.log('signup price fetch failed: ' + (e && e.message));
+		}
+		return _sgPriceCache;
+	}
+
+	// Returns the minimum acceptable on-chain amount for the signup currency.
+	async function signupRequiredCrypto (sentCur, clientSteemInvest) {
+		const costUsd = (config && config.signupCostUsd != null) ? parseFloat(config.signupCostUsd) : 2.0;
+		const TOLERANCE = 0.10; // absorb price drift (send -> confirm) + the client's 3-dp rounding
+		const prices = await signupUsdPrices();
+		const unit = (sentCur === 'HBD' || sentCur === 'SBD') ? prices.hbd : prices.hive;
+		if (unit && unit > 0) {
+			return (costUsd / unit) * (1 - TOLERANCE);
+		}
+		// Price unavailable: fall back to the client figure but never below a hard floor, so a
+		// tampered client still cannot create an account for ~nothing while the price API is down.
+		const floor = (sentCur === 'HBD' || sentCur === 'SBD') ? 1.5 : 5.0;
+		const clientVal = parseFloat(clientSteemInvest);
+		return Math.max(floor, isFinite(clientVal) ? (clientVal - 0.1) : floor);
+	}
+
 	async function confirmPaymentReceived (req, bchain) {
 		getConfig();
 		//stop polling after a bounded window. without this a memo that is never
 		//paid leaves an interval hammering the chain forever, and the caller's
 		//await never returns (so its keep-alive interval never clears either).
 		const pollDeadline = Date.now() + ((config.signupPaymentTimeoutMins || 15) * 60 * 1000);
+		// SERVER decides sufficiency — compute the required amount ONCE (not per 5s poll tick),
+		// from our cost + a live price, never from the client's steem_invest.
+		const requiredCrypto = await signupRequiredCrypto(req.query.sent_cur, req.query.steem_invest);
+		console.log('signup required (server, ' + req.query.sent_cur + '): ' + requiredCrypto
+			+ ' | client steem_invest=' + req.query.steem_invest);
 		return new Promise((resolve, reject) => {
 			//th_id MUST be local: a shared/global interval handle means one call's
 			//clearInterval() clears a *different* concurrent call's interval, leaving
@@ -766,7 +809,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 						
 						if (op[1].to === config.signup_account 
 							&& op[1].memo === req.query.memo 
-							&& sentAmount >= (parseFloat(req.query.steem_invest)-0.1) 
+							&& parseFloat(sentAmount) >= requiredCrypto
 							&& sentCur === req.query.sent_cur){  
 							console.log(op[1]);
 							
