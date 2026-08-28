@@ -101,6 +101,41 @@ describe('featured set/get round-trip', () => {
   });
 });
 
+describe('featured.pullStats (api2 field mapping)', () => {
+  const ok = (data) => Promise.resolve({ ok: true, json: () => Promise.resolve(data) });
+
+  it('maps getRank->user_rank->rank and user->tokens->afit, hitting the right URLs', async () => {
+    const calls = [];
+    const fetchImpl = (url) => {
+      calls.push(url);
+      if (url.includes('getRank/')) return ok({ user_rank: 12 });
+      if (url.includes('user/')) return ok({ tokens: 15400 });
+      return Promise.resolve({ ok: false });
+    };
+    const stats = await featured.pullStats('https://api2.actifit.io/', 'Jane', fetchImpl);
+    expect(stats).toEqual({ rank: 12, afit: 15400 });
+    expect(calls[0]).toBe('https://api2.actifit.io/getRank/Jane');
+    expect(calls[1]).toBe('https://api2.actifit.io/user/jane'); // user endpoint lowercased
+  });
+
+  it('drops a stat when its response is not ok or the field is missing/non-numeric', async () => {
+    const fetchImpl = (url) => url.includes('getRank/')
+      ? Promise.resolve({ ok: false })
+      : ok({ tokens: 'not-a-number' });
+    expect(await featured.pullStats('https://x/', 'bob', fetchImpl)).toEqual({});
+  });
+
+  it('is best-effort: a throwing fetch yields the partial/empty result, never rejects', async () => {
+    const fetchImpl = (url) => url.includes('getRank/') ? ok({ user_rank: 3 }) : Promise.reject(new Error('down'));
+    expect(await featured.pullStats('https://x/', 'jane', fetchImpl)).toEqual({ rank: 3 });
+  });
+
+  it('returns {} with no username or no fetch impl', async () => {
+    expect(await featured.pullStats('https://x/', '', () => ok({}))).toEqual({});
+    expect(await featured.pullStats('https://x/', 'jane', null)).toEqual({});
+  });
+});
+
 describe('featured route (HTTP)', () => {
   const express = require('express');
   const request = require('supertest');
