@@ -31,7 +31,7 @@ const getArg = (name, def) => {
 const FILE = getArg('--file', args.find((a) => a.endsWith('.json')));
 const DRY = has('--dry');
 const PULL = has('--pull-stats');
-const API_BASE = (config.acti_api_url || 'https://api2.actifit.io/').replace(/\/?$/, '/');
+const API_BASE = (config.api_url || 'https://api2.actifit.io/').replace(/\/?$/, '/');
 
 async function pullStats(username) {
 	const stats = {};
