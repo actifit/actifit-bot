@@ -756,6 +756,12 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		return _sgPriceCache;
 	}
 
+	// Test-only: clear the module-level price cache so unit tests can exercise the
+	// CoinGecko-up / CoinGecko-down branches independently. No production caller.
+	function _resetSignupPriceCache () {
+		_sgPriceCache = { ts: 0, hive: null, hbd: null, failTs: 0 };
+	}
+
 	// Returns the minimum acceptable on-chain amount for the signup currency. The figure is
 	// derived ENTIRELY server-side (our USD cost + a server-sourced price); the client's
 	// steem_invest is never trusted. botHivePrice is app.js's regularly-refreshed hivePrice
@@ -2800,6 +2806,9 @@ async function countUserCommentsToday(username) {
    createAccount: createAccount,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
+   signupRequiredCrypto: signupRequiredCrypto,
+   signupUsdPrices: signupUsdPrices,
+   _resetSignupPriceCache: _resetSignupPriceCache,
    confirmPaymentReceivedPassword: confirmPaymentReceivedPassword,
    confirmSEAFITReceived: confirmSEAFITReceived,
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
