@@ -224,3 +224,37 @@ describe('price cache (boundary is not hammered)', () => {
     expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('actifit-landingpage (web) signup stays compatible', () => {
+  // The web signup quotes crypto = minSignupUSDCost / hivePrice, where
+  // minSignupUSDCost = 2 (landingpage nuxt.config) matches the bot's signupCostUsd = 2
+  // default, and hivePrice is the bot's own /hivePrice rounded to 3 decimals. The server's
+  // 10% buffer must absorb that rounding so a MINIMUM web signup is never newly rejected.
+  // If this ever fails, the two repos' cost settings have drifted out of sync.
+  const WEB_MIN_USD = 2;
+  const webHiveQuote = (usd, priceRaw) => usd / Number(priceRaw.toFixed(3)); // page rounds price to 3dp
+
+  test('a minimum $2 HIVE web signup clears the server requirement', async () => {
+    coingeckoReturns(HIVE_PRICE, HBD_PRICE);
+    const required = await utils.signupRequiredCrypto('HIVE', null);
+    const paid = webHiveQuote(WEB_MIN_USD, HIVE_PRICE);
+    expect(paid).toBeGreaterThanOrEqual(required);
+  });
+
+  test('a minimum $2 HBD web signup clears the server requirement', async () => {
+    coingeckoReturns(HIVE_PRICE, HBD_PRICE);
+    const required = await utils.signupRequiredCrypto('HBD', null);
+    const paid = WEB_MIN_USD / 1; // page uses hbdPrice default 1 -> 2.000 HBD
+    expect(paid).toBeGreaterThanOrEqual(required);
+  });
+
+  test('web signups are not rejected at the $2 minimum across a range of HIVE prices', async () => {
+    for (const price of [0.02, 0.0437, 0.08, 0.15, 0.30]) {
+      utils._resetSignupPriceCache();
+      coingeckoReturns(price, HBD_PRICE);
+      const required = await utils.signupRequiredCrypto('HIVE', null);
+      const paid = webHiveQuote(WEB_MIN_USD, price);
+      expect(paid).toBeGreaterThanOrEqual(required);
+    }
+  });
+});
