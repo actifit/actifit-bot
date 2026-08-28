@@ -102,6 +102,27 @@ async function ensureFeaturedIndexes(_db) {
 }
 
 /**
+ * Best-effort fetch of a user's machine stats from the public api2 endpoints,
+ * for the seed script's --pull-stats. Maps getRank->user_rank and user->tokens
+ * (the same fields the web reads). Pure/injectable so it is unit-testable
+ * without config or a live network. `apiBase` should end with '/'.
+ */
+async function pullStats(apiBase, username, fetchImpl) {
+	const f = fetchImpl || (typeof fetch === 'function' ? fetch : null);
+	const stats = {};
+	if (!f || !username) return stats;
+	try {
+		const r = await f(apiBase + 'getRank/' + encodeURIComponent(username));
+		if (r && r.ok) { const j = await r.json(); const v = num(j.user_rank); if (v !== undefined) stats.rank = v; }
+	} catch (e) { /* best-effort */ }
+	try {
+		const r = await f(apiBase + 'user/' + encodeURIComponent(String(username).toLowerCase()));
+		if (r && r.ok) { const j = await r.json(); const v = num(j.tokens); if (v !== undefined) stats.afit = v; }
+	} catch (e) { /* best-effort */ }
+	return stats;
+}
+
+/**
  * Register the public READ route on an Express app (mirrors arena_routes so it
  * can be tested on a bare app). `getDb` resolves the live handle per-request.
  */
@@ -127,5 +148,6 @@ module.exports = {
 	getFeaturedActifitter,
 	setFeaturedActifitter,
 	ensureFeaturedIndexes,
-	registerFeaturedRoute
+	registerFeaturedRoute,
+	pullStats
 };

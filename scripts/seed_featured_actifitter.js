@@ -33,19 +33,6 @@ const DRY = has('--dry');
 const PULL = has('--pull-stats');
 const API_BASE = (config.api_url || 'https://api2.actifit.io/').replace(/\/?$/, '/');
 
-async function pullStats(username) {
-	const stats = {};
-	try {
-		const r = await fetch(API_BASE + 'getRank/' + encodeURIComponent(username));
-		if (r.ok) { const j = await r.json(); if (Number.isFinite(Number(j.user_rank))) stats.rank = Number(j.user_rank); }
-	} catch (e) { /* best-effort */ }
-	try {
-		const r = await fetch(API_BASE + 'user/' + encodeURIComponent(username.toLowerCase()));
-		if (r.ok) { const j = await r.json(); if (Number.isFinite(Number(j.tokens))) stats.afit = Number(j.tokens); }
-	} catch (e) { /* best-effort */ }
-	return stats;
-}
-
 (async () => {
 	if (!FILE || !fs.existsSync(FILE)) {
 		console.error('Provide an editorial payload: --file path/to/payload.json (see scripts/featured_actifitter.example.json)');
@@ -55,7 +42,7 @@ async function pullStats(username) {
 	if (!payload.username) { console.error('payload.username is required'); process.exit(1); }
 
 	if (PULL) {
-		const auto = await pullStats(payload.username);
+		const auto = await featured.pullStats(API_BASE, payload.username);
 		payload.stats = { ...auto, ...(payload.stats || {}) }; // file-provided stats win
 		console.log('pulled stats for @' + payload.username + ':', JSON.stringify(auto));
 	}
