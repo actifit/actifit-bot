@@ -42,6 +42,7 @@ const FIELDS = ['tagline', 'how_it_works', 'prize_summary', 'recurrence', 'art']
 		const db = client.db(config.db_name);
 		let updated = 0;
 		for (const p of patches) {
+			if (Object.keys(p.set).length === 0) { console.log(`  ${p.id}: no presentation fields — skipped`); continue; } // avoid an empty-$set throw
 			const r = await db.collection('challenges').updateOne({ id: p.id }, { $set: p.set });
 			console.log(`  ${p.id}: matched ${r.matchedCount}, modified ${r.modifiedCount}`);
 			updated += r.modifiedCount || 0;

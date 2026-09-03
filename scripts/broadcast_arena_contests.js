@@ -41,6 +41,9 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 	}
 
 	if (!config.posting_key) { console.error('config.posting_key is required to broadcast'); process.exit(1); }
+	if (!/actifit/i.test(NODE)) {
+		console.warn(`⚠️  Broadcasting via ${NODE} — NOT an Actifit node. These ops are irreversible; set config.active_hive_node to hiveapi.actifit.io to land via our own infra (house rule). Ctrl-C to abort.`);
+	}
 	const client = new dhive.Client(NODE);
 	const key = dhive.PrivateKey.fromString(config.posting_key);
 
