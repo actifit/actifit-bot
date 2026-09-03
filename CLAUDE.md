@@ -47,7 +47,7 @@ launch path.
    `trx_id`/`block_num`.
 3. **Delete the index-only `def_*` rows FIRST** (`node scripts/seed_arena_contests.js
    --clear`) before broadcasting. `indexArenaOp` **rejects** a `challenge_create`
-   for an existing id — it does NOT overwrite provenance (`arena.js:307`), so
+   for an existing id — it does NOT overwrite provenance (`arena.js:307-314`), so
    without the delete the tailer skips the on-chain ops and the fake `seed_*`
    trx / `block_num:0` remain. Also clear the `arena_tailer_state` cursor if the
    tailer ran before (the saved cursor overrides `arena_tailer_start_block`).
