@@ -9636,7 +9636,7 @@ app.get('/fetchTokenHoldersByCategory', async function(req, res){
 		}
 	} catch (err) {
 		console.log('fetchTokenHoldersByCategory error:', err.message);
-		res.send([]);
+		res.send(req.query.pretty==1 ? '' : []);
 	}
 
 });
