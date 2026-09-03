@@ -81,14 +81,25 @@ yet (tracked, #180). The named REST write endpoints (`/join`, `/leave`, create,
 Makes the Arena feel alive (Weekly Step League, Daily Focus, Season Ladder,
 Weekly Top-N, **Weekend Warrior**, Monthly Live-Ops). Two ways:
 
-- **Index-only (staging / dry-run):** run `arena_api.seedDefaultContests(db, {
-  officialAccount, nowMs: Date.now() })` from a node script against the target
-  DB. This inserts the challenges into the index (idempotent — fixed ids).
-- **On-chain (production):** broadcast the six `challenge_create` ops from
-  `arena_api.defaultContests(Date.now())` signed by `@actifit`, then let the
-  tailer (step 4) index them. This is the real, tamper-proof path.
+- **Index-only (staging / dry-run):** `node scripts/seed_arena_contests.js`
+  (wraps `arena_api.seedDefaultContests`). Inserts the challenges into the index
+  (idempotent — fixed ids). Carries the §182 presentation copy on fresh inserts.
+- **On-chain (production, the real path):** `node scripts/broadcast_arena_contests.js`
+  (`--dry` first). Signs the six `challenge_create` ops with `@actifit`'s
+  **posting** key (`config.posting_key`) and broadcasts them as `actifit_arena`
+  `custom_json`; it prints each block and the `arena_tailer_start_block` to set.
+  Then enable the tailer (step 4) and it indexes them with real `trx_id`/`block_num`.
+  This resolves the index-only tech debt (see CLAUDE.md).
 
-Verify: `curl .../arena/challenges` returns the 6 contests, `state=open`.
+**Backfilling #182 presentation copy onto ALREADY index-only defaults:** a seed
+re-run no-ops on existing ids (so it won't add the new fields), and a
+delete+reseed would **shift the contest windows**. To add the copy in place
+without moving windows: `node scripts/migrate_default_presentation.js` (`--dry`
+first) — `$set`s only the display fields. Not needed if you take the on-chain
+path above (delete the `def_*` docs first, then broadcast).
+
+Verify: `curl .../arena/challenges` returns the 6 contests, `state=open`, now
+carrying `tagline`/`how_it_works`/`prize_summary`/`recurrence`/`art`.
 
 **Rollback:** set each seeded challenge `state:'cancelled'` (or delete the index
 rows in staging). The fixed ids make a re-seed a no-op, so re-running is safe.
