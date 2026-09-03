@@ -95,7 +95,7 @@ Weekly Top-N, **Weekend Warrior**, Monthly Live-Ops). Two ways:
      resolved node; check it.
   2. **Delete the existing index-only `def_*` docs first.** They were seeded with
      synthetic `trx_id`s, and `indexArenaOp` **rejects** a `challenge_create`
-     whose id already exists (it does NOT overwrite provenance — `arena.js:307`).
+     whose id already exists (it does NOT overwrite provenance — `arena.js:307-314`).
      Skip this and the tailer skips all six on-chain ops, leaving the fake
      `seed_def_*` trx / `block_num:0`. Run `node scripts/seed_arena_contests.js
      --clear` (or `db.challenges.deleteMany({ id: /^def_/ })`).
@@ -146,7 +146,7 @@ Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
    **last-irreversible** block, not the reversible head, so a start block above
    LIB simply waits.
 2. Set `arena_tailer_enabled: true`. **Safe to set on every instance** — the
-   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:202`), so it
+   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:205`), so it
    can't double-poll even across the 2 servers + Heroku. Just make sure the MAIN
    process's config has it and gets restarted.
 3. Restart the process(es). Expect a single `Arena tailer started` log line (on
@@ -154,7 +154,7 @@ Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
 
 It targets **last-irreversible** blocks (reorg-safe), resumes from a persisted
 cursor (`arena_tailer_state`), and runs on the **single MAIN instance only**
-(the guard at `app.js:202` — two instances would double-poll).
+(the guard at `app.js:205` — two instances would double-poll).
 
 Verify: broadcast a test `join` from a throwaway account; confirm a
 `challenge_participants` row appears within a few blocks.
