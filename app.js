@@ -179,6 +179,21 @@ client.connect()
 	    utils.log(e, 'api');
 	  }
 
+	  // Friends suggestions (Trello #43): the `recentVerifiedPosts` / `recentAuthorsData`
+	  // aggregates filter verified_posts by a date range but the collection had no date index,
+	  // forcing a full-collection scan that made those endpoints hang. Ensure it here (idempotent,
+	  // background build so it never blocks startup).
+	  try {
+	    let verifiedPosts = db.collection('verified_posts');
+	    if (typeof verifiedPosts.createIndex === 'function') {
+	      verifiedPosts.createIndex({ date: 1 })
+	        .then(() => console.log('verified_posts.date index ensured'))
+	        .catch(e => utils.log(e, 'api'));
+	    }
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
+
 	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
 	  try {
