@@ -81,14 +81,47 @@ yet (tracked, #180). The named REST write endpoints (`/join`, `/leave`, create,
 Makes the Arena feel alive (Weekly Step League, Daily Focus, Season Ladder,
 Weekly Top-N, **Weekend Warrior**, Monthly Live-Ops). Two ways:
 
-- **Index-only (staging / dry-run):** run `arena_api.seedDefaultContests(db, {
-  officialAccount, nowMs: Date.now() })` from a node script against the target
-  DB. This inserts the challenges into the index (idempotent — fixed ids).
-- **On-chain (production):** broadcast the six `challenge_create` ops from
-  `arena_api.defaultContests(Date.now())` signed by `@actifit`, then let the
-  tailer (step 4) index them. This is the real, tamper-proof path.
+- **Index-only (staging / dry-run):** `node scripts/seed_arena_contests.js`
+  (wraps `arena_api.seedDefaultContests`). Inserts the challenges into the index
+  (idempotent — fixed ids). Carries the §182 presentation copy on fresh inserts.
+- **On-chain (production, the real path — resolves the index-only tech debt):**
+  broadcasts the six contests as real `actifit_arena` `custom_json` so the tailer
+  indexes them with genuine `trx_id`/`block_num`. **Follow in order — the delete
+  and cursor steps are MANDATORY, or the tailer silently skips the ops:**
 
-Verify: `curl .../arena/challenges` returns the 6 contests, `state=open`.
+  1. **Point at our own node.** Set `active_hive_node` to `hiveapi.actifit.io`
+     (not a public node) before broadcasting — the ops are irreversible and must
+     land via infrastructure we control (house rule). The broadcaster prints the
+     resolved node; check it.
+  2. **Delete the existing index-only `def_*` docs first.** They were seeded with
+     synthetic `trx_id`s, and `indexArenaOp` **rejects** a `challenge_create`
+     whose id already exists (it does NOT overwrite provenance — `arena.js:307-314`).
+     Skip this and the tailer skips all six on-chain ops, leaving the fake
+     `seed_def_*` trx / `block_num:0`. Run `node scripts/seed_arena_contests.js
+     --clear` (or `db.challenges.deleteMany({ id: /^def_/ })`).
+  3. **Clear the tailer cursor** if the tailer was ever enabled before:
+     `db.arena_tailer_state.deleteMany({})`. The saved cursor **wins** over
+     `arena_tailer_start_block` (see step 4), so a stale cursor past the broadcast
+     blocks would skip the ops.
+  4. **Broadcast:** `node scripts/broadcast_arena_contests.js --dry`, then without
+     `--dry`. Signs with `@actifit`'s **posting** key (`config.posting_key`) and
+     prints each block + the MIN block to use as `arena_tailer_start_block`.
+     ⚠️ **Irreversible** — `custom_json` ops cannot be unsent (unlike migrate's
+     reversible `$set`). On partial failure, re-running re-broadcasts the succeeded
+     ids (harmless — tailer is idempotent by id/trx) but then use the **earliest
+     block across both runs** as the start block.
+  5. Set `arena_tailer_start_block` = that min block (or a few earlier), then
+     enable the tailer (step 4). It indexes the six with real `trx_id`/`block_num`.
+
+**Backfilling #182 presentation copy onto ALREADY index-only defaults:** a seed
+re-run no-ops on existing ids (so it won't add the new fields), and a
+delete+reseed would **shift the contest windows**. To add the copy in place
+without moving windows: `node scripts/migrate_default_presentation.js` (`--dry`
+first) — `$set`s only the display fields (reversible). Not needed if you take the
+on-chain path above (which deletes then re-creates the docs from chain).
+
+Verify: `curl .../arena/challenges` returns the 6 contests, `state=open`, now
+carrying `tagline`/`how_it_works`/`prize_summary`/`recurrence`/`art`.
 
 **Rollback:** set each seeded challenge `state:'cancelled'` (or delete the index
 rows in staging). The fixed ids make a re-seed a no-op, so re-running is safe.
@@ -103,17 +136,25 @@ rows in staging). The fixed ids make a re-seed a no-op, so re-running is safe.
 
 Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
 
-1. Set `arena_tailer_start_block` to a **recent block** (NOT 0 — 0 now means
-   "start at the current target" via cold-start snap, but set it explicitly to be
-   safe). The tailer indexes up to the **last-irreversible** block, not the
-   reversible head, so a start block above LIB simply waits.
-2. Set `arena_tailer_enabled: true`.
-3. Restart the process. Expect a `Arena tailer started` log line, then
-   `arena blk <n> <trx>: <action>` lines as ops land.
+1. Set `arena_tailer_start_block` to the block to start from (for the on-chain
+   seed, the MIN block the broadcaster printed, or a few earlier). **This is
+   honored only on a COLD start** (no saved cursor): the persisted
+   `arena_tailer_state` cursor always wins (`arena_tailer.js:123`), so if the
+   tailer ran before, **clear that cursor** (`db.arena_tailer_state.deleteMany({})`)
+   or it resumes from where it left off and may skip the just-broadcast blocks.
+   (0 is reserved — set an explicit block.) The tailer indexes up to the
+   **last-irreversible** block, not the reversible head, so a start block above
+   LIB simply waits.
+2. Set `arena_tailer_enabled: true`. **Safe to set on every instance** — the
+   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:205`), so it
+   can't double-poll even across the 2 servers + Heroku. Just make sure the MAIN
+   process's config has it and gets restarted.
+3. Restart the process(es). Expect a single `Arena tailer started` log line (on
+   MAIN only), then `arena blk <n> <trx>: <action>` lines as ops land.
 
 It targets **last-irreversible** blocks (reorg-safe), resumes from a persisted
-cursor (`arena_tailer_state`), and runs **one instance only** (see the module
-header — two instances double-poll).
+cursor (`arena_tailer_state`), and runs on the **single MAIN instance only**
+(the guard at `app.js:205` — two instances would double-poll).
 
 Verify: broadcast a test `join` from a throwaway account; confirm a
 `challenge_participants` row appears within a few blocks.

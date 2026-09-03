@@ -9,6 +9,7 @@ var arenaStandings = require('./arena_standings');
 var arenaMerits = require('./arena_merits');
 var arenaPools = require('./arena_pools');
 var arenaRoutes = require('./arena_routes');
+var featured = require('./featured');
 const moment = require('moment')
 var crypto = require('crypto');
 const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
@@ -175,6 +176,7 @@ client.connect()
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
 	    arenaApi.ensureEventsIndexes(db);
+	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -196,8 +198,11 @@ client.connect()
 
 	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
+	  // Runs on the MAIN process ONLY: the tailer is single-instance (two would
+	  // double-poll), matching the other single-instance jobs (BOT_THREAD=='MAIN').
+	  // This lets arena_tailer_enabled be set on every instance safely.
 	  try {
-	    if (config.arena_tailer_enabled) {
+	    if (config.arena_tailer_enabled && process.env.BOT_THREAD == 'MAIN') {
 	      const arenaTailer = require('./arena_tailer');
 	      arenaTailer.startArenaTailer(db, {
 	        nodes: config.alt_hive_nodes,
@@ -769,6 +774,10 @@ const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHe
 // caller as the safe 'friendly' floor (community/official creates won't validate
 // until tier derivation from getRank/role is added — tracked on #180).
 arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
+
+// Actifitter of the Month (Trello #110) — public read of the editorial spotlight
+// (sanitized doc, or null when unset so the web section hides). Rate-limited.
+featured.registerFeaturedRoute(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
 
 app.get('/hivePrice', async function (req, res){
 	let refetch = false;
