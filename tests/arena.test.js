@@ -408,3 +408,43 @@ describe('arena — review round 2 hardening (M1 + coverage)', () => {
     expect(res).toMatchObject({ ok: true, action: 'challenge_created', noop: true });
   });
 });
+
+describe('challenge presentation metadata (Trello #182)', () => {
+  it('persists bounded presentation fields on create', async () => {
+    const db = createMockDb();
+    const body = createBody({
+      id: 'ch_pres', tagline: 'Climb the board', how_it_works: 'Log activity all week',
+      prize_summary: 'Earn Actifit Merits', recurrence: 'Weekly', art: 'step-league',
+    });
+    const res = await arena.indexArenaOp(db, chainOp(body, 'someuser'));
+    expect(res.ok).toBe(true);
+    const doc = await db.collection('challenges').findOne({ id: 'ch_pres' });
+    expect(doc.tagline).toBe('Climb the board');
+    expect(doc.how_it_works).toBe('Log activity all week');
+    expect(doc.prize_summary).toBe('Earn Actifit Merits');
+    expect(doc.recurrence).toBe('Weekly');
+    expect(doc.art).toBe('step-league');
+  });
+
+  it('drops non-string / empty and clamps over-long presentation fields', async () => {
+    const db = createMockDb();
+    const body = createBody({
+      id: 'ch_pres2', tagline: { nope: 1 }, recurrence: '   ', art: 42,
+      how_it_works: 'y'.repeat(5000),
+    });
+    await arena.indexArenaOp(db, chainOp(body, 'someuser'));
+    const doc = await db.collection('challenges').findOne({ id: 'ch_pres2' });
+    expect(doc.tagline).toBeUndefined();   // non-string dropped
+    expect(doc.recurrence).toBeUndefined(); // blank dropped
+    expect(doc.art).toBeUndefined();        // non-string dropped
+    expect(doc.how_it_works.length).toBe(2000); // clamped to bound
+  });
+
+  it('omits presentation keys entirely when none are provided', async () => {
+    const db = createMockDb();
+    await arena.indexArenaOp(db, chainOp(createBody({ id: 'ch_bare' }), 'someuser'));
+    const doc = await db.collection('challenges').findOne({ id: 'ch_bare' });
+    expect('tagline' in doc).toBe(false);
+    expect('art' in doc).toBe(false);
+  });
+});
