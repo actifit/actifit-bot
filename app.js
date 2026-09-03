@@ -181,6 +181,21 @@ client.connect()
 	    utils.log(e, 'api');
 	  }
 
+	  // Friends suggestions (Trello #43): the `recentVerifiedPosts` / `recentAuthorsData`
+	  // aggregates filter verified_posts by a date range but the collection had no date index,
+	  // forcing a full-collection scan that made those endpoints hang. Ensure it here (idempotent,
+	  // background build so it never blocks startup).
+	  try {
+	    let verifiedPosts = db.collection('verified_posts');
+	    if (typeof verifiedPosts.createIndex === 'function') {
+	      verifiedPosts.createIndex({ date: 1 })
+	        .then(() => console.log('verified_posts.date index ensured'))
+	        .catch(e => utils.log(e, 'api'));
+	    }
+	  } catch (e) {
+	    utils.log(e, 'api');
+	  }
+
 	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
 	  try {
@@ -2684,63 +2699,57 @@ app.get('/activeRefReward/:referred', async function (req, res) {
 /* end point for returning number of awarded users and tokens distributed */
 app.get('/accountsTotalAFIT', async function(req, res) {
 
-	db.collection('user_tokens').aggregate([
-		{ $match: { tokens: { $gte: 0.000001 } } },
-		{
-			$group: {
-				_id: null,
-				tokens_distributed: { $sum: "$tokens" },
-				user_count: { $sum: 1 }
+	try {
+		let results = await db.collection('user_tokens').aggregate([
+			{ $match: { tokens: { $gte: 0.000001 } } },
+			{
+				$group: {
+					_id: null,
+					tokens_distributed: { $sum: "$tokens" },
+					user_count: { $sum: 1 }
+				}
 			}
-		}
-	]).toArray(function(err, results) {
-		if (err) {
-			console.log("Error:", err);
-			res.send('');
-			return;
-		}
-
+		]).toArray();
 		if (results.length > 0) {
-			try {
-				var output = 'Rewarded users: ' + results[0].user_count + ', ';
-				output += 'Tokens distributed: ' + results[0].tokens_distributed;
-				res.send({'accounts': results[0].user_count, 'total': results[0].tokens_distributed});
-				console.log(results);
-			} catch (err) {
-				console.log(err);
-				res.send('');
-			}
+			res.send({'accounts': results[0].user_count, 'total': results[0].tokens_distributed});
+			console.log(results);
 		} else {
 			res.send('');
 		}
-	});
-	
+	} catch (err) {
+		console.log("Error:", err);
+		res.send('');
+	}
+
 });
 
 app.get('/tokensBurnt', async function (req, res) {
-	let agg = await db.collection('token_transactions').aggregate([
-		{
-			$match: {
-				reward_activity: 'Buy Product',
-				seller: 'actifit'
-			}
-		},
-		{
-		   $group:
+	try {
+		let results = await db.collection('token_transactions').aggregate([
 			{
-				_id: null,
-			   	tokens_burnt: { $sum: "$token_count" },
-				burn_trx_count: { $sum: 1 }
+				$match: {
+					reward_activity: 'Buy Product',
+					seller: 'actifit'
+				}
+			},
+			{
+			   $group:
+				{
+					_id: null,
+				   	tokens_burnt: { $sum: "$token_count" },
+					burn_trx_count: { $sum: 1 }
 
+				}
 			}
-		}
-	]).toArray(function(err, results) {
+		]).toArray();
 		if (results.length>0){
 			results[0].tokens_burnt = Math.abs(results[0].tokens_burnt);
-			res.send(results);
-			console.log(results);
 		}
-	});
+		res.send(results);   // always respond (empty [] instead of hanging)
+	} catch (err) {
+		console.log('tokensBurnt error:', err.message);
+		res.send([]);
+	}
 });
 
 
@@ -3430,28 +3439,32 @@ app.get('/delegationPayments', async function(req, res) {
 		dateRegex = req.query.targetDate;
 	}
 	
-	await db.collection('token_transactions').aggregate([
-		{
-			$match: 
+	try {
+		let results = await db.collection('token_transactions').aggregate([
 			{
-				"reward_activity": "Delegation",
-				"date": {
-					'$eq' : new Date(dateRegex)
-					}
-			}
-		},
-		{
-		   $group:
+				$match:
+				{
+					"reward_activity": "Delegation",
+					"date": {
+						'$eq' : new Date(dateRegex)
+						}
+				}
+			},
 			{
-			   _id: null,
-			   tokens_distributed: { $sum: "$token_count" },
-			   user_count: { $sum: 1 }
+			   $group:
+				{
+				   _id: null,
+				   tokens_distributed: { $sum: "$token_count" },
+				   user_count: { $sum: 1 }
+				}
 			}
-		}
-	   ]).toArray(function(err, results) {
+		   ]).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('delegationPayments error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -3466,24 +3479,25 @@ app.get('/totalTokensDistributed', async function(req, res) {
 	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('token_transactions').aggregate([
-		{
-			$match: 
+	try {
+		let results = await db.collection('token_transactions').aggregate([
 			{
-				"date": {
-					"$lte": new Date(endDate),
-					"$gt": new Date(startDate)
+				$match:
+				{
+					"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
+				}
+			},
+			{
+			   $group:
+				{
+				   _id: {reward_activity:"$reward_activity"},
+				   tokens_distributed: { $sum: "$token_count" },
 				}
 			}
-		},
-		{
-		   $group:
-			{
-			   _id: {reward_activity:"$reward_activity"},
-			   tokens_distributed: { $sum: "$token_count" },
-			}
-		}
-	   ]).toArray(function(err, results) {
+		   ]).toArray();
 		//also append total token count to the grouped display
 		let tot_tokens = 0;
 		for (let entry of results) {
@@ -3491,23 +3505,30 @@ app.get('/totalTokensDistributed', async function(req, res) {
 		}
 		console.log(tot_tokens);
 		results.push([{"_id":null,"tokens_distributed":tot_tokens}]);
-		
+
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('totalTokensDistributed error:', err.message);
+		res.send([]);
+	}
 
 });
 
 /* end point for returning count of posts/activities rewarded */
 app.get('/rewarded-activity-count', async function(req, res) {
 
-	await db.collection("posts").aggregate( [
-		{ $count: "reward_count" }
-	]).toArray(function(err, results) {
+	try {
+		let results = await db.collection("posts").aggregate( [
+			{ $count: "reward_count" }
+		]).toArray();
 		console.log(results);
 		utils.log(results, 'rewarded-activity-count');
 		res.send(results);
-	});
+	} catch (err) {
+		console.log('rewarded-activity-count error:', err.message);
+		res.send([]);
+	}
 });
 
 /* end point for returning charity data supported by actifit */
@@ -6840,24 +6861,26 @@ app.get('/getEstimatedReward', async function(req, res) {
 /* end point for returning total number of rewarded tokens to charities based upon user activity, along with unique user count who donated */
 app.get('/getCharityRewards', async function(req, res) {
 
-	await db.collection('token_transactions').aggregate([
-		{
-			$match: {reward_activity:'Charity Post'}
-		},
-		{
-		   $group:
+	try {
+		let results = await db.collection('token_transactions').aggregate([
 			{
-			   _id: null,
-			   tokens_distributed: { $sum: "$token_count" },
-			   user_count: { $sum: 1 }
+				$match: {reward_activity:'Charity Post'}
+			},
+			{
+			   $group:
+				{
+				   _id: null,
+				   tokens_distributed: { $sum: "$token_count" },
+				   user_count: { $sum: 1 }
+				}
 			}
-		}
-	   ]).toArray(function(err, results) {
-		var output = 'rewarded users:'+results[0].user_count+',';
-		output += 'tokens distributed:'+results[0].tokens_distributed;
+		   ]).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('getCharityRewards error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -6866,36 +6889,44 @@ app.get('/getCharityRewards', async function(req, res) {
 /* end point for returning full payout posts data */
 app.get('/getFullAFITPayPosts', async function(req, res) {
 
-	await db.collection('token_transactions').find(
-		{"reward_activity": "Full AFIT Payout"}).sort({'date': -1}).limit(1000).toArray(function(err, results) {
+	try {
+		let results = await db.collection('token_transactions').find(
+			{"reward_activity": "Full AFIT Payout"}).sort({'date': -1}).limit(1000).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('getFullAFITPayPosts error:', err.message);
+		res.send([]);
+	}
 
 });
 
 /* end point for returning total number of AFIT tokens paid in return for full AFIT pay along with matching STEEM + SBD */
 app.get('/getFullAFITPayStats', async function(req, res) {
 
-	await db.collection('token_transactions').aggregate([
-		{
-			$match: {"reward_activity": "Full AFIT Payout"}
-		},
-		{
-		   $group:
+	try {
+		let results = await db.collection('token_transactions').aggregate([
 			{
-				_id: null,
-				afit_tokens: { $sum: "$token_count" },
-				orig_sbd_amount: { $sum: "$orig_sbd_amount" },
-				orig_steem_amount: { $sum: "$orig_steem_amount" },
-				orig_sp_amount: { $sum: "$orig_sp_amount" },
-				transaction_count: { $sum: 1 }
+				$match: {"reward_activity": "Full AFIT Payout"}
+			},
+			{
+			   $group:
+				{
+					_id: null,
+					afit_tokens: { $sum: "$token_count" },
+					orig_sbd_amount: { $sum: "$orig_sbd_amount" },
+					orig_steem_amount: { $sum: "$orig_steem_amount" },
+					orig_sp_amount: { $sum: "$orig_sp_amount" },
+					transaction_count: { $sum: 1 }
+				}
 			}
-		}
-	   ]).toArray(function(err, results) {
+		   ]).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('getFullAFITPayStats error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -6917,44 +6948,48 @@ app.get('/moderatorActivity', async function(req, res) {
 	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('team').aggregate([
-		{
-			$match: 
+	try {
+		let results = await db.collection('team').aggregate([
 			{
-				title:'moderator', 
-				status:'active'
-			}
-		},
-		{
-			$lookup: 
-			{
-				from: "token_transactions", 
-				localField: "name", 
-				foreignField: "user", 
-				as: "moderatorActivity"
-			}
-		}, 
-		{
-			$project: 
-			{
-				'_id':0,
-				items: 
+				$match:
 				{
-					$filter: {
-						input: "$moderatorActivity",
-						as: "singleEntry",
-						cond: { $and: [
-							{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
-							{ "$gt": ["$$singleEntry.date", new Date(endDate)] }
-						] }
+					title:'moderator',
+					status:'active'
+				}
+			},
+			{
+				$lookup:
+				{
+					from: "token_transactions",
+					localField: "name",
+					foreignField: "user",
+					as: "moderatorActivity"
+				}
+			},
+			{
+				$project:
+				{
+					'_id':0,
+					items:
+					{
+						$filter: {
+							input: "$moderatorActivity",
+							as: "singleEntry",
+							cond: { $and: [
+								{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+								{ "$gt": ["$$singleEntry.date", new Date(endDate)] }
+							] }
+						}
 					}
 				}
 			}
-		}
-	   ]).toArray(function(err, results) {
+		   ]).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('moderatorActivity error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -6980,45 +7015,49 @@ app.get('/moderatorWeeklyStats', async function(req, res) {
 	var endDate = moment(moment(startDate).utc().subtract(days, 'days').toDate()).format('YYYY-MM-DD');
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('team').aggregate([
-		{
-			$match: 
+	try {
+		let results = await db.collection('team').aggregate([
 			{
-				title:'moderator', 
-				status:'active'
-			}
-		},
-		{
-			$lookup: 
-			{
-				from: "token_transactions", 
-				localField: "name", 
-				foreignField: "user", 
-				as: "moderatorActivity"
-			}
-		}, 
-		{
-			$project: 
-			{
-				'_id':0,
-				items: 
+				$match:
 				{
-					$filter: {
-						input: "$moderatorActivity",
-						as: "singleEntry",
-						cond: { $and: [
-							{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
-							{ "$gt": ["$$singleEntry.date", new Date(endDate)] },
-							{ "$in": ["$$singleEntry.reward_activity", ["Moderator Comment", "Post Vote"]] } 
-						] }
+					title:'moderator',
+					status:'active'
+				}
+			},
+			{
+				$lookup:
+				{
+					from: "token_transactions",
+					localField: "name",
+					foreignField: "user",
+					as: "moderatorActivity"
+				}
+			},
+			{
+				$project:
+				{
+					'_id':0,
+					items:
+					{
+						$filter: {
+							input: "$moderatorActivity",
+							as: "singleEntry",
+							cond: { $and: [
+								{ "$lte": ["$$singleEntry.date", new Date(startDate)] },
+								{ "$gt": ["$$singleEntry.date", new Date(endDate)] },
+								{ "$in": ["$$singleEntry.reward_activity", ["Moderator Comment", "Post Vote"]] }
+							] }
+						}
 					}
 				}
-			}
-		},
-	   ]).toArray(function(err, results) {
+			},
+		   ]).toArray();
 		res.send(results);
 		console.log(results);
-	   });
+	} catch (err) {
+		console.log('moderatorWeeklyStats error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -8779,7 +8818,7 @@ const handleConfirmPayment = async function(req,res){
 							bchain = 'HIVE';
 						}
 					}
-					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain);
+					paymentReceivedTx = await utils.confirmPaymentReceived(req, bchain, hivePrice);
 					console.log('>>>> got TX '+paymentReceivedTx);
 					if (paymentReceivedTx != ''){
 						req.query.confirming_tx = paymentReceivedTx;
@@ -9557,50 +9596,54 @@ app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){
 /* end point handling the display of categorized token holders */
 app.get('/fetchTokenHoldersByCategory', async function(req, res){
 	//connect to DB, and identify token holders by category
-	await db.collection('user_tokens').aggregate([
-	{
-	  $project: {    
-		"range": {
-		   $concat: [
-			  { $cond: [{$lt: ["$tokens",1]}, "< 1 AFIT", ""]}, 
-			  { $cond: [{$and:[ {$gte:["$tokens", 1 ]}, {$lt: ["$tokens", 11]}]}, "1 - 10 AFIT", ""] },
-			  { $cond: [{$and:[ {$gte:["$tokens",11]}, {$lt:["$tokens", 101]}]}, "11 - 100 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",101]}, {$lt:["$tokens", 1001]}]}, "101 - 1,000 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",1001]}, {$lt:["$tokens", 10001]}]}, "1,001 - 10,000 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",10001]}, {$lt:["$tokens", 50001]}]}, "10,001 - 50,000 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",50001]}, {$lt:["$tokens", 100001]}]}, "50,001 - 100,000 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",100001]}, {$lt:["$tokens", 500001]}]}, "100,001 - 500,000 AFIT", ""]},
-			  { $cond: [{$and:[ {$gte:["$tokens",500001]}, {$lt:["$tokens", 1000001]}]}, "500,001 - 1,000,000 AFIT", ""]},
-			  { $cond: [{$gte:["$tokens",1000001]}, "> 1,000,000 AFIT", ""]}
-		   ]
-		}  
-	  }    
-	},
-	{
-	  $group: { 
-		"_id" : "$range", 
-		count: { 
-		  $sum: 1
-		} 
-	  }
-	},
-	{
-	  $sort: {
-		"count": -1,
-	  }
-	}
-	]).toArray(function(err, results) {
-	  if (req.query.pretty==1){
-		let output = '|Category|Count|<br/>';
-		output += '|---|---|<br/>';
-	    for (let entry of results) {
-			output += '|' + entry._id + '|' + entry.count + '<br/>';
+	try {
+		let results = await db.collection('user_tokens').aggregate([
+		{
+		  $project: {
+			"range": {
+			   $concat: [
+				  { $cond: [{$lt: ["$tokens",1]}, "< 1 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens", 1 ]}, {$lt: ["$tokens", 11]}]}, "1 - 10 AFIT", ""] },
+				  { $cond: [{$and:[ {$gte:["$tokens",11]}, {$lt:["$tokens", 101]}]}, "11 - 100 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",101]}, {$lt:["$tokens", 1001]}]}, "101 - 1,000 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",1001]}, {$lt:["$tokens", 10001]}]}, "1,001 - 10,000 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",10001]}, {$lt:["$tokens", 50001]}]}, "10,001 - 50,000 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",50001]}, {$lt:["$tokens", 100001]}]}, "50,001 - 100,000 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",100001]}, {$lt:["$tokens", 500001]}]}, "100,001 - 500,000 AFIT", ""]},
+				  { $cond: [{$and:[ {$gte:["$tokens",500001]}, {$lt:["$tokens", 1000001]}]}, "500,001 - 1,000,000 AFIT", ""]},
+				  { $cond: [{$gte:["$tokens",1000001]}, "> 1,000,000 AFIT", ""]}
+			   ]
+			}
+		  }
+		},
+		{
+		  $group: {
+			"_id" : "$range",
+			count: {
+			  $sum: 1
+			}
+		  }
+		},
+		{
+		  $sort: {
+			"count": -1,
+		  }
 		}
-		res.send(output);
-	  }else{
-	    res.send(results);
-	  }
-    });
+		]).toArray();
+		if (req.query.pretty==1){
+			let output = '|Category|Count|<br/>';
+			output += '|---|---|<br/>';
+			for (let entry of results) {
+				output += '|' + entry._id + '|' + entry.count + '<br/>';
+			}
+			res.send(output);
+		}else{
+			res.send(results);
+		}
+	} catch (err) {
+		console.log('fetchTokenHoldersByCategory error:', err.message);
+		res.send(req.query.pretty==1 ? '' : []);
+	}
 
 });
 
@@ -9780,33 +9823,38 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 	banned_arr.push('');
 	//console.log(banned_arr);
 	
-	await db.collection('verified_posts').aggregate([
-		{$match: 
-			{
-				date: {
-					$lte: new Date(endDate),
-					$gt: new Date(startDate)
+	// NOTE: mongodb driver v5 dropped callback support, so the old .toArray(cb) never fired and
+	// res.send was never called → the request hung. Use the promise form and always respond.
+	try {
+		let results = await db.collection('verified_posts').aggregate([
+			{$match:
+				{
+					date: {
+						$lte: new Date(endDate),
+						$gt: new Date(startDate)
+					},
+					author: {
+						$nin: banned_arr,
+					}
 				},
-				author: {
-					$nin: banned_arr,
+			},
+			{$sort:
+				{
+					date:1
+				},
+			},
+			{$group:
+				{
+				   _id: '$author',
 				}
-			},
-		},
-		{$sort:
-			{
-				date:1
-			},
-		},
-		{$group:
-			{
-			   _id: '$author',
 			}
-		}
-	   ]).limit(maxCount).toArray(function(err, results) {
-		//also append total token count to the grouped display
+		   ]).limit(maxCount).toArray();
 		console.log(results.length);
 		res.send(results);
-	   });
+	} catch (err) {
+		console.log('recentVerifiedPosts error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -9824,34 +9872,36 @@ app.get('/recentAuthorsData', async function(req, res) {
 	}
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('verified_posts').aggregate([
-		{
-			$match: 
+	// mongodb v5 dropped .toArray(cb); use the promise form so the response is actually sent.
+	try {
+		let results = await db.collection('verified_posts').aggregate([
 			{
-				"date": {
-					"$lte": new Date(endDate),
-					"$gt": new Date(startDate)
+				$match:
+				{
+					"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
 				}
 			}
-		}
-	   ]).toArray(async function(err, results) {
-		//also append total token count to the grouped display
+		   ]).toArray();
 		console.log(results.length);
 		results = results.reverse();
 		let finalSet = [];
 		if (!req.params){
 			req.params = new Object();
 		}
-		for (let i=0;i < maxCount;i++){
-			req.params.user = results[i].author;	
+		let lim = Math.min(maxCount, results.length);   // guard: fewer authors than maxCount
+		for (let i=0;i < lim;i++){
+			req.params.user = results[i].author;
 			let rank = await calcRank (req, res);
-			console.log(results[i].author);
-			console.log(rank);
 			finalSet.push({'author': results[i].author, 'rank': rank});
 		}
 		res.send(finalSet);
-		
-	   });
+	} catch (err) {
+		console.log('recentAuthorsData error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -9865,21 +9915,24 @@ app.get('/totalPostsSubmitted', async function(req, res) {
 	var endDate = moment(moment(startDate).utc().add(1, 'days').toDate()).format('YYYY-MM-DD');
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('verified_posts').aggregate([
-		{
-			$match: 
+	try {
+		let results = await db.collection('verified_posts').aggregate([
 			{
-				"date": {
-					"$lte": new Date(endDate),
-					"$gt": new Date(startDate)
+				$match:
+				{
+					"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
 				}
 			}
-		}
-	   ]).toArray(function(err, results) {
-		//also append total token count to the grouped display
+		   ]).toArray();
 		console.log(results.length);
 		res.send({count:results.length});
-	   });
+	} catch (err) {
+		console.log('totalPostsSubmitted error:', err.message);
+		res.send({count:0});
+	}
 
 });
 
