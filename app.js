@@ -9789,33 +9789,38 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 	banned_arr.push('');
 	//console.log(banned_arr);
 	
-	await db.collection('verified_posts').aggregate([
-		{$match: 
-			{
-				date: {
-					$lte: new Date(endDate),
-					$gt: new Date(startDate)
+	// NOTE: mongodb driver v5 dropped callback support, so the old .toArray(cb) never fired and
+	// res.send was never called → the request hung. Use the promise form and always respond.
+	try {
+		let results = await db.collection('verified_posts').aggregate([
+			{$match:
+				{
+					date: {
+						$lte: new Date(endDate),
+						$gt: new Date(startDate)
+					},
+					author: {
+						$nin: banned_arr,
+					}
 				},
-				author: {
-					$nin: banned_arr,
+			},
+			{$sort:
+				{
+					date:1
+				},
+			},
+			{$group:
+				{
+				   _id: '$author',
 				}
-			},
-		},
-		{$sort:
-			{
-				date:1
-			},
-		},
-		{$group:
-			{
-			   _id: '$author',
 			}
-		}
-	   ]).limit(maxCount).toArray(function(err, results) {
-		//also append total token count to the grouped display
+		   ]).limit(maxCount).toArray();
 		console.log(results.length);
 		res.send(results);
-	   });
+	} catch (err) {
+		console.log('recentVerifiedPosts error:', err.message);
+		res.send([]);
+	}
 
 });
 
@@ -9833,34 +9838,36 @@ app.get('/recentAuthorsData', async function(req, res) {
 	}
 	console.log("startDate:"+startDate+" endDate:"+endDate);
 	
-	await db.collection('verified_posts').aggregate([
-		{
-			$match: 
+	// mongodb v5 dropped .toArray(cb); use the promise form so the response is actually sent.
+	try {
+		let results = await db.collection('verified_posts').aggregate([
 			{
-				"date": {
-					"$lte": new Date(endDate),
-					"$gt": new Date(startDate)
+				$match:
+				{
+					"date": {
+						"$lte": new Date(endDate),
+						"$gt": new Date(startDate)
+					}
 				}
 			}
-		}
-	   ]).toArray(async function(err, results) {
-		//also append total token count to the grouped display
+		   ]).toArray();
 		console.log(results.length);
 		results = results.reverse();
 		let finalSet = [];
 		if (!req.params){
 			req.params = new Object();
 		}
-		for (let i=0;i < maxCount;i++){
-			req.params.user = results[i].author;	
+		let lim = Math.min(maxCount, results.length);   // guard: fewer authors than maxCount
+		for (let i=0;i < lim;i++){
+			req.params.user = results[i].author;
 			let rank = await calcRank (req, res);
-			console.log(results[i].author);
-			console.log(rank);
 			finalSet.push({'author': results[i].author, 'rank': rank});
 		}
 		res.send(finalSet);
-		
-	   });
+	} catch (err) {
+		console.log('recentAuthorsData error:', err.message);
+		res.send([]);
+	}
 
 });
 
