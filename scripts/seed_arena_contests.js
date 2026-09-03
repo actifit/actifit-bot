@@ -27,17 +27,22 @@ const arena = require('../arena.js');
 const arenaApi = require('../arena_api.js');
 
 const DRY = process.argv.slice(2).includes('--dry');
+// --clear DELETES the six index-only default docs (the mandatory pre-step before
+// the on-chain seed — indexArenaOp won't overwrite an existing id's provenance).
+const CLEAR = process.argv.slice(2).includes('--clear');
 
 (async () => {
 	const url = config.testing ? config.mongo_local : config.mongo_uri;
 	const officialAccount = config.arena_official_account || 'actifit';
 	const nowMs = Date.now();
+	const ids = arenaApi.defaultContests(nowMs).map(c => c.id);
 
 	if (DRY) {
-		const contests = arenaApi.defaultContests(nowMs);
-		console.log(`[dry-run] would seed ${contests.length} official contests as @${officialAccount}:`);
-		for (const c of contests) {
-			console.log(`  - ${c.id}  (${c.type})  ${c.title || ''}`);
+		if (CLEAR) {
+			console.log(`[dry-run] would DELETE ${ids.length} default contest docs: ${ids.join(', ')}`);
+		} else {
+			console.log(`[dry-run] would seed ${ids.length} official contests as @${officialAccount}:`);
+			for (const c of arenaApi.defaultContests(nowMs)) console.log(`  - ${c.id}  (${c.type})  ${c.title || ''}`);
 		}
 		console.log('[dry-run] no database writes performed.');
 		return;
@@ -47,6 +52,12 @@ const DRY = process.argv.slice(2).includes('--dry');
 	try {
 		await client.connect();
 		const db = client.db(config.db_name);
+
+		if (CLEAR) {
+			const r = await db.collection('challenges').deleteMany({ id: { $in: ids } });
+			console.log(`cleared ${r.deletedCount} default contest doc(s): ${ids.join(', ')}`);
+			return;
+		}
 
 		// Make sure the collections this touches are indexed (safe if app.js
 		// already created them — index creation is idempotent).
