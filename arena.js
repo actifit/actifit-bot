@@ -113,6 +113,20 @@ function pick(obj, keys) {
 	return out;
 }
 
+// Optional display/presentation strings (§2.3-style spotlight copy, Trello #182)
+// carried on a challenge so web/Android/iOS share one source of copy. Bounded
+// lengths; anything non-string or over-long is dropped/clamped. These are
+// display-only — never scoring or reward economics.
+const PRESENTATION_LIMITS = { tagline: 200, how_it_works: 2000, prize_summary: 500, recurrence: 40, art: 60 };
+function buildPresentation(op) {
+	const out = {};
+	for (const [k, max] of Object.entries(PRESENTATION_LIMITS)) {
+		const v = op && op[k];
+		if (typeof v === 'string' && v.trim()) out[k] = v.trim().slice(0, max);
+	}
+	return out;
+}
+
 /**
  * Build the stored `entry` sub-doc, whitelisting BOTH the entry and its nested
  * `gate` so no monetary field (even one buried in gate) reaches the index (I1).
@@ -319,6 +333,8 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				rewards: op.rewards || null,
 				pool_ref: op.pool_ref || null,
 				parent_id: op.parent_id || null,
+				// Shared presentation copy (Trello #182) — display-only, bounded.
+				...buildPresentation(op),
 				created_by: signer,
 				source: { trx_id, block_num },
 				audit: { created_at: at },
