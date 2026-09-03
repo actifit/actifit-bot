@@ -145,13 +145,16 @@ Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
    (0 is reserved — set an explicit block.) The tailer indexes up to the
    **last-irreversible** block, not the reversible head, so a start block above
    LIB simply waits.
-2. Set `arena_tailer_enabled: true`.
-3. Restart the process. Expect a `Arena tailer started` log line, then
-   `arena blk <n> <trx>: <action>` lines as ops land.
+2. Set `arena_tailer_enabled: true`. **Safe to set on every instance** — the
+   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:202`), so it
+   can't double-poll even across the 2 servers + Heroku. Just make sure the MAIN
+   process's config has it and gets restarted.
+3. Restart the process(es). Expect a single `Arena tailer started` log line (on
+   MAIN only), then `arena blk <n> <trx>: <action>` lines as ops land.
 
 It targets **last-irreversible** blocks (reorg-safe), resumes from a persisted
-cursor (`arena_tailer_state`), and runs **one instance only** (see the module
-header — two instances double-poll).
+cursor (`arena_tailer_state`), and runs on the **single MAIN instance only**
+(the guard at `app.js:202` — two instances would double-poll).
 
 Verify: broadcast a test `join` from a throwaway account; confirm a
 `challenge_participants` row appears within a few blocks.
