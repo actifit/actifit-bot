@@ -16,6 +16,32 @@ describe('arena_merits.award (credit / I3 / emission cap)', () => {
     expect(await merits.balanceOf(db, 'alice')).toBe(300);
   });
 
+  test('idempotent:true — a repeated (user,reason,ref) reward credits ONCE (#178)', async () => {
+    const db = createMockDb();
+    const first = await merits.award(db, { user: 'alice', amount: 200, reason: 'challenge_reward', ref: 'ch1', at: AT, idempotent: true });
+    expect(first.ok).toBe(true);
+    expect(first.noop).toBeFalsy();
+    // simulate a crash-retry: same reward re-attempted
+    const retry = await merits.award(db, { user: 'alice', amount: 200, reason: 'challenge_reward', ref: 'ch1', at: AT, idempotent: true });
+    expect(retry).toMatchObject({ ok: true, noop: true });
+    expect(retry.entry).toBeTruthy();               // returns the prior entry (reward_ref stays valid)
+    expect(await merits.balanceOf(db, 'alice')).toBe(200); // credited once, not 400
+  });
+
+  test('idempotent rewards are scoped per (reason,ref) — different challenges both credit', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 50, reason: 'challenge_reward', ref: 'chA', at: AT, idempotent: true });
+    await merits.award(db, { user: 'a', amount: 30, reason: 'challenge_reward', ref: 'chB', at: AT, idempotent: true });
+    expect(await merits.balanceOf(db, 'a')).toBe(80);
+  });
+
+  test('without idempotent, the same ref credits each call (prior behavior preserved)', async () => {
+    const db = createMockDb();
+    await merits.award(db, { user: 'a', amount: 50, reason: 'challenge_reward', ref: 'ch1', at: AT });
+    await merits.award(db, { user: 'a', amount: 50, reason: 'challenge_reward', ref: 'ch1', at: AT });
+    expect(await merits.balanceOf(db, 'a')).toBe(100);
+  });
+
   test('I3 — rejects a non-whitelisted (buy/deposit) credit reason', async () => {
     const db = createMockDb();
     for (const reason of ['purchase', 'deposit', 'buy', 'transfer_in']) {

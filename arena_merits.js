@@ -41,10 +41,18 @@
  * NOT read them for decisions. The daily emission cap is a ledger read (a small
  * over-emit race is tolerable; it never overdraws).
  *
- * Deferred (tracked #178): wrap counter+ledger (and reserve+debit+purchase) in a
- * Mongo transaction for exact audit consistency + crash safety, and a real
- * (mongodb-memory-server) integration test — the mock proves guard-wiring, not
- * the DB's single-document atomicity.
+ * Idempotent emission (#178): `award({..., idempotent:true, ref})` no-ops if a
+ * ledger row with the same (user, reason, ref) already exists — so a once-only
+ * credit (challenge/season reward) survives a retry after a crash BETWEEN the
+ * emission and the caller's higher-level marker (e.g. challenge_resolutions)
+ * without double-crediting. The resolver uses this per (user, challenge).
+ *
+ * Still deferred (tracked #178, needs a replica set): wrap the single award's
+ * counter-$inc + ledger-insert (and reserve+debit+purchase) in a Mongo
+ * transaction to close the narrow crash window BETWEEN those two writes, plus a
+ * real (mongodb-memory-server) integration test. On a crash there the current
+ * order ($inc then ledger) fails SAFE toward a bounded over-credit (capped by the
+ * daily emission cap), never a lost spend or a stuck balance.
  *
  * F4 slice scope; DEFERRED to F5: pool-funded AFIT payout (I2 pool funding) and
  * I7 (funder ≠ paid participant) live in the pools/resolution module.
@@ -146,6 +154,18 @@ async function award(db, params) {
 	// MUST assert authorization. Guards the emission cap and I4.
 	if (reason === 'admin_adjust' && !params.authorized) {
 		return { ok: false, reason: 'admin_adjust requires authorization' };
+	}
+
+	// Idempotent emission (#178): when the caller marks a once-only credit keyed by
+	// `ref` (a challenge/season reward), a matching prior ledger row means it
+	// already landed — return it instead of emitting again. This closes the common
+	// crash window where the reward is emitted but the higher-level idempotency
+	// marker (e.g. challenge_resolutions) isn't yet written, so a retry re-awards.
+	// (The narrower single-award counter-vs-ledger window still needs a Mongo
+	// transaction — tracked, requires a replica set; see the header note.)
+	if (params.idempotent && ref) {
+		const existing = await db.collection(COLLECTIONS.LEDGER).findOne({ user, reason, ref });
+		if (existing) return { ok: true, noop: true, entry: existing };
 	}
 
 	// Anti-sybil daily emission cap on system-funded rewards (privileged
