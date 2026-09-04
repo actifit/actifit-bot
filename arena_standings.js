@@ -162,7 +162,10 @@ async function buildStandings(db, params = {}) {
 	const parts = await db.collection(COLLECTIONS.PARTICIPANTS)
 		.find({ challenge_id: { $in: challengeIds } }).toArray();
 
-	const inCohort = (p) => !cohort || p.cohort === cohort;
+	// A participant who LEFT is not ranked (their in-window score must not hold a
+	// leaderboard/prize slot).
+	const isActive = (p) => p.state !== 'left';
+	const inCohort = (p) => (!cohort || p.cohort === cohort) && isActive(p);
 	// Anti-cheat hold is per-ENTITY: a flag in ANY leg suppresses the whole entity
 	// (its clean legs must not take a prize slot while a hold is open).
 	const heldEntities = new Set(parts.filter((p) => inCohort(p) && isHeld(p)).map((p) => p.entity));

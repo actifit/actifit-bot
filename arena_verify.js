@@ -52,6 +52,14 @@ const DEFAULT_SPIKE_FACTOR = 5;       // a day > N× the participant's own media
 const DEFAULT_MAX_DAILY_STEPS = 200000; // implausible single-day activity (hard cap)
 const DEFAULT_DAY_RATIO = 30;         // max/min active-day ratio that trips a short-window spike
 
+/** Coerce a metadata value to a number, taking the first element of an array
+ *  (production stores step_count as ['5055']). Non-numeric → 0. */
+function firstNumber(v) {
+	const x = Array.isArray(v) ? v[0] : v;
+	const n = Number(x);
+	return Number.isFinite(n) ? n : 0;
+}
+
 function toDayKey(date) {
 	// UTC calendar day — a user may post more than once a day. Consistent with the
 	// rest of the app, which buckets on moment().utc().startOf('date').
@@ -175,8 +183,11 @@ async function fetchVerifiedActivity(db, entity, window) {
 		const meta = p.json_metadata || {};
 		return {
 			date: p.date,
-			step_count: Number(meta.step_count) || 0,
-			workout_minutes: Number(meta.workout_minutes) || 0,
+			// Production stores step_count as a single-element array of a numeric
+			// string, e.g. ['5055']; take the first element so a stray extra element
+			// can't collapse the whole day's activity to a silent 0.
+			step_count: firstNumber(meta.step_count),
+			workout_minutes: firstNumber(meta.workout_minutes),
 			permlink: p.permlink,
 		};
 	});
@@ -220,7 +231,10 @@ async function verifyChallenge(db, challengeId, opts = {}) {
 	if (!hasValidWindow(challenge.window)) return { ok: false, reason: 'challenge has no valid window' };
 
 	const asOf = opts.asOf || new Date().toISOString();
-	const parts = await participantsC.find({ challenge_id: challengeId }).toArray();
+	// Exclude participants who LEFT — they must not be scored (and so are never
+	// ranked or paid). A rejoin is impossible (the join op rejects a duplicate),
+	// so state:'left' is terminal for that entity in this challenge.
+	const parts = await participantsC.find({ challenge_id: challengeId, state: { $ne: 'left' } }).toArray();
 	let flagged = 0;
 
 	for (const p of parts) {

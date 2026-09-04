@@ -93,4 +93,39 @@ describe('arena_jobs.aggregateActiveChallenges', () => {
 		const res = await jobs.aggregateActiveChallenges(db);
 		expect(res).toMatchObject({ ok: true, processed: 0, verified: 0, standings: 0, failed: 0, skipped: 0 });
 	});
+
+	test('a participant who LEFT is not scored and not ranked', async () => {
+		const db = seed();
+		// bob leaves ch_open after posting.
+		await db.collection('challenge_participants').updateOne(
+			{ challenge_id: 'ch_open', entity: 'bob' }, { $set: { state: 'left' } });
+		await jobs.aggregateActiveChallenges(db, { asOf: '2026-09-01T00:00:00Z' });
+		const bob = await db.collection('challenge_participants').findOne({ challenge_id: 'ch_open', entity: 'bob' });
+		expect(bob.score).toBeUndefined(); // never scored
+		const board = await db.collection('standings').findOne({ id: 'ch_open' });
+		expect(board.rows.map(r => r.entity)).toEqual(['alice']); // bob absent
+	});
+
+	test('a challenge whose window has NOT started is skipped (no premature board)', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'ch_future', state: 'open', type: 'duel',
+			  window: { start: '2027-01-01T00:00:00Z', end: '2027-01-08T00:00:00Z' },
+			  scoring: { metric: 'activity_count', rule: 'max' } },
+		]);
+		db.collection('challenge_participants').__seed([{ challenge_id: 'ch_future', entity: 'zoe', flags: [] }]);
+		const res = await jobs.aggregateActiveChallenges(db, { asOf: '2026-09-01T00:00:00Z' });
+		expect(res.skipped).toBe(1);
+		expect(res.standings).toBe(0);
+		expect(await db.collection('standings').findOne({ id: 'ch_future' })).toBeNull();
+	});
+
+	test('ensureArenaJobIndexes declares the verified_posts {author,date} index', async () => {
+		// The shared mock has no createIndex, so drive a bespoke db (mirrors the
+		// ensureArenaIndexes test pattern).
+		const calls = [];
+		const idxDb = { collection: () => ({ createIndex: (spec) => { calls.push(spec); return Promise.resolve(); } }) };
+		await jobs.ensureArenaJobIndexes(idxDb);
+		expect(calls).toContainEqual({ author: 1, date: 1 });
+	});
 });

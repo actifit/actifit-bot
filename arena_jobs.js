@@ -63,6 +63,7 @@ async function aggregateActiveChallenges(db, opts = {}) {
 		.limit(limit)
 		.toArray();
 
+	const nowMs = Date.parse(asOf);
 	let verified = 0;
 	let standings = 0;
 	let failed = 0;
@@ -72,10 +73,12 @@ async function aggregateActiveChallenges(db, opts = {}) {
 		// Skip (don't fail) a challenge with no usable window — scoring against
 		// unbounded history is refused by verifyChallenge anyway (fail-closed).
 		if (!hasWindow(ch.window)) { skipped++; continue; }
+		// Skip a challenge whose window has not STARTED yet — otherwise we publish a
+		// premature all-zero board (nobody has any in-window activity). It picks up
+		// automatically on the first tick after the window opens.
+		if (Number.isFinite(nowMs) && Date.parse(ch.window.start) > nowMs) { skipped++; continue; }
 		try {
 			const v = await arenaVerify.verifyChallenge(db, ch.id, { ...(opts.verifyOpts || {}), asOf });
-			if (v && v.ok) verified++;
-
 			const s = await arenaStandings.buildStandings(db, {
 				challengeIds: [ch.id],
 				id: ch.id,              // key the doc by the challenge id (web reads by id)
@@ -83,6 +86,9 @@ async function aggregateActiveChallenges(db, opts = {}) {
 				window: ch.window,
 				asOf,
 			});
+			// Count only after BOTH steps complete, so a throw partway through lands
+			// solely in `failed` (never double-counted in verified/standings too).
+			if (v && v.ok) verified++;
 			if (s && s.ok) standings++;
 		} catch (e) {
 			failed++;
@@ -95,7 +101,22 @@ async function aggregateActiveChallenges(db, opts = {}) {
 	return summary;
 }
 
+/**
+ * Ensure the index the aggregation hot-path relies on. The per-participant score
+ * query is `verified_posts.find({ author, date: {$gte,$lte} })` — without a
+ * compound {author:1, date:1} index it scans the whole window's date range across
+ * all authors (736k+ docs) per participant, per challenge, every tick. Additive
+ * and safe (background); no-op where createIndex is unavailable (mock).
+ */
+async function ensureArenaJobIndexes(db) {
+	const vp = db.collection('verified_posts');
+	if (typeof vp.createIndex === 'function') {
+		await vp.createIndex({ author: 1, date: 1 });
+	}
+}
+
 module.exports = {
 	AGGREGATABLE_STATES,
 	aggregateActiveChallenges,
+	ensureArenaJobIndexes,
 };
