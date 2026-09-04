@@ -9,6 +9,7 @@ var arenaStandings = require('./arena_standings');
 var arenaMerits = require('./arena_merits');
 var arenaPools = require('./arena_pools');
 var arenaTier = require('./arena_tier');
+var arenaJobs = require('./arena_jobs');
 var arenaRoutes = require('./arena_routes');
 var featured = require('./featured');
 const moment = require('moment')
@@ -177,6 +178,7 @@ client.connect()
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
 	    arenaApi.ensureEventsIndexes(db);
+	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {
 	    utils.log(e, 'api');
@@ -1107,6 +1109,22 @@ async function restartApiNode() {
 }
 
 if (process.env.BOT_THREAD == 'MAIN'){
+	// Challenge Engine (Arena) — periodic aggregation sweep (F2 verify + F3
+	// standings). MAIN-only (single-instance, like the tailer) and config-gated
+	// (arena_jobs_enabled, off by default). Reads verified_posts and materializes
+	// challenge_participants.score + the per-challenge standings board. It emits no
+	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
+	if (config.arena_jobs_enabled) {
+		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
+		schedule.scheduleJob(aggCron, async function(){
+			try {
+				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
+			} catch (e) {
+				utils.log(e, 'arena');
+			}
+		});
+		console.log('Arena aggregation job scheduled ('+aggCron+')');
+	}
 	let j = schedule.scheduleJob({hour: 0, minute: 20}, function(){
 		restartApiNode();
 	});

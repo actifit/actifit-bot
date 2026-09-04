@@ -162,7 +162,10 @@ async function buildStandings(db, params = {}) {
 	const parts = await db.collection(COLLECTIONS.PARTICIPANTS)
 		.find({ challenge_id: { $in: challengeIds } }).toArray();
 
-	const inCohort = (p) => !cohort || p.cohort === cohort;
+	// A participant who LEFT is not ranked (their in-window score must not hold a
+	// leaderboard/prize slot).
+	const isActive = (p) => p.state !== 'left';
+	const inCohort = (p) => (!cohort || p.cohort === cohort) && isActive(p);
 	// Anti-cheat hold is per-ENTITY: a flag in ANY leg suppresses the whole entity
 	// (its clean legs must not take a prize slot while a hold is open).
 	const heldEntities = new Set(parts.filter((p) => inCohort(p) && isHeld(p)).map((p) => p.entity));
@@ -181,7 +184,10 @@ async function buildStandings(db, params = {}) {
 	const rows = [...byEntity.entries()].map(([entity, score]) => ({ entity, score }));
 	const ranked = computeStandings(rows, { mode: 'score', promotion });
 
-	const id = standingsId(scope, window, cohort);
+	// Per-challenge standings are keyed by the challenge id (params.id) so the
+	// public detail page — which queries /arena/standings?id=<challengeId> — finds
+	// them. Omit params.id for scope/season boards to use the derived standingsId.
+	const id = (typeof params.id === 'string' && params.id) ? params.id : standingsId(scope, window, cohort);
 	await db.collection(COLLECTIONS.STANDINGS).replaceOne(
 		{ id },
 		{ id, scope, window: window || null, cohort: cohort || null, rows: ranked, computed_at: params.asOf || new Date().toISOString() },
