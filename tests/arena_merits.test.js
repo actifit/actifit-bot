@@ -42,6 +42,26 @@ describe('arena_merits.award (credit / I3 / emission cap)', () => {
     expect(await merits.balanceOf(db, 'a')).toBe(100);
   });
 
+  test('idempotent:true requires a ref (rejects otherwise)', async () => {
+    const db = createMockDb();
+    const res = await merits.award(db, { user: 'a', amount: 10, reason: 'challenge_reward', at: AT, idempotent: true });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/requires a ref/);
+  });
+
+  test('idempotent no-op after a CAPPED first award reports the ACTUAL credited amount, not the request', async () => {
+    const db = createMockDb();
+    // Use up most of the 1000/day cap so the next reward is capped to 40.
+    await merits.award(db, { user: 'a', amount: 960, reason: 'challenge_reward', ref: 'seed', at: AT });
+    const first = await merits.award(db, { user: 'a', amount: 100, reason: 'challenge_reward', ref: 'chX', at: AT, idempotent: true });
+    expect(first.emitted).toBe(40);          // capped
+    expect(first.entry.delta).toBe(40);
+    // crash-retry before the caller's marker: the no-op must report 40, not 100.
+    const retry = await merits.award(db, { user: 'a', amount: 100, reason: 'challenge_reward', ref: 'chX', at: AT, idempotent: true });
+    expect(retry).toMatchObject({ ok: true, noop: true, emitted: 40 });
+    expect(await merits.balanceOf(db, 'a')).toBe(1000); // 960 + 40, credited once
+  });
+
   test('I3 — rejects a non-whitelisted (buy/deposit) credit reason', async () => {
     const db = createMockDb();
     for (const reason of ['purchase', 'deposit', 'buy', 'transfer_in']) {

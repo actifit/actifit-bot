@@ -51,8 +51,10 @@
  * counter-$inc + ledger-insert (and reserve+debit+purchase) in a Mongo
  * transaction to close the narrow crash window BETWEEN those two writes, plus a
  * real (mongodb-memory-server) integration test. On a crash there the current
- * order ($inc then ledger) fails SAFE toward a bounded over-credit (capped by the
- * daily emission cap), never a lost spend or a stuck balance.
+ * order ($inc then ledger) fails SAFE toward a bounded over-credit (one award per
+ * crash), never a lost spend or a stuck balance. NB: the daily cap reads the
+ * ledger, so it cannot observe a counter-only phantom $inc — the over-credit is
+ * bounded per crash, not strictly bounded by the cap.
  *
  * F4 slice scope; DEFERRED to F5: pool-funded AFIT payout (I2 pool funding) and
  * I7 (funder ≠ paid participant) live in the pools/resolution module.
@@ -163,9 +165,13 @@ async function award(db, params) {
 	// marker (e.g. challenge_resolutions) isn't yet written, so a retry re-awards.
 	// (The narrower single-award counter-vs-ledger window still needs a Mongo
 	// transaction — tracked, requires a replica set; see the header note.)
-	if (params.idempotent && ref) {
+	if (params.idempotent) {
+		if (!ref) return { ok: false, reason: 'idempotent award requires a ref' };
 		const existing = await db.collection(COLLECTIONS.LEDGER).findOne({ user, reason, ref });
-		if (existing) return { ok: true, noop: true, entry: existing };
+		// Report the ACTUALLY-credited amount (entry.delta) on the no-op, not the
+		// requested one — otherwise a caller recording `emitted` on a retry would
+		// over-state a reward that was originally capped (audit divergence vs ledger).
+		if (existing) return { ok: true, noop: true, entry: existing, emitted: existing.delta };
 	}
 
 	// Anti-sybil daily emission cap on system-funded rewards (privileged
@@ -284,6 +290,9 @@ async function ensureMeritsIndexes(db) {
 	const shop = db.collection(COLLECTIONS.SHOP);
 	if (typeof ledger.createIndex === 'function') {
 		await ledger.createIndex({ user: 1, at: 1 });
+		// Backs the idempotent-award dedupe lookup findOne({user, reason, ref}).
+		// Non-unique: legacy non-idempotent awards may share (user, reason, ref).
+		await ledger.createIndex({ user: 1, reason: 1, ref: 1 });
 	}
 	if (typeof balances.createIndex === 'function') {
 		await balances.createIndex({ user: 1 }, { unique: true });
