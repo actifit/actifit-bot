@@ -8,6 +8,7 @@ var arenaApi = require('./arena_api');
 var arenaStandings = require('./arena_standings');
 var arenaMerits = require('./arena_merits');
 var arenaPools = require('./arena_pools');
+var arenaTier = require('./arena_tier');
 var arenaRoutes = require('./arena_routes');
 var featured = require('./featured');
 const moment = require('moment')
@@ -206,8 +207,11 @@ client.connect()
 	      const arenaTailer = require('./arena_tailer');
 	      arenaTailer.startArenaTailer(db, {
 	        nodes: config.alt_hive_nodes,
-	        officialAccount: config.arena_official_account || config.account || 'actifit',
+	        officialAccount: arenaOfficialAccount,
 	        startBlock: config.arena_tailer_start_block || 0,
+	        // Authoritative §7.4 tier gate on ingest — the signer's real tier
+	        // decides whether a community/official create is accepted (#180).
+	        resolveTier: resolveArenaTier,
 	        log: (m) => utils.log(m, 'arena'),
 	      });
 	      console.log('Arena tailer started');
@@ -770,10 +774,31 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 // arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
 // Rate-limited: these are public, unauthenticated reads.
 const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
-// NOTE: no `resolveTier` is wired yet, so POST /arena/ops/validate treats EVERY
-// caller as the safe 'friendly' floor (community/official creates won't validate
-// until tier derivation from getRank/role is added — tracked on #180).
-arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
+// Server-side arena tier derivation (#180, §7.4): official = the @actifit account;
+// community = an active moderator (team collection); everyone else = friendly.
+// Injected into BOTH the ingest indexer (authoritative — keyed on the op's real
+// SIGNER) and the advisory validate endpoint, so a prediction can't drift from
+// what actually indexes. `isModerator` is defined later in this module; the arrow
+// only calls it at request/tailer time, well after that assignment.
+// LIMITATION (tracked follow-up): community is moderator-only for now; the §7.4
+// getRank-threshold branch (a rank-qualified non-moderator) is not yet wired —
+// it drops straight into the isCommunity hook below when added. Under-permissive
+// (fail-safe): it can only EXCLUDE a legit community leader, never upgrade anyone.
+const arenaOfficialAccount = config.arena_official_account || config.account || 'actifit';
+const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
+	officialAccount: arenaOfficialAccount,
+	isCommunity: (u) => isModerator(u),
+});
+// The validate endpoint is unauthenticated (chain-first: the CLIENT signs + the
+// tailer is the real gate), so the tier here is ADVISORY — derived from an
+// optional `username` in the body. A spoofed username can only get a misleading
+// "ok"; the signed broadcast still faces the authoritative signer-based gate at
+// ingest. Absent username → the safe 'friendly' floor.
+arenaRoutes.registerArenaRoutes(app, () => db, {
+	log: utils.log,
+	limiter: arenaReadRateLimit,
+	resolveTier: (req) => resolveArenaTier(req && req.body ? req.body.username : null),
+});
 
 // Actifitter of the Month (Trello #110) — public read of the editorial spotlight
 // (sanitized doc, or null when unset so the web section hides). Rate-limited.

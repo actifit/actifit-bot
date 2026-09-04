@@ -69,10 +69,17 @@ curl -X POST https://api2.actifit.io/arena/ops/validate \
   -d '{"op":{"op":"join","v":1,"challenge_id":"<id>"}}'
 ```
 
-⚠️ Until tier derivation from `getRank`/role is wired, every caller is treated as
-the **friendly** tier — so `community`/`official` challenge creates won't validate
-yet (tracked, #180). The named REST write endpoints (`/join`, `/leave`, create,
-`/sponsor`, `/score`) and the broadcast of official ops are also still to come.
+Tier derivation is **wired** (#180): the caller/signer tier is resolved
+server-side — `official` = the `@actifit` account, `community` = an **active
+moderator** (`team` collection), else `friendly`. It is applied **advisorily** at
+this validate endpoint (from a body `username`) and **authoritatively** at ingest
+(keyed on the op's cryptographic signer in `arena.indexArenaOp`), so a friendly
+account can no longer index a `community`/AFIT-pool challenge. ⚠️ **Outstanding
+half of §7.4:** the `getRank`-threshold branch (a rank-qualified *non*-moderator
+qualifying as community) is not yet wired — it drops into the `isCommunity` hook
+in `app.js` when added; until then such users are floored to `friendly`
+(under-permissive, fail-safe). The named REST write endpoints (`/join`, `/leave`,
+create, `/sponsor`, `/score`) and the broadcast of official ops are still to come.
 
 ---
 
