@@ -81,4 +81,21 @@ describe('indexArenaOp — authoritative §7.4 tier gate on ingest', () => {
 		expect(res.ok).toBe(false);
 		expect(res.reason).toMatch(/official challenge must be signed by the official account/);
 	});
+
+	test('re-tailing an indexed community create is a NO-OP even if the signer was since demoted', async () => {
+		const op = chainOp(createBody({ id: 'ch_re', origin_tier: 'community' }), 'mod1', { trx_id: 'trx_fixed' });
+		const first = await arena.indexArenaOp(db, op, { resolveTier });
+		expect(first.ok).toBe(true);
+		// Same trx re-tailed, but mod1 no longer resolves to community (demoted).
+		const demoted = async () => 'friendly';
+		const replay = await arena.indexArenaOp(db, op, { resolveTier: demoted });
+		expect(replay).toMatchObject({ ok: true, noop: true });
+	});
+
+	test('a resolver that THROWS never upgrades — create is floored to friendly', async () => {
+		const boom = async () => { throw new Error('rank service down'); };
+		const res = await arena.indexArenaOp(db, chainOp(createBody({ id: 'ch_boom', origin_tier: 'community' }), 'mod1'), { resolveTier: boom });
+		expect(res.ok).toBe(false);
+		expect(res.reason).toMatch(/tier gate/);
+	});
 });

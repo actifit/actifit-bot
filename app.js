@@ -780,6 +780,10 @@ const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHe
 // SIGNER) and the advisory validate endpoint, so a prediction can't drift from
 // what actually indexes. `isModerator` is defined later in this module; the arrow
 // only calls it at request/tailer time, well after that assignment.
+// LIMITATION (tracked follow-up): community is moderator-only for now; the §7.4
+// getRank-threshold branch (a rank-qualified non-moderator) is not yet wired —
+// it drops straight into the isCommunity hook below when added. Under-permissive
+// (fail-safe): it can only EXCLUDE a legit community leader, never upgrade anyone.
 const arenaOfficialAccount = config.arena_official_account || config.account || 'actifit';
 const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
 	officialAccount: arenaOfficialAccount,
