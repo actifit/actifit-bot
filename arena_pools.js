@@ -167,7 +167,8 @@ async function resolveChallenge(db, params) {
 	// Trust boundary — only ENROLLED, non-held participants of THIS challenge are
 	// payable; the caller-supplied standings are re-validated against the index.
 	const parts = await participantsC.find({ challenge_id: challengeId }).toArray();
-	const eligible = new Map(parts.filter((p) => !isHeld(p)).map((p) => [p.entity, p]));
+	// Payable = enrolled, not anti-cheat-held, and did NOT leave the challenge.
+	const eligible = new Map(parts.filter((p) => !isHeld(p) && p.state !== 'left').map((p) => [p.entity, p]));
 	const validStandings = standings.filter((r) => eligible.has(r.entity));
 
 	// I7 — exclude every funder of the pool from its own payout.
