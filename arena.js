@@ -30,6 +30,11 @@
 
 'use strict';
 
+// §7.4 origin-tier policy — the SAME gate the advisory validate endpoint
+// (arena_write) applies, so ingest and prediction can never drift. Load-time
+// safe (requires nothing).
+const arenaTier = require('./arena_tier');
+
 // ---- on-chain op namespace + names (§3.10) -------------------------------
 
 const ARENA_JSON_ID = 'actifit_arena';
@@ -300,9 +305,24 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 	switch (op.op) {
 		case OPS.CHALLENGE_CREATE: {
 			const origin_tier = op.origin_tier || 'friendly';
-			// Official challenges must be signed by the official account.
+			// Official challenges must be signed by the official account (kept
+			// explicit for a precise reason; the general tier gate below also
+			// covers it).
 			if (origin_tier === 'official' && signer !== officialAccount) {
 				return { ok: false, reason: 'official challenge must be signed by the official account' };
+			}
+			// AUTHORITATIVE §7.4 tier gate (Trello #180): derive the SIGNER's real
+			// tier server-side and reject a create the signer isn't entitled to —
+			// e.g. a friendly account broadcasting a community challenge or attaching
+			// an AFIT pool. Without an injected resolver a non-official signer is the
+			// safe 'friendly' floor. The advisory validate endpoint runs the SAME
+			// createTierErrors, so ingest and prediction never diverge.
+			const signerTier = typeof opts.resolveTier === 'function'
+				? await opts.resolveTier(signer)
+				: (signer === officialAccount ? 'official' : 'friendly');
+			const tierErrs = arenaTier.createTierErrors(op, signerTier);
+			if (tierErrs.length) {
+				return { ok: false, reason: `tier gate: ${tierErrs.join('; ')}` };
 			}
 			const existing = await challenges.findOne({ id: op.id });
 			if (existing) {
