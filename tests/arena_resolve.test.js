@@ -4,6 +4,7 @@
 
 const { createMockDb } = require('./helpers/mock-db');
 const jobs = require('../arena_jobs');
+const meritsLib = require('../arena_merits');
 
 const post = (author, dateISO, step_count) => ({
 	author, permlink: `p-${author}-${dateISO}`, date: new Date(dateISO), json_metadata: { step_count },
@@ -117,6 +118,23 @@ describe('arena_jobs.resolveDueChallenges', () => {
 		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
 		expect((await db.collection('merits_balances').findOne({ user: 'achiever' })).balance).toBe(20);
 		expect(await db.collection('merits_balances').findOne({ user: 'farmer' })).toBeNull();
+	});
+
+	test('crash-retry on a CAPPED reward keeps the recorded merits at the capped amount (no re-inflation, no double-credit)', async () => {
+		const db = seed();
+		// alice would earn 200 (rank 1) but has already earned 900 Merits today, so
+		// only 100 can land (1000/day cap).
+		await meritsLib.award(db, { user: 'alice', amount: 900, reason: 'challenge_reward', ref: 'earlier', at: NOW });
+		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
+		const p1 = await db.collection('challenge_participants').findOne({ challenge_id: 'def_weekly_step_league', entity: 'alice' });
+		expect(p1.result.reward.merits).toBe(100);   // capped, recorded accurately
+		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(1000);
+		// Simulate a crash BEFORE the resolution marker persisted: wipe it, re-resolve.
+		await db.collection('challenge_resolutions').deleteMany({});
+		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx2_' + op.op }) });
+		const p2 = await db.collection('challenge_participants').findOne({ challenge_id: 'def_weekly_step_league', entity: 'alice' });
+		expect(p2.result.reward.merits).toBe(100);   // STILL 100 — not re-inflated to 200
+		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(1000); // not double-credited
 	});
 
 	test('without a broadcaster: Merits still emitted, no settle/recurrence', async () => {

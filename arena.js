@@ -482,6 +482,15 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 		case OPS.LEAVE: {
 			const p = await participants.findOne({ challenge_id: op.challenge_id, entity: signer });
 			if (!p) return { ok: false, reason: 'not a participant' };
+			// Idempotent FIRST: a re-tailed leave that already applied is a no-op
+			// success — even if the challenge has since gone terminal (an out-of-order
+			// single-op replay must not turn a done leave into a rejection).
+			if (p.state === 'left') return { ok: true, action: 'left', noop: true };
+			// A NEW leave must never mutate a finalized (terminal) challenge's records.
+			const chL = await challenges.findOne({ id: op.challenge_id });
+			if (chL && TERMINAL_STATES.includes(chL.state)) {
+				return { ok: false, reason: `cannot leave a ${chL.state} challenge` };
+			}
 			await participants.updateOne(
 				{ challenge_id: op.challenge_id, entity: signer },
 				{ $set: { state: 'left' } }

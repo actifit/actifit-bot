@@ -172,6 +172,19 @@ describe('arena.indexArenaOp — lifecycle', () => {
     const res = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
     expect(res.ok).toBe(true);
     expect((await db.collection('challenge_participants').findOne({ entity: 'bob' })).state).toBe('left');
+    // re-leave is an idempotent no-op
+    const again = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
+    expect(again).toMatchObject({ ok: true, noop: true });
+  });
+
+  test('cannot leave a settled challenge (a late leave must not mutate final records)', async () => {
+    await create();
+    await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'bob'));
+    await db.collection('challenges').updateOne({ id: 'ch_1' }, { $set: { state: 'settled' } });
+    const res = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/cannot leave a settled/);
+    expect((await db.collection('challenge_participants').findOne({ entity: 'bob' })).state).toBe('enrolled');
   });
 
   test('settle is official-only, records results, and closes the challenge', async () => {

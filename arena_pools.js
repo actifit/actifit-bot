@@ -190,7 +190,9 @@ async function resolveChallenge(db, params) {
 		let reward_ref = null;
 		let emitted = 0;
 		if (p.merits > 0) {
-			const res = await merits.award(db, { user: p.entity, amount: p.merits, reason: 'challenge_reward', ref: challengeId, at });
+			// idempotent by (user, challenge): a retry after a crash before the
+			// resolution marker lands re-enters here but never double-emits (#178).
+			const res = await merits.award(db, { user: p.entity, amount: p.merits, reason: 'challenge_reward', ref: challengeId, at, idempotent: true });
 			if (res.ok && res.entry) {
 				reward_ref = res.entry.id;
 				emitted = res.emitted != null ? res.emitted : p.merits; // record what was ACTUALLY emitted
