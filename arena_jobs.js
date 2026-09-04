@@ -30,10 +30,22 @@
 
 const arenaVerify = require('./arena_verify');
 const arenaStandings = require('./arena_standings');
+const arenaPools = require('./arena_pools');
+const arenaRewards = require('./arena_rewards');
+const arenaApi = require('./arena_api');
 
 // States a challenge can be aggregated in — everything that isn't terminal.
 // (draft challenges have no participants yet; open/active/resolving do.)
 const AGGREGATABLE_STATES = ['open', 'active', 'resolving'];
+
+// Recurrence period lengths (ms) keyed by the presentation `recurrence` label.
+const DAY_MS = 24 * 60 * 60 * 1000;
+const RECURRENCE_MS = {
+	Daily: 1 * DAY_MS,
+	Weekly: 7 * DAY_MS,
+	Seasonal: 14 * DAY_MS,
+	Monthly: 30 * DAY_MS,
+};
 
 function hasWindow(w) {
 	if (!w) return false;
@@ -101,6 +113,193 @@ async function aggregateActiveChallenges(db, opts = {}) {
 	return summary;
 }
 
+// ---- resolution / settlement (F5) + recurrence -----------------------------
+
+/** A recurring OFFICIAL default challenge (def_* family) whose window rolls
+ *  forward. Restricted to defaults so user challenges never auto-proliferate. */
+function isRecurringDefault(ch) {
+	if (!ch) return false;
+	const base = ch.parent_id || ch.id || '';
+	return base.indexOf('def_') === 0 && !!RECURRENCE_MS[ch.recurrence];
+}
+
+/** Whitelisted presentation fields to copy onto a rolled recurrence instance. */
+function presentationOf(ch) {
+	const out = {};
+	for (const k of ['tagline', 'how_it_works', 'prize_summary', 'recurrence', 'art']) {
+		if (typeof ch[k] === 'string' && ch[k]) out[k] = ch[k];
+	}
+	return out;
+}
+
+/**
+ * Build the next-occurrence `challenge_create` op body for a recurring default,
+ * or null if it isn't recurring / has no usable window. The new id chains from
+ * the ORIGINAL base via parent_id (`<base>@<nextStartDate>`), so ids stay clean
+ * across periods and the web can group a series by parent_id. Window length is
+ * preserved; the next window starts where this one ended.
+ */
+function nextOccurrence(ch, nowMs) {
+	if (!isRecurringDefault(ch) || !hasWindow(ch.window)) return null;
+	const base = ch.parent_id || ch.id;
+	const start = Date.parse(ch.window.start);
+	const end = Date.parse(ch.window.end);
+	const len = end - start;
+	// Roll forward from this window's end; if we're already past several periods
+	// (a long outage), skip ahead so the new window is current, not stale.
+	let nextStart = end;
+	if (Number.isFinite(nowMs)) {
+		while (nextStart + len < nowMs) nextStart += len;
+	}
+	const nextEnd = nextStart + len;
+	const startIso = new Date(nextStart).toISOString();
+	const nextId = `${base}@${startIso.slice(0, 10)}`;
+	return {
+		op: 'challenge_create', v: 1,
+		id: nextId,
+		type: ch.type,
+		origin_tier: 'official',
+		title: ch.title || null,
+		visibility: ch.visibility || 'public',
+		community: ch.community || null,
+		participants_kind: ch.participants_kind || 'user',
+		window: { start: startIso, end: new Date(nextEnd).toISOString(), tz: (ch.window && ch.window.tz) || 'UTC' },
+		entry: { mode: 'free' },
+		scoring: ch.scoring,
+		rewards: ch.rewards || null,
+		parent_id: base,
+		...presentationOf(ch),
+	};
+}
+
+/**
+ * Resolve every DUE challenge (window ended, non-terminal, not yet resolved):
+ * finalize scores/standings, draw the Merit prize table, emit Merits + record the
+ * result (F5 resolveChallenge), broadcast the on-chain `settle` op as @actifit
+ * (the authoritative record — the tailer then flips the challenge to settled),
+ * fire per-winner F6 events, and roll a recurring default into its next window.
+ *
+ * REQUIRES the tailer to be enabled to complete the chain-first loop (state →
+ * settled, and the rolled next-occurrence indexed). Merit emission + the local
+ * resolution record happen regardless (idempotent per challenge). `opts.broadcastOp`
+ * (injected by app.js — signs with @actifit's posting key) is optional; without
+ * it, settle/recurrence are skipped and only Merits/results/events are written.
+ *
+ * @param {object} db
+ * @param {object} [opts] { now, asOf, limit, officialAccount, broadcastOp, log }
+ * @returns {Promise<{ok, processed, resolved, settled, recurred, failed, skipped}>}
+ */
+async function resolveDueChallenges(db, opts = {}) {
+	const log = typeof opts.log === 'function' ? opts.log : () => {};
+	const nowMs = opts.now ? Date.parse(opts.now) : Date.now();
+	const asOf = opts.asOf || new Date(nowMs).toISOString();
+	const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 200;
+	const broadcast = typeof opts.broadcastOp === 'function' ? opts.broadcastOp : null;
+	const challengesC = db.collection('challenges');
+	const resolutionsC = db.collection('challenge_resolutions');
+
+	const candidates = await challengesC
+		.find({ state: { $in: AGGREGATABLE_STATES } })
+		.limit(limit)
+		.toArray();
+
+	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0;
+
+	for (const ch of candidates) {
+		try {
+			if (!hasWindow(ch.window)) { skipped++; continue; }
+			// Not DUE until the window has closed.
+			if (Date.parse(ch.window.end) > nowMs) { skipped++; continue; }
+
+			const prior = await resolutionsC.findOne({ challenge_id: ch.id });
+			let resolution;
+			if (prior) {
+				resolution = { ok: true, noop: true, settlePayload: prior.settlePayload };
+			} else {
+				// Final aggregation against the (now stable) verified feed.
+				await arenaVerify.verifyChallenge(db, ch.id, { asOf });
+				await arenaStandings.buildStandings(db, {
+					challengeIds: [ch.id], id: ch.id, scope: 'challenge', window: ch.window, asOf,
+				});
+				const board = await db.collection('standings').findOne({ id: ch.id });
+				const rows = (board && Array.isArray(board.rows)) ? board.rows : [];
+				const standings = rows.map((r) => ({
+					entity: r.entity,
+					rank: r.rank,
+					score_verified: r.score != null ? r.score : (r.points != null ? r.points : 0),
+				}));
+				const prizes = arenaRewards.prizesForStandings(ch, standings);
+				// Merit-only settlement (no pool) → resolveChallenge emits Merits,
+				// records participant results + an idempotent resolution marker, and
+				// returns the settle payload.
+				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf });
+				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
+				resolved++;
+				// F6 — notify each rewarded finisher. Reward objects don't carry rank,
+				// so read it from the settle standings (entity -> rank).
+				const rankByEntity = new Map(
+					((resolution.settlePayload && resolution.settlePayload.standings) || []).map((s) => [s.entity, s.rank])
+				);
+				for (const rw of (resolution.settlePayload && resolution.settlePayload.rewards) || []) {
+					if (rw && rw.entity && Number(rw.merits) > 0) {
+						await arenaApi.emitEvent(db, {
+							type: 'results_settled', user: rw.entity, challenge_id: ch.id,
+							data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, merits: rw.merits }, at: asOf,
+						});
+					}
+				}
+			}
+
+			// Broadcast the authoritative on-chain settle op — once. The resolution
+			// record carries settle_trx after a successful broadcast, so a re-run (while
+			// the tailer hasn't yet flipped the challenge to settled) never double-sends.
+			if (broadcast && resolution.settlePayload) {
+				const marker = prior || await resolutionsC.findOne({ challenge_id: ch.id });
+				if (!marker || !marker.settle_trx) {
+					try {
+						const r = await broadcast(resolution.settlePayload);
+						settled++;
+						await resolutionsC.updateOne(
+							{ challenge_id: ch.id },
+							{ $set: { settle_trx: (r && (r.id || r.trx_id)) || true, settled_at: asOf } }
+						);
+					} catch (e) {
+						log(`arena resolve: settle broadcast ${ch.id} failed: ${e && e.message}`);
+					}
+				}
+			}
+
+			// Recurrence — roll a recurring default into its next window ONCE. Guarded
+			// by a `recurred_to` marker on the resolution record (robust even if the
+			// tailer hasn't yet indexed the new challenge), plus a belt-and-suspenders
+			// check that the next id doesn't already exist.
+			if (broadcast && isRecurringDefault(ch)) {
+				const marker = await resolutionsC.findOne({ challenge_id: ch.id });
+				if (marker && !marker.recurred_to) {
+					const next = nextOccurrence(ch, nowMs);
+					if (next && !(await challengesC.findOne({ id: next.id }))) {
+						try {
+							await broadcast(next);
+							recurred++;
+							await resolutionsC.updateOne({ challenge_id: ch.id }, { $set: { recurred_to: next.id } });
+							log(`arena resolve: rolled ${ch.id} -> ${next.id}`);
+						} catch (e) {
+							log(`arena resolve: recurrence ${ch.id} failed: ${e && e.message}`);
+						}
+					}
+				}
+			}
+		} catch (e) {
+			failed++;
+			log(`arena resolve: ${ch.id} error: ${e && e.message}`);
+		}
+	}
+
+	const summary = { ok: true, processed: candidates.length, resolved, settled, recurred, failed, skipped };
+	log(`arena resolve: processed=${summary.processed} resolved=${resolved} settled=${settled} recurred=${recurred} skipped=${skipped} failed=${failed}`);
+	return summary;
+}
+
 /**
  * Ensure the index the aggregation hot-path relies on. The per-participant score
  * query is `verified_posts.find({ author, date: {$gte,$lte} })` — without a
@@ -118,5 +317,8 @@ async function ensureArenaJobIndexes(db) {
 module.exports = {
 	AGGREGATABLE_STATES,
 	aggregateActiveChallenges,
+	resolveDueChallenges,
+	isRecurringDefault,
+	nextOccurrence,
 	ensureArenaJobIndexes,
 };

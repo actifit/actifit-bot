@@ -1124,6 +1124,43 @@ if (process.env.BOT_THREAD == 'MAIN'){
 			}
 		});
 		console.log('Arena aggregation job scheduled ('+aggCron+')');
+
+		// Resolution / settlement sweep (F5): resolves DUE challenges (window
+		// closed) → emits Merits + records results → broadcasts the on-chain settle
+		// op as @actifit → rolls recurring defaults into their next window. Requires
+		// the tailer enabled to complete the chain-first loop (state→settled, next
+		// occurrence indexed). Merit emission + the resolution record are idempotent.
+		const resolveCron = config.arena_resolve_cron || '30 * * * *'; // hourly at :30
+		// Build the @actifit settle/recurrence broadcaster once (POSTING authority
+		// only — never active). Absent posting_key → Merits/results/events still
+		// write, but settle/recurrence broadcasts are skipped.
+		let arenaBroadcastOp = null;
+		if (config.posting_key) {
+			const dhive = require('@hiveio/dhive');
+			const arenaNode = config.active_hive_node || (config.alt_hive_nodes && config.alt_hive_nodes[0]) || 'https://api.hive.blog';
+			const arenaBcClient = new dhive.Client(arenaNode);
+			const arenaBcKey = dhive.PrivateKey.fromString(config.posting_key);
+			arenaBroadcastOp = (body) => arenaBcClient.broadcast.json({
+				required_auths: [],
+				required_posting_auths: [arenaOfficialAccount],
+				id: arena.ARENA_JSON_ID,
+				json: JSON.stringify(body),
+			}, arenaBcKey);
+		} else {
+			utils.log('arena resolve: no posting_key — settle/recurrence broadcasts disabled', 'arena');
+		}
+		schedule.scheduleJob(resolveCron, async function(){
+			try {
+				await arenaJobs.resolveDueChallenges(db, {
+					officialAccount: arenaOfficialAccount,
+					broadcastOp: arenaBroadcastOp,
+					log: (m) => utils.log(m, 'arena'),
+				});
+			} catch (e) {
+				utils.log(e, 'arena');
+			}
+		});
+		console.log('Arena resolution job scheduled ('+resolveCron+')');
 	}
 	let j = schedule.scheduleJob({hour: 0, minute: 20}, function(){
 		restartApiNode();
