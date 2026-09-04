@@ -33,7 +33,7 @@
   "arena_official_account": "actifit",
   "arena_jobs_enabled": false,
   "arena_aggregate_cron": "*/15 * * * *",
-  "arena_resolve_cron": "30 * * * *",
+  "arena_resolve_cron": "35 * * * *",
   "trust_proxy_hops": 2,
   "mongo_uri": "mongodb://localhost:27017",
   "mongo_local": "mongodb://localhost:27017",

@@ -99,6 +99,26 @@ describe('arena_jobs.resolveDueChallenges', () => {
 		expect(second.sent.find((o) => o.op === 'challenge_create')).toBeFalsy();
 	});
 
+	test('goal challenge: only finishers who met the daily threshold are paid (anti-farm)', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'def_daily_focus', state: 'open', type: 'daily_focus', window: CLOSED,
+			  scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 10000 }, recurrence: 'Daily',
+			  origin_tier: 'official', title: 'Daily Focus Goal', art: 'daily-focus' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_daily_focus', entity: 'achiever', flags: [], state: 'enrolled' },
+			{ challenge_id: 'def_daily_focus', entity: 'farmer', flags: [], state: 'enrolled' },
+		]);
+		db.collection('verified_posts').__seed([
+			post('achiever', '2026-08-03T10:00:00Z', 12000), // met the 10k goal
+			post('farmer', '2026-08-03T10:00:00Z', 1),       // 1 step — did not
+		]);
+		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
+		expect((await db.collection('merits_balances').findOne({ user: 'achiever' })).balance).toBe(20);
+		expect(await db.collection('merits_balances').findOne({ user: 'farmer' })).toBeNull();
+	});
+
 	test('without a broadcaster: Merits still emitted, no settle/recurrence', async () => {
 		const db = seed();
 		const res = await jobs.resolveDueChallenges(db, { now: NOW });

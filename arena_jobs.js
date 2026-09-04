@@ -198,8 +198,11 @@ async function resolveDueChallenges(db, opts = {}) {
 	const challengesC = db.collection('challenges');
 	const resolutionsC = db.collection('challenge_resolutions');
 
+	// Oldest-closing first, so under a backlog the longest-overdue challenges are
+	// resolved before the limit is reached (avoids starving due challenges).
 	const candidates = await challengesC
 		.find({ state: { $in: AGGREGATABLE_STATES } })
+		.sort({ 'window.end': 1 })
 		.limit(limit)
 		.toArray();
 
@@ -242,10 +245,16 @@ async function resolveDueChallenges(db, opts = {}) {
 				);
 				for (const rw of (resolution.settlePayload && resolution.settlePayload.rewards) || []) {
 					if (rw && rw.entity && Number(rw.merits) > 0) {
-						await arenaApi.emitEvent(db, {
-							type: 'results_settled', user: rw.entity, challenge_id: ch.id,
-							data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, merits: rw.merits }, at: asOf,
-						});
+						// One bad event must not drop the rest (or mark the whole
+						// resolution failed after Merits already emitted).
+						try {
+							await arenaApi.emitEvent(db, {
+								type: 'results_settled', user: rw.entity, challenge_id: ch.id,
+								data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, merits: rw.merits }, at: asOf,
+							});
+						} catch (e) {
+							log(`arena resolve: event for ${rw.entity} on ${ch.id} failed: ${e && e.message}`);
+						}
 					}
 				}
 			}
@@ -277,7 +286,17 @@ async function resolveDueChallenges(db, opts = {}) {
 				const marker = await resolutionsC.findOne({ challenge_id: ch.id });
 				if (marker && !marker.recurred_to) {
 					const next = nextOccurrence(ch, nowMs);
-					if (next && !(await challengesC.findOne({ id: next.id }))) {
+					// Guard against a double-roll: skip if the exact next id exists, OR
+					// if ANY successor of this base already covers a window at/after this
+					// one's end (the next id is now-derived via skip-ahead, so a crash-
+					// retry across a period boundary could otherwise compute a new id).
+					const base = ch.parent_id || ch.id;
+					const siblings = await challengesC.find({ parent_id: base }).toArray();
+					const alreadyRolled = next && (
+						siblings.some((s) => s.id === next.id) ||
+						siblings.some((s) => s.window && Date.parse(s.window.start) >= Date.parse(ch.window.end))
+					);
+					if (next && !alreadyRolled) {
 						try {
 							await broadcast(next);
 							recurred++;
