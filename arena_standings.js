@@ -181,7 +181,10 @@ async function buildStandings(db, params = {}) {
 	const rows = [...byEntity.entries()].map(([entity, score]) => ({ entity, score }));
 	const ranked = computeStandings(rows, { mode: 'score', promotion });
 
-	const id = standingsId(scope, window, cohort);
+	// Per-challenge standings are keyed by the challenge id (params.id) so the
+	// public detail page — which queries /arena/standings?id=<challengeId> — finds
+	// them. Omit params.id for scope/season boards to use the derived standingsId.
+	const id = (typeof params.id === 'string' && params.id) ? params.id : standingsId(scope, window, cohort);
 	await db.collection(COLLECTIONS.STANDINGS).replaceOne(
 		{ id },
 		{ id, scope, window: window || null, cohort: cohort || null, rows: ranked, computed_at: params.asOf || new Date().toISOString() },
