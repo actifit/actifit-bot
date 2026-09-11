@@ -312,6 +312,12 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			if (origin_tier === 'official' && signer !== officialAccount) {
 				return { ok: false, reason: 'official challenge must be signed by the official account' };
 			}
+			// Reserve the def_* id namespace for the official account. The recurrence
+			// roller and the AFIT schedule map key on this prefix, so a user must not
+			// be able to mint a def_* id (belt-and-suspenders alongside the tier gate).
+			if (typeof op.id === 'string' && op.id.indexOf('def_') === 0 && signer !== officialAccount) {
+				return { ok: false, reason: 'the def_ id namespace is reserved for the official account' };
+			}
 			// Idempotency FIRST: an already-indexed op must re-tail as a clean no-op
 			// regardless of the signer's CURRENT tier. The tier gate is a live lookup
 			// (isModerator now), so running it before this check would make a re-tail

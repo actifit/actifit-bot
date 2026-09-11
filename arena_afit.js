@@ -33,8 +33,13 @@ const COL = {
 
 const AFIT_CHAIN = 'HIVE';
 const OFFICIAL_ACCOUNT = 'actifit';
-// reward_activity prefix that marks an Arena challenge reward row (per challenge).
+// reward_activity prefix for a TREASURY/system-funded reward row (per challenge).
+// The daily/weekly emission budget counts ONLY rows with this prefix.
 const ARENA_ACTIVITY_PREFIX = 'arena_challenge:';
+// reward_activity prefix for a CREATOR/POOL-funded payout — deliberately a
+// different namespace so it is NOT counted against the treasury emission budget
+// (the funder already paid; only the pool budget bounds it).
+const ARENA_POOL_PREFIX = 'arena_pool:';
 // Default per-user daily AFIT cap on challenge rewards (config-overridable).
 // Set at the free daily cash-out anchor (500) so a day's challenge winnings can't
 // exceed a normal free withdrawal, and so a single top prize is never clipped.
@@ -57,9 +62,11 @@ function weekBucket(iso) {
 	return Number.isFinite(ms) ? Math.floor(ms / WEEK_MS) : null;
 }
 
-/** The per-(user, challenge) ledger key that makes a re-credit idempotent. */
-function activityFor(challengeId) {
-	return ARENA_ACTIVITY_PREFIX + challengeId;
+/** The per-(user, challenge) ledger key that makes a re-credit idempotent.
+ *  `pooled` selects the creator-funded namespace (excluded from the treasury
+ *  budget); default is the treasury namespace. */
+function activityFor(challengeId, pooled) {
+	return (pooled ? ARENA_POOL_PREFIX : ARENA_ACTIVITY_PREFIX) + challengeId;
 }
 
 /**
@@ -151,7 +158,7 @@ async function creditAfitReward(db, params) {
 		return { ok: false, capped: true, credited: 0, balance: await balanceOf(db, user) };
 	}
 
-	const activity = activityFor(challengeId);
+	const activity = activityFor(challengeId, params.pooled);
 	// Idempotent: same (user, reward_activity) row is REPLACED, never duplicated.
 	await db.collection(COL.LEDGER).replaceOne(
 		{ user, reward_activity: activity },
@@ -174,6 +181,7 @@ module.exports = {
 	COL,
 	AFIT_CHAIN,
 	ARENA_ACTIVITY_PREFIX,
+	ARENA_POOL_PREFIX,
 	DEFAULT_DAILY_CAP,
 	activityFor,
 	weekBucket,

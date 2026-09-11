@@ -89,8 +89,11 @@ async function fundChallenge(db, params) {
 			},
 			{ upsert: true }
 		);
-		await arenaAfit.reconcileBalance(db, creator);
 	}
+	// Reconcile unconditionally (idempotent) — so a crash-retry that skipped the
+	// debit block still refreshes the materialized balance to reflect the debit,
+	// closing an over-spend window before the periodic full re-aggregation.
+	await arenaAfit.reconcileBalance(db, creator);
 
 	// Create the sponsor-funded pool (the completion marker). Creator = sponsor →
 	// excluded from their own payout (I7). Idempotent: "already exists" is success.

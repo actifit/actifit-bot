@@ -118,6 +118,14 @@ describe('indexArenaOp — funded create path', () => {
 		expect((await db.collection('challenges').findOne({ id: 'ch_hijack' })).pool_ref).toBeNull();
 	});
 
+	test('SECURITY — a non-official signer cannot create a def_* id', async () => {
+		const db = createMockDb();
+		await seedBalance(db, 'rich', 1000);
+		const res = await arena.indexArenaOp(db, chainOp(fundedCreate({ id: 'def_evil', rewards: null }), 'rich'), opts(db));
+		expect(res.ok).toBe(false);
+		expect(res.reason).toMatch(/def_ id namespace/);
+	});
+
 	test('an official contest is NOT creator-funded (rewards:null → no debit)', async () => {
 		const db = createMockDb();
 		const res = await arena.indexArenaOp(db, chainOp(fundedCreate({ id: 'def_x', origin_tier: 'official', rewards: null }), 'actifit'), {
@@ -186,5 +194,35 @@ describe('arena_rewards.poolPrizes', () => {
 	test('splits a pool 50/30/20 across the top three', () => {
 		expect(rewards.poolPrizes(100)).toEqual([{ rank: 1, afit: 50 }, { rank: 2, afit: 30 }, { rank: 3, afit: 20 }]);
 		expect(rewards.poolPrizes(0)).toEqual([]);
+	});
+	test('rounds DOWN so the split never exceeds the budget (else resolution locks)', () => {
+		for (const b of [99.99, 55.55, 250.05, 33.35, 1, 7.77]) {
+			const sum = rewards.poolPrizes(b).reduce((s, p) => s + p.afit, 0);
+			expect(sum).toBeLessThanOrEqual(b + 1e-9);
+		}
+	});
+});
+
+describe('creator-funded payouts do not contaminate the treasury budget (F2)', () => {
+	const jobs = require('../arena_jobs');
+	const CLOSED = { start: '2026-08-01T00:00:00Z', end: '2026-08-08T00:00:00Z', tz: 'UTC' };
+	const NOW = '2026-08-10T00:00:00Z';
+	const post = (author, dateISO, step_count) => ({ author, permlink: `p-${author}-${dateISO}`, date: new Date(dateISO), json_metadata: { step_count } });
+
+	test('a pool payout is written under arena_pool: and NOT counted by the treasury emission scan', async () => {
+		const db = createMockDb();
+		await seedBalance(db, 'creator', 1000);
+		await fund.fundChallenge(db, { creator: 'creator', challengeId: 'ch_f', prize: 400, at: NOW });
+		db.collection('challenges').__seed([{ id: 'ch_f', state: 'open', type: 'league_fixture', window: CLOSED, scoring: { metric: 'activity_count', rule: 'max' }, origin_tier: 'community', created_by: 'creator', pool_ref: 'poolch_ch_f' }]);
+		db.collection('challenge_participants').__seed([{ challenge_id: 'ch_f', entity: 'alice', flags: [], state: 'enrolled' }]);
+		db.collection('verified_posts').__seed([post('alice', '2026-08-03T10:00:00Z', 9000)]);
+		await jobs.resolveDueChallenges(db, { now: NOW, afitDailyCap: 500, afitWeeklyBudget: 50000, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
+
+		expect(await afit.balanceOf(db, 'alice')).toBe(200); // 50% of the 400 pool
+		// alice's pool winnings must NOT count against her treasury daily room, nor the weekly budget.
+		expect(await afit.arenaEmittedOn(db, 'alice', NOW)).toBe(0);
+		expect(await afit.arenaEmittedWeek(db, NOW)).toBe(0);
+		// the payout row is in the pool namespace
+		expect(await db.collection('token_transactions').findOne({ user: 'alice', reward_activity: 'arena_pool:ch_f' })).toBeTruthy();
 	});
 });

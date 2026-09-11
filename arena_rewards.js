@@ -91,9 +91,12 @@ const POOL_SPLIT = { 1: 0.5, 2: 0.3, 3: 0.2 };
 function poolPrizes(budget) {
 	const b = Number(budget) || 0;
 	if (b <= 0) return [];
-	const round2 = (x) => Math.round(x * 100) / 100;
+	// Round each share DOWN, so the three prizes can never sum to MORE than the
+	// budget (which resolveChallenge would reject, locking the pool forever). The
+	// rounding remainder falls to the creator's unpaid refund by design.
+	const floor2 = (x) => Math.floor(x * 100) / 100;
 	return Object.entries(POOL_SPLIT)
-		.map(([rank, frac]) => ({ rank: Number(rank), afit: round2(b * frac) }))
+		.map(([rank, frac]) => ({ rank: Number(rank), afit: floor2(b * frac) }))
 		.filter((p) => p.afit > 0);
 }
 
