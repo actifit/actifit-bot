@@ -1180,8 +1180,12 @@ if (process.env.BOT_THREAD == 'MAIN'){
 				await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
-					afitDailyCap: config.arena_afit_daily_cap, // per-user/day AFIT reward cap
-					afitWeeklyBudget: config.arena_afit_weekly_budget, // global weekly emission budget (0/unset = off)
+					// Emission guard defaults to the approved values when the live config
+					// omits them, so the treasury protection is correct-by-default and can't
+					// silently ship OFF. An explicit 0 in config still disables the weekly
+					// budget (Number.isFinite(0) === true); only an ABSENT key takes the default.
+					afitDailyCap: Number.isFinite(config.arena_afit_daily_cap) ? config.arena_afit_daily_cap : 500, // per-user/day AFIT reward cap
+					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
 			} catch (e) {
