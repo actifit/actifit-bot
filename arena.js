@@ -354,7 +354,11 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			// Official contests are system-funded (rewards:null → skipped here). If the
 			// creator can't cover it, the whole create is rejected — no unfunded prize
 			// is ever indexed.
-			let poolRef = op.pool_ref || null;
+			// SECURITY: pool_ref is NEVER taken from the client op — a challenge may
+			// only ever reference the pool the funding path creates for it. Otherwise a
+			// user could point their challenge at someone else's funded pool and drain
+			// it via alts.
+			let poolRef = null;
 			const fundedPrize = (op.rewards && origin_tier !== 'official' && Number(op.rewards.afit) > 0) ? Number(op.rewards.afit) : 0;
 			if (fundedPrize > 0) {
 				if (typeof opts.fundChallenge !== 'function') {

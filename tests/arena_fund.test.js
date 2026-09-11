@@ -109,6 +109,15 @@ describe('indexArenaOp — funded create path', () => {
 		expect(await afit.balanceOf(db, 'broke')).toBe(50); // untouched
 	});
 
+	test('SECURITY — a client-set pool_ref is IGNORED (cannot point at another pool)', async () => {
+		const db = createMockDb();
+		await seedBalance(db, 'rich', 1000);
+		// community create with no funding but a spoofed pool_ref at a victim pool
+		const res = await arena.indexArenaOp(db, chainOp(fundedCreate({ id: 'ch_hijack', rewards: null, pool_ref: 'poolch_victim' }), 'rich'), opts(db));
+		expect(res.ok).toBe(true);
+		expect((await db.collection('challenges').findOne({ id: 'ch_hijack' })).pool_ref).toBeNull();
+	});
+
 	test('an official contest is NOT creator-funded (rewards:null → no debit)', async () => {
 		const db = createMockDb();
 		const res = await arena.indexArenaOp(db, chainOp(fundedCreate({ id: 'def_x', origin_tier: 'official', rewards: null }), 'actifit'), {
