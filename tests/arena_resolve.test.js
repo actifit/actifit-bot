@@ -4,7 +4,7 @@
 
 const { createMockDb } = require('./helpers/mock-db');
 const jobs = require('../arena_jobs');
-const meritsLib = require('../arena_merits');
+const afit = require('../arena_afit');
 
 const post = (author, dateISO, step_count) => ({
 	author, permlink: `p-${author}-${dateISO}`, date: new Date(dateISO), json_metadata: { step_count },
@@ -38,7 +38,7 @@ function seed() {
 }
 
 describe('arena_jobs.resolveDueChallenges', () => {
-	test('resolves a due challenge: Merits emitted, results recorded, events fired', async () => {
+	test('resolves a due challenge: AFIT credited, results recorded, events fired', async () => {
 		const db = seed();
 		const sent = [];
 		const res = await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
@@ -47,21 +47,18 @@ describe('arena_jobs.resolveDueChallenges', () => {
 		expect(res.skipped).toBe(1);       // ch_future window still open
 		expect(res.failed).toBe(0);
 
-		// alice (rank 1) gets 200, bob (rank 2) gets 150; 'quit' (left) gets nothing.
-		const aliceBal = await db.collection('merits_balances').findOne({ user: 'alice' });
-		const bobBal = await db.collection('merits_balances').findOne({ user: 'bob' });
-		const quitBal = await db.collection('merits_balances').findOne({ user: 'quit' });
-		expect(aliceBal.balance).toBe(200);
-		expect(bobBal.balance).toBe(150);
-		expect(quitBal).toBeNull();
+		// alice (rank 1) gets 100 AFIT, bob (rank 2) gets 60; 'quit' (left) gets nothing.
+		expect(await afit.balanceOf(db, 'alice')).toBe(100);
+		expect(await afit.balanceOf(db, 'bob')).toBe(60);
+		expect(await afit.balanceOf(db, 'quit')).toBe(0);
 
 		// resolution marker written (idempotent guard)
 		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_weekly_step_league' })).toBeTruthy();
 
-		// F6 events for the two rewarded finishers
+		// F6 events for the rewarded finishers
 		const aliceEvents = await db.collection('arena_events').find({ user: 'alice', type: 'results_settled' }).toArray();
 		expect(aliceEvents.length).toBe(1);
-		expect(aliceEvents[0].data).toMatchObject({ rank: 1, merits: 200 });
+		expect(aliceEvents[0].data).toMatchObject({ rank: 1, afit: 100 });
 	});
 
 	test('broadcasts the settle op AND a rolled next-occurrence for a recurring default', async () => {
@@ -84,7 +81,7 @@ describe('arena_jobs.resolveDueChallenges', () => {
 		expect(create.window.end).toBe('2026-08-15T00:00:00.000Z');
 	});
 
-	test('idempotent: a second run does not re-emit Merits, re-broadcast settle, or re-roll', async () => {
+	test('idempotent: a second run does not re-credit AFIT, re-broadcast settle, or re-roll', async () => {
 		const db = seed();
 		const mk = () => { const sent = []; return { sent, fn: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } }; };
 		const first = mk();
@@ -93,7 +90,7 @@ describe('arena_jobs.resolveDueChallenges', () => {
 		const res2 = await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: second.fn });
 
 		// balances unchanged
-		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(200);
+		expect(await afit.balanceOf(db, 'alice')).toBe(100);
 		expect(res2.resolved).toBe(0);          // prior resolution → noop
 		// settle not re-sent (marker has settle_trx); recurrence next-id now exists → not re-rolled
 		expect(second.sent.find((o) => o.op === 'settle')).toBeFalsy();
@@ -116,34 +113,34 @@ describe('arena_jobs.resolveDueChallenges', () => {
 			post('farmer', '2026-08-03T10:00:00Z', 1),       // 1 step — did not
 		]);
 		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
-		expect((await db.collection('merits_balances').findOne({ user: 'achiever' })).balance).toBe(20);
-		expect(await db.collection('merits_balances').findOne({ user: 'farmer' })).toBeNull();
+		expect(await afit.balanceOf(db, 'achiever')).toBe(5);  // def_daily_focus flat 5 AFIT
+		expect(await afit.balanceOf(db, 'farmer')).toBe(0);
 	});
 
-	test('crash-retry on a CAPPED reward keeps the recorded merits at the capped amount (no re-inflation, no double-credit)', async () => {
+	test('crash-retry on a CAPPED reward keeps the recorded AFIT at the capped amount (no re-inflation, no double-credit)', async () => {
 		const db = seed();
-		// alice would earn 200 (rank 1) but has already earned 900 Merits today, so
-		// only 100 can land (1000/day cap).
-		await meritsLib.award(db, { user: 'alice', amount: 900, reason: 'challenge_reward', ref: 'earlier', at: NOW });
-		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
+		// alice would earn 100 (rank 1) but has already earned 250 arena AFIT today,
+		// so only 50 can land (300/day cap).
+		await afit.creditAfitReward(db, { user: 'alice', challengeId: 'earlier', amount: 250, at: NOW });
+		await jobs.resolveDueChallenges(db, { now: NOW, afitDailyCap: 300, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
 		const p1 = await db.collection('challenge_participants').findOne({ challenge_id: 'def_weekly_step_league', entity: 'alice' });
-		expect(p1.result.reward.merits).toBe(100);   // capped, recorded accurately
-		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(1000);
+		expect(p1.result.reward.afit).toBe(50);   // capped, recorded accurately
+		expect(await afit.balanceOf(db, 'alice')).toBe(300);
 		// Simulate a crash BEFORE the resolution marker persisted: wipe it, re-resolve.
 		await db.collection('challenge_resolutions').deleteMany({});
-		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx2_' + op.op }) });
+		await jobs.resolveDueChallenges(db, { now: NOW, afitDailyCap: 300, broadcastOp: async (op) => ({ id: 'trx2_' + op.op }) });
 		const p2 = await db.collection('challenge_participants').findOne({ challenge_id: 'def_weekly_step_league', entity: 'alice' });
-		expect(p2.result.reward.merits).toBe(100);   // STILL 100 — not re-inflated to 200
-		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(1000); // not double-credited
+		expect(p2.result.reward.afit).toBe(50);   // STILL 50 — not re-inflated to 100
+		expect(await afit.balanceOf(db, 'alice')).toBe(300); // not double-credited
 	});
 
-	test('without a broadcaster: Merits still emitted, no settle/recurrence', async () => {
+	test('without a broadcaster: AFIT still credited, no settle/recurrence', async () => {
 		const db = seed();
 		const res = await jobs.resolveDueChallenges(db, { now: NOW });
 		expect(res.resolved).toBe(1);
 		expect(res.settled).toBe(0);
 		expect(res.recurred).toBe(0);
-		expect((await db.collection('merits_balances').findOne({ user: 'alice' })).balance).toBe(200);
+		expect(await afit.balanceOf(db, 'alice')).toBe(100);
 	});
 });
 

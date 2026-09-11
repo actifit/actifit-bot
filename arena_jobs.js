@@ -232,10 +232,10 @@ async function resolveDueChallenges(db, opts = {}) {
 					score_verified: r.score != null ? r.score : (r.points != null ? r.points : 0),
 				}));
 				const prizes = arenaRewards.prizesForStandings(ch, standings);
-				// Merit-only settlement (no pool) → resolveChallenge emits Merits,
-				// records participant results + an idempotent resolution marker, and
-				// returns the settle payload.
-				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf });
+				// Settlement credits off-chain AFIT (official contests emit from the
+				// treasury, capped per-user/day), records participant results + an
+				// idempotent resolution marker, and returns the settle payload.
+				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf, dailyCap: opts.afitDailyCap });
 				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
 				resolved++;
 				// F6 — notify each rewarded finisher. Reward objects don't carry rank,
@@ -244,13 +244,13 @@ async function resolveDueChallenges(db, opts = {}) {
 					((resolution.settlePayload && resolution.settlePayload.standings) || []).map((s) => [s.entity, s.rank])
 				);
 				for (const rw of (resolution.settlePayload && resolution.settlePayload.rewards) || []) {
-					if (rw && rw.entity && Number(rw.merits) > 0) {
+					if (rw && rw.entity && Number(rw.afit) > 0) {
 						// One bad event must not drop the rest (or mark the whole
-						// resolution failed after Merits already emitted).
+						// resolution failed after AFIT was already credited).
 						try {
 							await arenaApi.emitEvent(db, {
 								type: 'results_settled', user: rw.entity, challenge_id: ch.id,
-								data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, merits: rw.merits }, at: asOf,
+								data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, afit: rw.afit }, at: asOf,
 							});
 						} catch (e) {
 							log(`arena resolve: event for ${rw.entity} on ${ch.id} failed: ${e && e.message}`);

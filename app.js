@@ -1163,6 +1163,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 				await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
+					afitDailyCap: config.arena_afit_daily_cap, // per-user/day AFIT reward cap
 					log: (m) => utils.log(m, 'arena'),
 				});
 			} catch (e) {
