@@ -312,6 +312,12 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			if (origin_tier === 'official' && signer !== officialAccount) {
 				return { ok: false, reason: 'official challenge must be signed by the official account' };
 			}
+			// Reserve the def_* id namespace for the official account. The recurrence
+			// roller and the AFIT schedule map key on this prefix, so a user must not
+			// be able to mint a def_* id (belt-and-suspenders alongside the tier gate).
+			if (typeof op.id === 'string' && op.id.indexOf('def_') === 0 && signer !== officialAccount) {
+				return { ok: false, reason: 'the def_ id namespace is reserved for the official account' };
+			}
 			// Idempotency FIRST: an already-indexed op must re-tail as a clean no-op
 			// regardless of the signer's CURRENT tier. The tier gate is a live lookup
 			// (isModerator now), so running it before this check would make a re-tail
@@ -348,6 +354,30 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				return { ok: false, reason: `tier gate: ${tierErrs.join('; ')}` };
 			}
 
+			// Creator-funded prize (§7.4): a non-official challenge carrying an AFIT
+			// prize is self-funded from the SIGNER's own off-chain AFIT. Lock it into a
+			// pool at ingest (debit creator prize + fee, burn the fee, create the pool).
+			// Official contests are system-funded (rewards:null → skipped here). If the
+			// creator can't cover it, the whole create is rejected — no unfunded prize
+			// is ever indexed.
+			// SECURITY: pool_ref is NEVER taken from the client op — a challenge may
+			// only ever reference the pool the funding path creates for it. Otherwise a
+			// user could point their challenge at someone else's funded pool and drain
+			// it via alts.
+			let poolRef = null;
+			const fundedPrize = (op.rewards && origin_tier !== 'official' && Number(op.rewards.afit) > 0) ? Number(op.rewards.afit) : 0;
+			if (fundedPrize > 0) {
+				if (typeof opts.fundChallenge !== 'function') {
+					return { ok: false, reason: 'funded challenges not enabled (no funder wired)' };
+				}
+				const funded = await opts.fundChallenge({
+					creator: signer, challengeId: op.id, prize: fundedPrize, at,
+					window: pick(op.window, ['start', 'end', 'tz']),
+				});
+				if (!funded.ok) return { ok: false, reason: `funding failed: ${funded.reason}` };
+				poolRef = funded.poolId;
+			}
+
 			const doc = {
 				id: op.id,
 				v: op.v || 1,
@@ -365,7 +395,7 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				entry: buildEntry(op.entry),
 				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
-				pool_ref: op.pool_ref || null,
+				pool_ref: poolRef,
 				parent_id: op.parent_id || null,
 				// Shared presentation copy (Trello #182) — display-only, bounded.
 				...buildPresentation(op),
