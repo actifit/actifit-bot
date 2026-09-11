@@ -199,7 +199,7 @@ describe('arena.indexArenaOp — lifecycle', () => {
         { entity: 'bob', rank: 1, score_verified: 12040 },
         { entity: 'carol', rank: 2, score_verified: 9000 },
       ],
-      rewards: [{ entity: 'bob', afit: 25, merits: 50, badges: ['winner'], he_tx: 'tx123' }],
+      rewards: [{ entity: 'bob', afit: 25, badges: ['winner'], reward_ref: 'arena_challenge:ch_1' }],
     };
 
     const denied = await arena.indexArenaOp(db, chainOp(settleBody, 'alice'));
@@ -210,7 +210,7 @@ describe('arena.indexArenaOp — lifecycle', () => {
 
     expect((await db.collection('challenges').findOne({ id: 'ch_1' })).state).toBe('settled');
     const bob = await db.collection('challenge_participants').findOne({ entity: 'bob' });
-    expect(bob.result).toMatchObject({ rank: 1, reward: { afit: 25, merits: 50, he_tx: 'tx123' } });
+    expect(bob.result).toMatchObject({ rank: 1, reward: { afit: 25, badges: ['winner'], reward_ref: 'arena_challenge:ch_1' } });
     const carol = await db.collection('challenge_participants').findOne({ entity: 'carol' });
     expect(carol.result).toMatchObject({ rank: 2, reward: null });
 

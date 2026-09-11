@@ -4,7 +4,7 @@
 
 const { createMockDb } = require('./helpers/mock-db');
 const pools = require('../arena_pools');
-const merits = require('../arena_merits');
+const afit = require('../arena_afit');
 
 const AT = '2026-08-26T10:00:00Z';
 
@@ -47,10 +47,10 @@ describe('arena_pools.allocatePayouts', () => {
   test('maps ranked rows to prizes and skips ranks with no prize', () => {
     const p = pools.allocatePayouts(
       [{ entity: 'a', rank: 1 }, { entity: 'b', rank: 2 }, { entity: 'c', rank: 3 }],
-      [{ rank: 1, afit: 100 }, { rank: 2, merits: 20 }]
+      [{ rank: 1, afit: 100 }, { rank: 2, afit: 20 }]
     );
     expect(p.map((x) => x.entity)).toEqual(['a', 'b']);
-    expect(p[0]).toMatchObject({ entity: 'a', afit: 100, merits: 0 });
+    expect(p[0]).toMatchObject({ entity: 'a', afit: 100 });
   });
 
   test('excludes excluded entities (funder)', () => {
@@ -58,9 +58,11 @@ describe('arena_pools.allocatePayouts', () => {
     expect(p).toEqual([]);
   });
 
-  test('skips a negative prize', () => {
+  test('skips a negative or empty prize', () => {
     expect(pools.allocatePayouts([{ entity: 'a', rank: 1 }], [{ rank: 1, afit: -100 }])).toEqual([]);
-    expect(pools.allocatePayouts([{ entity: 'a', rank: 1 }], [{ rank: 1, merits: -5 }])).toEqual([]);
+    expect(pools.allocatePayouts([{ entity: 'a', rank: 1 }], [{ rank: 1, afit: 0 }])).toEqual([]);
+    // a badge-only prize (no AFIT) still counts
+    expect(pools.allocatePayouts([{ entity: 'a', rank: 1 }], [{ rank: 1, badges: ['x'] }])).toHaveLength(1);
   });
 });
 
@@ -68,33 +70,33 @@ describe('arena_pools.resolveChallenge', () => {
   const seedParts = (db, challengeId, entities) =>
     db.collection('challenge_participants').__seed(entities.map((e) => (typeof e === 'string' ? { challenge_id: challengeId, entity: e, flags: [] } : { challenge_id: challengeId, ...e })));
 
-  test('draws prizes → emits Merits, records results, marks pool paid, settle carries score_verified', async () => {
+  test('credits AFIT off-chain, records results, marks pool paid, settle carries score_verified', async () => {
     const db = createMockDb();
     await pools.createPool(db, { id: 'pool1', funding: 'treasury', budget: 1000, currency: 'AFIT' });
     seedParts(db, 'ch1', ['a', 'b']);
     const standings = [{ entity: 'a', rank: 1, score_verified: 18000 }, { entity: 'b', rank: 2, score_verified: 12000 }];
-    const prizes = [{ rank: 1, afit: 100, merits: 50, badges: ['champ'] }, { rank: 2, merits: 20 }];
+    const prizes = [{ rank: 1, afit: 100, badges: ['champ'] }, { rank: 2, afit: 20 }];
 
     const res = await pools.resolveChallenge(db, { challengeId: 'ch1', poolId: 'pool1', standings, prizes, asOf: AT });
-    expect(res).toMatchObject({ ok: true, paidAfit: 100, rewarded: 2 });
+    expect(res).toMatchObject({ ok: true, paidAfit: 120, rewarded: 2 });
     expect(res.settlePayload.standings[0]).toMatchObject({ entity: 'a', rank: 1, score_verified: 18000 });
 
-    expect(await merits.balanceOf(db, 'a')).toBe(50);
-    expect(await merits.balanceOf(db, 'b')).toBe(20);
+    expect(await afit.balanceOf(db, 'a')).toBe(100); // spendable off-chain AFIT
+    expect(await afit.balanceOf(db, 'b')).toBe(20);
     const a = await db.collection('challenge_participants').findOne({ entity: 'a' });
-    expect(a.result).toMatchObject({ rank: 1, reward: { afit: 100, merits: 50, badges: ['champ'], reward_ref: 'led_a_0' } });
-    expect((await db.collection('pools').findOne({ id: 'pool1' })).paid).toBe(100);
+    expect(a.result).toMatchObject({ rank: 1, reward: { afit: 100, badges: ['champ'], reward_ref: 'arena_challenge:ch1' } });
+    expect((await db.collection('pools').findOne({ id: 'pool1' })).paid).toBe(120);
   });
 
-  test('is idempotent — re-resolving does not double-emit Merits or double-pay AFIT', async () => {
+  test('is idempotent — re-resolving does not double-credit AFIT or double-pay the pool', async () => {
     const db = createMockDb();
     await pools.createPool(db, { id: 'p', funding: 'treasury', budget: 1000 });
     seedParts(db, 'ch', ['a']);
-    const args = { challengeId: 'ch', poolId: 'p', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, afit: 100, merits: 50 }], asOf: AT };
+    const args = { challengeId: 'ch', poolId: 'p', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, afit: 100 }], asOf: AT };
     await pools.resolveChallenge(db, args);
     const again = await pools.resolveChallenge(db, args);
     expect(again).toMatchObject({ ok: true, noop: true });
-    expect(await merits.balanceOf(db, 'a')).toBe(50); // not 100
+    expect(await afit.balanceOf(db, 'a')).toBe(100); // not 200
     expect((await db.collection('pools').findOne({ id: 'p' })).paid).toBe(100); // not 200
   });
 
@@ -105,10 +107,12 @@ describe('arena_pools.resolveChallenge', () => {
     const res = await pools.resolveChallenge(db, {
       challengeId: 'ch2', poolId: 'pool2',
       standings: [{ entity: 'funderX', rank: 1 }, { entity: 'b', rank: 2 }],
-      prizes: [{ rank: 1, afit: 500 }, { rank: 2, afit: 100 }], asOf: AT,
+      prizes: [{ rank: 1, afit: 200 }, { rank: 2, afit: 100 }], asOf: AT,
     });
     expect(res.excludedFunders).toEqual(['funderX']);
     expect(res.paidAfit).toBe(100); // only b (rank 2)
+    expect(await afit.balanceOf(db, 'funderX')).toBe(0);
+    expect(await afit.balanceOf(db, 'b')).toBe(100);
   });
 
   test('trust boundary — a fabricated (non-enrolled) or anti-cheat-held entity is not paid', async () => {
@@ -118,24 +122,35 @@ describe('arena_pools.resolveChallenge', () => {
     const res = await pools.resolveChallenge(db, {
       challengeId: 'ch', poolId: 'p',
       standings: [{ entity: 'ghost', rank: 1 }, { entity: 'cheat', rank: 2 }, { entity: 'clean', rank: 3 }],
-      prizes: [{ rank: 1, merits: 100 }, { rank: 2, merits: 100 }, { rank: 3, merits: 30 }], asOf: AT,
+      prizes: [{ rank: 1, afit: 100 }, { rank: 2, afit: 100 }, { rank: 3, afit: 30 }], asOf: AT,
     });
     expect(res.rewarded).toBe(1); // only 'clean'
-    expect(await merits.balanceOf(db, 'ghost')).toBe(0);
-    expect(await merits.balanceOf(db, 'cheat')).toBe(0);
-    expect(await merits.balanceOf(db, 'clean')).toBe(30);
+    expect(await afit.balanceOf(db, 'ghost')).toBe(0);
+    expect(await afit.balanceOf(db, 'cheat')).toBe(0);
+    expect(await afit.balanceOf(db, 'clean')).toBe(30);
   });
 
-  test('records the ACTUALLY emitted Merits when the award is capped, not the requested', async () => {
+  test('records the ACTUALLY credited AFIT when the daily cap bites, not the requested', async () => {
     const db = createMockDb();
-    await pools.createPool(db, { id: 'p', funding: 'treasury', budget: 0 });
+    db.collection('challenges').__seed([{ id: 'ch', origin_tier: 'official' }]); // system emission is official-only
     seedParts(db, 'ch', ['a']);
-    await merits.award(db, { user: 'a', amount: 950, reason: 'challenge_reward', at: AT }); // near the 1000 cap
-    const res = await pools.resolveChallenge(db, { challengeId: 'ch', poolId: 'p', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, merits: 100 }], asOf: AT });
+    // 'a' already earned 280 arena AFIT today (from another challenge) → 20 room left of 300.
+    await afit.creditAfitReward(db, { user: 'a', challengeId: 'earlier', amount: 280, at: AT, dailyCap: 300 });
+    const res = await pools.resolveChallenge(db, { challengeId: 'ch', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, afit: 100 }], asOf: AT, dailyCap: 300 });
     expect(res.ok).toBe(true);
     const a = await db.collection('challenge_participants').findOne({ entity: 'a' });
-    expect(a.result.reward.merits).toBe(50); // emitted (cap room), not the requested 100
-    expect(await merits.balanceOf(db, 'a')).toBe(1000);
+    expect(a.result.reward.afit).toBe(20); // credited (cap room), not the requested 100
+    expect(await afit.balanceOf(db, 'a')).toBe(300);
+  });
+
+  test('defense-in-depth — pool-less (system) AFIT is refused for a non-official challenge', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch_user', origin_tier: 'friendly' }]);
+    seedParts(db, 'ch_user', ['a']);
+    const res = await pools.resolveChallenge(db, { challengeId: 'ch_user', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, afit: 100 }], asOf: AT });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/official-only/);
+    expect(await afit.balanceOf(db, 'a')).toBe(0); // nothing minted
   });
 
   test('commit-then-resolve honours the reservation (paid + committed <= budget)', async () => {

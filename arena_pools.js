@@ -31,13 +31,13 @@
  * `POST challenges` / `POST /:id/sponsor` HTTP endpoints (§7.4) and the actual
  * Hive-Engine AFIT broadcast (here `he_tx` is null until the transfer lands).
  *
- * Load-time safe: requires only ./arena_merits + ./arena_verify (both
+ * Load-time safe: requires only ./arena_afit + ./arena_verify (both
  * config/Firebase-free).
  */
 
 'use strict';
 
-const merits = require('./arena_merits');
+const arenaAfit = require('./arena_afit'); // off-chain AFIT reward crediting
 const arenaVerify = require('./arena_verify'); // ANTICHEAT_FLAG only
 
 const COLLECTIONS = {
@@ -110,9 +110,9 @@ async function commitToPool(db, poolId, amount) {
 
 /**
  * Map ranked standings rows to prize awards. Pure.
- * `prizes`: [{ rank, afit, merits, badges }]. `opts.excludeEntities`: a Set of
- * entities to skip (funders — I7). Negative prize amounts are rejected; a row
- * with no prize, or an all-empty prize, yields nothing.
+ * `prizes`: [{ rank, afit, badges }]. `opts.excludeEntities`: a Set of entities
+ * to skip (funders — I7). Negative amounts are rejected; a row with no prize, or
+ * an all-empty prize, yields nothing.
  */
 function allocatePayouts(standings, prizes, opts = {}) {
 	const exclude = opts.excludeEntities || new Set();
@@ -123,11 +123,10 @@ function allocatePayouts(standings, prizes, opts = {}) {
 		const prize = byRank.get(row.rank);
 		if (!prize) continue;
 		const afit = Number(prize.afit) || 0;
-		const meritAmt = Number(prize.merits) || 0;
 		const badges = Array.isArray(prize.badges) ? prize.badges : [];
-		if (afit < 0 || meritAmt < 0) continue; // negative prizes are never valid
-		if (afit === 0 && meritAmt === 0 && badges.length === 0) continue;
-		payouts.push({ entity: row.entity, rank: row.rank, afit, merits: meritAmt, badges });
+		if (afit < 0) continue; // negative prizes are never valid
+		if (afit === 0 && badges.length === 0) continue;
+		payouts.push({ entity: row.entity, rank: row.rank, afit, badges });
 	}
 	return payouts;
 }
@@ -137,13 +136,15 @@ function isHeld(participant) {
 }
 
 /**
- * Resolve a challenge: draw prizes for its verified standings from a pool, emit
- * Merits (F4), record AFIT payout intents + badge grants, update the pool
- * accounting, write participant results, and return the on-chain `settle`
- * payload. Idempotent per challenge (a `challenge_resolutions` marker).
+ * Resolve a challenge: draw AFIT prizes for its verified standings, credit them
+ * off-chain (arena_afit — official contests emit from the treasury under the
+ * per-user daily cap; a creator/sponsor pool draws against its budget), record
+ * badge grants, update pool accounting, write participant results, and return the
+ * on-chain `settle` payload. Idempotent per challenge (a `challenge_resolutions`
+ * marker) AND per (user, challenge) at the credit layer.
  *
  * @param {object} params { challengeId, poolId, standings:[{entity,rank,score_verified|score}],
- *   prizes:[{rank,afit,merits,badges}], asOf }
+ *   prizes:[{rank,afit,badges}], asOf, dailyCap? }
  * @returns {Promise<{ok, settlePayload?, paidAfit?, excludedFunders?, rewarded?, noop?, reason?}>}
  */
 async function resolveChallenge(db, params) {
@@ -163,6 +164,7 @@ async function resolveChallenge(db, params) {
 
 	const pool = poolId ? await poolsC.findOne({ id: poolId }) : null;
 	if (poolId && !pool) return { ok: false, reason: 'unknown pool' };
+	const challenge = await db.collection('challenges').findOne({ id: challengeId });
 
 	// Trust boundary — only ENROLLED, non-held participants of THIS challenge are
 	// payable; the caller-supplied standings are re-validated against the index.
@@ -178,41 +180,49 @@ async function resolveChallenge(db, params) {
 
 	const payouts = allocatePayouts(validStandings, prizes, { excludeEntities: exclude });
 
-	// AFIT is capped by the pool's remaining budget whenever any AFIT is paid.
-	const totalAfit = payouts.reduce((s, p) => s + p.afit, 0);
-	if (totalAfit > 0) {
-		if (!pool) return { ok: false, reason: 'AFIT payout requires a pool' };
-		if (totalAfit > pool.budget - pool.paid) return { ok: false, reason: 'payout exceeds remaining pool budget' };
+	// AFIT requested for this resolution. A creator/sponsor-funded pool caps it at
+	// the pool's remaining budget; an OFFICIAL/system-funded contest (no pool)
+	// emits off-chain AFIT from the treasury, bounded per-user/day by the credit
+	// primitive. (Only official contests carry a system schedule — user-created
+	// challenges get [] prizes here, so they never system-emit.)
+	const requestedAfit = payouts.reduce((s, p) => s + p.afit, 0);
+	// Defense-in-depth: pool-less (system/treasury-funded) AFIT is OFFICIAL-only.
+	// prizesForStandings already returns [] for non-official challenges, but guard
+	// here too so no future caller can mint treasury AFIT for a user challenge.
+	if (requestedAfit > 0 && !pool && (!challenge || challenge.origin_tier !== 'official')) {
+		return { ok: false, reason: 'system AFIT emission is official-only (needs a pool otherwise)' };
+	}
+	if (pool && requestedAfit > pool.budget - pool.paid) {
+		return { ok: false, reason: 'payout exceeds remaining pool budget' };
 	}
 
 	const rewards = [];
+	let totalCredited = 0;
 	for (const p of payouts) {
+		let credited = 0;
 		let reward_ref = null;
-		let emitted = 0;
-		if (p.merits > 0) {
-			// idempotent by (user, challenge): a retry after a crash before the
-			// resolution marker lands re-enters here but never double-emits (#178).
-			const res = await merits.award(db, { user: p.entity, amount: p.merits, reason: 'challenge_reward', ref: challengeId, at, idempotent: true });
-			if (res.ok && res.entry) {
-				reward_ref = res.entry.id;
-				emitted = res.emitted != null ? res.emitted : p.merits; // record what was ACTUALLY emitted
-			}
+		if (p.afit > 0) {
+			// idempotent per (user, challenge) + daily-capped: a retry after a crash
+			// before the resolution marker lands re-enters here without double-paying.
+			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: params.dailyCap, weeklyBudget: params.weeklyBudget });
+			if (res.ok) { credited = res.credited; reward_ref = res.ref; }
+			totalCredited += credited;
 		}
 		// Whole-object $set on `result` so it nests correctly (dotted paths don't
-		// in the mock). Record `emitted`, not the requested amount (M1).
+		// in the mock). Record what was ACTUALLY credited, not the requested amount.
 		const part = eligible.get(p.entity);
 		const priorResult = (part && part.result) || {};
-		const rewardObj = { afit: p.afit, merits: emitted, badges: p.badges, reward_ref, he_tx: null };
+		const rewardObj = { afit: credited, badges: p.badges, reward_ref };
 		await participantsC.updateOne(
 			{ challenge_id: challengeId, entity: p.entity },
 			{ $set: { result: { ...priorResult, rank: p.rank, reward: rewardObj } } }
 		);
-		rewards.push({ entity: p.entity, afit: p.afit, merits: emitted, badges: p.badges, reward_ref, he_tx: null });
+		rewards.push({ entity: p.entity, afit: credited, badges: p.badges, reward_ref });
 	}
 
 	if (pool) {
-		const newPaid = pool.paid + totalAfit;
-		const newCommitted = Math.max(0, pool.committed - totalAfit); // release the reservation as it is paid
+		const newPaid = pool.paid + totalCredited;
+		const newCommitted = Math.max(0, pool.committed - totalCredited); // release the reservation as it is paid
 		const state = newPaid >= pool.budget ? 'exhausted' : pool.state;
 		await poolsC.updateOne({ id: pool.id }, { $set: { paid: newPaid, committed: newCommitted, state } });
 	}
@@ -225,8 +235,8 @@ async function resolveChallenge(db, params) {
 	}));
 	const settlePayload = { op: 'settle', v: 1, challenge_id: challengeId, standings: settleStandings, rewards };
 
-	await resolutionsC.insertOne({ challenge_id: challengeId, pool_id: poolId || null, settlePayload, paidAfit: totalAfit, excludedFunders, at });
-	return { ok: true, settlePayload, paidAfit: totalAfit, excludedFunders, rewarded: payouts.length };
+	await resolutionsC.insertOne({ challenge_id: challengeId, pool_id: poolId || null, settlePayload, paidAfit: totalCredited, excludedFunders, at });
+	return { ok: true, settlePayload, paidAfit: totalCredited, excludedFunders, rewarded: payouts.length };
 }
 
 /** Indexes the pools/sponsors/resolutions rely on. Safe no-op where absent. */
