@@ -214,6 +214,10 @@ client.connect()
 	        // Authoritative §7.4 tier gate on ingest — the signer's real tier
 	        // decides whether a community/official create is accepted (#180).
 	        resolveTier: resolveArenaTier,
+	        // Creator-funded challenges: lock the creator's off-chain AFIT into the
+	        // prize pool at ingest (debit + 5% burn + pool). Rejects the create if
+	        // the creator can't cover it, so no unfunded prize is ever indexed.
+	        fundChallenge: arenaFundChallenge,
 	        log: (m) => utils.log(m, 'arena'),
 	      });
 	      console.log('Arena tailer started');
@@ -787,10 +791,23 @@ const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHe
 // it drops straight into the isCommunity hook below when added. Under-permissive
 // (fail-safe): it can only EXCLUDE a legit community leader, never upgrade anyone.
 const arenaOfficialAccount = config.arena_official_account || config.account || 'actifit';
+// Community-tier eligibility (§7.4): an active moderator, OR a holder of at least
+// `arena_funded_min_afit` off-chain AFIT — the holdings gate for creating a
+// FUNDED challenge (the creator must own real AFIT to fund a real prize). Reusing
+// the community tier means the existing tier gate already lets these callers
+// attach a pool (friendly challenges still can't).
+const arenaFundedMinAfit = Number.isFinite(config.arena_funded_min_afit) ? config.arena_funded_min_afit : 20000;
+const arenaAfit = require('./arena_afit');
+const arenaFund = require('./arena_fund');
 const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
 	officialAccount: arenaOfficialAccount,
-	isCommunity: (u) => isModerator(u),
+	isCommunity: async (u) => (await isModerator(u)) || (await arenaAfit.balanceOf(db, u)) >= arenaFundedMinAfit,
 });
+// Injected into the tailer's ingest so a funded create locks the creator's AFIT.
+const arenaFundChallenge = (params) => arenaFund.fundChallenge(db, Object.assign({
+	cutPct: config.arena_fund_cut_pct,
+	minPool: config.arena_fund_min_pool,
+}, params));
 // The validate endpoint is unauthenticated (chain-first: the CLIENT signs + the
 // tailer is the real gate), so the tier here is ADVISORY — derived from an
 // optional `username` in the body. A spoofed username can only get a misleading

@@ -32,6 +32,7 @@ const arenaVerify = require('./arena_verify');
 const arenaStandings = require('./arena_standings');
 const arenaPools = require('./arena_pools');
 const arenaRewards = require('./arena_rewards');
+const arenaFund = require('./arena_fund');
 const arenaApi = require('./arena_api');
 
 // States a challenge can be aggregated in — everything that isn't terminal.
@@ -231,11 +232,20 @@ async function resolveDueChallenges(db, opts = {}) {
 					rank: r.rank,
 					score_verified: r.score != null ? r.score : (r.points != null ? r.points : 0),
 				}));
-				const prizes = arenaRewards.prizesForStandings(ch, standings);
-				// Settlement credits off-chain AFIT (official contests emit from the
-				// treasury, capped per-user/day), records participant results + an
+				// Prizes: an OFFICIAL contest uses its system schedule (treasury-funded,
+				// capped); a CREATOR-FUNDED challenge distributes its own pool (top-3
+				// split, bounded by the pool budget, no treasury cap).
+				let prizes, poolId = null;
+				if (ch.pool_ref) {
+					const pool = await db.collection('pools').findOne({ id: ch.pool_ref });
+					poolId = ch.pool_ref;
+					prizes = arenaRewards.poolPrizes(pool ? pool.budget : 0);
+				} else {
+					prizes = arenaRewards.prizesForStandings(ch, standings);
+				}
+				// Settlement credits off-chain AFIT, records participant results + an
 				// idempotent resolution marker, and returns the settle payload.
-				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
+				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, poolId, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
 				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
 				resolved++;
 				// F6 — notify each rewarded finisher. Reward objects don't carry rank,
@@ -256,6 +266,18 @@ async function resolveDueChallenges(db, opts = {}) {
 							log(`arena resolve: event for ${rw.entity} on ${ch.id} failed: ${e && e.message}`);
 						}
 					}
+				}
+			}
+
+			// Refund any UNPAID balance of a CREATOR-FUNDED pool back to the creator
+			// (idempotent, safe on every pass — including a crash-retry where the
+			// resolution marker landed but the refund hadn't). A challenge that drew
+			// fewer than the funded ranks never burns the creator's prize.
+			if (ch.pool_ref) {
+				try {
+					await arenaFund.refundUnpaid(db, { challengeId: ch.id, poolId: ch.pool_ref, creator: ch.created_by, at: asOf });
+				} catch (e) {
+					log(`arena resolve: refund ${ch.id} failed: ${e && e.message}`);
 				}
 			}
 

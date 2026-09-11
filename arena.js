@@ -348,6 +348,26 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				return { ok: false, reason: `tier gate: ${tierErrs.join('; ')}` };
 			}
 
+			// Creator-funded prize (§7.4): a non-official challenge carrying an AFIT
+			// prize is self-funded from the SIGNER's own off-chain AFIT. Lock it into a
+			// pool at ingest (debit creator prize + fee, burn the fee, create the pool).
+			// Official contests are system-funded (rewards:null → skipped here). If the
+			// creator can't cover it, the whole create is rejected — no unfunded prize
+			// is ever indexed.
+			let poolRef = op.pool_ref || null;
+			const fundedPrize = (op.rewards && origin_tier !== 'official' && Number(op.rewards.afit) > 0) ? Number(op.rewards.afit) : 0;
+			if (fundedPrize > 0) {
+				if (typeof opts.fundChallenge !== 'function') {
+					return { ok: false, reason: 'funded challenges not enabled (no funder wired)' };
+				}
+				const funded = await opts.fundChallenge({
+					creator: signer, challengeId: op.id, prize: fundedPrize, at,
+					window: pick(op.window, ['start', 'end', 'tz']),
+				});
+				if (!funded.ok) return { ok: false, reason: `funding failed: ${funded.reason}` };
+				poolRef = funded.poolId;
+			}
+
 			const doc = {
 				id: op.id,
 				v: op.v || 1,
@@ -365,7 +385,7 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				entry: buildEntry(op.entry),
 				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
-				pool_ref: op.pool_ref || null,
+				pool_ref: poolRef,
 				parent_id: op.parent_id || null,
 				// Shared presentation copy (Trello #182) — display-only, bounded.
 				...buildPresentation(op),

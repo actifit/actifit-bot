@@ -78,9 +78,30 @@ function prizesForStandings(challenge, standings) {
 	return prizes;
 }
 
+// Default prize split for a CREATOR-FUNDED pool: top-3 take 50/30/20 of the
+// budget. Ranks with no finisher go unpaid → refunded to the creator. Rounding
+// remainder likewise stays unpaid and is refunded.
+const POOL_SPLIT = { 1: 0.5, 2: 0.3, 3: 0.2 };
+
+/**
+ * Rank-keyed AFIT prize table for a creator-funded pool of the given budget.
+ * @param {number} budget
+ * @returns {Array<{rank, afit}>}
+ */
+function poolPrizes(budget) {
+	const b = Number(budget) || 0;
+	if (b <= 0) return [];
+	const round2 = (x) => Math.round(x * 100) / 100;
+	return Object.entries(POOL_SPLIT)
+		.map(([rank, frac]) => ({ rank: Number(rank), afit: round2(b * frac) }))
+		.filter((p) => p.afit > 0);
+}
+
 module.exports = {
 	SCHEDULES,
+	POOL_SPLIT,
 	scheduleFor,
 	afitForRank,
 	prizesForStandings,
+	poolPrizes,
 };

@@ -196,6 +196,13 @@ async function resolveChallenge(db, params) {
 		return { ok: false, reason: 'payout exceeds remaining pool budget' };
 	}
 
+	// System (official/treasury) emission is bounded by the per-user daily cap +
+	// the global weekly budget. A creator/sponsor POOL is bounded by its own budget
+	// instead (the funder already paid), so the treasury caps don't apply — else a
+	// legitimately-funded prize would be clipped and stranded in the pool.
+	const effDailyCap = pool ? Number.MAX_SAFE_INTEGER : params.dailyCap;
+	const effWeeklyBudget = pool ? 0 : params.weeklyBudget;
+
 	const rewards = [];
 	let totalCredited = 0;
 	for (const p of payouts) {
@@ -204,7 +211,7 @@ async function resolveChallenge(db, params) {
 		if (p.afit > 0) {
 			// idempotent per (user, challenge) + daily-capped: a retry after a crash
 			// before the resolution marker lands re-enters here without double-paying.
-			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: params.dailyCap, weeklyBudget: params.weeklyBudget });
+			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: effDailyCap, weeklyBudget: effWeeklyBudget });
 			if (res.ok) { credited = res.credited; reward_ref = res.ref; }
 			totalCredited += credited;
 		}
