@@ -75,4 +75,37 @@ describe('arena_afit.creditAfitReward', () => {
 		const res = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chB', amount: 100, at: '2026-08-26T12:00:00Z', dailyCap: 300 });
 		expect(res.credited).toBe(100); // fresh day, full room
 	});
+
+	describe('global weekly emission budget', () => {
+		test('clamps total emission across ALL users, not just one', async () => {
+			const db = createMockDb();
+			const r1 = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 70, at: AT, weeklyBudget: 100 });
+			expect(r1.credited).toBe(70);
+			const r2 = await afit.creditAfitReward(db, { user: 'b', challengeId: 'chB', amount: 70, at: AT, weeklyBudget: 100 });
+			expect(r2.credited).toBe(30); // only 30 of the 100 weekly budget remains
+			const r3 = await afit.creditAfitReward(db, { user: 'c', challengeId: 'chC', amount: 50, at: AT, weeklyBudget: 100 });
+			expect(r3).toMatchObject({ ok: false, capped: true }); // budget exhausted
+		});
+
+		test('idempotent per (user,challenge) — a re-credit stays at the same amount', async () => {
+			const db = createMockDb();
+			await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 70, at: AT, weeklyBudget: 100 });
+			const retry = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 70, at: AT, weeklyBudget: 100 });
+			expect(retry.credited).toBe(70);          // excludes its own row → same room
+			expect(await afit.balanceOf(db, 'a')).toBe(70);
+		});
+
+		test('resets in a different week bucket', async () => {
+			const db = createMockDb();
+			await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 100, at: '2026-08-01T00:00:00Z', weeklyBudget: 100 });
+			const next = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chB', amount: 100, at: '2026-08-20T00:00:00Z', weeklyBudget: 100 });
+			expect(next.credited).toBe(100); // different week
+		});
+
+		test('unset (0/undefined) budget = disabled (per-user cap only)', async () => {
+			const db = createMockDb();
+			const r = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 400, at: AT }); // no weeklyBudget
+			expect(r.credited).toBe(400); // only the default per-user cap (500) applies
+		});
+	});
 });

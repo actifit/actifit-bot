@@ -29,15 +29,23 @@ const SCHEDULES = {
 };
 
 /**
- * The AFIT schedule for a challenge, or null if it has none (user-created).
- * A recurrence instance chains from its base id via parent_id.
+ * The AFIT schedule for a challenge, or null if it has none.
+ *
+ * System AFIT emission is OFFICIAL-only. The origin_tier check is the security
+ * gate: it is set at ingest from the op SIGNER's authority (only @actifit can
+ * create an official challenge — arena.indexArenaOp rejects an official create by
+ * any other signer), so a user CANNOT reach an official schedule by spoofing a
+ * client-set `parent_id: "def_monthly_liveops"` on a friendly challenge. A
+ * legitimate recurrence instance is broadcast by @actifit as origin_tier:'official'
+ * with parent_id chaining to its base def_* id.
  */
 function scheduleFor(challenge) {
 	if (!challenge) return null;
+	if (challenge.origin_tier !== 'official') return null; // only official contests system-emit
 	const base = challenge.parent_id || challenge.id;
 	if (base && SCHEDULES[base]) return SCHEDULES[base];
 	if (challenge.id && SCHEDULES[challenge.id]) return SCHEDULES[challenge.id];
-	return null; // user-created / unknown → NO system AFIT emission
+	return null; // official but not a scheduled default → no system emission
 }
 
 /** AFIT for a finishing rank under a schedule (0 if none). */

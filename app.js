@@ -1164,6 +1164,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
 					afitDailyCap: config.arena_afit_daily_cap, // per-user/day AFIT reward cap
+					afitWeeklyBudget: config.arena_afit_weekly_budget, // global weekly emission budget (0/unset = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
 			} catch (e) {

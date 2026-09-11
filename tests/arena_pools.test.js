@@ -132,6 +132,7 @@ describe('arena_pools.resolveChallenge', () => {
 
   test('records the ACTUALLY credited AFIT when the daily cap bites, not the requested', async () => {
     const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch', origin_tier: 'official' }]); // system emission is official-only
     seedParts(db, 'ch', ['a']);
     // 'a' already earned 280 arena AFIT today (from another challenge) → 20 room left of 300.
     await afit.creditAfitReward(db, { user: 'a', challengeId: 'earlier', amount: 280, at: AT, dailyCap: 300 });
@@ -140,6 +141,16 @@ describe('arena_pools.resolveChallenge', () => {
     const a = await db.collection('challenge_participants').findOne({ entity: 'a' });
     expect(a.result.reward.afit).toBe(20); // credited (cap room), not the requested 100
     expect(await afit.balanceOf(db, 'a')).toBe(300);
+  });
+
+  test('defense-in-depth — pool-less (system) AFIT is refused for a non-official challenge', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([{ id: 'ch_user', origin_tier: 'friendly' }]);
+    seedParts(db, 'ch_user', ['a']);
+    const res = await pools.resolveChallenge(db, { challengeId: 'ch_user', standings: [{ entity: 'a', rank: 1 }], prizes: [{ rank: 1, afit: 100 }], asOf: AT });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/official-only/);
+    expect(await afit.balanceOf(db, 'a')).toBe(0); // nothing minted
   });
 
   test('commit-then-resolve honours the reservation (paid + committed <= budget)', async () => {

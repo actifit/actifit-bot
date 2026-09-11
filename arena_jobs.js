@@ -235,7 +235,7 @@ async function resolveDueChallenges(db, opts = {}) {
 				// Settlement credits off-chain AFIT (official contests emit from the
 				// treasury, capped per-user/day), records participant results + an
 				// idempotent resolution marker, and returns the settle payload.
-				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf, dailyCap: opts.afitDailyCap });
+				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
 				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
 				resolved++;
 				// F6 — notify each rewarded finisher. Reward objects don't carry rank,

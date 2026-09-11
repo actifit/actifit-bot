@@ -528,9 +528,8 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 							score_verified: row.score_verified != null ? row.score_verified : null,
 							reward: reward ? {
 								afit: reward.afit || 0,
-								merits: reward.merits || 0,
 								badges: reward.badges || [],
-								he_tx: reward.he_tx || null,
+								reward_ref: reward.reward_ref || null,
 							} : null,
 						},
 					} }

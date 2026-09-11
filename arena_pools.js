@@ -164,6 +164,7 @@ async function resolveChallenge(db, params) {
 
 	const pool = poolId ? await poolsC.findOne({ id: poolId }) : null;
 	if (poolId && !pool) return { ok: false, reason: 'unknown pool' };
+	const challenge = await db.collection('challenges').findOne({ id: challengeId });
 
 	// Trust boundary — only ENROLLED, non-held participants of THIS challenge are
 	// payable; the caller-supplied standings are re-validated against the index.
@@ -185,6 +186,12 @@ async function resolveChallenge(db, params) {
 	// primitive. (Only official contests carry a system schedule — user-created
 	// challenges get [] prizes here, so they never system-emit.)
 	const requestedAfit = payouts.reduce((s, p) => s + p.afit, 0);
+	// Defense-in-depth: pool-less (system/treasury-funded) AFIT is OFFICIAL-only.
+	// prizesForStandings already returns [] for non-official challenges, but guard
+	// here too so no future caller can mint treasury AFIT for a user challenge.
+	if (requestedAfit > 0 && !pool && (!challenge || challenge.origin_tier !== 'official')) {
+		return { ok: false, reason: 'system AFIT emission is official-only (needs a pool otherwise)' };
+	}
 	if (pool && requestedAfit > pool.budget - pool.paid) {
 		return { ok: false, reason: 'payout exceeds remaining pool budget' };
 	}
@@ -197,7 +204,7 @@ async function resolveChallenge(db, params) {
 		if (p.afit > 0) {
 			// idempotent per (user, challenge) + daily-capped: a retry after a crash
 			// before the resolution marker lands re-enters here without double-paying.
-			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: params.dailyCap });
+			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: params.dailyCap, weeklyBudget: params.weeklyBudget });
 			if (res.ok) { credited = res.credited; reward_ref = res.ref; }
 			totalCredited += credited;
 		}

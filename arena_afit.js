@@ -40,14 +40,46 @@ const ARENA_ACTIVITY_PREFIX = 'arena_challenge:';
 // exceed a normal free withdrawal, and so a single top prize is never clipped.
 const DEFAULT_DAILY_CAP = 500;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
+// Upper bound of the reward_activity prefix range, for an index-friendly scan of
+// arena reward rows: 'arena_challenge:' <= x < 'arena_challenge;'  (';' = ':' + 1).
+const ARENA_ACTIVITY_HI = ARENA_ACTIVITY_PREFIX.slice(0, -1) + ';';
+
 function dayKey(iso) {
 	const d = new Date(iso);
 	return Number.isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
 }
 
+/** A stable 7-day bucket index for the weekly emission budget (UTC, epoch-based). */
+function weekBucket(iso) {
+	const ms = Date.parse(iso);
+	return Number.isFinite(ms) ? Math.floor(ms / WEEK_MS) : null;
+}
+
 /** The per-(user, challenge) ledger key that makes a re-credit idempotent. */
 function activityFor(challengeId) {
 	return ARENA_ACTIVITY_PREFIX + challengeId;
+}
+
+/**
+ * Total AFIT emitted from ALL Arena challenge rewards in the same weekly bucket as
+ * `at` (across all users), EXCLUDING the one (user, challenge) row being written —
+ * so a re-credit recomputes the same weekly room (idempotent), while other winners
+ * of the same run are counted. Backs the global weekly emission budget. Uses the
+ * reward_activity prefix range so it scans only arena rows, not the whole ledger.
+ */
+async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
+	const bucket = weekBucket(at);
+	if (bucket === null) return 0;
+	const rows = await db.collection(COL.LEDGER)
+		.find({ reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI } })
+		.toArray();
+	const skipActivity = excludeChallengeId ? activityFor(excludeChallengeId) : null;
+	return rows
+		.filter((r) => weekBucket(r.date) === bucket
+			&& !(r.user === excludeUser && r.reward_activity === skipActivity))
+		.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
 }
 
 /** Current off-chain AFIT balance (the materialized counter; 0 if none). */
@@ -88,9 +120,10 @@ async function reconcileBalance(db, user) {
 
 /**
  * Credit an off-chain AFIT challenge reward to a user — idempotent per
- * (user, challenge) and bounded by the per-user daily cap.
+ * (user, challenge), bounded by the per-user daily cap AND the optional GLOBAL
+ * weekly emission budget (treasury protection).
  * @param {object} db
- * @param {object} params { user, challengeId, amount, at?, dailyCap? }
+ * @param {object} params { user, challengeId, amount, at?, dailyCap?, weeklyBudget? }
  * @returns {Promise<{ok, credited, capped?, balance, ref?, reason?}>}
  */
 async function creditAfitReward(db, params) {
@@ -101,11 +134,19 @@ async function creditAfitReward(db, params) {
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
 	if (dayKey(at) === null) return { ok: false, reason: 'invalid at timestamp' };
 
-	// Per-user daily cap — excludes this challenge's own row so a retry re-credits
+	// Per-user daily room — excludes this challenge's own row so a retry re-credits
 	// the SAME amount (idempotent) rather than being double-counted against room.
-	const already = await arenaEmittedOn(db, user, at, challengeId);
-	const room = Math.max(0, dailyCap - already);
-	const credited = Math.min(Number(amount), room);
+	const dailyAlready = await arenaEmittedOn(db, user, at, challengeId);
+	const dailyRoom = Math.max(0, dailyCap - dailyAlready);
+	// Optional GLOBAL weekly emission budget across all users (treasury protection).
+	// 0 / undefined = disabled (per-user cap only). Same own-row exclusion keeps it
+	// idempotent on retry while still counting other winners in the same run.
+	let weeklyRoom = Infinity;
+	if (Number.isFinite(params.weeklyBudget) && params.weeklyBudget > 0) {
+		const weekAlready = await arenaEmittedWeek(db, at, user, challengeId);
+		weeklyRoom = Math.max(0, params.weeklyBudget - weekAlready);
+	}
+	const credited = Math.min(Number(amount), dailyRoom, weeklyRoom);
 	if (credited <= 0) {
 		return { ok: false, capped: true, credited: 0, balance: await balanceOf(db, user) };
 	}
@@ -135,8 +176,10 @@ module.exports = {
 	ARENA_ACTIVITY_PREFIX,
 	DEFAULT_DAILY_CAP,
 	activityFor,
+	weekBucket,
 	balanceOf,
 	arenaEmittedOn,
+	arenaEmittedWeek,
 	reconcileBalance,
 	creditAfitReward,
 };
