@@ -57,6 +57,12 @@ function registerArenaRoutes(app, getDb, opts = {}) {
 		} catch (err) { fail(res, 'arena_merits', err); }
 	});
 
+	app.get('/arena/badges/:user', ...mw, async (req, res) => {
+		try {
+			res.send(await arenaApi.getBadges(getDb(), req.params.user, { limit: intOr(req.query.limit) }));
+		} catch (err) { fail(res, 'arena_badges', err); }
+	});
+
 	app.get('/arena/shop', ...mw, async (req, res) => {
 		try {
 			res.send(await arenaApi.getShop(getDb(), { inStockOnly: req.query.inStockOnly === 'true' }));

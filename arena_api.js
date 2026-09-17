@@ -40,6 +40,7 @@ const COLLECTIONS = {
 	SHOP: 'rewards_shop',
 	POOLS: 'pools',
 	EVENTS: 'arena_events',
+	RESOLUTIONS: 'challenge_resolutions',
 };
 
 // The notification event types clients subscribe to (§9).
@@ -117,6 +118,66 @@ async function getMerits(db, user, opts = {}) {
 	const balance = (bal && Number.isFinite(bal.balance)) ? bal.balance : rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };
+}
+
+/**
+ * Every collectible badge a user has EARNED across challenges, newest first —
+ * derived from their settled participant results (result.reward.badges) and
+ * enriched with each challenge's title/art/type for a profile "badges" showcase.
+ * Public read; a user with no settled badges returns an empty list, not an error.
+ * One entry per (challenge, badge) so a challenge awarding several badges expands.
+ *
+ * `count` is the TOTAL earned; `badges` is a newest-first page bounded by
+ * pageLimit(opts.limit) — so count > badges.length signals a truncated page.
+ *
+ * PRIVACY: badges from NON-PUBLIC (private/community) challenges are excluded —
+ * this endpoint is keyed on a public, guessable username, so surfacing a
+ * non-public challenge's title/id here would both leak the browse surface's
+ * hidden data and let a caller pivot to getChallenge by that id. A missing
+ * challenge doc (unindexed/deleted) has no title/visibility to leak, so it is
+ * kept with the challenge_id as its title.
+ */
+async function getBadges(db, user, opts = {}) {
+	const u = scalar(user);
+	if (!u) return { user, count: 0, badges: [] };
+	const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ entity: u }).toArray();
+	// Keep only settled results that actually granted at least one badge.
+	const earned = parts.filter((p) => p && p.result && p.result.reward
+		&& Array.isArray(p.result.reward.badges) && p.result.reward.badges.length > 0);
+	if (!earned.length) return { user, count: 0, badges: [] };
+
+	// Enrich in TWO batched queries (not a findOne per challenge — this is a public
+	// endpoint): the challenge (title/art/type) and the settlement time (from the
+	// resolution marker; challenge window end as fallback), keyed by challenge id.
+	const ids = [...new Set(earned.map((p) => p.challenge_id))];
+	const challenges = await db.collection(COLLECTIONS.CHALLENGES).find({ id: { $in: ids } }).toArray();
+	const chById = new Map(challenges.map((c) => [c.id, c]));
+	const resolutions = await db.collection(COLLECTIONS.RESOLUTIONS).find({ challenge_id: { $in: ids } }).toArray();
+	const atById = new Map(resolutions.filter((r) => r && r.at).map((r) => [r.challenge_id, r.at]));
+
+	const badges = [];
+	for (const p of earned) {
+		const ch = chById.get(p.challenge_id) || null;
+		// PRIVACY: skip a confirmed non-public challenge (see header). A missing
+		// challenge has no title/visibility to leak, so it is kept.
+		if (ch && ch.visibility && ch.visibility !== 'public') continue;
+		const at = atById.get(p.challenge_id) || (ch && ch.window && ch.window.end) || null;
+		for (const b of p.result.reward.badges) {
+			if (typeof b !== 'string' || !b.trim()) continue;
+			badges.push({
+				badge: b.trim(),
+				challenge_id: p.challenge_id,
+				title: ch ? (ch.title || ch.id) : p.challenge_id,
+				art: ch ? (ch.art || null) : null,
+				type: ch ? (ch.type || null) : null,
+				rank: (p.result.rank != null) ? p.result.rank : null,
+				at,
+			});
+		}
+	}
+	// Newest first (ISO timestamps sort lexicographically); undated rows sink last.
+	badges.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+	return { user, count: badges.length, badges: badges.slice(0, pageLimit(opts.limit)) };
 }
 
 /** The rewards-shop catalog (optionally only in-stock items). */
@@ -265,6 +326,7 @@ module.exports = {
 	getChallenge,
 	getStandings,
 	getMerits,
+	getBadges,
 	getShop,
 	getPool,
 	emitEvent,
