@@ -110,6 +110,61 @@ describe('arena_api read models', () => {
     expect(await api.getBadges(db, 'carol')).toEqual({ user: 'carol', count: 0, badges: [] });
   });
 
+  test('getBadges EXCLUDES badges from non-public (private/community) challenges', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'pub', title: 'Public Cup', type: 'liveops', visibility: 'public', window: { end: '2026-08-20T00:00:00Z' } },
+      { id: 'prv', title: 'Secret League', type: 'duel', visibility: 'private', window: { end: '2026-08-21T00:00:00Z' } },
+      { id: 'com', title: 'Community Brawl', type: 'brawl', visibility: 'community', window: { end: '2026-08-22T00:00:00Z' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'pub', entity: 'alice', result: { rank: 1, reward: { badges: ['Public Winner'] } } },
+      { challenge_id: 'prv', entity: 'alice', result: { rank: 1, reward: { badges: ['Secret Winner'] } } },
+      { challenge_id: 'com', entity: 'alice', result: { rank: 1, reward: { badges: ['Community Winner'] } } },
+    ]);
+    const r = await api.getBadges(db, 'alice');
+    expect(r.count).toBe(1);
+    expect(r.badges.map((b) => b.badge)).toEqual(['Public Winner']);
+    // no private/community title, id, or badge name leaks in the response
+    expect(JSON.stringify(r.badges)).not.toMatch(/Secret|Community|prv|com/);
+  });
+
+  test('getBadges: count is the TOTAL earned; badges is a newest-first page (limit)', async () => {
+    const db = createMockDb();
+    const challenges = [];
+    const parts = [];
+    for (let i = 0; i < 4; i++) {
+      challenges.push({ id: 'c' + i, title: 'C' + i, type: 'liveops', visibility: 'public', window: { end: `2026-08-0${i + 1}T00:00:00Z` } });
+      parts.push({ challenge_id: 'c' + i, entity: 'alice', result: { rank: 1, reward: { badges: ['B' + i] } } });
+    }
+    db.collection('challenges').__seed(challenges);
+    db.collection('challenge_participants').__seed(parts);
+    const r = await api.getBadges(db, 'alice', { limit: 2 });
+    expect(r.count).toBe(4);          // total earned, not the page length
+    expect(r.badges).toHaveLength(2); // capped page
+    expect(r.badges.map((b) => b.badge)).toEqual(['B3', 'B2']); // newest first
+  });
+
+  test('getBadges enrichment fallbacks + badge sanitization', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'wf', title: 'Window Fallback', type: 'liveops', visibility: 'public', window: { end: '2026-08-15T00:00:00Z' } }, // no resolution → at = window.end
+      { id: 'nd', title: 'No Date', type: 'duel', visibility: 'public' }, // no window, no resolution → at = null
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'wf', entity: 'alice', result: { rank: 1, reward: { badges: ['Dated', 42, '  ', null] } } }, // non-string/blank dropped
+      { challenge_id: 'nd', entity: 'alice', result: { rank: 2, reward: { badges: ['Undated'] } } },
+      { challenge_id: 'gone', entity: 'alice', result: { rank: 3, reward: { badges: ['Orphan'] } } }, // challenge doc missing
+    ]);
+    const r = await api.getBadges(db, 'alice');
+    expect(r.count).toBe(3); // Dated + Undated + Orphan; 42/'  '/null dropped
+    expect(r.badges.find((b) => b.badge === 'Dated').at).toBe('2026-08-15T00:00:00Z'); // window.end fallback
+    expect(r.badges.find((b) => b.badge === 'Orphan')).toMatchObject({ title: 'gone', art: null, type: null }); // missing challenge
+    expect(r.badges[0].badge).toBe('Dated'); // only dated row sorts first (newest)
+    expect(r.badges.findIndex((b) => b.badge === 'Undated')).toBeGreaterThan(0); // undated rows sink
+    expect(r.badges.findIndex((b) => b.badge === 'Orphan')).toBeGreaterThan(0);
+  });
+
   test('getShop lists items and can filter to in-stock', async () => {
     const db = createMockDb();
     db.collection('rewards_shop').__seed([
