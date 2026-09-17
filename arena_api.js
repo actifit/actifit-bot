@@ -40,6 +40,7 @@ const COLLECTIONS = {
 	SHOP: 'rewards_shop',
 	POOLS: 'pools',
 	EVENTS: 'arena_events',
+	RESOLUTIONS: 'challenge_resolutions',
 };
 
 // The notification event types clients subscribe to (§9).
@@ -117,6 +118,55 @@ async function getMerits(db, user, opts = {}) {
 	const balance = (bal && Number.isFinite(bal.balance)) ? bal.balance : rows.reduce((s, r) => s + (Number(r.delta) || 0), 0);
 	const sorted = rows.slice().sort((a, b) => String(b.at).localeCompare(String(a.at)));
 	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };
+}
+
+/**
+ * Every collectible badge a user has EARNED across challenges, newest first —
+ * derived from their settled participant results (result.reward.badges) and
+ * enriched with each challenge's title/art/type for a profile "badges" showcase.
+ * Public read; a user with no settled badges returns an empty list, not an error.
+ * One entry per (challenge, badge) so a challenge awarding several badges expands.
+ */
+async function getBadges(db, user, opts = {}) {
+	const u = scalar(user);
+	if (!u) return { user, count: 0, badges: [] };
+	const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ entity: u }).toArray();
+	// Keep only settled results that actually granted at least one badge.
+	const earned = parts.filter((p) => p && p.result && p.result.reward
+		&& Array.isArray(p.result.reward.badges) && p.result.reward.badges.length > 0);
+	if (!earned.length) return { user, count: 0, badges: [] };
+
+	// Enrich per distinct challenge (small N per user): title/art/type + the
+	// settlement time (from the resolution marker; challenge window end as fallback).
+	const chById = new Map();
+	const atById = new Map();
+	for (const id of new Set(earned.map((p) => p.challenge_id))) {
+		const ch = await db.collection(COLLECTIONS.CHALLENGES).findOne({ id });
+		if (ch) chById.set(id, ch);
+		const res = await db.collection(COLLECTIONS.RESOLUTIONS).findOne({ challenge_id: id });
+		if (res && res.at) atById.set(id, res.at);
+	}
+
+	const badges = [];
+	for (const p of earned) {
+		const ch = chById.get(p.challenge_id) || null;
+		const at = atById.get(p.challenge_id) || (ch && ch.window && ch.window.end) || null;
+		for (const b of p.result.reward.badges) {
+			if (typeof b !== 'string' || !b.trim()) continue;
+			badges.push({
+				badge: b.trim(),
+				challenge_id: p.challenge_id,
+				title: ch ? (ch.title || ch.id) : p.challenge_id,
+				art: ch ? (ch.art || null) : null,
+				type: ch ? (ch.type || null) : null,
+				rank: (p.result.rank != null) ? p.result.rank : null,
+				at,
+			});
+		}
+	}
+	// Newest first (ISO timestamps sort lexicographically); undated rows sink last.
+	badges.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+	return { user, count: badges.length, badges: badges.slice(0, pageLimit(opts.limit)) };
 }
 
 /** The rewards-shop catalog (optionally only in-stock items). */
@@ -265,6 +315,7 @@ module.exports = {
 	getChallenge,
 	getStandings,
 	getMerits,
+	getBadges,
 	getShop,
 	getPool,
 	emitEvent,

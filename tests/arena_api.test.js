@@ -74,6 +74,42 @@ describe('arena_api read models', () => {
     expect(m.ledger[0].delta).toBe(-30); // newest first
   });
 
+  test('getBadges lists a user\'s earned badges across challenges, newest first, enriched', async () => {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'cA', title: 'Step League', type: 'league_fixture', art: 'step-league', window: { end: '2026-08-20T00:00:00Z' } },
+      { id: 'cB', title: 'Weekend Warrior', type: 'liveops', art: 'weekend-warrior', window: { end: '2026-08-25T00:00:00Z' } },
+      { id: 'cC', type: 'duel', window: { end: '2026-08-10T00:00:00Z' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'cA', entity: 'alice', result: { rank: 1, reward: { afit: 100, badges: ['Champion'] } } },
+      { challenge_id: 'cB', entity: 'alice', result: { rank: 2, reward: { afit: 40, badges: ['Weekend Hero', 'Streak'] } } },
+      { challenge_id: 'cC', entity: 'alice', result: { rank: 5, reward: { afit: 0, badges: [] } } }, // no badge → excluded
+      { challenge_id: 'cA', entity: 'bob', result: { rank: 2, reward: { badges: ['Runner-up'] } } }, // other user
+    ]);
+    db.collection('challenge_resolutions').__seed([
+      { challenge_id: 'cA', at: '2026-08-20T01:00:00Z' },
+      { challenge_id: 'cB', at: '2026-08-25T01:00:00Z' },
+    ]);
+
+    const r = await api.getBadges(db, 'alice');
+    expect(r.user).toBe('alice');
+    expect(r.count).toBe(3); // Champion + Weekend Hero + Streak (cC awards none)
+    // newest first: cB (08-25) before cA (08-20); a multi-badge challenge expands
+    expect(r.badges.map((b) => b.badge)).toEqual(['Weekend Hero', 'Streak', 'Champion']);
+    expect(r.badges[0]).toMatchObject({ badge: 'Weekend Hero', challenge_id: 'cB', title: 'Weekend Warrior', art: 'weekend-warrior', type: 'liveops', rank: 2 });
+    // never leaks another user's badge
+    expect(r.badges.some((b) => b.badge === 'Runner-up')).toBe(false);
+  });
+
+  test('getBadges returns an empty list (not an error) for a user with no settled badges', async () => {
+    const db = createMockDb();
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'cX', entity: 'carol', result: { rank: 3, reward: { afit: 10, badges: [] } } },
+    ]);
+    expect(await api.getBadges(db, 'carol')).toEqual({ user: 'carol', count: 0, badges: [] });
+  });
+
   test('getShop lists items and can filter to in-stock', async () => {
     const db = createMockDb();
     db.collection('rewards_shop').__seed([
