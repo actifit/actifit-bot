@@ -65,3 +65,59 @@ describe('arena_rewards.prizesForStandings', () => {
 		}
 	});
 });
+
+describe('arena_rewards.badgePrizes (user-created badge awards)', () => {
+	const badgeCh = (rule) => ({ id: 'ch_b', origin_tier: 'friendly', rewards: { badges: ['October Sprinter'] }, badge_rule: rule });
+
+	test('no badge on the challenge → no badge prizes', () => {
+		expect(rewards.badgePrizes({ id: 'x', origin_tier: 'friendly', rewards: { afit: 500 } }, standings(5))).toEqual([]);
+		expect(rewards.badgePrizes({ id: 'x', rewards: { badges: [] } }, standings(5))).toEqual([]);
+	});
+
+	test('winner (default) → the badge goes to rank 1 only', () => {
+		expect(rewards.badgePrizes(badgeCh('winner'), standings(5))).toEqual([{ rank: 1, badges: ['October Sprinter'] }]);
+		// missing/invalid rule falls back to winner
+		expect(rewards.badgePrizes({ ...badgeCh(undefined) }, standings(5))).toEqual([{ rank: 1, badges: ['October Sprinter'] }]);
+		expect(rewards.badgePrizes({ ...badgeCh('bogus') }, standings(5))).toEqual([{ rank: 1, badges: ['October Sprinter'] }]);
+	});
+
+	test('top3 → ranks 1-3 earn the badge', () => {
+		expect(rewards.badgePrizes(badgeCh('top3'), standings(5)).map((p) => p.rank)).toEqual([1, 2, 3]);
+	});
+
+	test('all → every finisher with a positive score earns it (zero-score excluded)', () => {
+		const s = [
+			{ entity: 'a', rank: 1, score_verified: 100 },
+			{ entity: 'b', rank: 2, score_verified: 50 },
+			{ entity: 'c', rank: 3, score_verified: 0 }, // did nothing → no badge
+		];
+		expect(rewards.badgePrizes(badgeCh('all'), s).map((p) => p.rank)).toEqual([1, 2]);
+	});
+
+	test('trims + drops non-string/blank badge names', () => {
+		const ch = { id: 'ch', origin_tier: 'friendly', rewards: { badges: ['  Champ  ', 42, '  ', null] }, badge_rule: 'winner' };
+		expect(rewards.badgePrizes(ch, standings(2))).toEqual([{ rank: 1, badges: ['Champ'] }]);
+	});
+});
+
+describe('arena_rewards.withBadgePrizes (merge into the AFIT prize table)', () => {
+	test('a badge-only contest (no AFIT prizes) yields badge-only prize rows', () => {
+		const ch = { id: 'ch', origin_tier: 'friendly', rewards: { badges: ['Winner'] }, badge_rule: 'winner' };
+		expect(rewards.withBadgePrizes([], ch, standings(3))).toEqual([{ rank: 1, badges: ['Winner'] }]);
+	});
+
+	test('badges merge onto the SAME rank as an AFIT prize (rank keeps both)', () => {
+		const ch = { id: 'ch', origin_tier: 'friendly', rewards: { badges: ['Ace'] }, badge_rule: 'top3' };
+		const afitPrizes = [{ rank: 1, afit: 100 }, { rank: 2, afit: 60 }];
+		const merged = rewards.withBadgePrizes(afitPrizes, ch, standings(3));
+		const byRank = Object.fromEntries(merged.map((p) => [p.rank, p]));
+		expect(byRank[1]).toEqual({ rank: 1, afit: 100, badges: ['Ace'] });
+		expect(byRank[2]).toEqual({ rank: 2, afit: 60, badges: ['Ace'] });
+		expect(byRank[3]).toEqual({ rank: 3, badges: ['Ace'] }); // badge-only rank
+	});
+
+	test('no badge → the AFIT prize table passes through unchanged', () => {
+		const afitPrizes = [{ rank: 1, afit: 100 }];
+		expect(rewards.withBadgePrizes(afitPrizes, { id: 'x', rewards: { afit: 1 } }, standings(2))).toEqual(afitPrizes);
+	});
+});

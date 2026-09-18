@@ -243,6 +243,10 @@ async function resolveDueChallenges(db, opts = {}) {
 				} else {
 					prizes = arenaRewards.prizesForStandings(ch, standings);
 				}
+				// Award the creator-defined badge(s) to the finishers named by the
+				// challenge's badge_rule (winner / top3 / all) — the step that turns a
+				// badge-only contest's rewards.badges into an actual grant at settlement.
+				prizes = arenaRewards.withBadgePrizes(prizes, ch, standings);
 				// Settlement credits off-chain AFIT, records participant results + an
 				// idempotent resolution marker, and returns the settle payload.
 				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, poolId, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
@@ -254,7 +258,7 @@ async function resolveDueChallenges(db, opts = {}) {
 					((resolution.settlePayload && resolution.settlePayload.standings) || []).map((s) => [s.entity, s.rank])
 				);
 				for (const rw of (resolution.settlePayload && resolution.settlePayload.rewards) || []) {
-					if (rw && rw.entity && Number(rw.afit) > 0) {
+					if (rw && rw.entity && (Number(rw.afit) > 0 || (Array.isArray(rw.badges) && rw.badges.length > 0))) {
 						// One bad event must not drop the rest (or mark the whole
 						// resolution failed after AFIT was already credited).
 						try {

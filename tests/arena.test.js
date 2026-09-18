@@ -113,6 +113,19 @@ describe('arena.indexArenaOp — lifecycle', () => {
     expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
   });
 
+  test('a valid badge_rule is stored on the challenge', async () => {
+    const res = await create({ rewards: { badges: ['October Sprinter'] }, badge_rule: 'top3' });
+    expect(res.ok).toBe(true);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toMatchObject({ badge_rule: 'top3' });
+  });
+
+  test('an invalid badge_rule is rejected (not indexed)', async () => {
+    const res = await create({ rewards: { badges: ['X'] }, badge_rule: 'everyone-forever' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/badge_rule/);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
   test('join records the signer as the participant', async () => {
     await create();
     const res = await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'bob'));
