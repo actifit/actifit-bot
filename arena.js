@@ -238,6 +238,12 @@ function validateArenaOp(op) {
 			if (op.badge_rule !== undefined && !BADGE_RULES.includes(op.badge_rule)) {
 				errors.push(`challenge_create: invalid badge_rule "${op.badge_rule}"`);
 			}
+			// Bound the client-supplied badge reward — a short list of short names
+			// (the whole rewards object is stored verbatim, so cap it here).
+			if (op.rewards && Array.isArray(op.rewards.badges)) {
+				if (op.rewards.badges.length > 5) errors.push('challenge_create: at most 5 badges');
+				if (op.rewards.badges.some((b) => typeof b === 'string' && b.length > 60)) errors.push('challenge_create: badge name too long (max 60)');
+			}
 			break;
 		}
 		case OPS.CHALLENGE_UPDATE: {

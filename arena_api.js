@@ -170,6 +170,9 @@ async function getBadges(db, user, opts = {}) {
 				title: ch ? (ch.title || ch.id) : p.challenge_id,
 				art: ch ? (ch.art || null) : null,
 				type: ch ? (ch.type || null) : null,
+				// Provenance so a client can label a community/user-created badge as
+				// unofficial (a badge name is free text — don't let it pass as official).
+				origin_tier: ch ? (ch.origin_tier || null) : null,
 				rank: (p.result.rank != null) ? p.result.rank : null,
 				at,
 			});

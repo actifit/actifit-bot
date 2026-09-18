@@ -85,6 +85,15 @@ describe('arena_rewards.badgePrizes (user-created badge awards)', () => {
 		expect(rewards.badgePrizes(badgeCh('top3'), standings(5)).map((p) => p.rank)).toEqual([1, 2, 3]);
 	});
 
+	test('winner/top3 also require a positive score — a zero-effort finisher earns nothing', () => {
+		const idle = [{ entity: 'idle', rank: 1, score_verified: 0 }, { entity: 'b', rank: 2, score_verified: 0 }];
+		expect(rewards.badgePrizes(badgeCh('winner'), idle)).toEqual([]);
+		expect(rewards.badgePrizes(badgeCh('top3'), idle)).toEqual([]);
+		// a positive rank-1 still wins under winner; top3 skips the zero-score ranks
+		expect(rewards.badgePrizes(badgeCh('winner'), [{ entity: 'a', rank: 1, score_verified: 5 }])).toEqual([{ rank: 1, badges: ['October Sprinter'] }]);
+		expect(rewards.badgePrizes(badgeCh('top3'), [{ entity: 'a', rank: 1, score_verified: 5 }, { entity: 'z', rank: 2, score_verified: 0 }]).map((p) => p.rank)).toEqual([1]);
+	});
+
 	test('all → every finisher with a positive score earns it (zero-score excluded)', () => {
 		const s = [
 			{ entity: 'a', rank: 1, score_verified: 100 },

@@ -264,7 +264,7 @@ async function resolveDueChallenges(db, opts = {}) {
 						try {
 							await arenaApi.emitEvent(db, {
 								type: 'results_settled', user: rw.entity, challenge_id: ch.id,
-								data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, afit: rw.afit }, at: asOf,
+								data: { rank: rankByEntity.has(rw.entity) ? rankByEntity.get(rw.entity) : null, afit: rw.afit, badges: Array.isArray(rw.badges) ? rw.badges : [] }, at: asOf,
 							});
 						} catch (e) {
 							log(`arena resolve: event for ${rw.entity} on ${ch.id} failed: ${e && e.message}`);

@@ -126,6 +126,12 @@ describe('arena.indexArenaOp — lifecycle', () => {
     expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
   });
 
+  test('an over-long or over-count badge reward is rejected', async () => {
+    expect((await create({ rewards: { badges: ['x'.repeat(61)] } })).ok).toBe(false);
+    expect((await create({ rewards: { badges: ['a', 'b', 'c', 'd', 'e', 'f'] } })).ok).toBe(false);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
   test('join records the signer as the participant', async () => {
     await create();
     const res = await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'bob'));

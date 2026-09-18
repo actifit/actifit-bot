@@ -117,15 +117,17 @@ function badgePrizes(challenge, standings) {
 	const badges = raw.filter((b) => typeof b === 'string' && b.trim()).map((b) => b.trim());
 	if (!badges.length) return [];
 	const rule = BADGE_RULES.includes(challenge && challenge.badge_rule) ? challenge.badge_rule : 'winner';
+	// Only finishers with a POSITIVE VERIFIED score can earn a badge — no reward for
+	// zero effort (matches prizesForStandings and blocks a vanity-badge farm via an
+	// empty alt), applied consistently to winner / top3 / all.
+	const scored = (standings || []).filter((r) => Number(r.score_verified) > 0);
 	let ranks;
-	if (rule === 'all') {
-		ranks = (standings || [])
-			.filter((r) => Number(r.score_verified) > 0 || Number(r.score) > 0)
-			.map((r) => r.rank);
-	} else if (rule === 'top3') {
-		ranks = [1, 2, 3];
-	} else {
-		ranks = [1];
+	if (rule === 'top3') {
+		ranks = scored.filter((r) => r.rank <= 3).map((r) => r.rank);
+	} else if (rule === 'all') {
+		ranks = scored.map((r) => r.rank);
+	} else { // winner
+		ranks = scored.filter((r) => r.rank === 1).map((r) => r.rank);
 	}
 	return [...new Set(ranks)].filter((r) => Number.isFinite(r)).map((rank) => ({ rank, badges: [...badges] }));
 }
