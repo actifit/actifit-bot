@@ -70,6 +70,9 @@ const ENTRY_MODES = ['free', 'activity_gated'];
 const GATE_ALLOWED_KEYS = ['min_activity'];
 // I6 — outcomes are decided by verified effort/goal, never chance.
 const SCORING_RULES = ['max', 'threshold', 'head_to_head'];
+// Who earns a user-created challenge's named badge at settlement (kept in sync
+// with arena_rewards.BADGE_RULES, which applies it).
+const BADGE_RULES = ['winner', 'top3', 'all'];
 
 // Highest `op.v` (§3.10) this build understands; newer major versions are rejected.
 const SUPPORTED_OP_VERSION = 1;
@@ -230,6 +233,16 @@ function validateArenaOp(op) {
 			// I6 — outcome decided by verified effort/goal, never chance.
 			if (!SCORING_RULES.includes(scoring.rule)) {
 				errors.push(`challenge_create: scoring.rule "${scoring.rule}" not allowed (invariant I6)`);
+			}
+			// Optional badge award rule (who earns a named badge at settlement).
+			if (op.badge_rule !== undefined && !BADGE_RULES.includes(op.badge_rule)) {
+				errors.push(`challenge_create: invalid badge_rule "${op.badge_rule}"`);
+			}
+			// Bound the client-supplied badge reward — a short list of short names
+			// (the whole rewards object is stored verbatim, so cap it here).
+			if (op.rewards && Array.isArray(op.rewards.badges)) {
+				if (op.rewards.badges.length > 5) errors.push('challenge_create: at most 5 badges');
+				if (op.rewards.badges.some((b) => typeof b === 'string' && b.length > 60)) errors.push('challenge_create: badge name too long (max 60)');
 			}
 			break;
 		}
@@ -395,6 +408,7 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				entry: buildEntry(op.entry),
 				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
+				badge_rule: op.badge_rule || null,
 				pool_ref: poolRef,
 				parent_id: op.parent_id || null,
 				// Shared presentation copy (Trello #182) — display-only, bounded.

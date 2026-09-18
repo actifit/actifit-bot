@@ -100,11 +100,64 @@ function poolPrizes(budget) {
 		.filter((p) => p.afit > 0);
 }
 
+// Which finishers earn a user-created challenge's badge, by the creator's rule.
+const BADGE_RULES = ['winner', 'top3', 'all'];
+
+/**
+ * Rank-keyed BADGE prizes for a challenge that awards a named badge
+ * (challenge.rewards.badges), assigned to finishers per challenge.badge_rule:
+ *   - 'winner' (default): rank 1 only
+ *   - 'top3': ranks 1-3
+ *   - 'all': every finisher with a positive verified score
+ * Returns [] when the challenge awards no badge. Pure.
+ * @returns {Array<{rank, badges:string[]}>}
+ */
+function badgePrizes(challenge, standings) {
+	const raw = (challenge && challenge.rewards && Array.isArray(challenge.rewards.badges)) ? challenge.rewards.badges : [];
+	const badges = raw.filter((b) => typeof b === 'string' && b.trim()).map((b) => b.trim());
+	if (!badges.length) return [];
+	const rule = BADGE_RULES.includes(challenge && challenge.badge_rule) ? challenge.badge_rule : 'winner';
+	// Only finishers with a POSITIVE VERIFIED score can earn a badge — no reward for
+	// zero effort (matches prizesForStandings and blocks a vanity-badge farm via an
+	// empty alt), applied consistently to winner / top3 / all.
+	const scored = (standings || []).filter((r) => Number(r.score_verified) > 0);
+	let ranks;
+	if (rule === 'top3') {
+		ranks = scored.filter((r) => r.rank <= 3).map((r) => r.rank);
+	} else if (rule === 'all') {
+		ranks = scored.map((r) => r.rank);
+	} else { // winner
+		ranks = scored.filter((r) => r.rank === 1).map((r) => r.rank);
+	}
+	return [...new Set(ranks)].filter((r) => Number.isFinite(r)).map((rank) => ({ rank, badges: [...badges] }));
+}
+
+/**
+ * Merge a challenge's badge prizes into an existing AFIT prize table by rank, so
+ * a rank can carry BOTH its AFIT prize and the badge. Ranks that earn only a
+ * badge (a badge-only contest has no AFIT prizes) are added as badge-only rows.
+ * Returns the combined [{rank, afit?, badges?}] table for resolveChallenge.
+ */
+function withBadgePrizes(prizes, challenge, standings) {
+	const bp = badgePrizes(challenge, standings);
+	if (!bp.length) return prizes || [];
+	const byRank = new Map((prizes || []).map((p) => [p.rank, { ...p }]));
+	for (const b of bp) {
+		const row = byRank.get(b.rank) || { rank: b.rank };
+		row.badges = [...(row.badges || []), ...b.badges];
+		byRank.set(b.rank, row);
+	}
+	return [...byRank.values()];
+}
+
 module.exports = {
 	SCHEDULES,
 	POOL_SPLIT,
+	BADGE_RULES,
 	scheduleFor,
 	afitForRank,
 	prizesForStandings,
 	poolPrizes,
+	badgePrizes,
+	withBadgePrizes,
 };

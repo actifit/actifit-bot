@@ -5,6 +5,7 @@
 const { createMockDb } = require('./helpers/mock-db');
 const pools = require('../arena_pools');
 const afit = require('../arena_afit');
+const rewards = require('../arena_rewards');
 
 const AT = '2026-08-26T10:00:00Z';
 
@@ -86,6 +87,28 @@ describe('arena_pools.resolveChallenge', () => {
     const a = await db.collection('challenge_participants').findOne({ entity: 'a' });
     expect(a.result).toMatchObject({ rank: 1, reward: { afit: 100, badges: ['champ'], reward_ref: 'arena_challenge:ch1' } });
     expect((await db.collection('pools').findOne({ id: 'pool1' })).paid).toBe(120);
+  });
+
+  test('END-TO-END: a user-created badge contest awards the badge to the winner (no AFIT, no pool)', async () => {
+    const db = createMockDb();
+    const ch = { id: 'chb', origin_tier: 'friendly', rewards: { badges: ['October Sprinter'] }, badge_rule: 'winner' };
+    db.collection('challenges').__seed([ch]);
+    seedParts(db, 'chb', ['alice', 'bob']);
+    const standings = [{ entity: 'alice', rank: 1, score_verified: 500 }, { entity: 'bob', rank: 2, score_verified: 300 }];
+    // The settlement job builds prizes this way for a badge-only (pool-less) contest.
+    const prizes = rewards.withBadgePrizes([], ch, standings);
+    expect(prizes).toEqual([{ rank: 1, badges: ['October Sprinter'] }]);
+
+    const res = await pools.resolveChallenge(db, { challengeId: 'chb', poolId: null, standings, prizes, asOf: AT });
+    expect(res.ok).toBe(true);
+    const alice = await db.collection('challenge_participants').findOne({ entity: 'alice' });
+    expect(alice.result).toMatchObject({ rank: 1, reward: { afit: 0, badges: ['October Sprinter'] } });
+    // rank 2 earns nothing under the 'winner' rule; no treasury AFIT was minted
+    const bob = await db.collection('challenge_participants').findOne({ entity: 'bob' });
+    expect(bob.result).toBeUndefined();
+    expect(await afit.balanceOf(db, 'alice')).toBe(0);
+    // the badge rides into the on-chain settle payload for @actifit to broadcast
+    expect(res.settlePayload.rewards).toEqual([{ entity: 'alice', afit: 0, badges: ['October Sprinter'], reward_ref: null }]);
   });
 
   test('is idempotent — re-resolving does not double-credit AFIT or double-pay the pool', async () => {

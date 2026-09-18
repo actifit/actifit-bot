@@ -78,7 +78,7 @@ describe('arena_api read models', () => {
     const db = createMockDb();
     db.collection('challenges').__seed([
       { id: 'cA', title: 'Step League', type: 'league_fixture', art: 'step-league', window: { end: '2026-08-20T00:00:00Z' } },
-      { id: 'cB', title: 'Weekend Warrior', type: 'liveops', art: 'weekend-warrior', window: { end: '2026-08-25T00:00:00Z' } },
+      { id: 'cB', title: 'Weekend Warrior', type: 'liveops', art: 'weekend-warrior', origin_tier: 'friendly', window: { end: '2026-08-25T00:00:00Z' } },
       { id: 'cC', type: 'duel', window: { end: '2026-08-10T00:00:00Z' } },
     ]);
     db.collection('challenge_participants').__seed([
@@ -97,7 +97,7 @@ describe('arena_api read models', () => {
     expect(r.count).toBe(3); // Champion + Weekend Hero + Streak (cC awards none)
     // newest first: cB (08-25) before cA (08-20); a multi-badge challenge expands
     expect(r.badges.map((b) => b.badge)).toEqual(['Weekend Hero', 'Streak', 'Champion']);
-    expect(r.badges[0]).toMatchObject({ badge: 'Weekend Hero', challenge_id: 'cB', title: 'Weekend Warrior', art: 'weekend-warrior', type: 'liveops', rank: 2 });
+    expect(r.badges[0]).toMatchObject({ badge: 'Weekend Hero', challenge_id: 'cB', title: 'Weekend Warrior', art: 'weekend-warrior', type: 'liveops', origin_tier: 'friendly', rank: 2 });
     // never leaks another user's badge
     expect(r.badges.some((b) => b.badge === 'Runner-up')).toBe(false);
   });
