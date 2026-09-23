@@ -23,7 +23,7 @@
  * `standings` read models.
  *
  * Load-time safe: requires only the config/Firebase-free arena libs. The caller
- * (app.js) owns scheduling + the single-instance (BOT_THREAD==MAIN) guard.
+ * (app.js) owns scheduling + the single-instance (BOT_THREAD=='SECOND_API') guard.
  */
 
 'use strict';

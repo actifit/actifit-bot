@@ -201,11 +201,14 @@ client.connect()
 
 	  // Challenge Engine (Trello #171 / F1 #175): tail actifit_arena ops from
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
-	  // Runs on the MAIN process ONLY: the tailer is single-instance (two would
-	  // double-poll), matching the other single-instance jobs (BOT_THREAD=='MAIN').
+	  // Runs on the SECOND_API process ONLY: the tailer is single-instance (two
+	  // would double-poll). SECOND_API is the live singleton marker in this app
+	  // (see disableUserLogin) - MAIN is no longer honoured for singleton work in
+	  // app.js, and BOT_THREAD is unset on both api and Heroku, so a MAIN guard
+	  // would never fire.
 	  // This lets arena_tailer_enabled be set on every instance safely.
 	  try {
-	    if (config.arena_tailer_enabled && process.env.BOT_THREAD == 'MAIN') {
+	    if (config.arena_tailer_enabled && process.env.BOT_THREAD == 'SECOND_API') {
 	      const arenaTailer = require('./arena_tailer');
 	      arenaTailer.startArenaTailer(db, {
 	        nodes: config.alt_hive_nodes,
@@ -1125,9 +1128,9 @@ async function restartApiNode() {
 	}
 }
 
-if (process.env.BOT_THREAD == 'MAIN'){
+if (process.env.BOT_THREAD == 'SECOND_API'){
 	// Challenge Engine (Arena) — periodic aggregation sweep (F2 verify + F3
-	// standings). MAIN-only (single-instance, like the tailer) and config-gated
+	// standings). SECOND_API-only (single-instance, like the tailer) and config-gated
 	// (arena_jobs_enabled, off by default). Reads verified_posts and materializes
 	// challenge_participants.score + the per-challenge standings board. It emits no
 	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
@@ -1154,7 +1157,7 @@ if (process.env.BOT_THREAD == 'MAIN'){
 		let arenaBroadcastOp = null;
 		if (config.posting_key) {
 			// Guard the key parse: a malformed posting_key must NOT crash the whole
-			// MAIN boot — just disable settle/recurrence broadcasts (Merits/results/
+			// api2 boot — just disable settle/recurrence broadcasts (Merits/results/
 			// events still write). Use the whole node list for failover.
 			try {
 				const dhive = require('@hiveio/dhive');
@@ -1194,6 +1197,14 @@ if (process.env.BOT_THREAD == 'MAIN'){
 		});
 		console.log('Arena resolution job scheduled ('+resolveCron+')');
 	}
+}
+
+// Legacy MAIN-gated dyno restarts. BOT_THREAD is not set to 'MAIN' on any
+// app.js process any more (api is unset, api2 is SECOND_API, Heroku is unset),
+// so these do not currently run. Kept as-is and deliberately NOT moved onto
+// SECOND_API: reviving four daily Heroku dyno stops is a separate decision
+// from running the Arena, and the heroku_app_* credentials are live.
+if (process.env.BOT_THREAD == 'MAIN'){
 	let j = schedule.scheduleJob({hour: 0, minute: 20}, function(){
 		restartApiNode();
 	});
