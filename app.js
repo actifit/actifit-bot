@@ -203,8 +203,9 @@ client.connect()
 	  // chain into the index. Config-gated — off unless arena_tailer_enabled is set.
 	  // Runs on the SECOND_API process ONLY: the tailer is single-instance (two
 	  // would double-poll). SECOND_API is the live singleton marker in this app
-	  // (see disableUserLogin) - MAIN is no longer honoured here and BOT_THREAD is
-	  // unset on both api and Heroku, so a MAIN guard would never fire.
+	  // (see disableUserLogin) - MAIN is no longer honoured for singleton work in
+	  // app.js, and BOT_THREAD is unset on both api and Heroku, so a MAIN guard
+	  // would never fire.
 	  // This lets arena_tailer_enabled be set on every instance safely.
 	  try {
 	    if (config.arena_tailer_enabled && process.env.BOT_THREAD == 'SECOND_API') {
@@ -1156,7 +1157,7 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 		let arenaBroadcastOp = null;
 		if (config.posting_key) {
 			// Guard the key parse: a malformed posting_key must NOT crash the whole
-			// MAIN boot — just disable settle/recurrence broadcasts (Merits/results/
+			// api2 boot — just disable settle/recurrence broadcasts (Merits/results/
 			// events still write). Use the whole node list for failover.
 			try {
 				const dhive = require('@hiveio/dhive');
