@@ -86,6 +86,16 @@ create, `/sponsor`, `/score`) and the broadcast of official ops are still to com
 
 ## 3. Seed the default contest set (§7.5)
 
+> 🛑 **ALREADY EXECUTED — 2026-09-23 13:06 UTC. DO NOT RE-RUN THIS STEP.**
+> The six contests were broadcast on-chain as @actifit via `hiveapi.actifit.io`,
+> landing in blocks **110164368, 110164369, 110164371, 110164372, 110164373,
+> 110164374** (MIN = **110164368**). The pre-existing index-only `def_*` rows were
+> deleted afterwards, so `challenges` is empty and ready for the tailer.
+> Re-running `broadcast_arena_contests.js` would mint a SECOND irreversible set of
+> six ops with fresh windows; the ids are fixed, so the tailer indexes whichever
+> lands first and rejects the rest — wasted RC and permanent junk on chain.
+> **Use `arena_tailer_start_block: 110164363` and go straight to §4.**
+
 Makes the Arena feel alive (Weekly Step League, Daily Focus, Season Ladder,
 Weekly Top-N, **Weekend Warrior**, Monthly Live-Ops). Two ways:
 
@@ -144,25 +154,34 @@ rows in staging). The fixed ids make a re-seed a no-op, so re-running is safe.
 
 Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
 
-1. Set `arena_tailer_start_block` to the block to start from (for the on-chain
-   seed, the MIN block the broadcaster printed, or a few earlier). **This is
+1. Set `arena_tailer_start_block` to the block to start from. **For this launch:
+   `110164363`.** It MUST be a JSON **number**, not a quoted string, and MUST be
+   **strictly below** the first op block (110164368): the cursor means *last
+   processed* and the loop resumes at `cursor + 1`, so setting it to exactly the
+   MIN block skips the first contest.
+   ⚠️ **If this key is absent, `0`, or a string, `arena_tailer.js:125` snaps the
+   cursor to the current last-irreversible block and PERSISTS it immediately** —
+   the six ops are then skipped permanently and silently, and adding the key
+   later does NOT help, because a saved cursor always wins. There is no error
+   log; `/arena/challenges` simply stays `[]`. **This is
    honored only on a COLD start** (no saved cursor): the persisted
    `arena_tailer_state` cursor always wins (`arena_tailer.js:123`), so if the
    tailer ran before, **clear that cursor** (`db.arena_tailer_state.deleteMany({})`)
    or it resumes from where it left off and may skip the just-broadcast blocks.
-   (0 is reserved — set an explicit block.) The tailer indexes up to the
+   (0 is reserved — set an explicit block.) Verify unconditionally before
+   restarting: `db.arena_tailer_state.countDocuments()` must be **0**. The tailer indexes up to the
    **last-irreversible** block, not the reversible head, so a start block above
    LIB simply waits.
 2. Set `arena_tailer_enabled: true`. **Safe to set on every instance** — the
-   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:205`), so it
-   can't double-poll even across the 2 servers + Heroku. Just make sure the MAIN
-   process's config has it and gets restarted.
+   tailer only starts on the `BOT_THREAD == 'SECOND_API'` process (api2), so it
+   can't double-poll even across the 2 servers + Heroku. Just make sure **api2**'s
+   `config.json` has it and that process gets restarted.
 3. Restart the process(es). Expect a single `Arena tailer started` log line (on
-   MAIN only), then `arena blk <n> <trx>: <action>` lines as ops land.
+   **api2** only), then `arena blk <n> <trx>: <action>` lines as ops land.
 
 It targets **last-irreversible** blocks (reorg-safe), resumes from a persisted
-cursor (`arena_tailer_state`), and runs on the **single MAIN instance only**
-(the guard at `app.js:205` — two instances would double-poll).
+cursor (`arena_tailer_state`), and runs on the **single SECOND_API instance only**
+(api2 — two instances would double-poll).
 
 Verify: broadcast a test `join` from a throwaway account; confirm a
 `challenge_participants` row appears within a few blocks.
@@ -183,11 +202,19 @@ by a single flag.
    `arena_aggregate_cron` (default `*/15 * * * *`) and `arena_resolve_cron`
    (default `35 * * * *` — deliberately offset from the aggregation ticks).
 2. Restart. Expect `Arena aggregation job scheduled (...)` +
-   `Arena resolution job scheduled (...)` on **MAIN only**.
+   `Arena resolution job scheduled (...)` on **api2** only.
 
-Both jobs sit inside the `process.env.BOT_THREAD == 'MAIN'` block (`app.js:1128`),
-so the flag is **safe to set on every instance** — the 2 servers + Heroku cannot
+Both jobs sit inside the `process.env.BOT_THREAD == 'SECOND_API'` block, so the
+flag is **safe to set on every instance** — the 2 servers + Heroku cannot
 double-run a payout even with identical config.
+
+> ⚠️ **Why SECOND_API and not MAIN.** `MAIN` is no longer honoured by `app.js`:
+> `BOT_THREAD` is **unset** on api.actifit.io, `SECOND_API` on api2, and unset on
+> Heroku, so a `MAIN` guard never fires (verified via `GET /thread_param/` on all
+> three). `SECOND_API` is the live single-instance marker — `disableUserLogin`
+> already uses it for exactly this reason. Do **not** "fix" this by switching to
+> `!= 'SECOND_API'`: that is true on BOTH api and Heroku and would double-credit
+> AFIT. The Arena therefore runs on **api2**.
 
 - **Aggregation** (`aggregateActiveChallenges`) — verify + materialize
   `challenge_participants.score` and the standings board from `verified_posts`.
@@ -238,17 +265,21 @@ Deploy:
 
 Data + flags:
 
-- [ ] Indexes present (step 1)
+- [ ] Indexes present (step 1). NOTE: `token_transactions` already carries
+      `{reward_activity:1}`, `{reward_activity:1,date:1}` and `{user:1,date:-1}`
+      in production (verified live) — the arena credit path is indexed.
 - [ ] Read API responds, including `/arena/badges/<user>` (step 2)
 - [ ] Six `def_*` contests broadcast **on-chain** and indexed with real
       `trx_id`/`block_num` — NOT the index-only seed (step 3)
 - [ ] `arena_tailer_enabled: true` + `arena_tailer_start_block` set, cursor
       cleared if the tailer ever ran (step 4)
-- [ ] Tailer verified: a test `join` from a throwaway account indexes
-- [ ] `arena_jobs_enabled: true`; both jobs logged on MAIN only (step 5)
+- [ ] Tailer verified: `arena_tailer_state.block_num` is ADVANCING and
+      `/arena/challenges` returns 6 (a stalled cursor looks identical to a
+      healthy idle tailer — check the number moves, not just the log line)
+- [ ] `arena_jobs_enabled: true`; both jobs logged on **api2** (SECOND_API) only (step 5)
 - [ ] Emission guards present and non-zero (step 5 table)
-- [ ] One tailer/jobs instance only; `@actifit` RC headroom confirmed
-- [ ] `@actifit` **posting** key in the MAIN process config (settle/recurrence
+- [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
+- [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
 
 **Fast global rollback:** `arena_tailer_enabled: false` + `arena_jobs_enabled:
