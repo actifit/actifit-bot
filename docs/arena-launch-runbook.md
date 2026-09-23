@@ -154,7 +154,7 @@ Ingests `actifit_arena` `custom_json` ops (joins, official ops) into the index.
    **last-irreversible** block, not the reversible head, so a start block above
    LIB simply waits.
 2. Set `arena_tailer_enabled: true`. **Safe to set on every instance** — the
-   tailer only starts on the `BOT_THREAD == 'MAIN'` process (`app.js:205`), so it
+   tailer only starts on the `BOT_THREAD == 'SECOND_API'` process (api2), so it
    can't double-poll even across the 2 servers + Heroku. Just make sure the MAIN
    process's config has it and gets restarted.
 3. Restart the process(es). Expect a single `Arena tailer started` log line (on
@@ -185,9 +185,17 @@ by a single flag.
 2. Restart. Expect `Arena aggregation job scheduled (...)` +
    `Arena resolution job scheduled (...)` on **MAIN only**.
 
-Both jobs sit inside the `process.env.BOT_THREAD == 'MAIN'` block (`app.js:1128`),
-so the flag is **safe to set on every instance** — the 2 servers + Heroku cannot
+Both jobs sit inside the `process.env.BOT_THREAD == 'SECOND_API'` block, so the
+flag is **safe to set on every instance** — the 2 servers + Heroku cannot
 double-run a payout even with identical config.
+
+> ⚠️ **Why SECOND_API and not MAIN.** `MAIN` is no longer honoured by `app.js`:
+> `BOT_THREAD` is **unset** on api.actifit.io, `SECOND_API` on api2, and unset on
+> Heroku, so a `MAIN` guard never fires (verified via `GET /thread_param/` on all
+> three). `SECOND_API` is the live single-instance marker — `disableUserLogin`
+> already uses it for exactly this reason. Do **not** "fix" this by switching to
+> `!= 'SECOND_API'`: that is true on BOTH api and Heroku and would double-credit
+> AFIT. The Arena therefore runs on **api2**.
 
 - **Aggregation** (`aggregateActiveChallenges`) — verify + materialize
   `challenge_participants.score` and the standings board from `verified_posts`.
@@ -245,10 +253,10 @@ Data + flags:
 - [ ] `arena_tailer_enabled: true` + `arena_tailer_start_block` set, cursor
       cleared if the tailer ever ran (step 4)
 - [ ] Tailer verified: a test `join` from a throwaway account indexes
-- [ ] `arena_jobs_enabled: true`; both jobs logged on MAIN only (step 5)
+- [ ] `arena_jobs_enabled: true`; both jobs logged on **api2** (SECOND_API) only (step 5)
 - [ ] Emission guards present and non-zero (step 5 table)
-- [ ] One tailer/jobs instance only; `@actifit` RC headroom confirmed
-- [ ] `@actifit` **posting** key in the MAIN process config (settle/recurrence
+- [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
+- [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
 
 **Fast global rollback:** `arena_tailer_enabled: false` + `arena_jobs_enabled:
