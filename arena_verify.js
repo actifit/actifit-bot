@@ -52,6 +52,14 @@ const DEFAULT_SPIKE_FACTOR = 5;       // a day > N× the participant's own media
 const DEFAULT_MAX_DAILY_STEPS = 200000; // implausible single-day activity (hard cap)
 const DEFAULT_DAY_RATIO = 30;         // max/min active-day ratio that trips a short-window spike
 
+/** Coerce a metadata value to a number, taking the first element of an array
+ *  (production stores step_count as ['5055']). Non-numeric → 0. */
+function firstNumber(v) {
+	const x = Array.isArray(v) ? v[0] : v;
+	const n = Number(x);
+	return Number.isFinite(n) ? n : 0;
+}
+
 function toDayKey(date) {
 	// UTC calendar day — a user may post more than once a day. Consistent with the
 	// rest of the app, which buckets on moment().utc().startOf('date').
@@ -94,20 +102,30 @@ function metricValue(record, metric) {
 /**
  * Aggregate a participant's verified activity across the challenge window.
  * Pure. Returns { metric, total, days, best_day, per_day:[{day,value}] }.
- * `total` is the verified score; the scoring RULE (max/threshold/head_to_head)
- * is applied later by the resolver (F5), not here.
+ *
+ * The `goal_hit` metric is judged against the challenge's daily THRESHOLD (in the
+ * underlying units — steps): a day counts (value 1) only when that day's TOTAL
+ * verified steps meet `scoring.threshold`. This is what makes a goal challenge a
+ * real GOAL — without it a single 1-step post would "hit" a 10,000-step target
+ * and farm the flat reward. Absent/zero threshold falls back to 1 (any activity),
+ * preserving prior behavior for goal challenges that don't set one. Other metrics
+ * accumulate their own value; the max/head_to_head rule is applied by the ranker.
  */
 function computeWindowScore(records, scoring) {
 	const metric = (scoring && scoring.metric) || 'activity_count';
+	const isGoal = metric === 'goal_hit';
+	const threshold = Number(scoring && scoring.threshold) > 0 ? Number(scoring.threshold) : 1;
 	const byDay = new Map();
 	for (const r of records || []) {
 		const day = toDayKey(r.date);
-		byDay.set(day, (byDay.get(day) || 0) + metricValue(r, metric));
+		// For goal_hit accumulate the RAW daily quantity (steps) so the threshold can
+		// be applied to the day's total; other metrics accumulate their metric value.
+		const add = isGoal ? (Number(r.step_count) || 0) : metricValue(r, metric);
+		byDay.set(day, (byDay.get(day) || 0) + add);
 	}
 	const per_day = [...byDay.entries()]
-		// goal_hit is boolean per day — a day is either hit or not, never counted
-		// per-post — so clamp the daily aggregate to 0/1.
-		.map(([day, value]) => ({ day, value: metric === 'goal_hit' ? (value > 0 ? 1 : 0) : value }))
+		// goal_hit is boolean per day — 1 only when the day's total meets the goal.
+		.map(([day, value]) => ({ day, value: isGoal ? (value >= threshold ? 1 : 0) : value }))
 		.sort((a, b) => (a.day < b.day ? -1 : 1));
 	const total = per_day.reduce((s, d) => s + d.value, 0);
 	const best_day = per_day.reduce((m, d) => Math.max(m, d.value), 0);
@@ -175,8 +193,11 @@ async function fetchVerifiedActivity(db, entity, window) {
 		const meta = p.json_metadata || {};
 		return {
 			date: p.date,
-			step_count: Number(meta.step_count) || 0,
-			workout_minutes: Number(meta.workout_minutes) || 0,
+			// Production stores step_count as a single-element array of a numeric
+			// string, e.g. ['5055']; take the first element so a stray extra element
+			// can't collapse the whole day's activity to a silent 0.
+			step_count: firstNumber(meta.step_count),
+			workout_minutes: firstNumber(meta.workout_minutes),
 			permlink: p.permlink,
 		};
 	});
@@ -220,7 +241,10 @@ async function verifyChallenge(db, challengeId, opts = {}) {
 	if (!hasValidWindow(challenge.window)) return { ok: false, reason: 'challenge has no valid window' };
 
 	const asOf = opts.asOf || new Date().toISOString();
-	const parts = await participantsC.find({ challenge_id: challengeId }).toArray();
+	// Exclude participants who LEFT — they must not be scored (and so are never
+	// ranked or paid). A rejoin is impossible (the join op rejects a duplicate),
+	// so state:'left' is terminal for that entity in this challenge.
+	const parts = await participantsC.find({ challenge_id: challengeId, state: { $ne: 'left' } }).toArray();
 	let flagged = 0;
 
 	for (const p of parts) {

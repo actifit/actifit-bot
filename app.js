@@ -8,6 +8,8 @@ var arenaApi = require('./arena_api');
 var arenaStandings = require('./arena_standings');
 var arenaMerits = require('./arena_merits');
 var arenaPools = require('./arena_pools');
+var arenaTier = require('./arena_tier');
+var arenaJobs = require('./arena_jobs');
 var arenaRoutes = require('./arena_routes');
 var featured = require('./featured');
 const moment = require('moment')
@@ -176,6 +178,7 @@ client.connect()
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
 	    arenaApi.ensureEventsIndexes(db);
+	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {
 	    utils.log(e, 'api');
@@ -206,8 +209,15 @@ client.connect()
 	      const arenaTailer = require('./arena_tailer');
 	      arenaTailer.startArenaTailer(db, {
 	        nodes: config.alt_hive_nodes,
-	        officialAccount: config.arena_official_account || config.account || 'actifit',
+	        officialAccount: arenaOfficialAccount,
 	        startBlock: config.arena_tailer_start_block || 0,
+	        // Authoritative §7.4 tier gate on ingest — the signer's real tier
+	        // decides whether a community/official create is accepted (#180).
+	        resolveTier: resolveArenaTier,
+	        // Creator-funded challenges: lock the creator's off-chain AFIT into the
+	        // prize pool at ingest (debit + 5% burn + pool). Rejects the create if
+	        // the creator can't cover it, so no unfunded prize is ever indexed.
+	        fundChallenge: arenaFundChallenge,
 	        log: (m) => utils.log(m, 'arena'),
 	      });
 	      console.log('Arena tailer started');
@@ -770,10 +780,44 @@ app.get('/gadgetPurchaseTrx', async function (req, res){
 // arena_api.js in arena_routes.js; getDb() resolves the live handle per-request.
 // Rate-limited: these are public, unauthenticated reads.
 const arenaReadRateLimit = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
-// NOTE: no `resolveTier` is wired yet, so POST /arena/ops/validate treats EVERY
-// caller as the safe 'friendly' floor (community/official creates won't validate
-// until tier derivation from getRank/role is added — tracked on #180).
-arenaRoutes.registerArenaRoutes(app, () => db, { log: utils.log, limiter: arenaReadRateLimit });
+// Server-side arena tier derivation (#180, §7.4): official = the @actifit account;
+// community = an active moderator (team collection); everyone else = friendly.
+// Injected into BOTH the ingest indexer (authoritative — keyed on the op's real
+// SIGNER) and the advisory validate endpoint, so a prediction can't drift from
+// what actually indexes. `isModerator` is defined later in this module; the arrow
+// only calls it at request/tailer time, well after that assignment.
+// LIMITATION (tracked follow-up): community is moderator-only for now; the §7.4
+// getRank-threshold branch (a rank-qualified non-moderator) is not yet wired —
+// it drops straight into the isCommunity hook below when added. Under-permissive
+// (fail-safe): it can only EXCLUDE a legit community leader, never upgrade anyone.
+const arenaOfficialAccount = config.arena_official_account || config.account || 'actifit';
+// Community-tier eligibility (§7.4): an active moderator, OR a holder of at least
+// `arena_funded_min_afit` off-chain AFIT — the holdings gate for creating a
+// FUNDED challenge (the creator must own real AFIT to fund a real prize). Reusing
+// the community tier means the existing tier gate already lets these callers
+// attach a pool (friendly challenges still can't).
+const arenaFundedMinAfit = Number.isFinite(config.arena_funded_min_afit) ? config.arena_funded_min_afit : 20000;
+const arenaAfit = require('./arena_afit');
+const arenaFund = require('./arena_fund');
+const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
+	officialAccount: arenaOfficialAccount,
+	isCommunity: async (u) => (await isModerator(u)) || (await arenaAfit.balanceOf(db, u)) >= arenaFundedMinAfit,
+});
+// Injected into the tailer's ingest so a funded create locks the creator's AFIT.
+const arenaFundChallenge = (params) => arenaFund.fundChallenge(db, Object.assign({
+	cutPct: config.arena_fund_cut_pct,
+	minPool: config.arena_fund_min_pool,
+}, params));
+// The validate endpoint is unauthenticated (chain-first: the CLIENT signs + the
+// tailer is the real gate), so the tier here is ADVISORY — derived from an
+// optional `username` in the body. A spoofed username can only get a misleading
+// "ok"; the signed broadcast still faces the authoritative signer-based gate at
+// ingest. Absent username → the safe 'friendly' floor.
+arenaRoutes.registerArenaRoutes(app, () => db, {
+	log: utils.log,
+	limiter: arenaReadRateLimit,
+	resolveTier: (req) => resolveArenaTier(req && req.body ? req.body.username : null),
+});
 
 // Actifitter of the Month (Trello #110) — public read of the editorial spotlight
 // (sanitized doc, or null when unset so the web section hides). Rate-limited.
@@ -1082,6 +1126,74 @@ async function restartApiNode() {
 }
 
 if (process.env.BOT_THREAD == 'MAIN'){
+	// Challenge Engine (Arena) — periodic aggregation sweep (F2 verify + F3
+	// standings). MAIN-only (single-instance, like the tailer) and config-gated
+	// (arena_jobs_enabled, off by default). Reads verified_posts and materializes
+	// challenge_participants.score + the per-challenge standings board. It emits no
+	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
+	if (config.arena_jobs_enabled) {
+		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
+		schedule.scheduleJob(aggCron, async function(){
+			try {
+				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
+			} catch (e) {
+				utils.log(e, 'arena');
+			}
+		});
+		console.log('Arena aggregation job scheduled ('+aggCron+')');
+
+		// Resolution / settlement sweep (F5): resolves DUE challenges (window
+		// closed) → emits Merits + records results → broadcasts the on-chain settle
+		// op as @actifit → rolls recurring defaults into their next window. Requires
+		// the tailer enabled to complete the chain-first loop (state→settled, next
+		// occurrence indexed). Merit emission + the resolution record are idempotent.
+		const resolveCron = config.arena_resolve_cron || '35 * * * *'; // hourly at :35 (offset from the :00/:15/:30/:45 aggregation ticks)
+		// Build the @actifit settle/recurrence broadcaster once (POSTING authority
+		// only — never active). Absent posting_key → Merits/results/events still
+		// write, but settle/recurrence broadcasts are skipped.
+		let arenaBroadcastOp = null;
+		if (config.posting_key) {
+			// Guard the key parse: a malformed posting_key must NOT crash the whole
+			// MAIN boot — just disable settle/recurrence broadcasts (Merits/results/
+			// events still write). Use the whole node list for failover.
+			try {
+				const dhive = require('@hiveio/dhive');
+				const arenaNodes = [config.active_hive_node, ...(config.alt_hive_nodes || [])]
+					.filter(Boolean);
+				const arenaBcClient = new dhive.Client(arenaNodes.length ? arenaNodes : ['https://api.hive.blog']);
+				const arenaBcKey = dhive.PrivateKey.fromString(config.posting_key);
+				arenaBroadcastOp = (body) => arenaBcClient.broadcast.json({
+					required_auths: [],
+					required_posting_auths: [arenaOfficialAccount],
+					id: arena.ARENA_JSON_ID,
+					json: JSON.stringify(body),
+				}, arenaBcKey);
+			} catch (e) {
+				utils.log('arena resolve: could not init broadcaster (' + (e && e.message) + ') — settle/recurrence disabled', 'arena');
+				arenaBroadcastOp = null;
+			}
+		} else {
+			utils.log('arena resolve: no posting_key — settle/recurrence broadcasts disabled', 'arena');
+		}
+		schedule.scheduleJob(resolveCron, async function(){
+			try {
+				await arenaJobs.resolveDueChallenges(db, {
+					officialAccount: arenaOfficialAccount,
+					broadcastOp: arenaBroadcastOp,
+					// Emission guard defaults to the approved values when the live config
+					// omits them, so the treasury protection is correct-by-default and can't
+					// silently ship OFF. An explicit 0 in config still disables the weekly
+					// budget (Number.isFinite(0) === true); only an ABSENT key takes the default.
+					afitDailyCap: Number.isFinite(config.arena_afit_daily_cap) ? config.arena_afit_daily_cap : 500, // per-user/day AFIT reward cap
+					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
+					log: (m) => utils.log(m, 'arena'),
+				});
+			} catch (e) {
+				utils.log(e, 'arena');
+			}
+		});
+		console.log('Arena resolution job scheduled ('+resolveCron+')');
+	}
 	let j = schedule.scheduleJob({hour: 0, minute: 20}, function(){
 		restartApiNode();
 	});

@@ -40,6 +40,7 @@ const COLLECTIONS = {
 	SHOP: 'rewards_shop',
 	POOLS: 'pools',
 	EVENTS: 'arena_events',
+	RESOLUTIONS: 'challenge_resolutions',
 };
 
 // The notification event types clients subscribe to (§9).
@@ -119,6 +120,69 @@ async function getMerits(db, user, opts = {}) {
 	return { user, balance, ledger: sorted.slice(0, pageLimit(opts.limit)) };
 }
 
+/**
+ * Every collectible badge a user has EARNED across challenges, newest first —
+ * derived from their settled participant results (result.reward.badges) and
+ * enriched with each challenge's title/art/type for a profile "badges" showcase.
+ * Public read; a user with no settled badges returns an empty list, not an error.
+ * One entry per (challenge, badge) so a challenge awarding several badges expands.
+ *
+ * `count` is the TOTAL earned; `badges` is a newest-first page bounded by
+ * pageLimit(opts.limit) — so count > badges.length signals a truncated page.
+ *
+ * PRIVACY: badges from NON-PUBLIC (private/community) challenges are excluded —
+ * this endpoint is keyed on a public, guessable username, so surfacing a
+ * non-public challenge's title/id here would both leak the browse surface's
+ * hidden data and let a caller pivot to getChallenge by that id. A missing
+ * challenge doc (unindexed/deleted) has no title/visibility to leak, so it is
+ * kept with the challenge_id as its title.
+ */
+async function getBadges(db, user, opts = {}) {
+	const u = scalar(user);
+	if (!u) return { user, count: 0, badges: [] };
+	const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ entity: u }).toArray();
+	// Keep only settled results that actually granted at least one badge.
+	const earned = parts.filter((p) => p && p.result && p.result.reward
+		&& Array.isArray(p.result.reward.badges) && p.result.reward.badges.length > 0);
+	if (!earned.length) return { user, count: 0, badges: [] };
+
+	// Enrich in TWO batched queries (not a findOne per challenge — this is a public
+	// endpoint): the challenge (title/art/type) and the settlement time (from the
+	// resolution marker; challenge window end as fallback), keyed by challenge id.
+	const ids = [...new Set(earned.map((p) => p.challenge_id))];
+	const challenges = await db.collection(COLLECTIONS.CHALLENGES).find({ id: { $in: ids } }).toArray();
+	const chById = new Map(challenges.map((c) => [c.id, c]));
+	const resolutions = await db.collection(COLLECTIONS.RESOLUTIONS).find({ challenge_id: { $in: ids } }).toArray();
+	const atById = new Map(resolutions.filter((r) => r && r.at).map((r) => [r.challenge_id, r.at]));
+
+	const badges = [];
+	for (const p of earned) {
+		const ch = chById.get(p.challenge_id) || null;
+		// PRIVACY: skip a confirmed non-public challenge (see header). A missing
+		// challenge has no title/visibility to leak, so it is kept.
+		if (ch && ch.visibility && ch.visibility !== 'public') continue;
+		const at = atById.get(p.challenge_id) || (ch && ch.window && ch.window.end) || null;
+		for (const b of p.result.reward.badges) {
+			if (typeof b !== 'string' || !b.trim()) continue;
+			badges.push({
+				badge: b.trim(),
+				challenge_id: p.challenge_id,
+				title: ch ? (ch.title || ch.id) : p.challenge_id,
+				art: ch ? (ch.art || null) : null,
+				type: ch ? (ch.type || null) : null,
+				// Provenance so a client can label a community/user-created badge as
+				// unofficial (a badge name is free text — don't let it pass as official).
+				origin_tier: ch ? (ch.origin_tier || null) : null,
+				rank: (p.result.rank != null) ? p.result.rank : null,
+				at,
+			});
+		}
+	}
+	// Newest first (ISO timestamps sort lexicographically); undated rows sink last.
+	badges.sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')));
+	return { user, count: badges.length, badges: badges.slice(0, pageLimit(opts.limit)) };
+}
+
 /** The rewards-shop catalog (optionally only in-stock items). */
 async function getShop(db, opts = {}) {
 	let items = await db.collection(COLLECTIONS.SHOP).find({}).toArray();
@@ -192,42 +256,42 @@ function defaultContests(nowMs) {
 			recurrence: 'Weekly', art: 'step-league',
 			tagline: 'Climb the weekly leaderboard by staying active every day.',
 			how_it_works: 'Every activity you log during the week counts toward your score. The most active members rise to the top of the league table.',
-			prize_summary: 'Earn Actifit Merits and a featured spot on the weekly leaderboard.', ...base },
+			prize_summary: 'Earn AFIT and a featured spot on the weekly leaderboard.', ...base },
 		{ op: 'challenge_create', v: 1, id: 'def_daily_focus', type: 'daily_focus',
 			title: 'Daily Focus Goal', window: windowFrom(nowMs, 1),
 			scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 10000 },
 			recurrence: 'Daily', art: 'daily-focus',
 			tagline: 'Hit your daily step goal and keep your streak alive.',
 			how_it_works: 'Reach the daily target to clear the challenge. It resets every day, so consistency is everything.',
-			prize_summary: 'Collect Actifit Merits for every day you reach your goal.', ...base },
+			prize_summary: 'Collect AFIT for every day you reach your goal.', ...base },
 		{ op: 'challenge_create', v: 1, id: 'def_season_ladder', type: 'league_fixture',
 			title: 'Season Ladder', window: windowFrom(nowMs, 14),
 			scoring: { metric: 'activity_count', rule: 'max' },
 			recurrence: 'Seasonal', art: 'season-ladder',
 			tagline: 'A two-week climb to the top of the ladder.',
 			how_it_works: 'Your verified activity accumulates across the whole season. Finish high on the ladder to reach the podium.',
-			prize_summary: 'Season Merits plus podium recognition for the top finishers.', ...base },
+			prize_summary: 'Season AFIT rewards plus podium recognition for the top finishers.', ...base },
 		{ op: 'challenge_create', v: 1, id: 'def_weekly_top_n', type: 'liveops',
 			title: 'Weekly Global Top-N', window: windowFrom(nowMs, 7),
 			scoring: { metric: 'activity_count', rule: 'max' },
 			recurrence: 'Weekly', art: 'global-top',
 			tagline: 'Compete with the whole community to finish in the global Top-N.',
 			how_it_works: 'Everyone competes on one global board. Finish among the top ranks by the end of the week.',
-			prize_summary: 'Top finishers earn bonus Actifit Merits.', ...base },
+			prize_summary: 'Top finishers earn bonus AFIT.', ...base },
 		{ op: 'challenge_create', v: 1, id: 'def_weekend_warrior', type: 'liveops',
 			title: 'Weekend Warrior', window: windowFrom(nowMs, 2),
 			scoring: { metric: 'activity_count', rule: 'max' },
 			recurrence: 'Weekly', art: 'weekend-warrior',
 			tagline: 'A 48-hour weekend blitz — go all out.',
 			how_it_works: 'A short, high-energy sprint across the weekend. Pack in as much activity as you can before it closes.',
-			prize_summary: 'Weekend Merits for the most active warriors.', ...base },
+			prize_summary: 'Weekend AFIT rewards for the most active warriors.', ...base },
 		{ op: 'challenge_create', v: 1, id: 'def_monthly_liveops', type: 'liveops',
 			title: 'Monthly Live-Ops Event', window: windowFrom(nowMs, 30),
 			scoring: { metric: 'activity_count', rule: 'max' },
 			recurrence: 'Monthly', art: 'monthly-event',
 			tagline: 'A month-long event with milestones all the way to the finish.',
 			how_it_works: 'Hit milestones through the month and finish strong — a marathon, not a sprint.',
-			prize_summary: 'Milestone Merits plus a special monthly reward.', ...base },
+			prize_summary: 'Milestone AFIT rewards plus a special monthly reward.', ...base },
 	];
 }
 
@@ -265,6 +329,7 @@ module.exports = {
 	getChallenge,
 	getStandings,
 	getMerits,
+	getBadges,
 	getShop,
 	getPool,
 	emitEvent,

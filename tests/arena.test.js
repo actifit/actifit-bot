@@ -113,6 +113,25 @@ describe('arena.indexArenaOp — lifecycle', () => {
     expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
   });
 
+  test('a valid badge_rule is stored on the challenge', async () => {
+    const res = await create({ rewards: { badges: ['October Sprinter'] }, badge_rule: 'top3' });
+    expect(res.ok).toBe(true);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toMatchObject({ badge_rule: 'top3' });
+  });
+
+  test('an invalid badge_rule is rejected (not indexed)', async () => {
+    const res = await create({ rewards: { badges: ['X'] }, badge_rule: 'everyone-forever' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/badge_rule/);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
+  test('an over-long or over-count badge reward is rejected', async () => {
+    expect((await create({ rewards: { badges: ['x'.repeat(61)] } })).ok).toBe(false);
+    expect((await create({ rewards: { badges: ['a', 'b', 'c', 'd', 'e', 'f'] } })).ok).toBe(false);
+    expect(await db.collection('challenges').findOne({ id: 'ch_1' })).toBeNull();
+  });
+
   test('join records the signer as the participant', async () => {
     await create();
     const res = await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'bob'));
@@ -172,6 +191,19 @@ describe('arena.indexArenaOp — lifecycle', () => {
     const res = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
     expect(res.ok).toBe(true);
     expect((await db.collection('challenge_participants').findOne({ entity: 'bob' })).state).toBe('left');
+    // re-leave is an idempotent no-op
+    const again = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
+    expect(again).toMatchObject({ ok: true, noop: true });
+  });
+
+  test('cannot leave a settled challenge (a late leave must not mutate final records)', async () => {
+    await create();
+    await arena.indexArenaOp(db, chainOp({ op: 'join', challenge_id: 'ch_1' }, 'bob'));
+    await db.collection('challenges').updateOne({ id: 'ch_1' }, { $set: { state: 'settled' } });
+    const res = await arena.indexArenaOp(db, chainOp({ op: 'leave', challenge_id: 'ch_1' }, 'bob'));
+    expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/cannot leave a settled/);
+    expect((await db.collection('challenge_participants').findOne({ entity: 'bob' })).state).toBe('enrolled');
   });
 
   test('settle is official-only, records results, and closes the challenge', async () => {
@@ -186,7 +218,7 @@ describe('arena.indexArenaOp — lifecycle', () => {
         { entity: 'bob', rank: 1, score_verified: 12040 },
         { entity: 'carol', rank: 2, score_verified: 9000 },
       ],
-      rewards: [{ entity: 'bob', afit: 25, merits: 50, badges: ['winner'], he_tx: 'tx123' }],
+      rewards: [{ entity: 'bob', afit: 25, badges: ['winner'], reward_ref: 'arena_challenge:ch_1' }],
     };
 
     const denied = await arena.indexArenaOp(db, chainOp(settleBody, 'alice'));
@@ -197,7 +229,7 @@ describe('arena.indexArenaOp — lifecycle', () => {
 
     expect((await db.collection('challenges').findOne({ id: 'ch_1' })).state).toBe('settled');
     const bob = await db.collection('challenge_participants').findOne({ entity: 'bob' });
-    expect(bob.result).toMatchObject({ rank: 1, reward: { afit: 25, merits: 50, he_tx: 'tx123' } });
+    expect(bob.result).toMatchObject({ rank: 1, reward: { afit: 25, badges: ['winner'], reward_ref: 'arena_challenge:ch_1' } });
     const carol = await db.collection('challenge_participants').findOne({ entity: 'carol' });
     expect(carol.result).toMatchObject({ rank: 2, reward: null });
 

@@ -52,6 +52,7 @@ curl https://api2.actifit.io/arena/challenges
 curl https://api2.actifit.io/arena/challenges/<id>
 curl https://api2.actifit.io/arena/standings?scope=league
 curl "https://api2.actifit.io/arena/merits/<user>?limit=20"
+curl "https://api2.actifit.io/arena/badges/<user>?limit=50"   # earned challenge badges
 curl https://api2.actifit.io/arena/shop
 curl https://api2.actifit.io/arena/pools/<id>
 curl https://api2.actifit.io/arena/events/<user>
@@ -69,10 +70,17 @@ curl -X POST https://api2.actifit.io/arena/ops/validate \
   -d '{"op":{"op":"join","v":1,"challenge_id":"<id>"}}'
 ```
 
-⚠️ Until tier derivation from `getRank`/role is wired, every caller is treated as
-the **friendly** tier — so `community`/`official` challenge creates won't validate
-yet (tracked, #180). The named REST write endpoints (`/join`, `/leave`, create,
-`/sponsor`, `/score`) and the broadcast of official ops are also still to come.
+Tier derivation is **wired** (#180): the caller/signer tier is resolved
+server-side — `official` = the `@actifit` account, `community` = an **active
+moderator** (`team` collection), else `friendly`. It is applied **advisorily** at
+this validate endpoint (from a body `username`) and **authoritatively** at ingest
+(keyed on the op's cryptographic signer in `arena.indexArenaOp`), so a friendly
+account can no longer index a `community`/AFIT-pool challenge. ⚠️ **Outstanding
+half of §7.4:** the `getRank`-threshold branch (a rank-qualified *non*-moderator
+qualifying as community) is not yet wired — it drops into the `isCommunity` hook
+in `app.js` when added; until then such users are floored to `friendly`
+(under-permissive, fail-safe). The named REST write endpoints (`/join`, `/leave`,
+create, `/sponsor`, `/score`) and the broadcast of official ops are still to come.
 
 ---
 
@@ -164,34 +172,84 @@ so re-enabling resumes cleanly.
 
 ---
 
-## 5. Scheduled jobs (not yet built — deferred)
+## 5. Scheduled jobs (BUILT — enable with `arena_jobs_enabled`)
 
-These are the remaining wiring, tracked on the sub-cards, and must NOT be enabled
-until built + reviewed:
+All three are built, unit-tested and multi-agent reviewed (#74 aggregation,
+#75 resolution/settlement + recurrence, #76 idempotency, #77 AFIT pivot,
+#78 creator-funded pools, #81 badge award). They are **off by default** and gated
+by a single flag.
 
-- **Verification + aggregation** (F2/F3): a periodic job that runs
-  `verifyChallenge` then `buildStandings` for active challenges/cohorts.
-- **Resolution/payout** (F5): on a challenge's window close, run
-  `resolveChallenge`, broadcast the returned `settle` op, and execute the
-  Hive-Engine AFIT transfers (filling `he_tx`).
-- **Notification emitters** (F6/§9): fire `emitEvent` from lifecycle transitions.
+1. Set `arena_jobs_enabled: true`. Optional cron overrides:
+   `arena_aggregate_cron` (default `*/15 * * * *`) and `arena_resolve_cron`
+   (default `35 * * * *` — deliberately offset from the aggregation ticks).
+2. Restart. Expect `Arena aggregation job scheduled (...)` +
+   `Arena resolution job scheduled (...)` on **MAIN only**.
 
-> 🚨 **BLOCKER for concurrent writes:** the Merits ledger + shop stock are still
-> single-writer (read-then-write). The **F4 atomic-counter redesign (#178)** must
-> land before resolution/purchase run concurrently, or double-spend / stock
-> oversell is possible. Until then, run resolution as a single sequential sweep.
+Both jobs sit inside the `process.env.BOT_THREAD == 'MAIN'` block (`app.js:1128`),
+so the flag is **safe to set on every instance** — the 2 servers + Heroku cannot
+double-run a payout even with identical config.
+
+- **Aggregation** (`aggregateActiveChallenges`) — verify + materialize
+  `challenge_participants.score` and the standings board from `verified_posts`.
+  Emits nothing, broadcasts nothing, moves no funds.
+- **Resolution / settlement** (`resolveDueChallenges`) — for each DUE challenge:
+  build standings → credit **off-chain AFIT** → write participant results +
+  a `challenge_resolutions` record → broadcast the `settle` op as `@actifit`
+  (**posting** authority only) → roll recurring defaults into their next window
+  → emit F6 notifications. Idempotent per challenge (unique
+  `challenge_resolutions.challenge_id`) and per credit.
+
+### Reward guards (confirmed 2026-09-12, defaulted in code by #79)
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `arena_afit_daily_cap` | `500` | Max AFIT a single user can be credited per day |
+| `arena_afit_weekly_budget` | `50000` | Global rolling-7-day treasury emission ceiling |
+| `arena_funded_min_afit` | `20000` | Holdings gate to fund a creator prize |
+| `arena_fund_cut_pct` | `5` | Platform fee on a funded pool (burned) |
+| `arena_fund_min_pool` | `50` | Minimum funded prize |
+
+These now **default correctly in code** (`app.js`), so the guard cannot ship OFF
+by omission. The weekly budget is a *ceiling, not a target* (~5x expected launch
+emission). An explicit `0` disables it — don't.
+
+Creator-funded pools are debited from the funder's own off-chain AFIT at ingest,
+split 50/30/20, the funder is excluded from winning (invariant I7), and any
+unpaid remainder is refunded at settlement. Badge-only contests move **zero**
+AFIT and touch no pool.
+
+> ✅ The #178 single-writer concern from the earlier draft of this runbook is
+> **resolved** — Merit/AFIT crediting is idempotent (keyed on user+reason+ref)
+> and resolution runs as one sequential sweep on a single instance.
+
+**Rollback:** `arena_jobs_enabled: false` + restart. Already-written resolutions
+stay (they are the settled record); no new funds move.
 
 ---
 
 ## 6. Go / no-go checklist
 
-- [ ] Indexes present (step 1)
-- [ ] Read API responds (step 2)
-- [ ] Default contests seeded + visible (step 3)
-- [ ] Tailer enabled, test join indexed (step 4)
-- [ ] #178 atomicity landed **before** any concurrent write job (step 5)
-- [ ] One tailer instance only; `@actifit` RC headroom confirmed
+Deploy:
 
-**Fast global rollback:** `arena_tailer_enabled: false` + don't schedule the
-jobs. The read routes stay up but inert; no funds move without the (not-yet-built,
-reviewed) resolution job.
+- [ ] `actifit-bot` `develop` -> `master` promoted (auto-deploys 2 servers; then
+      `git push heroku master` separately)
+- [ ] `actifit-landingpage` `develop` -> `master` promoted (run the
+      `npm ci` lockfile pre-flight first)
+
+Data + flags:
+
+- [ ] Indexes present (step 1)
+- [ ] Read API responds, including `/arena/badges/<user>` (step 2)
+- [ ] Six `def_*` contests broadcast **on-chain** and indexed with real
+      `trx_id`/`block_num` — NOT the index-only seed (step 3)
+- [ ] `arena_tailer_enabled: true` + `arena_tailer_start_block` set, cursor
+      cleared if the tailer ever ran (step 4)
+- [ ] Tailer verified: a test `join` from a throwaway account indexes
+- [ ] `arena_jobs_enabled: true`; both jobs logged on MAIN only (step 5)
+- [ ] Emission guards present and non-zero (step 5 table)
+- [ ] One tailer/jobs instance only; `@actifit` RC headroom confirmed
+- [ ] `@actifit` **posting** key in the MAIN process config (settle/recurrence
+      broadcasts are skipped without it — never the active key)
+
+**Fast global rollback:** `arena_tailer_enabled: false` + `arena_jobs_enabled:
+false`, restart. The read routes stay up but inert and no funds move.

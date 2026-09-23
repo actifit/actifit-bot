@@ -192,6 +192,19 @@ describe('arena_verify — review hardening', () => {
     expect(s.best_day).toBe(1);
   });
 
+  test('goal_hit enforces the daily THRESHOLD on the day total (anti-farm)', () => {
+    const s = verify.computeWindowScore([
+      { date: '2026-08-10T01:00:00Z', step_count: 4000 },
+      { date: '2026-08-10T20:00:00Z', step_count: 7000 }, // day total 11000 >= 10000 → hit
+      { date: '2026-08-11T10:00:00Z', step_count: 1 },    // 1 step → NOT a hit
+      { date: '2026-08-12T10:00:00Z', step_count: 9999 }, // just under → NOT a hit
+    ], { metric: 'goal_hit', rule: 'threshold', threshold: 10000 });
+    expect(s.per_day.find((d) => d.day === '2026-08-10').value).toBe(1);
+    expect(s.per_day.find((d) => d.day === '2026-08-11').value).toBe(0);
+    expect(s.per_day.find((d) => d.day === '2026-08-12').value).toBe(0);
+    expect(s.total).toBe(1); // only the 10k+ day counts
+  });
+
   test('a short-window (2-day) extreme jump is flagged by day_ratio', () => {
     const s = verify.computeWindowScore([
       { date: '2026-08-10T10:00:00Z', step_count: 1000 },

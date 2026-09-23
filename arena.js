@@ -30,6 +30,11 @@
 
 'use strict';
 
+// §7.4 origin-tier policy — the SAME gate the advisory validate endpoint
+// (arena_write) applies, so ingest and prediction can never drift. Load-time
+// safe (requires nothing).
+const arenaTier = require('./arena_tier');
+
 // ---- on-chain op namespace + names (§3.10) -------------------------------
 
 const ARENA_JSON_ID = 'actifit_arena';
@@ -65,6 +70,9 @@ const ENTRY_MODES = ['free', 'activity_gated'];
 const GATE_ALLOWED_KEYS = ['min_activity'];
 // I6 — outcomes are decided by verified effort/goal, never chance.
 const SCORING_RULES = ['max', 'threshold', 'head_to_head'];
+// Who earns a user-created challenge's named badge at settlement (kept in sync
+// with arena_rewards.BADGE_RULES, which applies it).
+const BADGE_RULES = ['winner', 'top3', 'all'];
 
 // Highest `op.v` (§3.10) this build understands; newer major versions are rejected.
 const SUPPORTED_OP_VERSION = 1;
@@ -226,6 +234,16 @@ function validateArenaOp(op) {
 			if (!SCORING_RULES.includes(scoring.rule)) {
 				errors.push(`challenge_create: scoring.rule "${scoring.rule}" not allowed (invariant I6)`);
 			}
+			// Optional badge award rule (who earns a named badge at settlement).
+			if (op.badge_rule !== undefined && !BADGE_RULES.includes(op.badge_rule)) {
+				errors.push(`challenge_create: invalid badge_rule "${op.badge_rule}"`);
+			}
+			// Bound the client-supplied badge reward — a short list of short names
+			// (the whole rewards object is stored verbatim, so cap it here).
+			if (op.rewards && Array.isArray(op.rewards.badges)) {
+				if (op.rewards.badges.length > 5) errors.push('challenge_create: at most 5 badges');
+				if (op.rewards.badges.some((b) => typeof b === 'string' && b.length > 60)) errors.push('challenge_create: badge name too long (max 60)');
+			}
 			break;
 		}
 		case OPS.CHALLENGE_UPDATE: {
@@ -300,10 +318,26 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 	switch (op.op) {
 		case OPS.CHALLENGE_CREATE: {
 			const origin_tier = op.origin_tier || 'friendly';
-			// Official challenges must be signed by the official account.
+			// Official challenges must be signed by the official account (kept
+			// explicit for a precise reason; the general tier gate below also
+			// covers it). Official tier is SINGLE-signer regardless of any admin
+			// list — this rule is intentionally not in the shared createTierErrors.
 			if (origin_tier === 'official' && signer !== officialAccount) {
 				return { ok: false, reason: 'official challenge must be signed by the official account' };
 			}
+			// Reserve the def_* id namespace for the official account. The recurrence
+			// roller and the AFIT schedule map key on this prefix, so a user must not
+			// be able to mint a def_* id (belt-and-suspenders alongside the tier gate).
+			if (typeof op.id === 'string' && op.id.indexOf('def_') === 0 && signer !== officialAccount) {
+				return { ok: false, reason: 'the def_ id namespace is reserved for the official account' };
+			}
+			// Idempotency FIRST: an already-indexed op must re-tail as a clean no-op
+			// regardless of the signer's CURRENT tier. The tier gate is a live lookup
+			// (isModerator now), so running it before this check would make a re-tail
+			// non-deterministic — a since-demoted creator's earlier community create
+			// would flip to REJECTED on replay/reindex, breaking the "DB is a faithful
+			// materialization of chain" guarantee. Idempotency is also cheaper (no
+			// per-replay role lookup during catch-up).
 			const existing = await challenges.findOne({ id: op.id });
 			if (existing) {
 				// Idempotent: the same broadcast re-tailed is a no-op success; a
@@ -312,6 +346,49 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 					return { ok: true, action: 'challenge_created', noop: true };
 				}
 				return { ok: false, reason: 'challenge id already exists' };
+			}
+			// AUTHORITATIVE §7.4 tier gate (Trello #180): derive the SIGNER's real
+			// tier server-side and reject a create the signer isn't entitled to —
+			// e.g. a friendly account broadcasting a community challenge or attaching
+			// an AFIT pool. Without an injected resolver a non-official signer is the
+			// safe 'friendly' floor. The advisory validate endpoint runs the SAME
+			// createTierErrors, so ingest and prediction never diverge. A resolver
+			// that throws must never UPGRADE a caller — fall back to the floor.
+			let signerTier;
+			try {
+				signerTier = typeof opts.resolveTier === 'function'
+					? await opts.resolveTier(signer)
+					: (signer === officialAccount ? 'official' : 'friendly');
+			} catch (e) {
+				signerTier = (signer === officialAccount ? 'official' : 'friendly');
+			}
+			const tierErrs = arenaTier.createTierErrors(op, signerTier);
+			if (tierErrs.length) {
+				return { ok: false, reason: `tier gate: ${tierErrs.join('; ')}` };
+			}
+
+			// Creator-funded prize (§7.4): a non-official challenge carrying an AFIT
+			// prize is self-funded from the SIGNER's own off-chain AFIT. Lock it into a
+			// pool at ingest (debit creator prize + fee, burn the fee, create the pool).
+			// Official contests are system-funded (rewards:null → skipped here). If the
+			// creator can't cover it, the whole create is rejected — no unfunded prize
+			// is ever indexed.
+			// SECURITY: pool_ref is NEVER taken from the client op — a challenge may
+			// only ever reference the pool the funding path creates for it. Otherwise a
+			// user could point their challenge at someone else's funded pool and drain
+			// it via alts.
+			let poolRef = null;
+			const fundedPrize = (op.rewards && origin_tier !== 'official' && Number(op.rewards.afit) > 0) ? Number(op.rewards.afit) : 0;
+			if (fundedPrize > 0) {
+				if (typeof opts.fundChallenge !== 'function') {
+					return { ok: false, reason: 'funded challenges not enabled (no funder wired)' };
+				}
+				const funded = await opts.fundChallenge({
+					creator: signer, challengeId: op.id, prize: fundedPrize, at,
+					window: pick(op.window, ['start', 'end', 'tz']),
+				});
+				if (!funded.ok) return { ok: false, reason: `funding failed: ${funded.reason}` };
+				poolRef = funded.poolId;
 			}
 
 			const doc = {
@@ -331,7 +408,8 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 				entry: buildEntry(op.entry),
 				scoring: pick(op.scoring, ['metric', 'rule', 'threshold']),
 				rewards: op.rewards || null,
-				pool_ref: op.pool_ref || null,
+				badge_rule: op.badge_rule || null,
+				pool_ref: poolRef,
 				parent_id: op.parent_id || null,
 				// Shared presentation copy (Trello #182) — display-only, bounded.
 				...buildPresentation(op),
@@ -448,6 +526,15 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 		case OPS.LEAVE: {
 			const p = await participants.findOne({ challenge_id: op.challenge_id, entity: signer });
 			if (!p) return { ok: false, reason: 'not a participant' };
+			// Idempotent FIRST: a re-tailed leave that already applied is a no-op
+			// success — even if the challenge has since gone terminal (an out-of-order
+			// single-op replay must not turn a done leave into a rejection).
+			if (p.state === 'left') return { ok: true, action: 'left', noop: true };
+			// A NEW leave must never mutate a finalized (terminal) challenge's records.
+			const chL = await challenges.findOne({ id: op.challenge_id });
+			if (chL && TERMINAL_STATES.includes(chL.state)) {
+				return { ok: false, reason: `cannot leave a ${chL.state} challenge` };
+			}
 			await participants.updateOne(
 				{ challenge_id: op.challenge_id, entity: signer },
 				{ $set: { state: 'left' } }
@@ -485,9 +572,8 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 							score_verified: row.score_verified != null ? row.score_verified : null,
 							reward: reward ? {
 								afit: reward.afit || 0,
-								merits: reward.merits || 0,
 								badges: reward.badges || [],
-								he_tx: reward.he_tx || null,
+								reward_ref: reward.reward_ref || null,
 							} : null,
 						},
 					} }

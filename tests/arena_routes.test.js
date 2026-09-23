@@ -96,6 +96,22 @@ describe('arena_routes (HTTP)', () => {
     expect(r.body.balance).toBe(130); // full balance, not just the page
   });
 
+  test('GET /arena/badges/:user returns earned badges, enriched with the challenge', async () => {
+    db.collection('challenges').__seed([{ id: 'chb', title: 'Badge Cup', type: 'liveops', art: 'global-top', window: { end: '2026-08-25T00:00:00Z' } }]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'chb', entity: 'alice', result: { rank: 1, reward: { afit: 50, badges: ['Cup Winner'] } } }]);
+    db.collection('challenge_resolutions').__seed([{ challenge_id: 'chb', at: '2026-08-25T01:00:00Z' }]);
+    const r = await request(app).get('/arena/badges/alice');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ user: 'alice', count: 1 });
+    expect(r.body.badges[0]).toMatchObject({ badge: 'Cup Winner', challenge_id: 'chb', title: 'Badge Cup', rank: 1 });
+  });
+
+  test('GET /arena/badges/:user is an empty list for a user with no badges', async () => {
+    const r = await request(app).get('/arena/badges/nobody');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ user: 'nobody', count: 0, badges: [] });
+  });
+
   test('a getDb failure yields 500 {error} and logs (no internal leak)', async () => {
     const logged = [];
     const bad = express();
