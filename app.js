@@ -178,6 +178,9 @@ client.connect()
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
 	    arenaApi.ensureEventsIndexes(db);
+	    // local require: arena_afit is declared far below (line ~804), unlike its
+	    // siblings at the top of this file. Same pattern as the tailer require below.
+	    require('./arena_afit').ensureAfitIndexes(db); // unique guard on arena credit rows
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {

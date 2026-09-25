@@ -109,3 +109,23 @@ describe('arena_afit.creditAfitReward', () => {
 		});
 	});
 });
+
+describe('arena_afit.ensureAfitIndexes', () => {
+	test('creates a PARTIAL unique index scoped to arena credit rows only', async () => {
+		const calls = [];
+		const db = { collection: () => ({ createIndex: async (keys, opts) => { calls.push({ keys, opts }); } }) };
+		await afit.ensureAfitIndexes(db);
+		expect(calls).toHaveLength(1);
+		expect(calls[0].keys).toEqual({ user: 1, reward_activity: 1 });
+		expect(calls[0].opts.unique).toBe(true);
+		// token_transactions is the WHOLE platform's AFIT ledger and legitimately has
+		// many rows sharing (user, reward_activity) for non-arena activity. Only arena
+		// credit rows carry challenge_id, so the constraint must be scoped to those.
+		expect(calls[0].opts.partialFilterExpression).toEqual({ challenge_id: { $exists: true } });
+	});
+
+	test('is a safe no-op where createIndex is unavailable (test mock / old driver)', async () => {
+		const db = { collection: () => ({}) };
+		await expect(afit.ensureAfitIndexes(db)).resolves.toBeUndefined();
+	});
+});
