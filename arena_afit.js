@@ -177,6 +177,38 @@ async function creditAfitReward(db, params) {
 	return { ok: true, credited, capped: credited < Number(amount), balance, ref: activity };
 }
 
+/**
+ * Index the arena credit path relies on for correctness.
+ *
+ * `creditAfitReward` is idempotent by REPLACING the (user, reward_activity) row,
+ * but a read-then-write upsert is only retry-safe, not race-safe: two concurrent
+ * runs can both miss the existing row and both insert, double-crediting. The
+ * unique `challenge_resolutions.challenge_id` is the backstop, but it is written
+ * LAST - after the credits - so it cannot prevent that.
+ *
+ * This makes the database enforce it. The index is PARTIAL, keyed on
+ * `challenge_id` existing: token_transactions is the whole platform's AFIT ledger
+ * (~23M rows at the time of writing) and legitimately holds many rows sharing a
+ * (user, reward_activity) pair for non-arena activity. Only arena credit rows
+ * carry `challenge_id`, so only those are indexed and constrained - verified
+ * against production before adding this (3 rows carried it, 0 duplicates).
+ *
+ * Safe no-op where createIndex is unavailable (the in-memory test mock).
+ */
+async function ensureAfitIndexes(db) {
+	const ledger = db.collection(COL.LEDGER);
+	if (typeof ledger.createIndex !== 'function') return;
+	await ledger.createIndex(
+		{ user: 1, reward_activity: 1 },
+		{
+			unique: true,
+			partialFilterExpression: { challenge_id: { $exists: true } },
+			name: 'arena_credit_unique',
+			background: true,
+		}
+	);
+}
+
 module.exports = {
 	COL,
 	AFIT_CHAIN,
@@ -190,4 +222,5 @@ module.exports = {
 	arenaEmittedWeek,
 	reconcileBalance,
 	creditAfitReward,
+	ensureAfitIndexes,
 };
