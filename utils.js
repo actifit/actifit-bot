@@ -1510,12 +1510,44 @@ function format(n, c, d, t) {
   fs.appendFileSync( name + '.log', new Date().toString() + ' - ' + msg + "\n");
  }
 
+ /**
+  * Read and cache config.json.
+  *
+  * FAIL LOUDLY on a malformed file. This used to be a bare JSON.parse: on a
+  * syntax error it threw, `config` was never assigned, so every later call
+  * re-read, re-threw, and logged 'I get config' again forever. Callers that
+  * swallow errors then saw `config.<anything>` as undefined and silently
+  * disabled themselves with NO error anywhere.
+  *
+  * That cost roughly an hour on Arena launch night (2026-09-23): a missing
+  * comma left by a hand-edit meant `config.arena_tailer_enabled` read as
+  * undefined, the tailer guard stayed false, nothing logged, and every check we
+  * ran - grep for the keys, pm2 cwd, git HEAD, BOT_THREAD - looked correct,
+  * because grep matches lines in a file that does not parse.
+  *
+  * A malformed config is never recoverable at runtime, so crash at boot with a
+  * message that names the file and the parse position instead.
+  */
  function getConfig() {
   if (config)
     return config;
   else {
     console.log('I get config');
-    config = JSON.parse(fs.readFileSync("config.json"));
+    let raw;
+    try {
+      raw = fs.readFileSync("config.json", "utf8");
+    } catch (e) {
+      console.error('FATAL: cannot read config.json from ' + process.cwd() + ' - ' + e.message);
+      throw e;
+    }
+    try {
+      config = JSON.parse(raw);
+    } catch (e) {
+      console.error('FATAL: config.json is not valid JSON (' + process.cwd() + '/config.json): ' + e.message);
+      console.error('       Nothing that reads config will work until this is fixed.');
+      console.error('       Tip: a JSON linter, or any editor that highlights JSON, will point at it.');
+      throw e;
+    }
     return config;
   }
  }
