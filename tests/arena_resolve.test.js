@@ -160,4 +160,42 @@ describe('arena_jobs.nextOccurrence / isRecurringDefault', () => {
 		expect(Date.parse(next.window.end)).toBeGreaterThanOrEqual(Date.parse('2026-08-10T00:00:00Z'));
 		expect(next.parent_id).toBe('def_daily_focus');
 	});
+
+	test('cadence comes from recurrence, NOT window length (Weekend Warrior regression)', () => {
+		// def_weekend_warrior is a 2-DAY window that recurs WEEKLY. Rolling by window
+		// length made it repeat every 2 days and walk off the weekend permanently
+		// (seen in production 2026-09-25). It must roll +7d and stay 2 days long.
+		const ch = {
+			id: 'def_weekend_warrior', recurrence: 'Weekly', type: 'liveops', scoring: {},
+			window: { start: '2026-09-25T13:06:00Z', end: '2026-09-27T13:06:00Z', tz: 'UTC' },
+		};
+		const next = jobs.nextOccurrence(ch, Date.parse('2026-09-27T14:00:00Z'));
+		expect(next.window.start).toBe('2026-10-02T13:06:00.000Z'); // +7d, still a Friday
+		expect(next.window.end).toBe('2026-10-04T13:06:00.000Z');   // still 2 days long
+		expect(Date.parse(next.window.end) - Date.parse(next.window.start)).toBe(2 * 24 * 3600 * 1000);
+		expect(next.id).toBe('def_weekend_warrior@2026-10-02');
+	});
+
+	test('the other five defaults are unchanged (cadence == window length)', () => {
+		const cases = [
+			['def_daily_focus', 'Daily', '2026-09-25T13:06:00Z', '2026-09-26T13:06:00Z', '2026-09-26T13:06:00.000Z'],
+			['def_weekly_step_league', 'Weekly', '2026-09-23T13:06:00Z', '2026-09-30T13:06:00Z', '2026-09-30T13:06:00.000Z'],
+			['def_weekly_top_n', 'Weekly', '2026-09-23T13:06:00Z', '2026-09-30T13:06:00Z', '2026-09-30T13:06:00.000Z'],
+			['def_season_ladder', 'Seasonal', '2026-09-23T13:06:00Z', '2026-10-07T13:06:00Z', '2026-10-07T13:06:00.000Z'],
+			['def_monthly_liveops', 'Monthly', '2026-09-23T13:06:00Z', '2026-10-23T13:06:00Z', '2026-10-23T13:06:00.000Z'],
+		];
+		for (const [id, recurrence, start, end, expectedStart] of cases) {
+			const next = jobs.nextOccurrence({ id, recurrence, type: 'liveops', scoring: {}, window: { start, end, tz: 'UTC' } }, Date.parse(end) + 1000);
+			// next window starts exactly where the old one ended, as before the fix
+			expect([id, next.window.start]).toEqual([id, expectedStart]);
+		}
+	});
+
+	test('an unknown recurrence falls back to window length and never loops forever', () => {
+		const ch = { id: 'def_odd', recurrence: 'Fortnightly', type: 'liveops', scoring: {},
+			window: { start: '2026-09-01T00:00:00Z', end: '2026-09-03T00:00:00Z', tz: 'UTC' } };
+		// isRecurringDefault gates on a KNOWN recurrence, so this is null rather than a hang
+		expect(jobs.isRecurringDefault(ch)).toBe(false);
+		expect(jobs.nextOccurrence(ch, Date.now())).toBeNull();
+	});
 });
