@@ -282,5 +282,34 @@ Data + flags:
 - [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
 
+## 7. Keeping BOT_THREAD from vanishing
+
+`BOT_THREAD` for the `app` process used to live only in on-server pm2 state and
+was declared nowhere in the repo. It silently disappeared from api.actifit.io at
+some point, and nothing could restore it because nothing recorded what it should
+be. With the Arena gated on `SECOND_API`, losing it on api2 stops settlement
+**silently** - winners are not paid and nothing alarms.
+
+Two committed pm2 configs now pin it, deliberately one per server:
+
+| Server | File | `BOT_THREAD` |
+| --- | --- | --- |
+| api2.actifit.io | `appconfig.api2.js` | `SECOND_API` (runs the Arena) |
+| api.actifit.io | `appconfig.api.js` | unset (correct - keeps CORS) |
+
+```
+pm2 delete app
+pm2 start appconfig.api2.js    # or appconfig.api.js on api
+pm2 save                       # REQUIRED, or a reboot loses it again
+curl -s localhost:3120/thread_param/
+```
+
+They are separate files on purpose: one shared config started on both boxes
+would make both `SECOND_API` and double-run the payout sweeps. Both pin
+`instances: 1` / `exec_mode: fork`, because `pm2 scale app 2` would inherit the
+env into every instance and run two tailers and two settlement sweeps.
+
+---
+
 **Fast global rollback:** `arena_tailer_enabled: false` + `arena_jobs_enabled:
 false`, restart. The read routes stay up but inert and no funds move.
