@@ -333,6 +333,79 @@ describe('arena_jobs.recordResolveHealth', () => {
 		expect(r.alert.body).toMatch(/will not clear on its own/);
 	});
 
+	// A stuck challenge used to be MASKED by any other challenge settling in the same
+	// sweep: five due, four settle, one fails forever -> never alerts, while that
+	// contest's winners are never paid. It also made the alarm's sensitivity depend on
+	// what else coincidentally closed that hour.
+	test('a failing challenge still alarms even when others settle', async () => {
+		const db = createMockDb();
+		const mixed = { ok: true, processed: 5, resolved: 4, settled: 4, recurred: 4, failed: 1, skipped: 0, budgetExhausted: 0 };
+		await jobs.recordResolveHealth(db, mixed, { asOf: AT(1) });
+		const r = await jobs.recordResolveHealth(db, mixed, { asOf: AT(2) });
+		expect(r.alert).not.toBeNull();
+		expect(r.alert.kind).toBe('settlement_stalled');
+	});
+
+	// `settled` only counts successful BROADCASTS. With no posting key the sweep
+	// credits AFIT and writes resolutions but nothing reaches the chain, reporting
+	// failed:0 settled:0 - which read as perfectly healthy.
+	test('no broadcaster alarms immediately, and is its own diagnosis', async () => {
+		const db = createMockDb();
+		const looksFine = { ok: true, processed: 1, resolved: 1, settled: 0, recurred: 0, failed: 0, skipped: 0, budgetExhausted: 0 };
+
+		const quiet = await jobs.recordResolveHealth(db, looksFine, { asOf: AT(1) });
+		expect(quiet.alert).toBeNull();          // with a broadcaster this is just idle
+
+		const db2 = createMockDb();
+		const r = await jobs.recordResolveHealth(db2, looksFine, { asOf: AT(1), canBroadcast: false });
+		expect(r.alert.kind).toBe('cannot_broadcast');
+		expect(r.alert.body).toMatch(/POSTING key/);
+		expect(r.health.can_broadcast).toBe(false);
+		// and it does not wait two ticks - it never fixes itself
+		expect(r.health.alerting).toBe(true);
+	});
+
+	// An all-clear must be EARNED. Clearing on any non-stalled sweep meant an IDLE
+	// sweep mailed "settlement has recovered" with nothing settled.
+	test('an idle sweep does NOT mail a false all-clear', async () => {
+		const db = createMockDb();
+		const stalled = { ok: true, processed: 1, resolved: 0, settled: 0, recurred: 0, failed: 1, skipped: 0, budgetExhausted: 0 };
+		const idle = { ok: true, processed: 0, resolved: 0, settled: 0, recurred: 0, failed: 0, skipped: 0, budgetExhausted: 0 };
+		await jobs.recordResolveHealth(db, stalled, { asOf: AT(1) });
+		await jobs.recordResolveHealth(db, stalled, { asOf: AT(2) });
+
+		const stillNothing = await jobs.recordResolveHealth(db, idle, { asOf: AT(3) });
+		expect(stillNothing.alert).toBeNull();   // NOT "recovered"
+
+		const real = await jobs.recordResolveHealth(db, { ...idle, settled: 1 }, { asOf: AT(4) });
+		expect(real.alert.kind).toBe('recovered');
+	});
+
+	test('checkResolveHeartbeat catches the sweep not running at all', async () => {
+		const db = createMockDb();
+		await jobs.recordResolveHealth(db, { ok: true, processed: 0, resolved: 0, settled: 0, recurred: 0, failed: 0, skipped: 0 }, { asOf: '2026-08-10T01:35:00Z' });
+
+		// an hour later: normal
+		const fine = await jobs.checkResolveHeartbeat(db, { now: Date.parse('2026-08-10T02:40:00Z') });
+		expect(fine.stale).toBe(false);
+		expect(fine.alert).toBeNull();
+
+		// four hours later: two ticks missed
+		const dead = await jobs.checkResolveHeartbeat(db, { now: Date.parse('2026-08-10T05:40:00Z') });
+		expect(dead.stale).toBe(true);
+		expect(dead.alert.kind).toBe('resolve_not_running');
+		// and it does not re-page every 15 minutes
+		const again = await jobs.checkResolveHeartbeat(db, { now: Date.parse('2026-08-10T05:55:00Z') });
+		expect(again.alert).toBeNull();
+	});
+
+	test('checkResolveHeartbeat does not alarm on a box that has never run a sweep', async () => {
+		const db = createMockDb();
+		const r = await jobs.checkResolveHeartbeat(db, { now: Date.now() });
+		expect(r.stale).toBe(false);
+		expect(r.alert).toBeNull();
+	});
+
 	test('the health record is queryable — the check on-call can actually run', async () => {
 		const db = createMockDb();
 		await jobs.recordResolveHealth(db, goodSweep, { asOf: AT(1) });

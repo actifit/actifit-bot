@@ -37,7 +37,7 @@
   "arena_autoenroll_enabled": false,
   "arena_autoenroll_lookback_days": 7,
   "arena_autoenroll_max_roster": 250,
-  "arena_afit_daily_cap": 500,
+  "arena_afit_daily_cap": 0,
   "arena_afit_weekly_budget": 50000,
   "arena_funded_min_afit": 20000,
   "arena_fund_cut_pct": 5,
