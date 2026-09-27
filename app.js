@@ -1222,11 +1222,21 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 				const resolveSummary = await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
-					// Emission guard defaults to the approved values when the live config
-					// omits them, so the treasury protection is correct-by-default and can't
-					// silently ship OFF. An explicit 0 in config still disables the weekly
-					// budget (Number.isFinite(0) === true); only an ABSENT key takes the default.
-					afitDailyCap: Number.isFinite(config.arena_afit_daily_cap) ? config.arena_afit_daily_cap : 500, // per-user/day AFIT reward cap
+					// The GLOBAL weekly budget is the treasury guard and stays defaulted ON:
+					// it is correct-by-default and cannot silently ship off. An explicit 0 in
+					// config disables it (Number.isFinite(0) === true); only an ABSENT key
+					// takes the default.
+					//
+					// The PER-USER DAILY cap now defaults OFF for contest prizes (product
+					// decision, 2026-09-27). It was built as anti-farming for ACTIVITY
+					// rewards, where someone could otherwise mint unbounded AFIT by posting.
+					// A contest prize cannot be farmed - you have to out-rank everyone - and
+					// each contest's own schedule already bounds what a single person can
+					// win. All six defaults settle in the same sweep, so the only thing the
+					// cap actually did here was clip a legitimate multi-contest winner, and
+					// that clipped figure went on-chain as the prize, permanently. Set
+					// arena_afit_daily_cap in config.json to re-enable it.
+					afitDailyCap: Number.isFinite(config.arena_afit_daily_cap) ? config.arena_afit_daily_cap : 0, // 0 = no per-user daily cap on contest prizes
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});

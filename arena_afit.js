@@ -228,15 +228,20 @@ async function reconcileBalance(db, user) {
 async function creditAfitReward(db, params) {
 	const { user, challengeId, amount } = params;
 	const at = params.at || new Date().toISOString();
+	// An explicit 0 DISABLES the per-user daily cap, matching how weeklyBudget: 0
+	// already means "off" in this module. An absent value still falls back to
+	// DEFAULT_DAILY_CAP so a direct caller cannot accidentally get an uncapped credit.
 	const dailyCap = Number.isFinite(params.dailyCap) ? params.dailyCap : DEFAULT_DAILY_CAP;
+	const dailyCapOn = dailyCap > 0;
 	if (!user || !challengeId) return { ok: false, reason: 'missing user/challengeId' };
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
 	if (dayKey(at) === null) return { ok: false, reason: 'invalid at timestamp' };
 
 	// Per-user daily room — excludes this challenge's own row so a retry re-credits
 	// the SAME amount (idempotent) rather than being double-counted against room.
-	const dailyAlready = await arenaEmittedOn(db, user, at, challengeId);
-	const dailyRoom = Math.max(0, dailyCap - dailyAlready);
+	// Skipped entirely when the cap is off, which also saves a query per credit.
+	const dailyAlready = dailyCapOn ? await arenaEmittedOn(db, user, at, challengeId) : 0;
+	const dailyRoom = dailyCapOn ? Math.max(0, dailyCap - dailyAlready) : Infinity;
 	// Optional GLOBAL weekly emission budget across all users (treasury protection).
 	// 0 / undefined = disabled (per-user cap only). Same own-row exclusion keeps it
 	// idempotent on retry while still counting other winners in the same run.

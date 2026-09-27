@@ -187,6 +187,42 @@ describe('arena_afit — bounded cap/budget reads', () => {
 		expect(never.shortfall).toMatchObject({ requested: 60000, unsatisfiable: true });
 	});
 
+	// Product decision (2026-09-27): the per-user daily cap does not apply to contest
+	// prizes. It was anti-farming for ACTIVITY rewards; a prize cannot be farmed, each
+	// contest's schedule already bounds it, and all six defaults settle in the same
+	// sweep - so the cap only ever clipped a legitimate multi-contest winner, and that
+	// clipped figure went on-chain as the prize, permanently.
+	test('dailyCap 0 disables the per-user cap entirely', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 480, '2026-08-26T01:00:00Z'),
+		]);
+		// with a 500 cap this would clip to 20; with the cap off it pays in full
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, dailyCap: 0, weeklyBudget: 50000 });
+		expect(res).toMatchObject({ ok: true, credited: 400, capped: false });
+		expect(await afit.balanceOf(db, 'ace')).toBe(880);
+	});
+
+	test('the weekly treasury budget still binds when the daily cap is off', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 49800, '2026-08-26T01:00:00Z'),
+		]);
+		// the treasury guard is untouched: 200 left, 400 asked for -> refuse, not clip
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, dailyCap: 0, weeklyBudget: 50000 });
+		expect(res).toMatchObject({ ok: false, cappedBy: 'weekly_budget', credited: 0 });
+	});
+
+	test('an ABSENT dailyCap still falls back to the 500 default', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 480, '2026-08-26T01:00:00Z'),
+		]);
+		// a direct caller that forgets the param must not get an uncapped credit
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, weeklyBudget: 50000 });
+		expect(res.credited).toBe(20);
+	});
+
 	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
 		const db = createMockDb();
 		db.collection('token_transactions').__seed([
