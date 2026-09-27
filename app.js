@@ -1191,11 +1191,27 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
+				// Carry a recurring default's roster into the occurrence it rolled into
+				// (a join is scoped to ONE challenge id, so every new occurrence used to
+				// start empty). DEFERRED by design: it enrols only into a target the
+				// tailer has already indexed, so it runs a tick BEHIND the roll it
+				// follows, and its own failures never abort settlement above.
+				try {
+					await arenaJobs.autoEnrollRecurrences(db, {
+						broadcastOp: arenaBroadcastOp,
+						lookbackDays: Number.isFinite(config.arena_autoenroll_lookback_days)
+							? config.arena_autoenroll_lookback_days
+							: undefined,
+						log: (m) => utils.log(m, 'arena'),
+					});
+				} catch (e) {
+					utils.log(e, 'arena');
+				}
 			} catch (e) {
 				utils.log(e, 'arena');
 			}
 		});
-		console.log('Arena resolution job scheduled ('+resolveCron+')');
+		console.log('Arena resolution job scheduled ('+resolveCron+') with recurrence auto-enrolment');
 	}
 }
 
