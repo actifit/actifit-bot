@@ -1513,20 +1513,32 @@ function format(n, c, d, t) {
  /**
   * Read and cache config.json.
   *
-  * FAIL LOUDLY on a malformed file. This used to be a bare JSON.parse: on a
-  * syntax error it threw, `config` was never assigned, so every later call
-  * re-read, re-threw, and logged 'I get config' again forever. Callers that
-  * swallow errors then saw `config.<anything>` as undefined and silently
-  * disabled themselves with NO error anywhere.
+  * WHAT THIS DOES AND DOES NOT FIX - corrected after review, because the first
+  * version of this comment got the post-mortem wrong and a wrong post-mortem is
+  * worse than none.
   *
-  * That cost roughly an hour on Arena launch night (2026-09-23): a missing
-  * comma left by a hand-edit meant `config.arena_tailer_enabled` read as
-  * undefined, the tailer guard stayed false, nothing logged, and every check we
-  * ran - grep for the keys, pm2 cwd, git HEAD, BOT_THREAD - looked correct,
-  * because grep matches lines in a file that does not parse.
+  * It does NOT change behaviour for a malformed file. `getConfig()` is called at
+  * MODULE SCOPE (top of this file), so a JSON syntax error already threw out of
+  * `require('./utils')` and the process already died at boot - loudly, in a pm2
+  * restart loop. The earlier claim here, that `config` stayed undefined and
+  * callers silently disabled themselves, cannot happen: the lazy getConfig()
+  * call sites are only reachable once the module-scope call has already
+  * succeeded, at which point `config` is truthy and they early-return.
   *
-  * A malformed config is never recoverable at runtime, so crash at boot with a
-  * message that names the file and the parse position instead.
+  * What it DOES add is a message that names the file, its RESOLVED path and the
+  * parse position, instead of a bare `Unexpected token` with no filename. The
+  * resolved path is the useful part: this reads a RELATIVE path against
+  * process.cwd(), so the same code reads a different file depending on where the
+  * process was started from.
+  *
+  * The Arena launch-night incident (2026-09-23) remains UNEXPLAINED by this fix.
+  * The symptoms - app up and serving, tailer never starting, nothing in the
+  * logs, and grep finding every expected key - do not fit a parse error, since
+  * that would have prevented boot entirely. They fit either a valid-but-wrong
+  * file (duplicate key, which JSON.parse silently resolves last-wins, or altered
+  * nesting) or a wrong-cwd read of a DIFFERENT, parseable config.json. Hence the
+  * success-path log below: knowing WHICH file was loaded is what would have
+  * closed that hour.
   */
  function getConfig() {
   if (config)
@@ -1537,13 +1549,18 @@ function format(n, c, d, t) {
     try {
       raw = fs.readFileSync("config.json", "utf8");
     } catch (e) {
-      console.error('FATAL: cannot read config.json from ' + process.cwd() + ' - ' + e.message);
+      console.error('FATAL: cannot read config.json from ' + require('path').resolve('config.json') + ' - ' + e.message);
       throw e;
     }
+    const resolved = require('path').resolve('config.json');
     try {
       config = JSON.parse(raw);
+      // Which file did we actually load? A relative read against process.cwd()
+      // means this is not answerable from the code alone, and a stale-but-valid
+      // config in an unexpected cwd is indistinguishable from a correct one.
+      console.log('config.json loaded from ' + resolved);
     } catch (e) {
-      console.error('FATAL: config.json is not valid JSON (' + process.cwd() + '/config.json): ' + e.message);
+      console.error('FATAL: config.json is not valid JSON (' + resolved + '): ' + e.message);
       console.error('       Nothing that reads config will work until this is fixed.');
       console.error('       Tip: a JSON linter, or any editor that highlights JSON, will point at it.');
       throw e;
