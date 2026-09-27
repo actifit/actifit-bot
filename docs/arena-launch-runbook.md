@@ -297,12 +297,44 @@ Two committed pm2 configs now pin it, deliberately one per server:
 | api2.actifit.io | `appconfig.api2.js` | `SECOND_API` (runs the Arena) |
 | api.actifit.io | `appconfig.api.js` | unset (correct - keeps CORS) |
 
+**Capture the existing environment FIRST.** `pm2 delete app` discards every
+variable that lives only in pm2's stored state - which is the exact failure this
+PR exists to end, so do not reproduce it while fixing it. `app.js` reads
+`BOT_THREAD`, `NODE_ENV`, `PORT`, `TRUST_PROXY_HOPS`, `X_BEARER_TOKEN` and
+`X_ACTIFITAPP_USER_ID`. Most have a `config.json` fallback that takes precedence,
+but `X_BEARER_TOKEN` failing over produces a silently broken X engagement path
+(logged to console only, no alarm), and a wrong `TRUST_PROXY_HOPS` breaks every
+rate-limit bucket.
+
+```
+pm2 describe app            # or: pm2 env <id>
+```
+
+Diff that against the config file and add anything it declares that the file does
+not. Only then:
+
 ```
 pm2 delete app
 pm2 start appconfig.api2.js    # or appconfig.api.js on api
 pm2 save                       # REQUIRED, or a reboot loses it again
 curl -s localhost:3120/thread_param/
 ```
+
+The curl is the real verification, not the config file: pm2 merges an app's `env`
+over the environment its daemon inherited, so `env: {}` cannot by itself clear a
+`BOT_THREAD` exported in the deploy user's shell. On api2 it must print
+`SECOND_API`; on api it must print an empty line.
+
+**Starting the wrong file on the wrong box** is the thing to avoid: both declare
+`name: 'app'`, so nothing structurally prevents it. On api the loudest symptom is
+CORS silently dropping on the primary API box (`app.js` flips its `!= 'SECOND_API'`
+branch false), breaking the mobile app and web frontend - before any Arena
+double-run matters.
+
+**Not covered here:** the `delegations` process has the identical exposure. Its
+whole reward pipeline is gated on `BOT_THREAD == 'MAIN'`, and if that value also
+lives only in on-server pm2 state, delegator rewards can vanish just as silently.
+It has no committed ecosystem file yet.
 
 They are separate files on purpose: one shared config started on both boxes
 would make both `SECOND_API` and double-run the payout sweeps. Both pin

@@ -21,6 +21,17 @@ module.exports = {
     cwd: '/home/actifit-bot',
     exec_mode: 'fork',
     instances: 1,
+    // BOT_THREAD is deliberately absent: app.js gates the Arena tailer, the
+    // aggregation/settlement sweeps and disableUserLogin on == 'SECOND_API', and
+    // the app-level CORS header on != 'SECOND_API'. Unset makes the first three
+    // false and CORS true, which is exactly what this box needs.
+    //
+    // CAUTION: `env: {}` documents intent, it does NOT enforce it. pm2 MERGES this
+    // over the environment its daemon inherited - it does not start from empty. If
+    // BOT_THREAD is exported in the deploy user's shell or profile, the process
+    // still sees it. The curl check below is the actual verification, not this line.
+    // To force it: env: { BOT_THREAD: '' } - '' is still != 'SECOND_API', so CORS
+    // stays on while every == 'SECOND_API' guard is deterministically false.
     env: {}
   }]
 }
