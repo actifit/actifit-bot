@@ -236,7 +236,7 @@ double-run a payout even with identical config.
 | `arena_fund_cut_pct` | `5` | Platform fee on a funded pool (burned) |
 | `arena_fund_min_pool` | `50` | Minimum funded prize |
 
-These now **default correctly in code** (`app.js`), so the guard cannot ship OFF
+These default in code (`app.js`), so the **weekly treasury budget** cannot ship OFF by omission. `arena_afit_daily_cap` is the deliberate exception: it defaults to **0 (no per-user cap on contest prizes)** — see the table above.
 by omission. The weekly budget is a *ceiling, not a target* (~5x expected launch
 emission). An explicit `0` disables it — don't.
 
@@ -277,7 +277,13 @@ Data + flags:
       `/arena/challenges` returns 6 (a stalled cursor looks identical to a
       healthy idle tailer — check the number moves, not just the log line)
 - [ ] `arena_jobs_enabled: true`; both jobs logged on **api2** (SECOND_API) only (step 5)
-- [ ] Emission guards present and non-zero (step 5 table)
+- [ ] `arena_afit_weekly_budget` present and non-zero (step 5 table). NOTE
+      `arena_afit_daily_cap` is deliberately **0/absent** — it does not apply to
+      contest prizes. Set it explicitly in `config.json` so the choice is declared
+      rather than inherited from a code default.
+- [ ] A test email actually ARRIVES from the box (`smtp_usr`/`smtp_key`/`smtp_from`
+      must be set — `report_emails` alone is not enough). A page nobody receives is
+      worse than no page, because this checklist says it is covered.
 - [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
 - [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
@@ -316,6 +322,28 @@ db.arena_health.findOne({ _id: 'resolve_sweep' })
 A sweep with nothing due reports `stalled_ticks: 0` — **idle is not stalled**, and the
 record distinguishes them.
 
+`last_success_at` means *the last time a settle op was broadcast*, not the last time a
+sweep ran. Most hourly sweeps legitimately have nothing due, and the seeded cadences
+close at 1 / 7 / 14 / 30 day intervals — so **a `last_success_at` days old is normal**
+and is not by itself a stall. `alerting` is the signal; `last_success_at` is context.
+
+### What this alarm does NOT cover
+
+Be honest about the edges, because the checklist implies more coverage than exists:
+
+| Failure | Caught? |
+| --- | --- |
+| Weekly treasury exhausted | yes — mails, and clears itself |
+| A challenge failing every sweep | yes — even if others settle alongside it |
+| No posting key / broadcaster dead | yes — its own `cannot_broadcast` alert |
+| Resolve cron stopped, or a hung read wedged the in-flight guard | yes — the aggregation sweep heartbeats it |
+| `arena_jobs_enabled: false` | **no** |
+| `BOT_THREAD` unset, so the whole Arena block is skipped | **NO — and this is the known silent killer** |
+
+The last two cannot be detected from inside a process that was never scheduled to run.
+They need **outside** monitoring: alert if `arena_health.resolve_sweep.last_run_at`
+stops advancing, from something that is not this app.
+
 ### If `budgetExhausted > 0`
 
 The weekly AFIT treasury budget is exhausted. This is a controlled stop, not damage:
@@ -330,9 +358,10 @@ The weekly AFIT treasury budget is exhausted. This is a controlled stop, not dam
 To resume sooner, raise `arena_afit_weekly_budget` in `config.json` and restart.
 
 **Do not lower `arena_afit_daily_cap` in response to this alarm.** It does not help —
-the constraint is the weekly budget — and the per-user cap is recomputed on every
-retry, so lowering it mid-stall is the one action that could reduce a reward a winner
-has already banked.
+the constraint is the weekly budget, not the per-user cap. (An earlier version of this
+note claimed lowering it could reduce a reward a winner had already banked: that is
+**not** true — a re-credit never writes less than the row already present. The reason
+is simply that it does nothing for this problem.)
 
 ### If `alerting` is true but `budgetExhausted` is 0
 

@@ -232,6 +232,11 @@ async function creditAfitReward(db, params) {
 	// already means "off" in this module. An absent value still falls back to
 	// DEFAULT_DAILY_CAP so a direct caller cannot accidentally get an uncapped credit.
 	const dailyCap = Number.isFinite(params.dailyCap) ? params.dailyCap : DEFAULT_DAILY_CAP;
+	// A NEGATIVE value is a config typo, not "off". Treating it as off would fail
+	// OPEN - an uncapped credit from a fat-fingered minus sign - so refuse instead.
+	if (Number.isFinite(params.dailyCap) && params.dailyCap < 0) {
+		return { ok: false, reason: 'dailyCap must be >= 0 (0 disables the cap)' };
+	}
 	const dailyCapOn = dailyCap > 0;
 	if (!user || !challengeId) return { ok: false, reason: 'missing user/challengeId' };
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
@@ -290,8 +295,10 @@ async function creditAfitReward(db, params) {
 	// `unsatisfiable` means no amount of waiting helps: the prize exceeds the whole
 	// budget, not merely what is left of it. Only meaningful when the weekly budget is
 	// actually enabled and binding, which is guaranteed here - cappedBy can only be
-	// 'weekly_budget' when weeklyRoom <= dailyRoom, and dailyRoom is always finite, so
-	// params.weeklyBudget is a finite positive number on this path.
+	// 'weekly_budget' only when weeklyRoom <= dailyRoom AND credited < requested, which
+	// together force weeklyRoom to be a finite number below requested - so
+	// params.weeklyBudget is finite and positive on this path. (dailyRoom itself is
+	// Infinity whenever the per-user cap is disabled, so it is NOT the finite one.)
 	const shortfall = cappedBy
 		? {
 			requested,
