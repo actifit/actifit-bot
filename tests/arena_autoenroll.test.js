@@ -170,10 +170,47 @@ describe('arena_jobs.autoEnrollRecurrences', () => {
 		expect(sent[0].entities).toEqual(['thepavsalford']);
 	});
 
-	test('the funder of a prize is never carried in (I7)', async () => {
-		const db = seed({ target: { rewards: { funder: 'rajpootg', kind: 'afit', amount: 500 } } });
+	// I7, against the REAL production schema. An earlier version of this test seeded
+	// `rewards.funder`, a field NOTHING in the system writes - so it passed while the
+	// exclusion was dead code. The creator is `created_by`; the authoritative funder
+	// list is `pools.funders` / `sponsor_id`, reached via the challenge's `pool_ref`.
+	test('the creator of a challenge is never carried in (I7, via created_by)', async () => {
+		const db = seed({ target: { created_by: 'rajpootg' } });
 		const { sent, fn } = collect();
 		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		expect(sent[0].entities).toEqual(['thepavsalford']);
+	});
+
+	test('every funder on the pool is excluded (I7, via pool_ref)', async () => {
+		const db = seed({ target: { pool_ref: 'pool_1' } });
+		db.collection('pools').__seed([
+			{ id: 'pool_1', funders: ['rajpootg'], sponsor_id: 'thepavsalford' },
+		]);
+		const { sent, fn } = collect();
+		const res = await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		// both candidates were funders, so there is nobody left to carry
+		expect(sent).toHaveLength(0);
+		expect(res.skipped).toBe(1);
+	});
+
+	// The bug two independent reviewers reproduced. `left` MUST be collected across the
+	// whole series and subtracted at the end: leaving occurrence N does not touch your
+	// row on occurrence N-1, and a SETTLED row can never be left at all (arena.js
+	// refuses `leave` on a terminal challenge). A per-row state filter unioned across
+	// siblings therefore re-enrolled the user forever, with NO sequence of actions that
+	// could stop it. The `quitter` fixture cannot catch this - it has exactly one row.
+	test('leaving ONE occurrence opts you out of the whole series, permanently', async () => {
+		const db = seed({
+			participants: [
+				// joined the base (row ends 'settled', which is unleavable), then explicitly
+				// LEFT the occurrence they were auto-enrolled into
+				{ challenge_id: 'def_daily_focus@2026-09-25', entity: 'rajpootg', state: 'left', flags: [] },
+			],
+		});
+		const { sent, fn } = collect();
+		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+
+		expect(sent[0].entities).not.toContain('rajpootg');
 		expect(sent[0].entities).toEqual(['thepavsalford']);
 	});
 
@@ -270,6 +307,84 @@ describe('arena_jobs.autoEnrollRecurrences', () => {
 		const all = [...sent[0].entities, ...sent[1].entities];
 		expect(new Set(all).size).toBe(n);
 		expect(res.enrolled).toBe(n);
+	});
+
+	// The roster cap is a TREASURY control: the official schedules pay per-finisher
+	// (def_daily_focus is `flat: 5`), so emission is O(roster) against a fixed
+	// 50,000 AFIT/week budget. When the cap bites we must keep the MOST RECENTLY
+	// ACTIVE candidates, not an arbitrary slice.
+	test('the roster is capped, keeping the most recently active candidates', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'def_c', state: 'settled', type: 'daily_focus', recurrence: 'Daily', participants_kind: 'user',
+			  window: { start: '2026-09-25T13:00:00Z', end: '2026-09-26T13:00:00Z' } },
+			{ id: 'def_c@2026-09-27', state: 'open', type: 'daily_focus', recurrence: 'Daily', parent_id: 'def_c', participants_kind: 'user',
+			  window: { start: '2026-09-27T13:00:00Z', end: '2026-09-28T13:00:00Z' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_c', entity: 'stale', state: 'settled', flags: [] },
+			{ challenge_id: 'def_c', entity: 'fresh', state: 'settled', flags: [] },
+		]);
+		// both inside the 7-day lookback, but 'fresh' reported far more recently
+		db.collection('verified_posts').__seed([post('stale', 6), post('fresh', 1)]);
+		db.collection('challenge_resolutions').__seed([{ challenge_id: 'def_c', recurred_to: 'def_c@2026-09-27' }]);
+
+		const { sent, fn } = collect();
+		const res = await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn, maxRoster: 1 });
+
+		expect(sent[0].entities).toEqual(['fresh']);
+		expect(res.enrolled).toBe(1);
+		const marker = await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_c' });
+		expect(marker.auto_enroll_overflow).toBe(1);
+	});
+
+	test('an unindexed target is retried, but only up to a bound', async () => {
+		const db = seed({ resolution: { recurred_to: 'def_daily_focus@2099-01-01' } });
+		const { sent, fn } = collect();
+
+		// first miss: the attempt counter starts and the marker stays unset, so it retries
+		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		let m = await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_daily_focus@2026-09-25' });
+		expect(m.auto_enroll_attempts).toBe(1);
+		expect(m.auto_enrolled_at).toBeUndefined();
+
+		// at the bound it gives up, so an immortal row cannot starve later rolls
+		await db.collection('challenge_resolutions').updateOne(
+			{ challenge_id: 'def_daily_focus@2026-09-25' },
+			{ $set: { auto_enroll_attempts: jobs.AUTO_ENROLL_MAX_ATTEMPTS - 1 } }
+		);
+		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		m = await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_daily_focus@2026-09-25' });
+		expect(m.auto_enrolled_at).toBe(NOW);
+		expect(m.auto_enroll_reason).toMatch(/never indexed/);
+		expect(sent).toHaveLength(0);
+	});
+
+	test('two resolutions naming the same target broadcast that roster only once', async () => {
+		const db = seed();
+		db.collection('challenge_resolutions').__seed([
+			{ challenge_id: 'def_daily_focus@2026-09-25', recurred_to: 'def_daily_focus@2026-09-26' },
+			{ challenge_id: 'def_daily_focus@2026-09-24', recurred_to: 'def_daily_focus@2026-09-26' },
+		]);
+		const { sent, fn } = collect();
+		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+
+		const forTarget = sent.filter((o) => o.challenge_id === 'def_daily_focus@2026-09-26');
+		expect(forTarget).toHaveLength(1);
+		// the duplicate is marked, not left to retry forever
+		const dup = await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_daily_focus@2026-09-24' });
+		expect(dup.auto_enroll_reason).toMatch(/duplicate target/);
+	});
+
+	test('a target still resolving is retried, never marked done', async () => {
+		const db = seed({ target: { state: 'resolving' } });
+		const { sent, fn } = collect();
+		const res = await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		expect(sent).toHaveLength(0);
+		expect(res.skipped).toBe(1);
+		const m = await db.collection('challenge_resolutions').findOne({ challenge_id: 'def_daily_focus@2026-09-25' });
+		// 'resolving' is a LIVE state, so it must not burn the roster on a one-way door
+		expect(m.auto_enrolled_at).toBeUndefined();
 	});
 
 	test('a broadcast failure leaves the marker unset so the roster is retried', async () => {
