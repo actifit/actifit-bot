@@ -28,6 +28,43 @@ describe('arena_afit.creditAfitReward', () => {
 		expect(await afit.balanceOf(db, 'a')).toBe(40); // not 80
 	});
 
+	// The `arena_credit_unique` index turns the loser of a genuine race from a silent
+	// double-insert into an E11000. That throw MUST NOT escape: creditAfitReward runs
+	// inside arena_pools.resolveChallenge's payout loop, so escaping would abandon a
+	// resolution mid-payout with some winners paid, pools.paid un-updated and no
+	// settle broadcast. The mock cannot enforce a unique index, so force the raise.
+	test('a duplicate-key race reports the amount ALREADY banked instead of throwing', async () => {
+		const db = createMockDb();
+		// the row the racing writer already committed
+		await afit.creditAfitReward(db, { user: 'a', challengeId: 'chR', amount: 60, at: AT });
+
+		const ledger = db.collection('token_transactions');
+		const real = ledger.replaceOne;
+		ledger.replaceOne = async () => {
+			const e = new Error('E11000 duplicate key error collection: token_transactions index: arena_credit_unique');
+			e.code = 11000;
+			throw e;
+		};
+		const res = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chR', amount: 60, at: AT });
+		ledger.replaceOne = real;
+
+		expect(res.ok).toBe(true);
+		expect(res.raced).toBe(true);
+		expect(res.credited).toBe(60);          // what is actually banked, not what we intended
+		expect(await afit.balanceOf(db, 'a')).toBe(60);   // never doubled
+		const rows = await ledger.find({ user: 'a', reward_activity: 'arena_challenge:chR' }).toArray();
+		expect(rows.length).toBe(1);
+	});
+
+	test('a NON-duplicate write error still propagates — we must not swallow real failures', async () => {
+		const db = createMockDb();
+		const ledger = db.collection('token_transactions');
+		ledger.replaceOne = async () => { throw new Error('connection reset'); };
+		await expect(
+			afit.creditAfitReward(db, { user: 'a', challengeId: 'chE', amount: 10, at: AT })
+		).rejects.toThrow('connection reset');
+	});
+
 	test('distinct challenges each credit; balance sums them', async () => {
 		const db = createMockDb();
 		await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 30, at: AT });
@@ -107,5 +144,25 @@ describe('arena_afit.creditAfitReward', () => {
 			const r = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 400, at: AT }); // no weeklyBudget
 			expect(r.credited).toBe(400); // only the default per-user cap (500) applies
 		});
+	});
+});
+
+describe('arena_afit.ensureAfitIndexes', () => {
+	test('creates a PARTIAL unique index scoped to arena credit rows only', async () => {
+		const calls = [];
+		const db = { collection: () => ({ createIndex: async (keys, opts) => { calls.push({ keys, opts }); } }) };
+		await afit.ensureAfitIndexes(db);
+		expect(calls).toHaveLength(1);
+		expect(calls[0].keys).toEqual({ user: 1, reward_activity: 1 });
+		expect(calls[0].opts.unique).toBe(true);
+		// token_transactions is the WHOLE platform's AFIT ledger and legitimately has
+		// many rows sharing (user, reward_activity) for non-arena activity. Only arena
+		// credit rows carry challenge_id, so the constraint must be scoped to those.
+		expect(calls[0].opts.partialFilterExpression).toEqual({ challenge_id: { $type: 'string' } });
+	});
+
+	test('is a safe no-op where createIndex is unavailable (test mock / old driver)', async () => {
+		const db = { collection: () => ({}) };
+		await expect(afit.ensureAfitIndexes(db)).resolves.toBeUndefined();
 	});
 });

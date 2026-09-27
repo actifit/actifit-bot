@@ -65,6 +65,12 @@ function weekBucket(iso) {
 /** The per-(user, challenge) ledger key that makes a re-credit idempotent.
  *  `pooled` selects the creator-funded namespace (excluded from the treasury
  *  budget); default is the treasury namespace. */
+/** Mongo duplicate-key (E11000). Mirrors the helper in arena.js; duplicated
+ *  deliberately so this module keeps its no-arena-dependency load-time safety. */
+function isDuplicateKeyError(e) {
+	return !!e && (e.code === 11000 || e.code === 11001 || /E11000/.test(String(e && e.message)));
+}
+
 function activityFor(challengeId, pooled) {
 	return (pooled ? ARENA_POOL_PREFIX : ARENA_ACTIVITY_PREFIX) + challengeId;
 }
@@ -160,21 +166,89 @@ async function creditAfitReward(db, params) {
 
 	const activity = activityFor(challengeId, params.pooled);
 	// Idempotent: same (user, reward_activity) row is REPLACED, never duplicated.
-	await db.collection(COL.LEDGER).replaceOne(
-		{ user, reward_activity: activity },
-		{
-			user,
-			reward_activity: activity,
-			token_count: credited,
-			chain: AFIT_CHAIN,
-			orig_account: OFFICIAL_ACCOUNT,
-			challenge_id: challengeId,
-			date: new Date(at),
-		},
-		{ upsert: true }
-	);
+	// Once `arena_credit_unique` exists, the loser of a genuine race no longer
+	// double-inserts - it raises E11000 here. That must NOT escape: this runs inside
+	// arena_pools.resolveChallenge's payout loop, so an unhandled throw would abandon
+	// the resolution mid-payout with some winners credited, `pools.paid` un-updated
+	// and no settle broadcast. A duplicate key means the row we were about to write
+	// already exists, which is exactly the outcome we wanted, so read it back and
+	// report what is actually banked rather than what we intended to credit.
+	try {
+		await db.collection(COL.LEDGER).replaceOne(
+			{ user, reward_activity: activity },
+			{
+				user,
+				reward_activity: activity,
+				token_count: credited,
+				chain: AFIT_CHAIN,
+				orig_account: OFFICIAL_ACCOUNT,
+				challenge_id: challengeId,
+				date: new Date(at),
+			},
+			{ upsert: true }
+		);
+	} catch (e) {
+		if (!isDuplicateKeyError(e)) throw e;
+		const existing = await db.collection(COL.LEDGER).findOne({ user, reward_activity: activity });
+		const already = Number(existing && existing.token_count) || 0;
+		return {
+			ok: true,
+			credited: already,
+			capped: already < Number(amount),
+			raced: true,
+			balance: await reconcileBalance(db, user),
+			ref: activity,
+		};
+	}
 	const balance = await reconcileBalance(db, user);
 	return { ok: true, credited, capped: credited < Number(amount), balance, ref: activity };
+}
+
+/**
+ * Index the arena credit path relies on for correctness.
+ *
+ * `creditAfitReward` is idempotent by REPLACING the (user, reward_activity) row,
+ * but a read-then-write upsert is only retry-safe, not race-safe: two concurrent
+ * runs can both miss the existing row and both insert, double-crediting. The
+ * unique `challenge_resolutions.challenge_id` is the backstop, but it is written
+ * LAST - after the credits - so it cannot prevent that.
+ *
+ * This makes the database enforce it. The index is PARTIAL: token_transactions is
+ * the whole platform's AFIT ledger (~23M rows at the time of writing) and
+ * legitimately holds many rows sharing a (user, reward_activity) pair for
+ * non-arena activity. Only arena credit rows carry `challenge_id`, so only those
+ * are indexed and constrained - verified against production before adding this
+ * (3 rows carried it, 0 duplicates).
+ *
+ * The filter tests `$type: 'string'` rather than `$exists: true` on purpose:
+ * `$exists` also matches an explicit `challenge_id: null`, so a single careless
+ * `challenge_id: maybeNull` in some future non-arena writer would drag that whole
+ * class of ordinary ledger rows into a UNIQUE index and start rejecting
+ * legitimate inserts. `$type` cannot be tripped that way, at no extra cost.
+ *
+ * OPERATIONAL NOTE - do not deploy this blind. `background` is accepted but
+ * IGNORED by MongoDB 4.2+, and a partial index cannot be seeded from another
+ * index: the server must examine all ~23M documents to decide membership, which
+ * is real IO on the primary plus a brief exclusive lock as the build commits.
+ * Create it by hand off-peak (`mongosh`, then verify with `getIndexes()`) BEFORE
+ * shipping the code; this call then finds it and is a no-op. Note also that flags
+ * such as `arena_jobs_enabled` do NOT gate it, so a flags-off rollback does not
+ * remove it - that needs a `dropIndex('arena_credit_unique')`.
+ *
+ * Safe no-op where createIndex is unavailable (the in-memory test mock).
+ */
+async function ensureAfitIndexes(db) {
+	const ledger = db.collection(COL.LEDGER);
+	if (typeof ledger.createIndex !== 'function') return;
+	await ledger.createIndex(
+		{ user: 1, reward_activity: 1 },
+		{
+			unique: true,
+			partialFilterExpression: { challenge_id: { $type: 'string' } },
+			name: 'arena_credit_unique',
+			background: true,
+		}
+	);
 }
 
 module.exports = {
@@ -190,4 +264,5 @@ module.exports = {
 	arenaEmittedWeek,
 	reconcileBalance,
 	creditAfitReward,
+	ensureAfitIndexes,
 };
