@@ -262,8 +262,25 @@ async function resolveDueChallenges(db, opts = {}) {
 				// idempotent resolution marker, and returns the settle payload.
 				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, poolId, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
 				if (!resolution.ok) {
+					// DELIBERATE, and worth stating because it is a product decision, not a
+					// side effect: `continue` skips the F6 events, refundUnpaid, the settle
+					// broadcast AND the recurrence roll. So while the weekly treasury is
+					// dry, a recurring default creates no next occurrence at all.
+					//
+					// That is the behaviour we want. Rolling forward during exhaustion just
+					// manufactures more contests we cannot pay for, and each one would have
+					// to be unwound later; halting damps the cascade instead. nextOccurrence
+					// skip-aheads to the current period when it does resume, so the series
+					// picks up at today rather than replaying the missed windows - i.e. the
+					// missed periods simply never existed, which is the honest outcome for a
+					// contest nobody could have been paid for.
 					failed++;
-					if (resolution.budgetExhausted) {
+					if (resolution.budgetExhausted && resolution.shortfall && resolution.shortfall.unsatisfiable) {
+						// Never going to clear on its own: one prize is bigger than the
+						// whole weekly budget. Retrying looks identical to congestion, so
+						// name it as configuration.
+						log(`arena resolve: *** MISCONFIGURED BUDGET *** ${ch.id} needs ${resolution.shortfall.requested} AFIT for a single prize but the ENTIRE weekly budget is smaller. This will never settle until arena_afit_weekly_budget is raised or the schedule is lowered. ${resolution.reason}`);
+					} else if (resolution.budgetExhausted) {
 						// Not a transient error, and not self-healing: the weekly treasury
 						// budget is gone and NOTHING will settle until it resets or the
 						// budget is raised. Say so unmistakably, because the alternative

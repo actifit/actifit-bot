@@ -45,10 +45,18 @@ describe('arena_afit — bounded cap/budget reads', () => {
 			arenaRow('bob', 'chA', 1000, '2026-08-26T01:00:00Z'),    // same week -> counts
 			arenaRow('bob', 'chOld', 40000, '2026-07-01T01:00:00Z'), // long past -> must NOT count
 		]);
+		// 1200 budget - 1000 already emitted this week = 200 of room, but the prize is
+		// 500. A treasury that can only cover PART of a prize must not pay part of it:
+		// that figure is settled on-chain and never revisited. Refuse and let the
+		// resolution retry once the budget frees. (The 40000 from a past week is
+		// correctly ignored - if it counted, there would be no room at all.)
 		const res = await afit.creditAfitReward(db, { user: 'carol', challengeId: 'chNew', amount: 500, at: AT, weeklyBudget: 1200 });
-		// 1200 budget - 1000 already emitted this week = 200 of room
-		expect(res.credited).toBe(200);
-		expect(res.capped).toBe(true);
+		expect(res).toMatchObject({ ok: false, capped: true, credited: 0, cappedBy: 'weekly_budget' });
+		expect(res.shortfall).toMatchObject({ requested: 500, available: 200, unsatisfiable: false });
+
+		// and a prize that DOES fit in the remaining room is paid in full
+		const fits = await afit.creditAfitReward(db, { user: 'carol', challengeId: 'chFits', amount: 200, at: AT, weeklyBudget: 1200 });
+		expect(fits).toMatchObject({ ok: true, credited: 200 });
 	});
 
 	test('a re-credit of the SAME (user, challenge) recomputes the same room', async () => {
@@ -79,9 +87,19 @@ describe('arena_afit — bounded cap/budget reads', () => {
 			{ user: 'x', reward_activity: 'arena_challenge:chT', token_count: 100, challenge_id: 'chT', date: new Date('2026-08-26T01:00:00Z') },
 		]);
 		// budget 1000; only the 100 treasury row counts, so 900 of room remains
-		// dailyCap raised out of the way so the WEEKLY budget is what binds here
+		// dailyCap raised out of the way so the WEEKLY budget is what binds here.
+		// Only the 100 treasury row counts, leaving 900 of room - so a 5000 prize is
+		// refused (not part-paid), while a prize that fits the 900 is paid in full.
+		// If the pooled/fund/refund rows leaked into the treasury total there would be
+		// no room at all and even the small prize would be refused.
 		const res = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chNew', amount: 5000, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
-		expect(res.credited).toBe(900);
+		expect(res).toMatchObject({ ok: false, cappedBy: 'weekly_budget' });
+		// 5000 exceeds the ENTIRE 1000 budget, so this one can never be satisfied by
+		// waiting - the guard says so rather than looping on it forever
+		expect(res.shortfall).toMatchObject({ requested: 5000, available: 900, unsatisfiable: true });
+
+		const fits = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chFits', amount: 900, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
+		expect(fits).toMatchObject({ ok: true, credited: 900 });
 	});
 
 	test('a pooled credit is written to its own namespace and is not treasury-capped', async () => {
@@ -97,6 +115,19 @@ describe('arena_afit — bounded cap/budget reads', () => {
 		// and it must not show up in the treasury weekly total afterwards
 		const next = await afit.creditAfitReward(db, { user: 'w', challengeId: 'chT', amount: 100, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
 		expect(next.credited).toBe(100);   // the 5000 pooled row did not eat the budget
+	});
+
+	// The daily cap is deliberately NOT treated like the treasury. It is per-user
+	// policy - you may earn 500 a day - so a clip is the rule working as intended and
+	// must still pay, and must still let the contest settle for everyone else.
+	test('a DAILY-cap clip still pays the reduced amount', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('dan', 'chEarlier', 300, '2026-08-26T01:00:00Z'),
+		]);
+		const res = await afit.creditAfitReward(db, { user: 'dan', challengeId: 'chNew', amount: 400, at: AT, dailyCap: 500, weeklyBudget: 100000 });
+		expect(res).toMatchObject({ ok: true, credited: 200, capped: true });
+		expect(await afit.balanceOf(db, 'dan')).toBe(500);
 	});
 
 	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
@@ -223,10 +254,18 @@ describe('arena_afit.creditAfitReward', () => {
 			const db = createMockDb();
 			const r1 = await afit.creditAfitReward(db, { user: 'a', challengeId: 'chA', amount: 70, at: AT, weeklyBudget: 100 });
 			expect(r1.credited).toBe(70);
+			// only 30 of the 100 weekly budget remains, so a 70 prize no longer fits.
+			// It is REFUSED rather than part-paid at 30 - a reduced figure would be
+			// settled on-chain permanently for a winner who earned the full amount.
 			const r2 = await afit.creditAfitReward(db, { user: 'b', challengeId: 'chB', amount: 70, at: AT, weeklyBudget: 100 });
-			expect(r2.credited).toBe(30); // only 30 of the 100 weekly budget remains
+			expect(r2).toMatchObject({ ok: false, capped: true, credited: 0, cappedBy: 'weekly_budget' });
+			expect(r2.shortfall).toMatchObject({ requested: 70, available: 30, unsatisfiable: false });
+			// a prize that fits the remaining 30 still pays, so the budget is not wasted
+			const r2b = await afit.creditAfitReward(db, { user: 'b', challengeId: 'chB2', amount: 30, at: AT, weeklyBudget: 100 });
+			expect(r2b).toMatchObject({ ok: true, credited: 30 });
+			// now genuinely exhausted
 			const r3 = await afit.creditAfitReward(db, { user: 'c', challengeId: 'chC', amount: 50, at: AT, weeklyBudget: 100 });
-			expect(r3).toMatchObject({ ok: false, capped: true }); // budget exhausted
+			expect(r3).toMatchObject({ ok: false, capped: true, credited: 0, cappedBy: 'weekly_budget' });
 		});
 
 		test('idempotent per (user,challenge) — a re-credit stays at the same amount', async () => {

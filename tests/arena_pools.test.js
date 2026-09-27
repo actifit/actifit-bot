@@ -256,7 +256,12 @@ describe('arena_pools.resolveChallenge — budget exhaustion must not settle a z
 		expect(res.reason).toMatch(/budget exhausted/i);
 		expect(res.settlePayload).toBeUndefined();
 
-		// nothing recorded against the participant, so no zero to broadcast
+		// nothing recorded against the participant, so no wrong figure to broadcast.
+		// NOTE this fixture has ONE winner on purpose: the abort fires on the first
+		// credit, so nothing was written at all. With several winners the earlier ones
+		// ARE already credited when the abort fires - that case is its own test below,
+		// because the old assertion here quietly implied an invariant the code does
+		// not hold in general.
 		const p = await db.collection('challenge_participants')
 			.findOne({ challenge_id: 'chBig', entity: 'winner' });
 		expect(p.result == null || p.result.reward == null).toBe(true);
@@ -280,6 +285,97 @@ describe('arena_pools.resolveChallenge — budget exhaustion must not settle a z
 		});
 		expect(second.ok).toBe(true);
 		expect(second.settlePayload.rewards[0]).toMatchObject({ entity: 'winner', afit: 400 });
+	});
+
+	// The case the single-winner fixtures cannot reach: the abort happens INSIDE the
+	// payout loop, so higher-ranked winners are already credited when it fires. This
+	// pins what that half-finished state looks like, and that it heals.
+	test('a multi-winner partial payout leaves no marker and heals in full later', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'chMulti', state: 'open', type: 'liveops', origin_tier: 'official',
+			  window: { start: '2026-08-01T00:00:00Z', end: '2026-08-26T00:00:00Z' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'chMulti', entity: 'A', state: 'enrolled', flags: [], score: { verified: 300 } },
+			{ challenge_id: 'chMulti', entity: 'B', state: 'enrolled', flags: [], score: { verified: 200 } },
+			{ challenge_id: 'chMulti', entity: 'C', state: 'enrolled', flags: [], score: { verified: 100 } },
+		]);
+		// 49,600 of a 50,000 budget already spent this week -> 400 of room.
+		// A's 400 fits exactly; B's 250 then does not.
+		db.collection('token_transactions').__seed([
+			{ user: 'other', reward_activity: 'arena_challenge:chEarlier', token_count: 49600,
+			  challenge_id: 'chEarlier', date: new Date(AT) },
+		]);
+		const standings = [
+			{ entity: 'A', rank: 1, score_verified: 300 },
+			{ entity: 'B', rank: 2, score_verified: 200 },
+			{ entity: 'C', rank: 3, score_verified: 100 },
+		];
+		const prizes = [
+			{ rank: 1, afit: 400, badges: [] },
+			{ rank: 2, afit: 250, badges: [] },
+			{ rank: 3, afit: 150, badges: [] },
+		];
+		const args = { challengeId: 'chMulti', standings, prizes, dailyCap: 500, weeklyBudget: 50000 };
+
+		const first = await pools.resolveChallenge(db, { ...args, asOf: AT });
+		expect(first.ok).toBe(false);
+		expect(first.budgetExhausted).toBe(true);
+
+		// A was already paid before the abort reached B - that is the partial state
+		expect(await afit.balanceOf(db, 'A')).toBe(400);
+		expect(await afit.balanceOf(db, 'B')).toBe(0);
+		// but NO resolution marker, so nothing was settled or broadcast
+		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'chMulti' })).toBeFalsy();
+
+		// a same-week retry is stable: A recomputes to the SAME 400 (its own row is
+		// excluded from the budget), and B still cannot be paid
+		const again = await pools.resolveChallenge(db, { ...args, asOf: AT });
+		expect(again.ok).toBe(false);
+		expect(await afit.balanceOf(db, 'A')).toBe(400);
+
+		// next week the budget resets and the whole thing settles in full
+		const LATER = '2026-09-03T10:00:00Z';
+		const healed = await pools.resolveChallenge(db, { ...args, asOf: LATER });
+		expect(healed.ok).toBe(true);
+		const paid = Object.fromEntries(healed.settlePayload.rewards.map((r) => [r.entity, r.afit]));
+		expect(paid).toEqual({ A: 400, B: 250, C: 150 });
+		expect(await afit.balanceOf(db, 'B')).toBe(250);
+	});
+
+	// The finding that made this PR worth re-reviewing: gating the abort on a credit
+	// of exactly ZERO missed the PARTIAL clip. Payouts run in rank order, so the
+	// winner straddling the budget boundary is the one with the BIGGEST prize - the
+	// old code paid them a reduced figure and settled it on-chain forever.
+	test('a NON-ZERO clip by the weekly budget also refuses to settle', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'chClip', state: 'open', type: 'liveops', origin_tier: 'official',
+			  window: { start: '2026-08-01T00:00:00Z', end: '2026-08-26T00:00:00Z' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'chClip', entity: 'top', state: 'enrolled', flags: [], score: { verified: 100 } },
+		]);
+		// 49,700 spent -> 300 of room against a 400 prize: a CLIP, not a zero
+		db.collection('token_transactions').__seed([
+			{ user: 'other', reward_activity: 'arena_challenge:chEarlier', token_count: 49700,
+			  challenge_id: 'chEarlier', date: new Date(AT) },
+		]);
+
+		const res = await pools.resolveChallenge(db, {
+			challengeId: 'chClip',
+			standings: [{ entity: 'top', rank: 1, score_verified: 100 }],
+			prizes: [{ rank: 1, afit: 400, badges: [] }],
+			asOf: AT, dailyCap: 500, weeklyBudget: 50000,
+		});
+
+		expect(res.ok).toBe(false);
+		expect(res.budgetExhausted).toBe(true);
+		expect(res.shortfall).toMatchObject({ requested: 400, available: 300, unsatisfiable: false });
+		// crucially: NOT credited 300, and nothing settled
+		expect(await afit.balanceOf(db, 'top')).toBe(0);
+		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'chClip' })).toBeFalsy();
 	});
 
 	test('a per-user DAILY cap is NOT treated the same — it still settles', async () => {

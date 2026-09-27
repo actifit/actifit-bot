@@ -218,9 +218,12 @@ async function reconcileBalance(db, user) {
  * @param {object} db
  * @param {object} params { user, challengeId, amount, at?, dailyCap?, weeklyBudget? }
  * @returns {Promise<{ok, credited, capped?, cappedBy?, balance, ref?, reason?}>}
- *   `cappedBy` is set when a credit was clamped to ZERO: 'daily_cap' (that user has
- *   had their allowance today - normal) or 'weekly_budget' (the treasury budget for
- *   the week is exhausted - NOT normal, and must not be settled as a zero).
+ *   `cappedBy` names the binding constraint on ANY shortfall (zero OR partial):
+ *   'daily_cap' (that user has had their allowance today - normal policy, and the
+ *   contest still settles) or 'weekly_budget' (the treasury is empty for the week -
+ *   NOT normal). A 'weekly_budget' shortfall always returns ok:false and writes
+ *   NOTHING, whether it clipped to zero or merely reduced the amount, so the caller
+ *   can abort the resolution rather than record a wrong figure on-chain forever.
  */
 async function creditAfitReward(db, params) {
 	const { user, challengeId, amount } = params;
@@ -242,20 +245,53 @@ async function creditAfitReward(db, params) {
 		const weekAlready = await arenaEmittedWeek(db, at, user, challengeId);
 		weeklyRoom = Math.max(0, params.weeklyBudget - weekAlready);
 	}
-	const credited = Math.min(Number(amount), dailyRoom, weeklyRoom);
+	const requested = Number(amount);
+	const credited = Math.min(requested, dailyRoom, weeklyRoom);
+
+	// WHICH constraint bit, and did it bite at all. Both matter to the caller, and
+	// neither used to be knowable.
+	//
+	// A per-user daily cap is normal, expected policy: that user has already had
+	// their 500 today, and the contest should still settle. The GLOBAL weekly budget
+	// running dry is a different thing entirely - the treasury is empty, it affects
+	// every winner, and recording a reduced amount for it writes a permanent on-chain
+	// record that a real winner earned less than they did.
+	//
+	// Report this on ANY shortfall, not just a clip to zero. Payouts are credited in
+	// RANK ORDER, biggest prize first, so when the budget crosses zero mid-challenge
+	// there is exactly ONE boundary-crossing credit - and unless the remaining room
+	// lands on precisely 0, that one is a partial clip, not a zero. Gating only on
+	// zero therefore missed the single winner who loses the most, every single time.
+	// On a tie prefer weekly: it is the constraint that blocks everybody.
+	const cappedBy = credited < requested
+		? (weeklyRoom <= dailyRoom ? 'weekly_budget' : 'daily_cap')
+		: null;
+
 	if (credited <= 0) {
-		// WHY we capped to nothing matters to the caller, and used to be unknowable.
-		// A per-user daily cap is normal, expected policy: that user has already had
-		// their 500 today and the contest should still settle. The GLOBAL weekly
-		// budget running dry is a different thing entirely - it is the treasury being
-		// empty, it affects every winner, and settling a zero for it writes a
-		// permanent on-chain record that a real winner earned nothing. The caller has
-		// to be able to tell those apart, so name the binding constraint.
 		return {
 			ok: false,
 			capped: true,
 			credited: 0,
-			cappedBy: weeklyRoom <= 0 ? 'weekly_budget' : 'daily_cap',
+			cappedBy,
+			balance: await balanceOf(db, user),
+		};
+	}
+	if (cappedBy === 'weekly_budget') {
+		// A PARTIAL payment out of an exhausted treasury. Refuse it for the same
+		// reason we refuse the zero: settling it is permanent and public, and the
+		// right amount is payable later. Nothing is written, so the caller can abort
+		// the whole resolution and retry once the budget frees.
+		// A prize larger than the ENTIRE weekly budget can never be satisfied, no
+		// matter how long we wait - that is a misconfiguration, not congestion, and
+		// retrying it hourly forever would look exactly like ordinary exhaustion.
+		// Flag it so the caller can say so instead of quietly looping.
+		const unsatisfiable = requested > params.weeklyBudget;
+		return {
+			ok: false,
+			capped: true,
+			credited: 0,
+			cappedBy,
+			shortfall: { requested, available: credited, unsatisfiable },
 			balance: await balanceOf(db, user),
 		};
 	}

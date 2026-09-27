@@ -229,10 +229,19 @@ async function resolveChallenge(db, params) {
 			// is not this: that is expected policy for one user and must not block
 			// everyone else's settlement, so it still records 0 and settles.
 			if (!res.ok && res.cappedBy === 'weekly_budget') {
+				// Covers a clip to zero AND a PARTIAL clip. The partial is the one that
+				// matters most: payouts are credited in rank order, biggest prize first,
+				// so the winner whose credit straddles the budget boundary is the one
+				// with the largest prize, and paying them a reduced figure would settle
+				// that number on-chain permanently.
+				const short = res.shortfall || {};
 				return {
 					ok: false,
-					reason: 'weekly AFIT budget exhausted - refusing to settle a zero reward for ' + p.entity,
+					reason: 'weekly AFIT budget exhausted - refusing to settle a reduced reward for '
+						+ p.entity + ' (needed ' + (short.requested != null ? short.requested : p.afit)
+						+ ', only ' + (short.available != null ? short.available : 0) + ' of budget left)',
 					budgetExhausted: true,
+					shortfall: res.shortfall || null,
 				};
 			}
 			if (res.ok) { credited = res.credited; reward_ref = res.ref; }
