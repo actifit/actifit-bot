@@ -85,8 +85,58 @@ function createMockCollection(initialData = []) {
       return Promise.resolve({ deletedCount: before - data.length });
     }),
     aggregate: jest.fn((pipeline) => {
-      // Simplified: just return all data for now
-      return createCursor(data);
+      // Minimal but REAL $match/$group support. This used to ignore the pipeline
+      // and return every document, which silently made any aggregation look like a
+      // full collection read - so code that replaced a scan with a server-side sum
+      // could not be tested, and a test could pass while the real query did
+      // something completely different. Only the stages the arena code actually
+      // uses are implemented; anything else throws loudly rather than quietly
+      // returning the wrong thing.
+      if (!Array.isArray(pipeline)) return createCursor(data);
+      let docs = data.slice();
+      for (const stage of pipeline) {
+        const op = Object.keys(stage)[0];
+        if (op === '$match') {
+          docs = docs.filter((d) => matchQuery(d, stage.$match));
+        } else if (op === '$group') {
+          const spec = stage.$group;
+          const groups = new Map();
+          for (const d of docs) {
+            // only a literal null _id (grand total) is supported
+            const key = spec._id === null ? '__all__' : String(resolveField(d, spec._id));
+            if (!groups.has(key)) groups.set(key, { _id: spec._id === null ? null : resolveField(d, spec._id) });
+            const g = groups.get(key);
+            for (const [field, acc] of Object.entries(spec)) {
+              if (field === '_id') continue;
+              if (acc && acc.$sum !== undefined) {
+                // Match real MongoDB: $sum IGNORES non-numeric values rather than
+                // coercing them. Number(x) || 0 would silently reproduce the old
+                // JS-reduce semantics this code replaced (which DID coerce numeric
+                // strings), hiding the one real behaviour change behind a green test.
+                let add;
+                if (typeof acc.$sum === 'number') {
+                  add = acc.$sum;
+                } else {
+                  const v = resolveField(d, acc.$sum);
+                  add = typeof v === 'number' && Number.isFinite(v) ? v : 0;
+                }
+                g[field] = (g[field] || 0) + add;
+              } else if (acc && acc.$max !== undefined) {
+                const v = resolveField(d, acc.$max);
+                g[field] = g[field] === undefined ? v : (v > g[field] ? v : g[field]);
+              } else {
+                throw new Error('mock-db aggregate: unsupported accumulator ' + JSON.stringify(acc));
+              }
+            }
+          }
+          docs = [...groups.values()];
+        } else if (op === '$limit') {
+          docs = docs.slice(0, stage.$limit);
+        } else {
+          throw new Error('mock-db aggregate: unsupported stage ' + op);
+        }
+      }
+      return createCursor(docs);
     }),
     distinct: jest.fn(() => Promise.resolve([])),
     // Expose data for test assertions
@@ -107,6 +157,14 @@ function createCursor(results) {
     skip: jest.fn((n) => createCursor(results.slice(n))),
     count: jest.fn(() => Promise.resolve(results.length)),
   };
+}
+
+/**
+ * Resolve an aggregation field reference ("$token_count") or a literal.
+ */
+function resolveField(doc, ref) {
+  if (typeof ref === 'string' && ref.startsWith('$')) return doc[ref.slice(1)];
+  return ref;
 }
 
 /**
@@ -132,6 +190,17 @@ function matchQuery(doc, query) {
         const hasKey = doc[key] !== undefined;
         if (query[key].$exists && !hasKey) return false;
         if (!query[key].$exists && hasKey) return false;
+      }
+      // An operator this matcher does not implement used to fall straight through
+      // and MATCH EVERYTHING - so a test could filter on $type/$regex/$expr, assert
+      // a total, and pass green while real MongoDB returned something else. That is
+      // the same silently-wrong-answer failure the aggregate() stage check exists to
+      // prevent, so fail the same way: loudly.
+      const SUPPORTED = ['$gte', '$lte', '$gt', '$lt', '$ne', '$in', '$nin', '$exists'];
+      for (const op of Object.keys(query[key])) {
+        if (op.startsWith('$') && !SUPPORTED.includes(op)) {
+          throw new Error('mock-db matchQuery: unsupported operator ' + op + ' on field "' + key + '"');
+        }
       }
     } else {
       if (doc[key] !== query[key]) return false;

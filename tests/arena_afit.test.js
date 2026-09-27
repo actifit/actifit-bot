@@ -7,6 +7,111 @@ const afit = require('../arena_afit');
 
 const AT = '2026-08-26T10:00:00Z';
 
+// The cap/budget readers used to pull unbounded row sets into Node and filter in
+// JS: arenaEmittedOn read the user's ENTIRE platform ledger (3,205 rows for a real
+// participant) and arenaEmittedWeek read every arena row ever written - both once
+// per credit, inside the payout loop. They now bound by date in the query and sum
+// server-side. These tests pin the SEMANTICS that bounding must not change.
+describe('arena_afit — bounded cap/budget reads', () => {
+	const AT = '2026-08-26T10:00:00Z';
+	const arenaRow = (user, challengeId, tokens, dateISO) => ({
+		user,
+		reward_activity: 'arena_challenge:' + challengeId,
+		token_count: tokens,
+		challenge_id: challengeId,
+		date: new Date(dateISO),
+	});
+
+	test('the daily cap counts only THIS user\'s arena rows on THIS day', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('alice', 'chA', 100, '2026-08-26T01:00:00Z'),   // same day  -> counts
+			arenaRow('alice', 'chB', 200, '2026-08-25T23:00:00Z'),   // day before -> must NOT count
+			arenaRow('bob',   'chC', 400, '2026-08-26T02:00:00Z'),   // other user -> must NOT count
+			// ordinary non-arena ledger rows for the same user on the same day
+			{ user: 'alice', reward_activity: 'Post', token_count: 5000, date: new Date('2026-08-26T03:00:00Z') },
+			{ user: 'alice', reward_activity: 'Comment', token_count: 9000, date: new Date('2026-08-26T04:00:00Z') },
+		]);
+
+		// dailyCap 300, already 100 used today -> only 200 of a 500 request lands
+		const res = await afit.creditAfitReward(db, { user: 'alice', challengeId: 'chNew', amount: 500, at: AT, dailyCap: 300 });
+		expect(res.credited).toBe(200);
+		expect(res.capped).toBe(true);
+	});
+
+	test('the weekly budget counts only rows inside the same week bucket', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('bob', 'chA', 1000, '2026-08-26T01:00:00Z'),    // same week -> counts
+			arenaRow('bob', 'chOld', 40000, '2026-07-01T01:00:00Z'), // long past -> must NOT count
+		]);
+		const res = await afit.creditAfitReward(db, { user: 'carol', challengeId: 'chNew', amount: 500, at: AT, weeklyBudget: 1200 });
+		// 1200 budget - 1000 already emitted this week = 200 of room
+		expect(res.credited).toBe(200);
+		expect(res.capped).toBe(true);
+	});
+
+	test('a re-credit of the SAME (user, challenge) recomputes the same room', async () => {
+		const db = createMockDb();
+		const first = await afit.creditAfitReward(db, { user: 'dave', challengeId: 'chX', amount: 250, at: AT, dailyCap: 300, weeklyBudget: 1000 });
+		expect(first.credited).toBe(250);
+		// replaying must not count its own row against its own room
+		const again = await afit.creditAfitReward(db, { user: 'dave', challengeId: 'chX', amount: 250, at: AT, dailyCap: 300, weeklyBudget: 1000 });
+		expect(again.credited).toBe(250);
+		expect(await afit.balanceOf(db, 'dave')).toBe(250);   // never doubled
+	});
+
+	// THE most money-critical property in this module: a creator-funded (pooled)
+	// credit must NEVER count against the TREASURY budget - the creator already paid
+	// for it. The old code tested the namespace with indexOf(prefix) === 0; the new
+	// code uses a $gte/$lt string range whose upper bound is the prefix with ':'
+	// replaced by ';' (adjacent codepoints, 0x3A -> 0x3B). That is exact, but nothing
+	// pinned it, so a future edit to ARENA_ACTIVITY_HI could silently pull pooled or
+	// fund rows into the treasury total with every test still green.
+	test('pooled / fund / refund namespaces never count toward the TREASURY budget', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			// all in the same week, all large enough to blow a small budget
+			{ user: 'x', reward_activity: 'arena_pool:chP',    token_count: 40000, challenge_id: 'chP', date: new Date('2026-08-26T01:00:00Z') },
+			{ user: 'x', reward_activity: 'arena_fund:chF',    token_count: -9000, challenge_id: 'chF', date: new Date('2026-08-26T01:00:00Z') },
+			{ user: 'x', reward_activity: 'arena_refund:chF',  token_count: 9000,  challenge_id: 'chF', date: new Date('2026-08-26T01:00:00Z') },
+			// a treasury row, which DOES count
+			{ user: 'x', reward_activity: 'arena_challenge:chT', token_count: 100, challenge_id: 'chT', date: new Date('2026-08-26T01:00:00Z') },
+		]);
+		// budget 1000; only the 100 treasury row counts, so 900 of room remains
+		// dailyCap raised out of the way so the WEEKLY budget is what binds here
+		const res = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chNew', amount: 5000, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
+		expect(res.credited).toBe(900);
+	});
+
+	test('a pooled credit is written to its own namespace and is not treasury-capped', async () => {
+		const db = createMockDb();
+		// pooled credits pass weeklyBudget 0 / an effectively infinite daily cap
+		const res = await afit.creditAfitReward(db, {
+			user: 'z', challengeId: 'chP', amount: 5000, at: AT, pooled: true,
+			dailyCap: Number.MAX_SAFE_INTEGER, weeklyBudget: 0,
+		});
+		expect(res.credited).toBe(5000);
+		const row = await db.collection('token_transactions').findOne({ user: 'z' });
+		expect(row.reward_activity).toBe('arena_pool:chP');
+		// and it must not show up in the treasury weekly total afterwards
+		const next = await afit.creditAfitReward(db, { user: 'w', challengeId: 'chT', amount: 100, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
+		expect(next.credited).toBe(100);   // the 5000 pooled row did not eat the budget
+	});
+
+	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('erin', 'chA', 10, '2026-08-26T01:00:00Z'),
+			{ user: 'erin', reward_activity: 'Post', token_count: 90, date: new Date('2026-01-01T00:00:00Z') },
+			{ user: 'erin', reward_activity: 'Comment', token_count: 5, date: new Date('2025-06-01T00:00:00Z') },
+			{ user: 'frank', reward_activity: 'Post', token_count: 999, date: new Date('2026-08-26T01:00:00Z') },
+		]);
+		expect(await afit.reconcileBalance(db, 'erin')).toBe(105);
+		expect(await afit.balanceOf(db, 'erin')).toBe(105);
+	});
+});
+
 describe('arena_afit.creditAfitReward', () => {
 	test('credits AFIT into token_transactions and reconciles user_tokens (spendable balance)', async () => {
 		const db = createMockDb();
