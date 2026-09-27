@@ -1510,12 +1510,61 @@ function format(n, c, d, t) {
   fs.appendFileSync( name + '.log', new Date().toString() + ' - ' + msg + "\n");
  }
 
+ /**
+  * Read and cache config.json.
+  *
+  * WHAT THIS DOES AND DOES NOT FIX - corrected after review, because the first
+  * version of this comment got the post-mortem wrong and a wrong post-mortem is
+  * worse than none.
+  *
+  * It does NOT change behaviour for a malformed file. `getConfig()` is called at
+  * MODULE SCOPE (top of this file), so a JSON syntax error already threw out of
+  * `require('./utils')` and the process already died at boot - loudly, in a pm2
+  * restart loop. The earlier claim here, that `config` stayed undefined and
+  * callers silently disabled themselves, cannot happen: the lazy getConfig()
+  * call sites are only reachable once the module-scope call has already
+  * succeeded, at which point `config` is truthy and they early-return.
+  *
+  * What it DOES add is a message that names the file, its RESOLVED path and the
+  * parse position, instead of a bare `Unexpected token` with no filename. The
+  * resolved path is the useful part: this reads a RELATIVE path against
+  * process.cwd(), so the same code reads a different file depending on where the
+  * process was started from.
+  *
+  * The Arena launch-night incident (2026-09-23) remains UNEXPLAINED by this fix.
+  * The symptoms - app up and serving, tailer never starting, nothing in the
+  * logs, and grep finding every expected key - do not fit a parse error, since
+  * that would have prevented boot entirely. They fit either a valid-but-wrong
+  * file (duplicate key, which JSON.parse silently resolves last-wins, or altered
+  * nesting) or a wrong-cwd read of a DIFFERENT, parseable config.json. Hence the
+  * success-path log below: knowing WHICH file was loaded is what would have
+  * closed that hour.
+  */
  function getConfig() {
   if (config)
     return config;
   else {
     console.log('I get config');
-    config = JSON.parse(fs.readFileSync("config.json"));
+    let raw;
+    try {
+      raw = fs.readFileSync("config.json", "utf8");
+    } catch (e) {
+      console.error('FATAL: cannot read config.json from ' + require('path').resolve('config.json') + ' - ' + e.message);
+      throw e;
+    }
+    const resolved = require('path').resolve('config.json');
+    try {
+      config = JSON.parse(raw);
+      // Which file did we actually load? A relative read against process.cwd()
+      // means this is not answerable from the code alone, and a stale-but-valid
+      // config in an unexpected cwd is indistinguishable from a correct one.
+      console.log('config.json loaded from ' + resolved);
+    } catch (e) {
+      console.error('FATAL: config.json is not valid JSON (' + resolved + '): ' + e.message);
+      console.error('       Nothing that reads config will work until this is fixed.');
+      console.error('       Tip: a JSON linter, or any editor that highlights JSON, will point at it.');
+      throw e;
+    }
     return config;
   }
  }

@@ -356,6 +356,308 @@ async function resolveDueChallenges(db, opts = {}) {
 	return summary;
 }
 
+// ---- auto-enrolment of a rolled recurrence (F5b) ---------------------------
+
+/** How many entities one `enroll` op may carry. Hive caps a custom_json payload at
+ *  8192 bytes. A Hive account name is at most 16 chars, so 200 entities is ~3.8 KB
+ *  of JSON plus a small envelope — roughly HALF the limit, not (as an earlier
+ *  version of this comment wrongly claimed) an order of magnitude inside it. Do not
+ *  raise this much without recomputing: 400 would sit right on the ceiling. A
+ *  bigger roster is split across several ops, which the indexer applies additively. */
+const AUTO_ENROLL_CHUNK = 200;
+
+/** A carried-forward participant must show REAL recent activity, otherwise a
+ *  one-time joiner who stopped using Actifit would be re-enrolled into every future
+ *  occurrence forever. 7 days, measured back from the moment this pass runs: the
+ *  production roster (2026-09-27) posts 2-8 reports a week, so a 1-2 day lookback
+ *  would have dropped a genuine weekly participant. */
+const AUTO_ENROLL_LOOKBACK_DAYS = 7;
+
+/** Hard ceiling on a carried roster.
+ *
+ *  This is a TREASURY control, not a performance tweak. The official schedules in
+ *  arena_rewards pay per-finisher, not per-winner: `def_daily_focus` is
+ *  `{ flat: 5 }`, which pays 5 AFIT to EVERY finisher with a positive score, and
+ *  four of the other five defaults carry a `participation` amount (8-25 AFIT). So
+ *  emission is O(roster), and `def_daily_focus` alone is 35 AFIT/user/week — about
+ *  1,430 carried users would exhaust the entire 50,000 AFIT/week global budget.
+ *
+ *  Exhaustion is not graceful. creditAfitReward returns `capped: true, credited: 0`,
+ *  resolveChallenge records `afit: 0`, and that zero goes into the settle payload
+ *  and on-chain; the resolution marker is idempotent, so it is never retried. And
+ *  because due challenges resolve oldest-first, the daily contests would drain the
+ *  week before the monthly LiveOps closes — the 400/250/150 AFIT top prizes are
+ *  exactly the ones that would silently settle at zero, for real players.
+ *
+ *  So the roster is capped, and when the cap bites we keep the MOST RECENTLY ACTIVE
+ *  candidates rather than an arbitrary slice. Anyone dropped can still join by hand;
+ *  they are not excluded from the contest, only from being auto-enrolled into it. */
+const AUTO_ENROLL_MAX_ROSTER = 250;
+
+/** Ceiling on chain ops per tick, across all resolutions. Each op is a ~4 KB
+ *  custom_json signed with @actifit's posting key; after an outage a backlog could
+ *  otherwise try to push hundreds back-to-back, exhaust RC, fail, and re-flood on
+ *  the next tick. Leftover work simply waits — markers stay unset. */
+const AUTO_ENROLL_OPS_PER_TICK = 20;
+
+/** Give up on a target that never gets indexed, so it cannot occupy the pending
+ *  window forever and starve live rolls behind it. */
+const AUTO_ENROLL_MAX_ATTEMPTS = 48;   // hourly cron => ~2 days
+
+/**
+ * Carry a recurring default's roster into the occurrence it just rolled into.
+ *
+ * WHY: joining is a user-signed on-chain act, scoped to ONE challenge id. A
+ * recurring contest rolls into a brand-new id, so every occurrence started with an
+ * EMPTY roster and nobody realised they had to re-join. In production
+ * `def_daily_focus@2026-09-25` ran, resolved and broadcast an on-chain settle for
+ * NOBODY, and the occurrences after it were empty too.
+ *
+ * The roster is sourced from the WHOLE SERIES (the base challenge plus every sibling
+ * sharing its parent_id) — not just the occurrence that closed. Sourcing only from
+ * the previous occurrence would perpetuate the hole rather than heal it: once one
+ * occurrence is empty, every later one inherits emptiness forever.
+ *
+ * Chain-first, and NOT a forged join: we hold only @actifit's posting key, and a
+ * `join` is the user's own assertion to make. We broadcast the official-signed
+ * `enroll` op instead, which the indexer accepts from the official account alone.
+ * An auto-enrolment is therefore visibly distinct on-chain from a user's own join.
+ *
+ * Runs as its OWN deferred pass rather than inline after the recurrence broadcast:
+ * `enroll` is rejected as "unknown challenge" until the tailer has indexed the new
+ * challenge. An unindexed target is retried (bounded — see AUTO_ENROLL_MAX_ATTEMPTS)
+ * rather than silently losing a roster.
+ *
+ * OPT-OUT IS SERIES-WIDE, and that is load-bearing. `left` must be collected across
+ * the WHOLE series and subtracted at the end, never filtered per row: leaving
+ * occurrence N does not touch your row on occurrence N-1, and a settled row can
+ * never be left at all (`arena.js` refuses `leave` on a terminal challenge). Filtering
+ * row-by-row and unioning the results therefore re-enrolled anyone who had ever
+ * joined, forever, with no sequence of user actions that could stop it. Reviewers
+ * reproduced that; `tests/arena_autoenroll.test.js` now pins it.
+ *
+ * I1 is untouched — `enroll` carries no fee, and the target's entry mode is whatever
+ * its create op set (`free` for every default).
+ *
+ * @param {object} db
+ * @param {object} [opts] { asOf, now, limit, broadcastOp, lookbackDays, maxRoster,
+ *                          opsPerTick, log }
+ * @returns {Promise<{ok, processed, enrolled, ops, skipped, failed, deferred}>}
+ */
+async function autoEnrollRecurrences(db, opts = {}) {
+	const log = typeof opts.log === 'function' ? opts.log : () => {};
+	const asOf = opts.asOf || new Date().toISOString();
+	const nowMs = Number.isFinite(opts.now) ? opts.now : Date.parse(asOf);
+	const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? opts.limit : 50;
+	const broadcast = typeof opts.broadcastOp === 'function' ? opts.broadcastOp : null;
+	const lookbackDays = Number.isFinite(opts.lookbackDays) && opts.lookbackDays > 0
+		? opts.lookbackDays
+		: AUTO_ENROLL_LOOKBACK_DAYS;
+	const maxRoster = Number.isInteger(opts.maxRoster) && opts.maxRoster > 0
+		? opts.maxRoster
+		: AUTO_ENROLL_MAX_ROSTER;
+	const opsPerTick = Number.isInteger(opts.opsPerTick) && opts.opsPerTick > 0
+		? opts.opsPerTick
+		: AUTO_ENROLL_OPS_PER_TICK;
+
+	const resolutionsC = db.collection('challenge_resolutions');
+	const challengesC = db.collection('challenges');
+	const participantsC = db.collection('challenge_participants');
+	const verifiedC = db.collection('verified_posts');
+
+	// No broadcaster = nothing we can do. Leave every marker UNSET so the work is
+	// picked up whole once one exists, rather than marked done-and-empty.
+	if (!broadcast) {
+		log('arena auto-enroll: no broadcaster - skipped');
+		return { ok: true, processed: 0, enrolled: 0, ops: 0, skipped: 0, failed: 0, deferred: 0 };
+	}
+
+	const pendingAll = await resolutionsC
+		.find({ recurred_to: { $exists: true, $ne: null }, auto_enrolled_at: { $exists: false } })
+		.limit(limit)
+		.toArray();
+
+	// Two resolutions can name the SAME target (a crash-retry across a period
+	// boundary can double-roll). The already-on-target exclusion below reads Mongo,
+	// which cannot yet see an enrolment made earlier in this same tick, so without
+	// this the same roster would be broadcast twice. Keep one and mark the rest.
+	const pending = [];
+	const seenTargets = new Map();
+	for (const r of pendingAll) {
+		if (seenTargets.has(r.recurred_to)) {
+			await resolutionsC.updateOne(
+				{ challenge_id: r.challenge_id },
+				{ $set: { auto_enrolled_at: asOf, auto_enroll_reason: 'duplicate target, handled by ' + seenTargets.get(r.recurred_to) } }
+			);
+			continue;
+		}
+		seenTargets.set(r.recurred_to, r.challenge_id);
+		pending.push(r);
+	}
+
+	let enrolled = 0;
+	let ops = 0;
+	let skipped = 0;
+	let failed = 0;
+	let deferred = 0;
+
+	for (const r of pending) {
+		// Per-tick chain-op budget. Stop cleanly, leaving markers unset, so the
+		// remainder is picked up next tick instead of flooding the node now.
+		if (ops >= opsPerTick) { deferred++; continue; }
+		try {
+			// Stamp the resolution so a dead end is never retried forever. Carries a
+			// reason so the decision stays legible without re-deriving it.
+			const mark = (reason, extra) => resolutionsC.updateOne(
+				{ challenge_id: r.challenge_id },
+				{ $set: { auto_enrolled_at: asOf, auto_enroll_reason: reason, ...(extra || {}) } }
+			);
+
+			const target = await challengesC.findOne({ id: r.recurred_to });
+			if (!target) {
+				// The tailer has not indexed the rolled challenge yet. Retry — but
+				// BOUNDED: a `challenge_create` the indexer rejected outright is never
+				// going to appear, and an immortal pending row would sit at the front of
+				// this (unsorted) window and starve every later roll behind it.
+				const attempts = (Number(r.auto_enroll_attempts) || 0) + 1;
+				if (attempts >= AUTO_ENROLL_MAX_ATTEMPTS) {
+					await mark('target never indexed after ' + attempts + ' attempts', { auto_enroll_attempts: attempts });
+					log('arena auto-enroll: GIVING UP on ' + r.challenge_id + ' -> ' + r.recurred_to + ' (never indexed after ' + attempts + ' attempts)');
+				} else {
+					await resolutionsC.updateOne(
+						{ challenge_id: r.challenge_id },
+						{ $set: { auto_enroll_attempts: attempts, auto_enroll_last_attempt_at: asOf } }
+					);
+				}
+				skipped++;
+				continue;
+			}
+
+			// Only enrol into a roster that can still actually play. `resolving` is a
+			// LIVE state (see AGGREGATABLE_STATES), so treat it as not-yet-ready and
+			// retry rather than burning the roster on a one-way door.
+			if (target.state === 'resolving') { skipped++; continue; }
+			if (!['open', 'active'].includes(target.state)) {
+				await mark('target state ' + target.state);
+				skipped++;
+				continue;
+			}
+			if (hasWindow(target.window) && Date.parse(target.window.end) <= nowMs) {
+				await mark('target window already closed');
+				skipped++;
+				continue;
+			}
+			// Cheap belt-and-suspenders: this pass broadcasts an OFFICIAL-signed op, so
+			// it must never be pointed at anything but a recurring official default,
+			// whatever a future writer of `recurred_to` does.
+			if (!isRecurringDefault(target)) {
+				await mark('target is not a recurring official default');
+				skipped++;
+				continue;
+			}
+
+			// ---- assemble the series roster ----------------------------------
+			// Two queries plus a union, because the base challenge is identified by its
+			// own id while the occurrences are identified by parent_id (and the
+			// in-memory test mock supports no $or).
+			const base = target.parent_id || target.id;
+			const seriesIds = new Set([base]);
+			for (const s of await challengesC.find({ parent_id: base }).toArray()) seriesIds.add(s.id);
+			seriesIds.delete(target.id);   // never source from the target itself
+
+			// Collect candidates AND opt-outs separately over the whole series. The
+			// opt-out set is subtracted at the END — see the note in the doc comment on
+			// why a per-row `$ne: 'left'` filter is not equivalent and was a real bug.
+			const candidates = new Set();
+			const optedOut = new Set();
+			for (const cid of seriesIds) {
+				for (const p of await participantsC.find({ challenge_id: cid }).toArray()) {
+					if (typeof p.entity !== 'string' || !p.entity) continue;
+					if (p.state === 'left') optedOut.add(p.entity);
+					else candidates.add(p.entity);
+				}
+			}
+			// A `leave` anywhere in the series opts you out of the whole series.
+			for (const e of optedOut) candidates.delete(e);
+
+			// Already on the target roster (a manual re-join, or an earlier partial run) —
+			// including anyone who has already left the TARGET itself.
+			for (const p of await participantsC.find({ challenge_id: target.id }).toArray()) {
+				candidates.delete(p.entity);
+			}
+
+			// I7 - whoever funds a prize can never be enrolled to win it. The creator is
+			// stored as `created_by` (NOT `creator`), and the authoritative funder list
+			// lives on the pool, reachable via `pool_ref` — an earlier version read
+			// `rewards.funder`/`creator`, neither of which any code path writes, so the
+			// exclusion was dead code that only its own test could satisfy.
+			if (target.created_by) candidates.delete(target.created_by);
+			if (target.pool_ref) {
+				const pool = await db.collection('pools').findOne({ id: target.pool_ref });
+				for (const f of (pool && pool.funders) || []) candidates.delete(f);
+				if (pool && pool.sponsor_id) candidates.delete(pool.sponsor_id);
+			}
+
+			// ---- prune the dormant, then cap ---------------------------------
+			// A squad has no `verified_posts` author, so the activity test can only be
+			// applied to user rosters; a squad series is carried unpruned but still capped.
+			const isUserRoster = (target.participants_kind || 'user') === 'user';
+			const since = new Date(nowMs - lookbackDays * DAY_MS);
+			const active = [];
+			for (const entity of candidates) {
+				if (!isUserRoster) { active.push({ entity, at: 0 }); continue; }
+				// Most recent report inside the lookback: proves activity AND gives the
+				// recency key the cap ranks on. Served by {author:1, date:1}.
+				const recent = await verifiedC.find({ author: entity, date: { $gte: since } })
+					.sort({ date: -1 }).limit(1).toArray();
+				if (recent.length) active.push({ entity, at: Date.parse(recent[0].date) || 0 });
+			}
+
+			if (!active.length) {
+				await mark('no active carry-forward candidates', { auto_enrolled_count: 0 });
+				skipped++;
+				continue;
+			}
+
+			// Cap by MOST RECENT activity, so if the ceiling bites we keep the people
+			// most likely to actually be playing. Tie-break on name for determinism.
+			active.sort((a, b) => (b.at - a.at) || (a.entity < b.entity ? -1 : 1));
+			const overflow = Math.max(0, active.length - maxRoster);
+			const entities = active.slice(0, maxRoster).map((a) => a.entity);
+			if (overflow > 0) {
+				log('arena auto-enroll: ' + target.id + ' roster capped at ' + maxRoster + ' (' + overflow + ' least-recently-active candidate(s) not carried; they can still join manually)');
+			}
+
+			// ---- broadcast ----------------------------------------------------
+			// Counted per successful op: a mid-roster failure leaves the marker unset so
+			// the remainder is retried next tick (the already-enrolled are filtered out
+			// by the target-roster exclusion above, once the tailer has caught up).
+			entities.sort();
+			for (let i = 0; i < entities.length; i += AUTO_ENROLL_CHUNK) {
+				const chunk = entities.slice(i, i + AUTO_ENROLL_CHUNK);
+				await broadcast({
+					op: 'enroll', v: 1,
+					challenge_id: target.id,
+					entities: chunk,
+					reason: 'recurrence_carry_forward',
+					from: r.challenge_id,
+				});
+				ops++;
+				enrolled += chunk.length;
+			}
+			await mark('carried forward', { auto_enrolled_count: entities.length, auto_enroll_overflow: overflow });
+			log('arena auto-enroll: ' + r.challenge_id + ' -> ' + target.id + ' carried ' + entities.length + ' participant(s) in ' + Math.ceil(entities.length / AUTO_ENROLL_CHUNK) + ' op(s)');
+		} catch (e) {
+			failed++;
+			log('arena auto-enroll: ' + r.challenge_id + ' error: ' + (e && e.message));
+		}
+	}
+
+	const summary = { ok: true, processed: pending.length, enrolled, ops, skipped, failed, deferred };
+	log('arena auto-enroll: processed=' + summary.processed + ' enrolled=' + enrolled + ' ops=' + ops + ' skipped=' + skipped + ' deferred=' + deferred + ' failed=' + failed);
+	return summary;
+}
+
 /**
  * Ensure the index the aggregation hot-path relies on. The per-participant score
  * query is `verified_posts.find({ author, date: {$gte,$lte} })` — without a
@@ -376,5 +678,11 @@ module.exports = {
 	resolveDueChallenges,
 	isRecurringDefault,
 	nextOccurrence,
+	autoEnrollRecurrences,
+	AUTO_ENROLL_CHUNK,
+	AUTO_ENROLL_LOOKBACK_DAYS,
+	AUTO_ENROLL_MAX_ROSTER,
+	AUTO_ENROLL_OPS_PER_TICK,
+	AUTO_ENROLL_MAX_ATTEMPTS,
 	ensureArenaJobIndexes,
 };

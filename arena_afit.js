@@ -65,6 +65,12 @@ function weekBucket(iso) {
 /** The per-(user, challenge) ledger key that makes a re-credit idempotent.
  *  `pooled` selects the creator-funded namespace (excluded from the treasury
  *  budget); default is the treasury namespace. */
+/** Mongo duplicate-key (E11000). Mirrors the helper in arena.js; duplicated
+ *  deliberately so this module keeps its no-arena-dependency load-time safety. */
+function isDuplicateKeyError(e) {
+	return !!e && (e.code === 11000 || e.code === 11001 || /E11000/.test(String(e && e.message)));
+}
+
 function activityFor(challengeId, pooled) {
 	return (pooled ? ARENA_POOL_PREFIX : ARENA_ACTIVITY_PREFIX) + challengeId;
 }
@@ -79,14 +85,48 @@ function activityFor(challengeId, pooled) {
 async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 	const bucket = weekBucket(at);
 	if (bucket === null) return 0;
-	const rows = await db.collection(COL.LEDGER)
-		.find({ reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI } })
-		.toArray();
-	const skipActivity = excludeChallengeId ? activityFor(excludeChallengeId) : null;
-	return rows
-		.filter((r) => weekBucket(r.date) === bucket
-			&& !(r.user === excludeUser && r.reward_activity === skipActivity))
-		.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	// Bounded by the week window in the QUERY, and summed server-side. This used to
+	// pull EVERY arena ledger row ever written into Node and filter by week in JS -
+	// on every single credit, inside the payout loop.
+	//
+	// Be precise about what this does and does not fix. Measured with explain() on
+	// production: the plan is IXSCAN [reward_activity_1_date_1] -> FETCH, 4 keys /
+	// 3 docs / 1ms - NOT a collection scan. But `reward_activity` leads that index
+	// under a RANGE predicate, so MongoDB cannot use `date` as a tight index bound;
+	// the week filter is applied after the key walk. The ROWS RETURNED are bounded,
+	// and nothing crosses the wire any more, but the keys walked still grow with the
+	// number of arena credits ever made. Free today (3 rows); worth revisiting with
+	// a date-leading index or a small running-total document once this is thousands.
+	const start = new Date(bucket * WEEK_MS);
+	const end = new Date((bucket + 1) * WEEK_MS);
+	const match = {
+		reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI },
+		date: { $gte: start, $lt: end },
+	};
+	const rows = await db.collection(COL.LEDGER).aggregate([
+		{ $match: match },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	let total = (rows[0] && Number(rows[0].total)) || 0;
+	// Subtract the one (user, challenge) row being rewritten, so a re-credit
+	// recomputes the SAME weekly room (idempotent) while still counting every other
+	// winner in this run. Read as a single indexed document, not a scan.
+	if (excludeUser && excludeChallengeId) {
+		// Subtract EVERY row on this key, not just the first. `arena_credit_unique`
+		// makes duplicates impossible, but it is a hand-created production index, so
+		// this must not quietly under-subtract anywhere it has not been built yet -
+		// that would shrink the room and under-pay the winner.
+		const own = await db.collection(COL.LEDGER).aggregate([
+			{ $match: {
+				user: excludeUser,
+				reward_activity: activityFor(excludeChallengeId),
+				date: { $gte: start, $lt: end },
+			} },
+			{ $group: { _id: null, total: { $sum: '$token_count' } } },
+		]).toArray();
+		total -= (own[0] && Number(own[0].total)) || 0;
+	}
+	return total > 0 ? total : 0;
 }
 
 /** Current off-chain AFIT balance (the materialized counter; 0 if none). */
@@ -103,20 +143,66 @@ async function balanceOf(db, user) {
 async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 	const day = dayKey(at);
 	if (day === null) return 0;
-	const rows = await db.collection(COL.LEDGER).find({ user }).toArray();
-	const skip = excludeChallengeId ? activityFor(excludeChallengeId) : null;
-	return rows
-		.filter((r) => typeof r.reward_activity === 'string'
-			&& r.reward_activity.indexOf(ARENA_ACTIVITY_PREFIX) === 0
-			&& r.reward_activity !== skip
-			&& dayKey(r.date) === day)
-		.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	// Bounded to this user's ARENA rows on this DAY. It used to pull the user's
+	// ENTIRE platform ledger - measured at 3,205 rows for a real participant, on
+	// every credit - and throw almost all of it away in JS.
+	// UTC day bounds, matching dayKey() exactly (it keys off toISOString()).
+	// new Date(at), NOT Date.parse(at): dayKey() uses new Date(), and the two
+	// disagree on non-string input (Date.parse(1756200000000) is NaN while
+	// new Date(1756200000000) is valid). That divergence would fail OPEN - a NaN
+	// here returns 0 emitted, handing back the FULL daily cap.
+	const ms = new Date(at).getTime();
+	if (!Number.isFinite(ms)) return 0;
+	const start = new Date(Math.floor(ms / DAY_MS) * DAY_MS);
+	const end = new Date(start.getTime() + DAY_MS);
+	const rows = await db.collection(COL.LEDGER).aggregate([
+		{ $match: {
+			user,
+			reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI },
+			date: { $gte: start, $lt: end },
+		} },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	let total = (rows[0] && Number(rows[0].total)) || 0;
+	if (excludeChallengeId) {
+		// All rows on this key (see the note in arenaEmittedWeek), and bounded to the
+		// same day window so a row outside it is never subtracted.
+		const own = await db.collection(COL.LEDGER).aggregate([
+			{ $match: {
+				user,
+				reward_activity: activityFor(excludeChallengeId),
+				date: { $gte: start, $lt: end },
+			} },
+			{ $group: { _id: null, total: { $sum: '$token_count' } } },
+		]).toArray();
+		total -= (own[0] && Number(own[0].total)) || 0;
+	}
+	return total > 0 ? total : 0;
 }
 
-/** Re-derive a single user's materialized balance from their ledger rows. */
+/** Re-derive a single user's materialized balance from their ledger rows.
+ *
+ *  This legitimately has to consider the user's WHOLE ledger - it is the full
+ *  balance, so there is nothing to bound it by. What it must not do is ship every
+ *  one of those rows to Node just to add up one field: a real participant already
+ *  has 3,205 ledger rows, and this runs once per credit inside the payout loop.
+ *  The sum happens server-side on the {user:1, date:-1} index instead (confirmed
+ *  present on production and chosen by the planner: IXSCAN [user_1_date_-1]), so
+ *  the documents never cross the wire.
+ *
+ *  This is NOT a pure refactor, and the difference is worth stating: `Number(x)||0`
+ *  coerced a numeric STRING token_count, whereas MongoDB's $sum ignores non-numeric
+ *  values outright. That moves this function INTO agreement with the two pipelines
+ *  that already own this balance in production - delegations.js updateUserTokens
+ *  (which $out's straight over user_tokens) and app.js /recalculateUserTokens, both
+ *  of which already use $sum. Previously this function was the odd one out and
+ *  could inflate a balance that the next sweep silently clawed back. */
 async function reconcileBalance(db, user) {
-	const rows = await db.collection(COL.LEDGER).find({ user }).toArray();
-	const tokens = rows.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	const agg = await db.collection(COL.LEDGER).aggregate([
+		{ $match: { user } },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	const tokens = (agg[0] && Number(agg[0].total)) || 0;
 	await db.collection(COL.BALANCES).replaceOne(
 		{ _id: user },
 		{ _id: user, user, tokens },
@@ -160,21 +246,89 @@ async function creditAfitReward(db, params) {
 
 	const activity = activityFor(challengeId, params.pooled);
 	// Idempotent: same (user, reward_activity) row is REPLACED, never duplicated.
-	await db.collection(COL.LEDGER).replaceOne(
-		{ user, reward_activity: activity },
-		{
-			user,
-			reward_activity: activity,
-			token_count: credited,
-			chain: AFIT_CHAIN,
-			orig_account: OFFICIAL_ACCOUNT,
-			challenge_id: challengeId,
-			date: new Date(at),
-		},
-		{ upsert: true }
-	);
+	// Once `arena_credit_unique` exists, the loser of a genuine race no longer
+	// double-inserts - it raises E11000 here. That must NOT escape: this runs inside
+	// arena_pools.resolveChallenge's payout loop, so an unhandled throw would abandon
+	// the resolution mid-payout with some winners credited, `pools.paid` un-updated
+	// and no settle broadcast. A duplicate key means the row we were about to write
+	// already exists, which is exactly the outcome we wanted, so read it back and
+	// report what is actually banked rather than what we intended to credit.
+	try {
+		await db.collection(COL.LEDGER).replaceOne(
+			{ user, reward_activity: activity },
+			{
+				user,
+				reward_activity: activity,
+				token_count: credited,
+				chain: AFIT_CHAIN,
+				orig_account: OFFICIAL_ACCOUNT,
+				challenge_id: challengeId,
+				date: new Date(at),
+			},
+			{ upsert: true }
+		);
+	} catch (e) {
+		if (!isDuplicateKeyError(e)) throw e;
+		const existing = await db.collection(COL.LEDGER).findOne({ user, reward_activity: activity });
+		const already = Number(existing && existing.token_count) || 0;
+		return {
+			ok: true,
+			credited: already,
+			capped: already < Number(amount),
+			raced: true,
+			balance: await reconcileBalance(db, user),
+			ref: activity,
+		};
+	}
 	const balance = await reconcileBalance(db, user);
 	return { ok: true, credited, capped: credited < Number(amount), balance, ref: activity };
+}
+
+/**
+ * Index the arena credit path relies on for correctness.
+ *
+ * `creditAfitReward` is idempotent by REPLACING the (user, reward_activity) row,
+ * but a read-then-write upsert is only retry-safe, not race-safe: two concurrent
+ * runs can both miss the existing row and both insert, double-crediting. The
+ * unique `challenge_resolutions.challenge_id` is the backstop, but it is written
+ * LAST - after the credits - so it cannot prevent that.
+ *
+ * This makes the database enforce it. The index is PARTIAL: token_transactions is
+ * the whole platform's AFIT ledger (~23M rows at the time of writing) and
+ * legitimately holds many rows sharing a (user, reward_activity) pair for
+ * non-arena activity. Only arena credit rows carry `challenge_id`, so only those
+ * are indexed and constrained - verified against production before adding this
+ * (3 rows carried it, 0 duplicates).
+ *
+ * The filter tests `$type: 'string'` rather than `$exists: true` on purpose:
+ * `$exists` also matches an explicit `challenge_id: null`, so a single careless
+ * `challenge_id: maybeNull` in some future non-arena writer would drag that whole
+ * class of ordinary ledger rows into a UNIQUE index and start rejecting
+ * legitimate inserts. `$type` cannot be tripped that way, at no extra cost.
+ *
+ * OPERATIONAL NOTE - do not deploy this blind. `background` is accepted but
+ * IGNORED by MongoDB 4.2+, and a partial index cannot be seeded from another
+ * index: the server must examine all ~23M documents to decide membership, which
+ * is real IO on the primary plus a brief exclusive lock as the build commits.
+ * Create it by hand off-peak (`mongosh`, then verify with `getIndexes()`) BEFORE
+ * shipping the code; this call then finds it and is a no-op. Note also that flags
+ * such as `arena_jobs_enabled` do NOT gate it, so a flags-off rollback does not
+ * remove it - that needs a `dropIndex('arena_credit_unique')`.
+ *
+ * Safe no-op where createIndex is unavailable (the in-memory test mock).
+ */
+async function ensureAfitIndexes(db) {
+	const ledger = db.collection(COL.LEDGER);
+	if (typeof ledger.createIndex !== 'function') return;
+	await ledger.createIndex(
+		{ user: 1, reward_activity: 1 },
+		{
+			unique: true,
+			partialFilterExpression: { challenge_id: { $type: 'string' } },
+			name: 'arena_credit_unique',
+			background: true,
+		}
+	);
 }
 
 module.exports = {
@@ -190,4 +344,5 @@ module.exports = {
 	arenaEmittedWeek,
 	reconcileBalance,
 	creditAfitReward,
+	ensureAfitIndexes,
 };

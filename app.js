@@ -178,6 +178,28 @@ client.connect()
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
 	    arenaApi.ensureEventsIndexes(db);
+	    // local require: arena_afit is declared far below (line ~804), unlike its
+	    // siblings at the top of this file. Same pattern as the tailer require below.
+	    // .catch() is LOAD-BEARING, not defensive noise: this call is not awaited, so
+	    // the synchronous try/catch around it cannot see a rejected promise. There is
+	    // no process-level unhandledRejection handler anywhere in this app, and Node 20
+	    // terminates on an unhandled rejection by default - so an index build that fails
+	    // would exit the process, pm2 would restart it, and it would re-issue the same
+	    // build on a 23M-document collection in a crash loop. Unlike its siblings above
+	    // (small arena-only collections where a duplicate is structurally impossible),
+	    // a UNIQUE index over token_transactions has realistic ways to reject: E11000 on
+	    // a future duplicate pair, IndexOptionsConflict, or an aborted build.
+	    require('./arena_afit').ensureAfitIndexes(db)   // unique guard on arena credit rows
+	    // The handler itself must be incapable of throwing: utils.log does a
+	    // synchronous appendFileSync, so an unwritable log file would re-raise the very
+	    // rejection this .catch() exists to absorb and we would be back to a boot crash
+	    // loop. Verified: with a bare utils.log here, tests/middleware.test.js fails to
+	    // boot the app at all.
+	      .catch((e) => {
+	        try {
+	          utils.log('arena_credit_unique index build failed; the DB-level double-credit guard is NOT in place (the code-level guard still applies): ' + (e && e.message), 'api');
+	        } catch (_) { /* a logging failure must never resurrect the rejection */ }
+	      });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {
@@ -1136,11 +1158,20 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
 	if (config.arena_jobs_enabled) {
 		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
+		// In-flight guard: node-schedule fires on the clock regardless of whether the
+		// previous async invocation finished. A sweep that outruns its own interval
+		// would otherwise overlap itself INSIDE this one process — the single-instance
+		// BOT_THREAD guard does not help, because both runs are the same process.
+		let aggRunning = false;
 		schedule.scheduleJob(aggCron, async function(){
+			if (aggRunning) { utils.log('arena aggregation: previous sweep still running, skipping this tick', 'arena'); return; }
+			aggRunning = true;
 			try {
 				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
 			} catch (e) {
 				utils.log(e, 'arena');
+			} finally {
+				aggRunning = false;
 			}
 		});
 		console.log('Arena aggregation job scheduled ('+aggCron+')');
@@ -1178,7 +1209,15 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 		} else {
 			utils.log('arena resolve: no posting_key — settle/recurrence broadcasts disabled', 'arena');
 		}
+		// Same in-flight guard as the aggregation sweep, and it matters more here:
+		// resolveDueChallenges credits AFIT, so two overlapping runs in this one
+		// process are exactly the double-credit the single-instance guard exists to
+		// prevent. resolveDueChallenges handles up to 200 challenges per sweep, so it
+		// can outrun an hourly cron on a busy week.
+		let resolveRunning = false;
 		schedule.scheduleJob(resolveCron, async function(){
+			if (resolveRunning) { utils.log('arena resolve: previous sweep still running, skipping this tick', 'arena'); return; }
+			resolveRunning = true;
 			try {
 				await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
@@ -1191,11 +1230,43 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
+				// Carry a recurring default's roster into the occurrence it rolled into
+				// (a join is scoped to ONE challenge id, so every new occurrence used to
+				// start empty). DEFERRED by design: it enrols only into a target the tailer
+				// has already indexed, so it runs a tick BEHIND the roll it follows, and its
+				// own failures never abort settlement above.
+				//
+				// DEFAULT OFF, and deliberately its OWN flag rather than riding on
+				// arena_jobs_enabled. The official reward schedules pay per-FINISHER
+				// (def_daily_focus is `flat: 5`, four others carry `participation`), so
+				// emission scales with roster size and a carried roster spends real treasury
+				// AFIT on people who never asked to play. Enabling this is an economic
+				// decision that wants the schedules re-costed against the expected roster
+				// first - and it must be switchable OFF without also stopping settlement,
+				// payouts and recurrence.
+				if (config.arena_autoenroll_enabled) {
+					try {
+						await arenaJobs.autoEnrollRecurrences(db, {
+							broadcastOp: arenaBroadcastOp,
+							lookbackDays: Number.isFinite(config.arena_autoenroll_lookback_days)
+								? config.arena_autoenroll_lookback_days
+								: undefined,
+							maxRoster: Number.isInteger(config.arena_autoenroll_max_roster)
+								? config.arena_autoenroll_max_roster
+								: undefined,
+							log: (m) => utils.log(m, 'arena'),
+						});
+					} catch (e) {
+						utils.log(e, 'arena');
+					}
+				}
 			} catch (e) {
 				utils.log(e, 'arena');
+			} finally {
+				resolveRunning = false;
 			}
 		});
-		console.log('Arena resolution job scheduled ('+resolveCron+')');
+		console.log('Arena resolution job scheduled ('+resolveCron+')'+(config.arena_autoenroll_enabled ? ' with recurrence auto-enrolment' : '; recurrence auto-enrolment DISABLED (arena_autoenroll_enabled)'));
 	}
 }
 
