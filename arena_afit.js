@@ -217,7 +217,10 @@ async function reconcileBalance(db, user) {
  * weekly emission budget (treasury protection).
  * @param {object} db
  * @param {object} params { user, challengeId, amount, at?, dailyCap?, weeklyBudget? }
- * @returns {Promise<{ok, credited, capped?, balance, ref?, reason?}>}
+ * @returns {Promise<{ok, credited, capped?, cappedBy?, balance, ref?, reason?}>}
+ *   `cappedBy` is set when a credit was clamped to ZERO: 'daily_cap' (that user has
+ *   had their allowance today - normal) or 'weekly_budget' (the treasury budget for
+ *   the week is exhausted - NOT normal, and must not be settled as a zero).
  */
 async function creditAfitReward(db, params) {
 	const { user, challengeId, amount } = params;
@@ -241,7 +244,20 @@ async function creditAfitReward(db, params) {
 	}
 	const credited = Math.min(Number(amount), dailyRoom, weeklyRoom);
 	if (credited <= 0) {
-		return { ok: false, capped: true, credited: 0, balance: await balanceOf(db, user) };
+		// WHY we capped to nothing matters to the caller, and used to be unknowable.
+		// A per-user daily cap is normal, expected policy: that user has already had
+		// their 500 today and the contest should still settle. The GLOBAL weekly
+		// budget running dry is a different thing entirely - it is the treasury being
+		// empty, it affects every winner, and settling a zero for it writes a
+		// permanent on-chain record that a real winner earned nothing. The caller has
+		// to be able to tell those apart, so name the binding constraint.
+		return {
+			ok: false,
+			capped: true,
+			credited: 0,
+			cappedBy: weeklyRoom <= 0 ? 'weekly_budget' : 'daily_cap',
+			balance: await balanceOf(db, user),
+		};
 	}
 
 	const activity = activityFor(challengeId, params.pooled);

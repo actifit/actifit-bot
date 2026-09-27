@@ -213,3 +213,99 @@ describe('arena_pools.resolveChallenge', () => {
     expect(calls.challenge_resolutions).toEqual(expect.arrayContaining([expect.objectContaining({ spec: { challenge_id: 1 }, opts: { unique: true } })]));
   });
 });
+
+// When the GLOBAL weekly treasury budget runs dry, a winner used to be recorded as
+// having earned ZERO - in their participant result, in the settle payload, and
+// therefore on-chain as the authoritative outcome - and it was never retried,
+// because the resolution marker is idempotent and a later run reuses the STORED
+// payload verbatim. They got no notification either (the F6 event only fires on
+// afit > 0). Resolution must abort instead, leaving no marker and no settle.
+describe('arena_pools.resolveChallenge — budget exhaustion must not settle a zero', () => {
+	const AT = '2026-08-26T10:00:00Z';
+
+	function seedExhausted() {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'chBig', state: 'open', type: 'liveops', origin_tier: 'official',
+			  window: { start: '2026-08-01T00:00:00Z', end: '2026-08-26T00:00:00Z' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'chBig', entity: 'winner', state: 'enrolled', flags: [],
+			  score: { verified: 100 } },
+		]);
+		// another challenge already ate the entire weekly budget this week
+		db.collection('token_transactions').__seed([
+			{ user: 'someoneelse', reward_activity: 'arena_challenge:chEarlier',
+			  token_count: 50000, challenge_id: 'chEarlier', date: new Date(AT) },
+		]);
+		return db;
+	}
+
+	const standings = [{ entity: 'winner', rank: 1, score_verified: 100 }];
+	const prizes = [{ rank: 1, afit: 400, badges: [] }];
+
+	test('refuses to resolve, writes no result and no settle payload', async () => {
+		const db = seedExhausted();
+		const res = await pools.resolveChallenge(db, {
+			challengeId: 'chBig', standings, prizes, asOf: AT,
+			dailyCap: 500, weeklyBudget: 50000,
+		});
+
+		expect(res.ok).toBe(false);
+		expect(res.budgetExhausted).toBe(true);
+		expect(res.reason).toMatch(/budget exhausted/i);
+		expect(res.settlePayload).toBeUndefined();
+
+		// nothing recorded against the participant, so no zero to broadcast
+		const p = await db.collection('challenge_participants')
+			.findOne({ challenge_id: 'chBig', entity: 'winner' });
+		expect(p.result == null || p.result.reward == null).toBe(true);
+
+		// and NO resolution marker - so it is retried, not frozen at zero
+		const marker = await db.collection('challenge_resolutions').findOne({ challenge_id: 'chBig' });
+		expect(marker).toBeFalsy();
+	});
+
+	test('once budget frees, the same challenge resolves and pays in full', async () => {
+		const db = seedExhausted();
+		const first = await pools.resolveChallenge(db, {
+			challengeId: 'chBig', standings, prizes, asOf: AT, dailyCap: 500, weeklyBudget: 50000,
+		});
+		expect(first.ok).toBe(false);
+
+		// a later week (or a raised budget) - here, the next week bucket
+		const LATER = '2026-09-03T10:00:00Z';
+		const second = await pools.resolveChallenge(db, {
+			challengeId: 'chBig', standings, prizes, asOf: LATER, dailyCap: 500, weeklyBudget: 50000,
+		});
+		expect(second.ok).toBe(true);
+		expect(second.settlePayload.rewards[0]).toMatchObject({ entity: 'winner', afit: 400 });
+	});
+
+	test('a per-user DAILY cap is NOT treated the same — it still settles', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'chD', state: 'open', type: 'daily_focus', origin_tier: 'official',
+			  window: { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'chD', entity: 'maxed', state: 'enrolled', flags: [], score: { verified: 10 } },
+		]);
+		// this user has already had their whole daily allowance elsewhere today
+		db.collection('token_transactions').__seed([
+			{ user: 'maxed', reward_activity: 'arena_challenge:chOther', token_count: 500,
+			  challenge_id: 'chOther', date: new Date(AT) },
+		]);
+
+		const res = await pools.resolveChallenge(db, {
+			challengeId: 'chD',
+			standings: [{ entity: 'maxed', rank: 1, score_verified: 10 }],
+			prizes: [{ rank: 1, afit: 5, badges: [] }],
+			asOf: AT, dailyCap: 500, weeklyBudget: 50000,
+		});
+
+		// one user at their documented daily cap must not block everyone's settlement
+		expect(res.ok).toBe(true);
+		expect(res.settlePayload.rewards[0].afit).toBe(0);
+	});
+});

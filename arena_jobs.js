@@ -261,7 +261,19 @@ async function resolveDueChallenges(db, opts = {}) {
 				// Settlement credits off-chain AFIT, records participant results + an
 				// idempotent resolution marker, and returns the settle payload.
 				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, poolId, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
-				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
+				if (!resolution.ok) {
+					failed++;
+					if (resolution.budgetExhausted) {
+						// Not a transient error, and not self-healing: the weekly treasury
+						// budget is gone and NOTHING will settle until it resets or the
+						// budget is raised. Say so unmistakably, because the alternative
+						// behaviour (settling zeros) was silent and permanent.
+						log(`arena resolve: *** WEEKLY AFIT BUDGET EXHAUSTED *** ${ch.id} NOT settled and NOT rolled - it will retry, and no zero reward has been written or broadcast. ${resolution.reason}`);
+					} else {
+						log(`arena resolve: ${ch.id} failed: ${resolution.reason}`);
+					}
+					continue;
+				}
 				resolved++;
 				// F6 — notify each rewarded finisher. Reward objects don't carry rank,
 				// so read it from the settle standings (entity -> rank).
