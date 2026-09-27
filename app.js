@@ -190,7 +190,16 @@ client.connect()
 	    // a UNIQUE index over token_transactions has realistic ways to reject: E11000 on
 	    // a future duplicate pair, IndexOptionsConflict, or an aborted build.
 	    require('./arena_afit').ensureAfitIndexes(db)   // unique guard on arena credit rows
-	      .catch((e) => utils.log('arena_credit_unique index build failed; DB-level double-credit guard NOT in place (the code-level guard still applies): ' + (e && e.message), 'api'));
+	    // The handler itself must be incapable of throwing: utils.log does a
+	    // synchronous appendFileSync, so an unwritable log file would re-raise the very
+	    // rejection this .catch() exists to absorb and we would be back to a boot crash
+	    // loop. Verified: with a bare utils.log here, tests/middleware.test.js fails to
+	    // boot the app at all.
+	      .catch((e) => {
+	        try {
+	          utils.log('arena_credit_unique index build failed; the DB-level double-credit guard is NOT in place (the code-level guard still applies): ' + (e && e.message), 'api');
+	        } catch (_) { /* a logging failure must never resurrect the rejection */ }
+	      });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
 	  } catch (e) {
