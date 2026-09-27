@@ -85,14 +85,31 @@ function activityFor(challengeId, pooled) {
 async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 	const bucket = weekBucket(at);
 	if (bucket === null) return 0;
-	const rows = await db.collection(COL.LEDGER)
-		.find({ reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI } })
-		.toArray();
-	const skipActivity = excludeChallengeId ? activityFor(excludeChallengeId) : null;
-	return rows
-		.filter((r) => weekBucket(r.date) === bucket
-			&& !(r.user === excludeUser && r.reward_activity === skipActivity))
-		.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	// Bounded by the week window in the QUERY, and summed server-side. This used to
+	// pull EVERY arena ledger row ever written into Node and filter by week in JS -
+	// on every single credit, inside the payout loop. At 3 rows that was free; it
+	// grows without bound for as long as the Arena runs, and it is exactly the kind
+	// of long unbounded read that leaves the in-flight cron guard stuck on.
+	const start = new Date(bucket * WEEK_MS);
+	const end = new Date((bucket + 1) * WEEK_MS);
+	const match = {
+		reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI },
+		date: { $gte: start, $lt: end },
+	};
+	const rows = await db.collection(COL.LEDGER).aggregate([
+		{ $match: match },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	let total = (rows[0] && Number(rows[0].total)) || 0;
+	// Subtract the one (user, challenge) row being rewritten, so a re-credit
+	// recomputes the SAME weekly room (idempotent) while still counting every other
+	// winner in this run. Read as a single indexed document, not a scan.
+	if (excludeUser && excludeChallengeId) {
+		const own = await db.collection(COL.LEDGER)
+			.findOne({ user: excludeUser, reward_activity: activityFor(excludeChallengeId) });
+		if (own && weekBucket(own.date) === bucket) total -= Number(own.token_count) || 0;
+	}
+	return total > 0 ? total : 0;
 }
 
 /** Current off-chain AFIT balance (the materialized counter; 0 if none). */
@@ -109,20 +126,45 @@ async function balanceOf(db, user) {
 async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 	const day = dayKey(at);
 	if (day === null) return 0;
-	const rows = await db.collection(COL.LEDGER).find({ user }).toArray();
-	const skip = excludeChallengeId ? activityFor(excludeChallengeId) : null;
-	return rows
-		.filter((r) => typeof r.reward_activity === 'string'
-			&& r.reward_activity.indexOf(ARENA_ACTIVITY_PREFIX) === 0
-			&& r.reward_activity !== skip
-			&& dayKey(r.date) === day)
-		.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	// Bounded to this user's ARENA rows on this DAY. It used to pull the user's
+	// ENTIRE platform ledger - measured at 3,205 rows for a real participant, on
+	// every credit - and throw almost all of it away in JS.
+	// UTC day bounds, matching dayKey() exactly (it keys off toISOString()).
+	const ms = Date.parse(at);
+	if (!Number.isFinite(ms)) return 0;
+	const start = new Date(Math.floor(ms / DAY_MS) * DAY_MS);
+	const end = new Date(start.getTime() + DAY_MS);
+	const rows = await db.collection(COL.LEDGER).aggregate([
+		{ $match: {
+			user,
+			reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI },
+			date: { $gte: start, $lt: end },
+		} },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	let total = (rows[0] && Number(rows[0].total)) || 0;
+	if (excludeChallengeId) {
+		const own = await db.collection(COL.LEDGER)
+			.findOne({ user, reward_activity: activityFor(excludeChallengeId) });
+		if (own && dayKey(own.date) === day) total -= Number(own.token_count) || 0;
+	}
+	return total > 0 ? total : 0;
 }
 
-/** Re-derive a single user's materialized balance from their ledger rows. */
+/** Re-derive a single user's materialized balance from their ledger rows.
+ *
+ *  This legitimately has to consider the user's WHOLE ledger - it is the full
+ *  balance, so there is nothing to bound it by. What it must not do is ship every
+ *  one of those rows to Node just to add up one field: a real participant already
+ *  has 3,205 ledger rows, and this runs once per credit inside the payout loop.
+ *  The sum happens server-side on the {user:1, date:-1} index instead, so the
+ *  documents never cross the wire. */
 async function reconcileBalance(db, user) {
-	const rows = await db.collection(COL.LEDGER).find({ user }).toArray();
-	const tokens = rows.reduce((s, r) => s + (Number(r.token_count) || 0), 0);
+	const agg = await db.collection(COL.LEDGER).aggregate([
+		{ $match: { user } },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	const tokens = (agg[0] && Number(agg[0].total)) || 0;
 	await db.collection(COL.BALANCES).replaceOne(
 		{ _id: user },
 		{ _id: user, user, tokens },
