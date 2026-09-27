@@ -1136,11 +1136,20 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
 	if (config.arena_jobs_enabled) {
 		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
+		// In-flight guard: node-schedule fires on the clock regardless of whether the
+		// previous async invocation finished. A sweep that outruns its own interval
+		// would otherwise overlap itself INSIDE this one process — the single-instance
+		// BOT_THREAD guard does not help, because both runs are the same process.
+		let aggRunning = false;
 		schedule.scheduleJob(aggCron, async function(){
+			if (aggRunning) { utils.log('arena aggregation: previous sweep still running, skipping this tick', 'arena'); return; }
+			aggRunning = true;
 			try {
 				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
 			} catch (e) {
 				utils.log(e, 'arena');
+			} finally {
+				aggRunning = false;
 			}
 		});
 		console.log('Arena aggregation job scheduled ('+aggCron+')');
@@ -1178,7 +1187,15 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 		} else {
 			utils.log('arena resolve: no posting_key — settle/recurrence broadcasts disabled', 'arena');
 		}
+		// Same in-flight guard as the aggregation sweep, and it matters more here:
+		// resolveDueChallenges credits AFIT, so two overlapping runs in this one
+		// process are exactly the double-credit the single-instance guard exists to
+		// prevent. resolveDueChallenges handles up to 200 challenges per sweep, so it
+		// can outrun an hourly cron on a busy week.
+		let resolveRunning = false;
 		schedule.scheduleJob(resolveCron, async function(){
+			if (resolveRunning) { utils.log('arena resolve: previous sweep still running, skipping this tick', 'arena'); return; }
+			resolveRunning = true;
 			try {
 				await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
@@ -1193,6 +1210,8 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 				});
 			} catch (e) {
 				utils.log(e, 'arena');
+			} finally {
+				resolveRunning = false;
 			}
 		});
 		console.log('Arena resolution job scheduled ('+resolveCron+')');
