@@ -217,7 +217,13 @@ async function reconcileBalance(db, user) {
  * weekly emission budget (treasury protection).
  * @param {object} db
  * @param {object} params { user, challengeId, amount, at?, dailyCap?, weeklyBudget? }
- * @returns {Promise<{ok, credited, capped?, balance, ref?, reason?}>}
+ * @returns {Promise<{ok, credited, capped?, cappedBy?, balance, ref?, reason?}>}
+ *   `cappedBy` names the binding constraint on ANY shortfall (zero OR partial):
+ *   'daily_cap' (that user has had their allowance today - normal policy, and the
+ *   contest still settles) or 'weekly_budget' (the treasury is empty for the week -
+ *   NOT normal). A 'weekly_budget' shortfall always returns ok:false and writes
+ *   NOTHING, whether it clipped to zero or merely reduced the amount, so the caller
+ *   can abort the resolution rather than record a wrong figure on-chain forever.
  */
 async function creditAfitReward(db, params) {
 	const { user, challengeId, amount } = params;
@@ -239,12 +245,92 @@ async function creditAfitReward(db, params) {
 		const weekAlready = await arenaEmittedWeek(db, at, user, challengeId);
 		weeklyRoom = Math.max(0, params.weeklyBudget - weekAlready);
 	}
-	const credited = Math.min(Number(amount), dailyRoom, weeklyRoom);
+	const requested = Number(amount);
+	const credited = Math.min(requested, dailyRoom, weeklyRoom);
+
+	// WHICH constraint bit, and did it bite at all. Both matter to the caller, and
+	// neither used to be knowable.
+	//
+	// A per-user daily cap is normal, expected policy: that user has already had
+	// their 500 today, and the contest should still settle. The GLOBAL weekly budget
+	// running dry is a different thing entirely - the treasury is empty, it affects
+	// every winner, and recording a reduced amount for it writes a permanent on-chain
+	// record that a real winner earned less than they did.
+	//
+	// Report this on ANY shortfall, not just a clip to zero. weeklyRoom only ever
+	// decreases as a challenge pays out, so when the budget crosses zero mid-challenge
+	// there is exactly ONE boundary-crossing credit - and unless the remaining room
+	// lands on precisely 0, that one is a partial clip, not a zero. Gating only on
+	// zero therefore let the straddling winner settle a reduced figure on-chain.
+	//
+	// (An earlier version of this comment said payouts run "in rank order, biggest
+	// prize first, so the straddler has the largest prize". Both halves were wrong:
+	// allocatePayouts iterates the standings it is handed and never sorts - the order
+	// is incidental, inherited from buildStandings - and the straddler is simply
+	// whoever's credit first exceeds the remaining room, which the multi-winner test
+	// in arena_pools shows is rank 2, not rank 1. For def_daily_focus, `flat: 5`,
+	// every prize is identical anyway.)
+	//
+	// On a tie prefer weekly: it is the constraint that blocks everybody.
+	const cappedBy = credited < requested
+		? (weeklyRoom <= dailyRoom ? 'weekly_budget' : 'daily_cap')
+		: null;
+
+	// Build the shortfall for EVERY shortfall, including a clip to zero. It used to be
+	// computed only on the partial path, below the `credited <= 0` early return - so a
+	// FULLY drained budget reported no shortfall at all, and the caller's
+	// "misconfigured budget" branch could never fire in exactly the case it was
+	// written for: a prize larger than the entire weekly budget, which stalls forever.
+	//
+	// `unsatisfiable` means no amount of waiting helps: the prize exceeds the whole
+	// budget, not merely what is left of it. Only meaningful when the weekly budget is
+	// actually enabled and binding, which is guaranteed here - cappedBy can only be
+	// 'weekly_budget' when weeklyRoom <= dailyRoom, and dailyRoom is always finite, so
+	// params.weeklyBudget is a finite positive number on this path.
+	const shortfall = cappedBy
+		? {
+			requested,
+			available: Math.max(0, credited),
+			unsatisfiable: cappedBy === 'weekly_budget' && requested > params.weeklyBudget,
+		}
+		: null;
+
 	if (credited <= 0) {
-		return { ok: false, capped: true, credited: 0, balance: await balanceOf(db, user) };
+		return { ok: false, capped: true, credited: 0, cappedBy, shortfall, balance: await balanceOf(db, user) };
+	}
+	if (cappedBy === 'weekly_budget') {
+		// A PARTIAL payment out of an exhausted treasury. Refuse it for the same
+		// reason we refuse the zero: settling it is permanent and public, and the
+		// right amount is payable later. Nothing is written, so the caller can abort
+		// the whole resolution and retry once the budget frees.
+		return { ok: false, capped: true, credited: 0, cappedBy, shortfall, balance: await balanceOf(db, user) };
 	}
 
 	const activity = activityFor(challengeId, params.pooled);
+
+	// A re-credit must NEVER reduce what is already banked. This became reachable the
+	// moment resolution went from "resolve once" to "retry until the budget fits":
+	// the write below is a replaceOne, the caps are recomputed from scratch on each
+	// attempt, and a later attempt can legitimately compute a SMALLER number - most
+	// easily because the retry lands on a different UTC day on which the user has
+	// already earned elsewhere, or because an operator lowered a cap in response to
+	// the exhaustion alarm. Measured: a banked 400 rewritten to 200. Since spends are
+	// negative ledger rows and the balance is the sum of the whole ledger, lowering a
+	// credit the user has ALREADY SPENT drives their balance negative.
+	//
+	// Paying more later is fine (that is the heal); paying less is never fine.
+	const existingRow = await db.collection(COL.LEDGER).findOne({ user, reward_activity: activity });
+	const alreadyBanked = Number(existingRow && existingRow.token_count) || 0;
+	if (alreadyBanked > credited) {
+		return {
+			ok: true,
+			credited: alreadyBanked,
+			capped: false,
+			heldAtBanked: { recomputed: credited, banked: alreadyBanked },
+			balance: await reconcileBalance(db, user),
+			ref: activity,
+		};
+	}
 	// Idempotent: same (user, reward_activity) row is REPLACED, never duplicated.
 	// Once `arena_credit_unique` exists, the loser of a genuine race no longer
 	// double-inserts - it raises E11000 here. That must NOT escape: this runs inside
@@ -281,7 +367,11 @@ async function creditAfitReward(db, params) {
 		};
 	}
 	const balance = await reconcileBalance(db, user);
-	return { ok: true, credited, capped: credited < Number(amount), balance, ref: activity };
+	// `shortfall` rides along on a clipped-but-paid credit too (the daily-cap case).
+	// The caller records it against the result so a reduced prize is AUDITABLE rather
+	// than an unexplained smaller number - see the note in arena_pools about why the
+	// daily cap still settles.
+	return { ok: true, credited, capped: credited < requested, cappedBy, shortfall, balance, ref: activity };
 }
 
 /**
