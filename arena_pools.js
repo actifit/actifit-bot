@@ -208,10 +208,46 @@ async function resolveChallenge(db, params) {
 	for (const p of payouts) {
 		let credited = 0;
 		let reward_ref = null;
+		let creditRes = null;
 		if (p.afit > 0) {
 			// idempotent per (user, challenge) + daily-capped: a retry after a crash
 			// before the resolution marker lands re-enters here without double-paying.
 			const res = await arenaAfit.creditAfitReward(db, { user: p.entity, challengeId, amount: p.afit, at, dailyCap: effDailyCap, weeklyBudget: effWeeklyBudget, pooled: !!(pool && pool.funding !== 'treasury') });
+			creditRes = res;
+			// The GLOBAL weekly treasury budget running dry must ABORT the resolution,
+			// never be recorded as "paid 0". Settling it would write afit: 0 into the
+			// participant result AND into the settle payload, broadcast that on-chain as
+			// the authoritative outcome, and then never retry - because the resolution
+			// marker is idempotent and a later run reuses the STORED payload verbatim.
+			// A real winner would be permanently, publicly recorded as having earned
+			// nothing, with no notification (the F6 event only fires on afit > 0).
+			//
+			// It aims at the biggest prizes, too: resolveDueChallenges sorts
+			// oldest-closing-first, so the daily contests drain the week before the
+			// monthly LiveOps closes - exactly the 400/250/150 top three.
+			//
+			// Failing here leaves no marker and no settle, so the challenge is simply
+			// resolved again on a later tick once the budget frees. A per-user DAILY cap
+			// is not this: that is expected policy for one user and must not block
+			// everyone else's settlement, so it still records 0 and settles.
+			if (!res.ok && res.cappedBy === 'weekly_budget') {
+				// Covers a clip to zero AND a PARTIAL clip. The partial is the one that
+				// matters: weeklyRoom only decreases as a challenge pays out, so exactly
+				// one winner's credit straddles the boundary, and paying them a reduced
+				// figure would settle that number on-chain permanently. (Which winner
+				// that is depends on payout order, not on prize size - see the note in
+				// arena_afit; an earlier comment here claimed it was always the largest
+				// prize, which the multi-winner test disproves.)
+				const short = res.shortfall || {};
+				return {
+					ok: false,
+					reason: 'weekly AFIT budget exhausted - refusing to settle a reduced reward for '
+						+ p.entity + ' (needed ' + (short.requested != null ? short.requested : p.afit)
+						+ ', only ' + (short.available != null ? short.available : 0) + ' of budget left)',
+					budgetExhausted: true,
+					shortfall: res.shortfall || null,
+				};
+			}
 			if (res.ok) { credited = res.credited; reward_ref = res.ref; }
 			totalCredited += credited;
 		}
@@ -219,7 +255,16 @@ async function resolveChallenge(db, params) {
 		// in the mock). Record what was ACTUALLY credited, not the requested amount.
 		const part = eligible.get(p.entity);
 		const priorResult = (part && part.result) || {};
+		// A DAILY-cap clip still settles - that is per-user policy, and one user at
+		// their allowance must not block everyone else's settlement. But it is still a
+		// winner receiving less than the prize, recorded permanently, so carry WHY
+		// alongside the number. Without this the settle op says "265" for a 400 prize
+		// with no explanation anywhere, on-chain, forever.
 		const rewardObj = { afit: credited, badges: p.badges, reward_ref };
+		if (creditRes && creditRes.shortfall && creditRes.cappedBy === 'daily_cap') {
+			rewardObj.reduced_by = 'daily_cap';
+			rewardObj.prize_afit = creditRes.shortfall.requested;
+		}
 		await participantsC.updateOne(
 			{ challenge_id: challengeId, entity: p.entity },
 			{ $set: { result: { ...priorResult, rank: p.rank, reward: rewardObj } } }

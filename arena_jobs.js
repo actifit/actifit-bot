@@ -261,7 +261,42 @@ async function resolveDueChallenges(db, opts = {}) {
 				// Settlement credits off-chain AFIT, records participant results + an
 				// idempotent resolution marker, and returns the settle payload.
 				resolution = await arenaPools.resolveChallenge(db, { challengeId: ch.id, poolId, standings, prizes, asOf, dailyCap: opts.afitDailyCap, weeklyBudget: opts.afitWeeklyBudget });
-				if (!resolution.ok) { failed++; log(`arena resolve: ${ch.id} failed: ${resolution.reason}`); continue; }
+				if (!resolution.ok) {
+					// NOTE this branch is the GENERIC failure path - it also carries
+					// pre-existing reasons like 'unknown pool' or 'payout exceeds remaining
+					// pool budget', which have nothing to do with the treasury.
+					//
+					// For the BUDGET-EXHAUSTED case specifically the skip is DELIBERATE and
+					// worth stating, because it is a product decision rather than a side
+					// effect of `continue`: skipping here also skips the F6 events,
+					// refundUnpaid, the settle broadcast AND the recurrence roll, so while
+					// the weekly treasury is dry a recurring default creates no next
+					// occurrence at all.
+					//
+					// That is the behaviour we want. Rolling forward during exhaustion just
+					// manufactures more contests we cannot pay for, and each one would have
+					// to be unwound later; halting damps the cascade instead. nextOccurrence
+					// skip-aheads to the current period when it does resume, so the series
+					// picks up at today rather than replaying the missed windows - i.e. the
+					// missed periods simply never existed, which is the honest outcome for a
+					// contest nobody could have been paid for.
+					failed++;
+					if (resolution.budgetExhausted && resolution.shortfall && resolution.shortfall.unsatisfiable) {
+						// Never going to clear on its own: one prize is bigger than the
+						// whole weekly budget. Retrying looks identical to congestion, so
+						// name it as configuration.
+						log(`arena resolve: *** MISCONFIGURED BUDGET *** ${ch.id} needs ${resolution.shortfall.requested} AFIT for a single prize but the ENTIRE weekly budget is smaller. This will never settle until arena_afit_weekly_budget is raised or the schedule is lowered. ${resolution.reason}`);
+					} else if (resolution.budgetExhausted) {
+						// Not a transient error, and not self-healing: the weekly treasury
+						// budget is gone and NOTHING will settle until it resets or the
+						// budget is raised. Say so unmistakably, because the alternative
+						// behaviour (settling zeros) was silent and permanent.
+						log(`arena resolve: *** WEEKLY AFIT BUDGET EXHAUSTED *** ${ch.id} NOT settled and NOT rolled - it will retry, and no zero reward has been written or broadcast. ${resolution.reason}`);
+					} else {
+						log(`arena resolve: ${ch.id} failed: ${resolution.reason}`);
+					}
+					continue;
+				}
 				resolved++;
 				// F6 — notify each rewarded finisher. Reward objects don't carry rank,
 				// so read it from the settle standings (entity -> rank).
