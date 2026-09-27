@@ -1230,13 +1230,43 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
+				// Carry a recurring default's roster into the occurrence it rolled into
+				// (a join is scoped to ONE challenge id, so every new occurrence used to
+				// start empty). DEFERRED by design: it enrols only into a target the tailer
+				// has already indexed, so it runs a tick BEHIND the roll it follows, and its
+				// own failures never abort settlement above.
+				//
+				// DEFAULT OFF, and deliberately its OWN flag rather than riding on
+				// arena_jobs_enabled. The official reward schedules pay per-FINISHER
+				// (def_daily_focus is `flat: 5`, four others carry `participation`), so
+				// emission scales with roster size and a carried roster spends real treasury
+				// AFIT on people who never asked to play. Enabling this is an economic
+				// decision that wants the schedules re-costed against the expected roster
+				// first - and it must be switchable OFF without also stopping settlement,
+				// payouts and recurrence.
+				if (config.arena_autoenroll_enabled) {
+					try {
+						await arenaJobs.autoEnrollRecurrences(db, {
+							broadcastOp: arenaBroadcastOp,
+							lookbackDays: Number.isFinite(config.arena_autoenroll_lookback_days)
+								? config.arena_autoenroll_lookback_days
+								: undefined,
+							maxRoster: Number.isInteger(config.arena_autoenroll_max_roster)
+								? config.arena_autoenroll_max_roster
+								: undefined,
+							log: (m) => utils.log(m, 'arena'),
+						});
+					} catch (e) {
+						utils.log(e, 'arena');
+					}
+				}
 			} catch (e) {
 				utils.log(e, 'arena');
 			} finally {
 				resolveRunning = false;
 			}
 		});
-		console.log('Arena resolution job scheduled ('+resolveCron+')');
+		console.log('Arena resolution job scheduled ('+resolveCron+')'+(config.arena_autoenroll_enabled ? ' with recurrence auto-enrolment' : '; recurrence auto-enrolment DISABLED (arena_autoenroll_enabled)'));
 	}
 }
 

@@ -500,6 +500,13 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			}
 			const ch = await challenges.findOne({ id: op.challenge_id });
 			if (!ch) return { ok: false, reason: 'unknown challenge' };
+			// Same joinability gate as OPS.JOIN. An enroll is a system-side join, so it
+			// must not be able to do what a user's own join cannot: a settle can land
+			// between the enroller reading `open` and this op being indexed, which would
+			// otherwise write never-scored participants into a finalized challenge.
+			if (!['open', 'active'].includes(ch.state)) {
+				return { ok: false, reason: `challenge not joinable in state ${ch.state}` };
+			}
 
 			let enrolled = 0;
 			for (const entity of op.entities) {
