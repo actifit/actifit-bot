@@ -270,3 +270,102 @@ describe('arena_jobs.resolveDueChallenges — weekly budget exhausted', () => {
 			.findOne({ challenge_id: 'def_weekly_step_league' })).toBeTruthy();
 	});
 });
+
+// A stalled Arena used to be indistinguishable from a healthy idle one: the sweep
+// summary was discarded by the caller, the only trace was a line in arena.log on one
+// box, and every documented health check kept passing. Worse, when the treasury is
+// dry the recurrence roll is skipped too, so not even the challenge list changes.
+describe('arena_jobs.recordResolveHealth', () => {
+	const AT = (n) => '2026-08-10T0' + n + ':35:00Z';
+	const stalledSweep = (extra = {}) => ({ ok: true, processed: 1, resolved: 0, settled: 0, recurred: 0, failed: 1, skipped: 0, budgetExhausted: 0, ...extra });
+	const goodSweep = { ok: true, processed: 1, resolved: 1, settled: 1, recurred: 1, failed: 0, skipped: 0, budgetExhausted: 0 };
+	const idleSweep = { ok: true, processed: 0, resolved: 0, settled: 0, recurred: 0, failed: 0, skipped: 0, budgetExhausted: 0 };
+
+	test('a sweep with nothing due is IDLE, not stalled — no alarm', async () => {
+		const db = createMockDb();
+		const r = await jobs.recordResolveHealth(db, idleSweep, { asOf: AT(1) });
+		expect(r.alert).toBeNull();
+		expect(r.health.stalled_ticks).toBe(0);
+		expect(r.health.alerting).toBe(false);
+	});
+
+	test('one failing sweep does not page — two does, and only once', async () => {
+		const db = createMockDb();
+
+		const first = await jobs.recordResolveHealth(db, stalledSweep(), { asOf: AT(1) });
+		expect(first.alert).toBeNull();            // could be a transient RPC blip
+		expect(first.health.stalled_ticks).toBe(1);
+
+		const second = await jobs.recordResolveHealth(db, stalledSweep({ budgetExhausted: 1 }), { asOf: AT(2) });
+		expect(second.alert).not.toBeNull();
+		expect(second.alert.kind).toBe('budget_exhausted');
+		expect(second.alert.subject).toMatch(/budget exhausted/i);
+		expect(second.alert.body).toMatch(/No wrong reward has been written/);
+
+		// still stuck an hour later: state recorded, but NOT paged again
+		const third = await jobs.recordResolveHealth(db, stalledSweep({ budgetExhausted: 1 }), { asOf: AT(3) });
+		expect(third.alert).toBeNull();
+		expect(third.health.stalled_ticks).toBe(3);
+		expect(third.health.alerting).toBe(true);
+		expect(third.health.stalled_since).toBe(AT(1));   // when it ACTUALLY started
+	});
+
+	test('recovery pages exactly once, then goes quiet', async () => {
+		const db = createMockDb();
+		await jobs.recordResolveHealth(db, stalledSweep(), { asOf: AT(1) });
+		await jobs.recordResolveHealth(db, stalledSweep(), { asOf: AT(2) });
+
+		const recovered = await jobs.recordResolveHealth(db, goodSweep, { asOf: AT(3) });
+		expect(recovered.alert.kind).toBe('recovered');
+		expect(recovered.health.alerting).toBe(false);
+		expect(recovered.health.stalled_ticks).toBe(0);
+		expect(recovered.health.last_success_at).toBe(AT(3));
+
+		const quiet = await jobs.recordResolveHealth(db, goodSweep, { asOf: AT(4) });
+		expect(quiet.alert).toBeNull();
+	});
+
+	test('a non-budget failure is reported as NOT self-healing', async () => {
+		const db = createMockDb();
+		await jobs.recordResolveHealth(db, stalledSweep(), { asOf: AT(1) });
+		const r = await jobs.recordResolveHealth(db, stalledSweep(), { asOf: AT(2) });
+		expect(r.alert.kind).toBe('settlement_stalled');
+		expect(r.alert.body).toMatch(/will not clear on its own/);
+	});
+
+	test('the health record is queryable — the check on-call can actually run', async () => {
+		const db = createMockDb();
+		await jobs.recordResolveHealth(db, goodSweep, { asOf: AT(1) });
+		const doc = await db.collection(jobs.HEALTH_COLLECTION).findOne({ _id: jobs.HEALTH_ID });
+		expect(doc).toMatchObject({ _id: 'resolve_sweep', last_run_at: AT(1), alerting: false });
+		expect(doc.last_summary.settled).toBe(1);
+	});
+});
+
+// and the sweep itself now reports budget exhaustion in its summary, so the health
+// recorder can tell "treasury dry" from "something else broke"
+describe('resolveDueChallenges reports budgetExhausted in its summary', () => {
+	test('counts the exhausted challenge', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'def_weekly_step_league', state: 'open', type: 'league_fixture', window: CLOSED,
+			  scoring: { metric: 'activity_count', rule: 'max' }, recurrence: 'Weekly',
+			  origin_tier: 'official', title: 'Weekly Step League' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_weekly_step_league', entity: 'alice', state: 'enrolled', flags: [] },
+		]);
+		db.collection('verified_posts').__seed([post('alice', '2026-08-02T10:00:00Z', 12000)]);
+		db.collection('token_transactions').__seed([
+			{ user: 'x', reward_activity: 'arena_challenge:chEarlier', token_count: 50000,
+			  challenge_id: 'chEarlier', date: new Date('2026-08-09T00:00:00Z') },
+		]);
+
+		const res = await jobs.resolveDueChallenges(db, {
+			now: NOW, afitDailyCap: 500, afitWeeklyBudget: 50000,
+			broadcastOp: async (op) => ({ id: 'trx_' + op.op }),
+		});
+		expect(res.budgetExhausted).toBe(1);
+		expect(res.settled).toBe(0);
+	});
+});

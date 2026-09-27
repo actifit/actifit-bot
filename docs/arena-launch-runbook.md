@@ -281,6 +281,69 @@ Data + flags:
 - [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
 - [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
+- [ ] `config.report_emails` set, so a settlement stall actually pages someone
+      (step 6b). Without it the alarm is log-only.
+- [ ] `db.arena_health.findOne({_id:'resolve_sweep'})` returns a record with
+      `alerting: false` after the first sweep (step 6b) — this is the ONLY check
+      that distinguishes a stalled Arena from a healthy idle one
+
+## 6b. Is settlement actually running?
+
+**This is the check to run when someone asks "is the Arena healthy?".** Every other
+check in this runbook can pass while settlement is completely stopped:
+
+- the tailer cursor keeps advancing (the tailer is a separate job and is fine)
+- `/arena/challenges` keeps returning 6 (when the treasury is dry the recurrence
+  roll is skipped too, so the challenge list does not change either)
+- no process has crashed and nothing looks wrong in `pm2 status`
+
+Settlement records its own state, so ask it directly:
+
+```js
+// on the SECOND_API box, or any mongo client against the live DB
+db.arena_health.findOne({ _id: 'resolve_sweep' })
+```
+
+| field | meaning |
+| --- | --- |
+| `last_run_at` | when the sweep last ran. Stale by more than ~1h = the cron is not firing at all |
+| `last_success_at` | when something last actually settled |
+| `stalled_ticks` | consecutive sweeps that failed with nothing settled. `0` is healthy |
+| `alerting` | true once `stalled_ticks` reaches 2 (~1h stuck) |
+| `stalled_since` | when the current stall began |
+| `last_summary.budgetExhausted` | `> 0` means the weekly AFIT treasury budget is dry |
+
+A sweep with nothing due reports `stalled_ticks: 0` — **idle is not stalled**, and the
+record distinguishes them.
+
+### If `budgetExhausted > 0`
+
+The weekly AFIT treasury budget is exhausted. This is a controlled stop, not damage:
+
+- **no wrong reward has been written or broadcast** — the refusal is the point. Before
+  this guard existed, winners were settled at a reduced amount (or zero) on-chain,
+  permanently, and never retried
+- challenges are NOT settled, NO settle ops are broadcast, and recurring contests do
+  NOT roll into their next occurrence, so no unpayable contests are created
+- it clears by itself when the weekly bucket rolls over, and everything settles then
+
+To resume sooner, raise `arena_afit_weekly_budget` in `config.json` and restart.
+
+**Do not lower `arena_afit_daily_cap` in response to this alarm.** It does not help —
+the constraint is the weekly budget — and the per-user cap is recomputed on every
+retry, so lowering it mid-stall is the one action that could reduce a reward a winner
+has already banked.
+
+### If `alerting` is true but `budgetExhausted` is 0
+
+Something else is failing and it will **not** clear on its own. Read `arena.log` on the
+SECOND_API box for the per-challenge reason.
+
+### Alert mail
+
+Alerts go to `config.report_emails` on a state **change** — one mail when it starts,
+one when it recovers, not one per tick. If `report_emails` is unset the alert is only
+logged, and the log line says so.
 
 ## 7. Keeping BOT_THREAD from vanishing
 

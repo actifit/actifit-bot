@@ -1219,7 +1219,7 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 			if (resolveRunning) { utils.log('arena resolve: previous sweep still running, skipping this tick', 'arena'); return; }
 			resolveRunning = true;
 			try {
-				await arenaJobs.resolveDueChallenges(db, {
+				const resolveSummary = await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
 					// Emission guard defaults to the approved values when the live config
@@ -1230,6 +1230,32 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
+				// The summary used to be DISCARDED here, which is why a fully stalled
+				// Arena was indistinguishable from a healthy idle one: the only trace was
+				// a line in arena.log on one box, while every documented health check (the
+				// tailer cursor advancing, /arena/challenges returning rows) kept passing.
+				// Record it, and mail on a state CHANGE so a week of exhaustion is one
+				// page and one all-clear rather than 168 identical messages.
+				try {
+					const h = await arenaJobs.recordResolveHealth(db, resolveSummary);
+					if (h.alert) {
+						utils.log('arena resolve: ALERT (' + h.alert.kind + ') ' + h.alert.subject, 'arena');
+						const to = config.report_emails;
+						if (to && to.length) {
+							// Never let a mail failure take down the sweep - it runs inside the
+							// in-flight guard, so an escaping throw would leave it wedged.
+							// local require: app.js does not import mail at the top, and this
+							// path runs at most twice per incident, so there is nothing to gain
+							// from loading the SMTP transport at boot.
+							await require('./mail').sendPlainMail(h.alert.subject, h.alert.body, to)
+								.catch((e) => utils.log('arena resolve: alert mail failed: ' + (e && e.message), 'arena'));
+						} else {
+							utils.log('arena resolve: no report_emails configured - alert not delivered', 'arena');
+						}
+					}
+				} catch (e) {
+					utils.log('arena resolve: health recording failed: ' + (e && e.message), 'arena');
+				}
 				// Carry a recurring default's roster into the occurrence it rolled into
 				// (a join is scoped to ONE challenge id, so every new occurrence used to
 				// start empty). DEFERRED by design: it enrols only into a target the tailer
