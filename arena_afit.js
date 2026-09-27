@@ -87,9 +87,16 @@ async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 	if (bucket === null) return 0;
 	// Bounded by the week window in the QUERY, and summed server-side. This used to
 	// pull EVERY arena ledger row ever written into Node and filter by week in JS -
-	// on every single credit, inside the payout loop. At 3 rows that was free; it
-	// grows without bound for as long as the Arena runs, and it is exactly the kind
-	// of long unbounded read that leaves the in-flight cron guard stuck on.
+	// on every single credit, inside the payout loop.
+	//
+	// Be precise about what this does and does not fix. Measured with explain() on
+	// production: the plan is IXSCAN [reward_activity_1_date_1] -> FETCH, 4 keys /
+	// 3 docs / 1ms - NOT a collection scan. But `reward_activity` leads that index
+	// under a RANGE predicate, so MongoDB cannot use `date` as a tight index bound;
+	// the week filter is applied after the key walk. The ROWS RETURNED are bounded,
+	// and nothing crosses the wire any more, but the keys walked still grow with the
+	// number of arena credits ever made. Free today (3 rows); worth revisiting with
+	// a date-leading index or a small running-total document once this is thousands.
 	const start = new Date(bucket * WEEK_MS);
 	const end = new Date((bucket + 1) * WEEK_MS);
 	const match = {
@@ -105,9 +112,19 @@ async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 	// recomputes the SAME weekly room (idempotent) while still counting every other
 	// winner in this run. Read as a single indexed document, not a scan.
 	if (excludeUser && excludeChallengeId) {
-		const own = await db.collection(COL.LEDGER)
-			.findOne({ user: excludeUser, reward_activity: activityFor(excludeChallengeId) });
-		if (own && weekBucket(own.date) === bucket) total -= Number(own.token_count) || 0;
+		// Subtract EVERY row on this key, not just the first. `arena_credit_unique`
+		// makes duplicates impossible, but it is a hand-created production index, so
+		// this must not quietly under-subtract anywhere it has not been built yet -
+		// that would shrink the room and under-pay the winner.
+		const own = await db.collection(COL.LEDGER).aggregate([
+			{ $match: {
+				user: excludeUser,
+				reward_activity: activityFor(excludeChallengeId),
+				date: { $gte: start, $lt: end },
+			} },
+			{ $group: { _id: null, total: { $sum: '$token_count' } } },
+		]).toArray();
+		total -= (own[0] && Number(own[0].total)) || 0;
 	}
 	return total > 0 ? total : 0;
 }
@@ -130,7 +147,11 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 	// ENTIRE platform ledger - measured at 3,205 rows for a real participant, on
 	// every credit - and throw almost all of it away in JS.
 	// UTC day bounds, matching dayKey() exactly (it keys off toISOString()).
-	const ms = Date.parse(at);
+	// new Date(at), NOT Date.parse(at): dayKey() uses new Date(), and the two
+	// disagree on non-string input (Date.parse(1756200000000) is NaN while
+	// new Date(1756200000000) is valid). That divergence would fail OPEN - a NaN
+	// here returns 0 emitted, handing back the FULL daily cap.
+	const ms = new Date(at).getTime();
 	if (!Number.isFinite(ms)) return 0;
 	const start = new Date(Math.floor(ms / DAY_MS) * DAY_MS);
 	const end = new Date(start.getTime() + DAY_MS);
@@ -144,9 +165,17 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 	]).toArray();
 	let total = (rows[0] && Number(rows[0].total)) || 0;
 	if (excludeChallengeId) {
-		const own = await db.collection(COL.LEDGER)
-			.findOne({ user, reward_activity: activityFor(excludeChallengeId) });
-		if (own && dayKey(own.date) === day) total -= Number(own.token_count) || 0;
+		// All rows on this key (see the note in arenaEmittedWeek), and bounded to the
+		// same day window so a row outside it is never subtracted.
+		const own = await db.collection(COL.LEDGER).aggregate([
+			{ $match: {
+				user,
+				reward_activity: activityFor(excludeChallengeId),
+				date: { $gte: start, $lt: end },
+			} },
+			{ $group: { _id: null, total: { $sum: '$token_count' } } },
+		]).toArray();
+		total -= (own[0] && Number(own[0].total)) || 0;
 	}
 	return total > 0 ? total : 0;
 }
@@ -157,8 +186,17 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
  *  balance, so there is nothing to bound it by. What it must not do is ship every
  *  one of those rows to Node just to add up one field: a real participant already
  *  has 3,205 ledger rows, and this runs once per credit inside the payout loop.
- *  The sum happens server-side on the {user:1, date:-1} index instead, so the
- *  documents never cross the wire. */
+ *  The sum happens server-side on the {user:1, date:-1} index instead (confirmed
+ *  present on production and chosen by the planner: IXSCAN [user_1_date_-1]), so
+ *  the documents never cross the wire.
+ *
+ *  This is NOT a pure refactor, and the difference is worth stating: `Number(x)||0`
+ *  coerced a numeric STRING token_count, whereas MongoDB's $sum ignores non-numeric
+ *  values outright. That moves this function INTO agreement with the two pipelines
+ *  that already own this balance in production - delegations.js updateUserTokens
+ *  (which $out's straight over user_tokens) and app.js /recalculateUserTokens, both
+ *  of which already use $sum. Previously this function was the odd one out and
+ *  could inflate a balance that the next sweep silently clawed back. */
 async function reconcileBalance(db, user) {
 	const agg = await db.collection(COL.LEDGER).aggregate([
 		{ $match: { user } },

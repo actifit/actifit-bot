@@ -61,6 +61,44 @@ describe('arena_afit — bounded cap/budget reads', () => {
 		expect(await afit.balanceOf(db, 'dave')).toBe(250);   // never doubled
 	});
 
+	// THE most money-critical property in this module: a creator-funded (pooled)
+	// credit must NEVER count against the TREASURY budget - the creator already paid
+	// for it. The old code tested the namespace with indexOf(prefix) === 0; the new
+	// code uses a $gte/$lt string range whose upper bound is the prefix with ':'
+	// replaced by ';' (adjacent codepoints, 0x3A -> 0x3B). That is exact, but nothing
+	// pinned it, so a future edit to ARENA_ACTIVITY_HI could silently pull pooled or
+	// fund rows into the treasury total with every test still green.
+	test('pooled / fund / refund namespaces never count toward the TREASURY budget', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			// all in the same week, all large enough to blow a small budget
+			{ user: 'x', reward_activity: 'arena_pool:chP',    token_count: 40000, challenge_id: 'chP', date: new Date('2026-08-26T01:00:00Z') },
+			{ user: 'x', reward_activity: 'arena_fund:chF',    token_count: -9000, challenge_id: 'chF', date: new Date('2026-08-26T01:00:00Z') },
+			{ user: 'x', reward_activity: 'arena_refund:chF',  token_count: 9000,  challenge_id: 'chF', date: new Date('2026-08-26T01:00:00Z') },
+			// a treasury row, which DOES count
+			{ user: 'x', reward_activity: 'arena_challenge:chT', token_count: 100, challenge_id: 'chT', date: new Date('2026-08-26T01:00:00Z') },
+		]);
+		// budget 1000; only the 100 treasury row counts, so 900 of room remains
+		// dailyCap raised out of the way so the WEEKLY budget is what binds here
+		const res = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chNew', amount: 5000, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
+		expect(res.credited).toBe(900);
+	});
+
+	test('a pooled credit is written to its own namespace and is not treasury-capped', async () => {
+		const db = createMockDb();
+		// pooled credits pass weeklyBudget 0 / an effectively infinite daily cap
+		const res = await afit.creditAfitReward(db, {
+			user: 'z', challengeId: 'chP', amount: 5000, at: AT, pooled: true,
+			dailyCap: Number.MAX_SAFE_INTEGER, weeklyBudget: 0,
+		});
+		expect(res.credited).toBe(5000);
+		const row = await db.collection('token_transactions').findOne({ user: 'z' });
+		expect(row.reward_activity).toBe('arena_pool:chP');
+		// and it must not show up in the treasury weekly total afterwards
+		const next = await afit.creditAfitReward(db, { user: 'w', challengeId: 'chT', amount: 100, at: AT, dailyCap: 100000, weeklyBudget: 1000 });
+		expect(next.credited).toBe(100);   // the 5000 pooled row did not eat the budget
+	});
+
 	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
 		const db = createMockDb();
 		db.collection('token_transactions').__seed([

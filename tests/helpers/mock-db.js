@@ -109,7 +109,17 @@ function createMockCollection(initialData = []) {
             for (const [field, acc] of Object.entries(spec)) {
               if (field === '_id') continue;
               if (acc && acc.$sum !== undefined) {
-                const add = typeof acc.$sum === 'number' ? acc.$sum : (Number(resolveField(d, acc.$sum)) || 0);
+                // Match real MongoDB: $sum IGNORES non-numeric values rather than
+                // coercing them. Number(x) || 0 would silently reproduce the old
+                // JS-reduce semantics this code replaced (which DID coerce numeric
+                // strings), hiding the one real behaviour change behind a green test.
+                let add;
+                if (typeof acc.$sum === 'number') {
+                  add = acc.$sum;
+                } else {
+                  const v = resolveField(d, acc.$sum);
+                  add = typeof v === 'number' && Number.isFinite(v) ? v : 0;
+                }
                 g[field] = (g[field] || 0) + add;
               } else if (acc && acc.$max !== undefined) {
                 const v = resolveField(d, acc.$max);
@@ -180,6 +190,17 @@ function matchQuery(doc, query) {
         const hasKey = doc[key] !== undefined;
         if (query[key].$exists && !hasKey) return false;
         if (!query[key].$exists && hasKey) return false;
+      }
+      // An operator this matcher does not implement used to fall straight through
+      // and MATCH EVERYTHING - so a test could filter on $type/$regex/$expr, assert
+      // a total, and pass green while real MongoDB returned something else. That is
+      // the same silently-wrong-answer failure the aggregate() stage check exists to
+      // prevent, so fail the same way: loudly.
+      const SUPPORTED = ['$gte', '$lte', '$gt', '$lt', '$ne', '$in', '$nin', '$exists'];
+      for (const op of Object.keys(query[key])) {
+        if (op.startsWith('$') && !SUPPORTED.includes(op)) {
+          throw new Error('mock-db matchQuery: unsupported operator ' + op + ' on field "' + key + '"');
+        }
       }
     } else {
       if (doc[key] !== query[key]) return false;
