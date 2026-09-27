@@ -137,20 +137,31 @@ function presentationOf(ch) {
  * Build the next-occurrence `challenge_create` op body for a recurring default,
  * or null if it isn't recurring / has no usable window. The new id chains from
  * the ORIGINAL base via parent_id (`<base>@<nextStartDate>`), so ids stay clean
- * across periods and the web can group a series by parent_id. Window length is
- * preserved; the next window starts where this one ended.
+ * across periods and the web can group a series by parent_id.
+ *
+ * CADENCE vs WINDOW LENGTH are different things and must not be conflated:
+ *   - cadence       = RECURRENCE_MS[ch.recurrence] - how often the contest REPEATS
+ *   - window length = end - start                  - how long each period RUNS
+ * They coincide for five of the six defaults (Daily/1d, Weekly/7d, Seasonal/14d,
+ * Monthly/30d), which is why using the window length as the period went unnoticed.
+ * Weekend Warrior is `recurrence: 'Weekly'` with a 2-DAY window: rolling by window
+ * length made it repeat every 2 days and walk off the weekend permanently
+ * (observed in production 2026-09-25). The next window therefore starts one
+ * CADENCE after this one started, and keeps this one's length.
  */
 function nextOccurrence(ch, nowMs) {
 	if (!isRecurringDefault(ch) || !hasWindow(ch.window)) return null;
 	const base = ch.parent_id || ch.id;
 	const start = Date.parse(ch.window.start);
 	const end = Date.parse(ch.window.end);
-	const len = end - start;
-	// Roll forward from this window's end; if we're already past several periods
-	// (a long outage), skip ahead so the new window is current, not stale.
-	let nextStart = end;
-	if (Number.isFinite(nowMs)) {
-		while (nextStart + len < nowMs) nextStart += len;
+	const len = end - start;                            // how long each period RUNS
+	const period = RECURRENCE_MS[ch.recurrence] || len; // how often it REPEATS
+	// Roll forward one cadence from this window's start; if we're already past
+	// several periods (a long outage), skip ahead so the new window is current,
+	// not stale. Guard the loop: a non-positive period would spin forever.
+	let nextStart = start + period;
+	if (Number.isFinite(nowMs) && period > 0) {
+		while (nextStart + len < nowMs) nextStart += period;
 	}
 	const nextEnd = nextStart + len;
 	const startIso = new Date(nextStart).toISOString();
