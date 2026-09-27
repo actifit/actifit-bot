@@ -130,6 +130,63 @@ describe('arena_afit — bounded cap/budget reads', () => {
 		expect(await afit.balanceOf(db, 'dan')).toBe(500);
 	});
 
+	// A re-credit must never LOWER what is already banked. This became reachable when
+	// resolution went from "resolve once" to "retry until the budget fits": the write
+	// is a replaceOne and the caps are recomputed on every attempt, so a retry landing
+	// on a different UTC day (or after an operator lowers a cap) can compute a smaller
+	// number. Spends are negative ledger rows, so reducing a credit the user has
+	// ALREADY SPENT drives their balance negative. Measured before the fix: a banked
+	// 400 rewritten to 200.
+	test('a retry never reduces an already-banked credit', async () => {
+		const db = createMockDb();
+		const DAY1 = '2026-08-26T10:00:00Z';
+		const DAY2 = '2026-08-27T10:00:00Z';
+
+		const first = await afit.creditAfitReward(db, { user: 'A', challengeId: 'chBig', amount: 400, at: DAY1, dailyCap: 500, weeklyBudget: 50000 });
+		expect(first.credited).toBe(400);
+
+		// the user spends it
+		await db.collection('token_transactions').insertOne({
+			user: 'A', reward_activity: 'market_purchase', token_count: -400, date: new Date(DAY1),
+		});
+		await afit.reconcileBalance(db, 'A');
+		expect(await afit.balanceOf(db, 'A')).toBe(0);
+
+		// and earns elsewhere on the day the retry lands, eating their daily room
+		await db.collection('token_transactions').insertOne({
+			user: 'A', reward_activity: 'arena_challenge:chOther', token_count: 300,
+			challenge_id: 'chOther', date: new Date(DAY2),
+		});
+
+		const retry = await afit.creditAfitReward(db, { user: 'A', challengeId: 'chBig', amount: 400, at: DAY2, dailyCap: 500, weeklyBudget: 50000 });
+		expect(retry.ok).toBe(true);
+		expect(retry.credited).toBe(400);                       // NOT the recomputed 200
+		expect(retry.heldAtBanked).toEqual({ recomputed: 200, banked: 400 });
+
+		const row = await db.collection('token_transactions').findOne({ user: 'A', reward_activity: 'arena_challenge:chBig' });
+		expect(row.token_count).toBe(400);
+		expect(await afit.balanceOf(db, 'A')).toBe(300);        // never negative
+	});
+
+	// A fully drained budget must still report a shortfall, or the caller cannot tell
+	// "wait for next week" from "this prize is bigger than the entire budget and will
+	// never fit". The zero path used to return before the shortfall was built.
+	test('a fully drained budget still reports a shortfall, and flags the unsatisfiable case', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			{ user: 'x', reward_activity: 'arena_challenge:chEarlier', token_count: 50000,
+			  challenge_id: 'chEarlier', date: new Date(AT) },
+		]);
+		// ordinary exhaustion: the prize would fit a fresh budget
+		const ordinary = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chA', amount: 400, at: AT, dailyCap: 500, weeklyBudget: 50000 });
+		expect(ordinary).toMatchObject({ ok: false, credited: 0, cappedBy: 'weekly_budget' });
+		expect(ordinary.shortfall).toMatchObject({ requested: 400, available: 0, unsatisfiable: false });
+
+		// misconfiguration: the prize exceeds the WHOLE budget, so waiting never helps
+		const never = await afit.creditAfitReward(db, { user: 'y', challengeId: 'chB', amount: 60000, at: AT, dailyCap: 500, weeklyBudget: 50000 });
+		expect(never.shortfall).toMatchObject({ requested: 60000, unsatisfiable: true });
+	});
+
 	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
 		const db = createMockDb();
 		db.collection('token_transactions').__seed([

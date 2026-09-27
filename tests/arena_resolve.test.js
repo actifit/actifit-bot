@@ -199,3 +199,74 @@ describe('arena_jobs.nextOccurrence / isRecurringDefault', () => {
 		expect(jobs.nextOccurrence(ch, Date.now())).toBeNull();
 	});
 });
+
+// End-to-end cover for the branch the reviewers flagged as untested: what the
+// SWEEP does when the weekly treasury is dry. The unit tests prove resolveChallenge
+// refuses; this proves the consequences that refusal has at the sweep level - no
+// settle op broadcast, no recurrence roll, no marker - because those are the
+// product decision, not an implementation detail.
+describe('arena_jobs.resolveDueChallenges — weekly budget exhausted', () => {
+	function seedDry() {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'def_weekly_step_league', state: 'open', type: 'league_fixture', window: CLOSED,
+			  scoring: { metric: 'activity_count', rule: 'max' }, recurrence: 'Weekly',
+			  origin_tier: 'official', title: 'Weekly Step League' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_weekly_step_league', entity: 'alice', state: 'enrolled', flags: [] },
+		]);
+		db.collection('verified_posts').__seed([
+			post('alice', '2026-08-02T10:00:00Z', 12000),
+			post('alice', '2026-08-03T10:00:00Z', 11000),
+		]);
+		// the week's entire treasury budget is already spent
+		db.collection('token_transactions').__seed([
+			{ user: 'someoneelse', reward_activity: 'arena_challenge:chEarlier', token_count: 50000,
+			  challenge_id: 'chEarlier', date: new Date('2026-08-09T00:00:00Z') },
+		]);
+		return db;
+	}
+
+	test('broadcasts NO settle op, rolls NO recurrence, writes NO marker', async () => {
+		const db = seedDry();
+		const sent = [];
+		const res = await jobs.resolveDueChallenges(db, {
+			now: NOW,
+			afitDailyCap: 500,
+			afitWeeklyBudget: 50000,
+			broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; },
+		});
+
+		expect(res.failed).toBe(1);
+		expect(res.settled).toBe(0);
+		expect(res.recurred).toBe(0);
+		// nothing at all went to the chain - not a settle, not a next occurrence
+		expect(sent).toHaveLength(0);
+		expect(await db.collection('challenge_resolutions')
+			.findOne({ challenge_id: 'def_weekly_step_league' })).toBeFalsy();
+		// and the challenge stays live so a later sweep picks it up again
+		const ch = await db.collection('challenges').findOne({ id: 'def_weekly_step_league' });
+		expect(ch.state).toBe('open');
+	});
+
+	test('the very same sweep settles and rolls once the budget is there', async () => {
+		const db = seedDry();
+		// clear the pre-spend: this is the only difference from the test above
+		await db.collection('token_transactions').deleteMany({ user: 'someoneelse' });
+
+		const sent = [];
+		const res = await jobs.resolveDueChallenges(db, {
+			now: NOW,
+			afitDailyCap: 500,
+			afitWeeklyBudget: 50000,
+			broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; },
+		});
+
+		expect(res.failed).toBe(0);
+		expect(res.settled).toBe(1);
+		expect(sent.some((o) => o.op === 'settle')).toBe(true);
+		expect(await db.collection('challenge_resolutions')
+			.findOne({ challenge_id: 'def_weekly_step_league' })).toBeTruthy();
+	});
+});
