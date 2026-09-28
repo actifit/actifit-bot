@@ -320,8 +320,9 @@ Data + flags:
       a time, never both. And `systemctl start` restores from the last `pm2 save`
       dump, not from the repo configs, so run it only AFTER adopting the configs and
       saving - otherwise the box comes back on the old env, which for `delegations`
-      means the manual-run branch described in the pm2 section below (no funds move,
-      but today's AFIT ledger rows get recomputed).
+      means the manual-run branch described in the pm2 section below - no outward
+      transfer, but today's AFIT ledger rows get recomputed and the wrong values are
+      PERMANENT (nothing revisits that date).
 
       The unit is named after the user pm2 runs as. `pm2-root` is correct only if that
       is root - otherwise it is `pm2-<user>`, and checking `pm2-root` fails
@@ -556,20 +557,62 @@ boot. That is the **manual-run entry point, and it is in active weekly use** —
 below. It:
 
 - recomputes today's off-chain AFIT delegator rows via `upsertRewardTransaction`, a
-  keyed `replaceOne(upsert)`, so it **overwrites** today's rows rather than doubling
-  them; `updateUserTokens()` then rebuilds `user_tokens` from them;
+  keyed `replaceOne(upsert)` on `{user, chain, date, reward_activity, orig_account}`, so
+  it **overwrites** today's rows rather than doubling them; `updateUserTokens()` then
+  rebuilds `user_tokens` from them. (One narrow exception: `user` and `reward_activity`
+  are part of that key, so if `delegation_alt_beneficiaries` changed between runs the old
+  row survives *beside* the new one. The upsert is also not awaited, so a Mongo error
+  there is another unhandled rejection.);
 - **on a Monday only**, runs `processSteemRewards`, which computes HIVE/HBD amounts and
-  writes them to `HIVErewards<date>.json`. The transfer code there is commented out;
-- installs `setInterval(claimRewards, 1h)` — @actifit claiming its **own** pending
-  rewards. Benign, though the timers and MongoClients accumulate per invocation.
+  writes them to `HIVErewards<date>.json`. **There is no transfer code in it** — only a
+  commented-out SteemConnect signing-URL builder and a mail send. The file *is* the
+  deliverable; transfers are done by hand afterwards;
+- installs **two** timers — `setInterval(claimRewards, 1h)` and
+  `setInterval(loadSteemPrices, 5min)` — which accumulate per invocation along with a
+  fresh MongoClient. `claimRewards` is **not** benign; see below.
 
-**Nothing is broadcast and no funds move on this path.** So an accidental start is a
-wrong-**value** bug in the off-chain ledger — today's rows recomputed from a delegation
-snapshot up to ~24h old, since the scheduled 08:00 job refreshes it daily — not a wrong
-payout. It is bounded, and the next scheduled run corrects it. Still worth avoiding,
-because `updateUserTokens()` propagates the wrong values into displayed balances.
+**No outward transfer is reachable on this path.** Nothing pays a delegator, no BSC
+send, no Hive-Engine op. The only broadcast anywhere in the source is a **self-directed**
+`claim_reward_balance` for `config.full_pay_benef_account` (`actifit.funds`), and it
+cannot currently even get that far.
+
+**But the wrong rows are permanent — do not round this off to "harmless".** The upsert
+key includes `date`, set to today's UTC midnight, so tomorrow's 08:00 run writes
+`date=D+1` and **never revisits `date=D`**. And `updateUserTokens()` is a `$group` sum
+over **all** of `token_transactions` with `$out: user_tokens`, so every future rebuild
+re-derives balances from the poisoned row. A bad row written today is baked into
+displayed balances indefinitely.
+
+The delegation snapshot it computes from is at most ~24h old **while `MAIN` is running
+normally on api2**, because that job passes `updateDelegations = true` daily. In the
+case actually being described here — the env went missing, so no `MAIN` job is running —
+the snapshot age is **unbounded**.
 
 Nothing alarms either way; the Arena settlement alarm cannot see this process at all.
+
+### `claimRewards` is broken, and it is a latent process-killer
+
+Worth knowing because it affects the **healthy `MAIN` process too** — the 08:00 job calls
+`runRewards`, which installs the same timer.
+
+`claimRewards` reads `reward_steem_balance` / `reward_sbd_balance`. **Those fields do not
+exist on a Hive account object** — verified on chain, `hiveapi.actifit.io` returns
+neither for `actifit.funds`. `utils.js` uses the correct `reward_hive_balance` /
+`reward_hbd_balance`, with the STEEM names commented out beside them, so the right names
+are known in this repo.
+
+| Account state | What happens |
+| --- | --- |
+| All reward balances `0` | `parseFloat(undefined)` is `NaN`, `NaN > 0` is false, guard fails, logs `no rewards to claim for now`. **Harmless — and this is the current state** (`actifit.funds` reads `0.000 HIVE / 0.000 HBD / 0.000000 VESTS` as of 2026-09-28, which is why nothing looks wrong today). |
+| Any pending `reward_vesting_balance` | The guard passes on that third term, then the next line calls `.split(' ')` on the **absent** `reward_steem_balance` and throws `TypeError`. `claimRewards` is `async`, called from `setInterval` with no `.catch`, and nothing in `delegations.js` installs an `unhandledRejection` handler — so on Node 20 (`package.json` pins `20.x`) **the process terminates**. |
+
+Expected shape if it ever fires: the timer is installed only by `runRewards`, which on
+`MAIN` is the 08:00 job — so roughly **one crash a day**, an hour or so after 08:00,
+followed by a pm2 restart. Not an hourly loop, because a restarted `MAIN` process only
+re-schedules 08:00 and does not call `runRewards` again.
+
+**To check:** `pm2 describe delegations` — a restart count that climbs about once a day
+is this bug. A flat count means `actifit.funds` is still at zero.
 
 > **The manual run is deliberate — and it does not happen on api2.**
 >
@@ -578,6 +621,12 @@ Nothing alarms either way; the Arena settlement alarm cannot see this process at
 > `npm run delegate` (or `node delegations.js`) with no `BOT_THREAD` set, which takes
 > the same `else` branch. The Monday gate (`d.getDay() == 1`) lives inside
 > `startProcess`, so the day of the week is load-bearing.
+>
+> **That gate uses LOCAL time** (`new Date().getDay()`) while every date boundary around
+> it uses `moment().utc()`. The two agree for anyone east of UTC, but on a machine west
+> of UTC a run late Sunday evening local is already Monday UTC — it would land in the
+> reward window and then skip the gate, producing no file and no error. If the weekly
+> run ever silently produces nothing, check the timezone before anything else.
 >
 > Two consequences:
 >
@@ -640,8 +689,8 @@ the environment, so a green row proves only that something started.
 
 This matters here because a `delegations` process that comes up *without* the env does
 not sit idle waiting to be noticed - it takes the manual-run branch and recomputes
-today's AFIT ledger rows. No funds move (see below), but the values are wrong until the
-next scheduled run.
+today's AFIT ledger rows. No outward transfer happens, but the wrong values are
+PERMANENT: nothing ever revisits that date (see below).
 
 **Check `pm2 status` against the config's `name` field before adopting any of these
 files.** pm2 keys processes by name, so a config whose `name` does not match the

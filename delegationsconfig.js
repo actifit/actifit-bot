@@ -44,22 +44,59 @@
 // which is the MANUAL-RUN entry point, in active weekly use (see below). It:
 //
 //   - recomputes today's off-chain AFIT delegator rows via upsertRewardTransaction,
-//     a keyed replaceOne(upsert) - so it OVERWRITES today's rows rather than doubling
-//     them - and updateUserTokens() then rebuilds user_tokens from them;
+//     a keyed replaceOne(upsert) on {user, chain, date, reward_activity, orig_account}
+//     - so it OVERWRITES today's rows rather than doubling them - and then
+//     updateUserTokens() rebuilds user_tokens from them;
 //   - on a MONDAY only, runs processSteemRewards, which computes HIVE/HBD amounts and
-//     writes them to HIVErewards<date>.json. The transfer code there is commented out;
-//   - installs setInterval(claimRewards, 1h), which claims @actifit's OWN pending
-//     rewards. Benign, but the timers and MongoClients accumulate per invocation.
+//     writes them to HIVErewards<date>.json. There is no transfer code in it at all -
+//     only a commented-out SteemConnect signing-URL builder and a mail send. The file
+//     IS the deliverable; the transfers are done by hand afterwards;
+//   - installs TWO timers: setInterval(claimRewards, 1h) and
+//     setInterval(loadSteemPrices, 5min). Both accumulate per invocation, along with a
+//     fresh MongoClient, for as long as the process lives. See the claimRewards note
+//     below - it is NOT benign.
 //
-// NOTHING IS BROADCAST AND NO FUNDS MOVE on this path. So an accidental start is a
-// wrong-VALUE bug in the off-chain ledger - today's rows recomputed from a delegation
-// snapshot up to ~24h old, since the scheduled 08:00 job refreshes it daily - not a
-// wrong payout. It is bounded, and the next scheduled run corrects it.
+// NO OUTWARD TRANSFER IS REACHABLE on this path - nothing pays a delegator, no BSC
+// send, no Hive-Engine op. The only broadcast anywhere in the source is a
+// SELF-DIRECTED claim_reward_balance for config.full_pay_benef_account (actifit.funds)
+// inside claimRewards, and see below for why it cannot currently even get that far.
 //
-// It is still worth not doing accidentally, because updateUserTokens() propagates the
-// wrong values into displayed balances. Nothing alarms either way: the Arena
-// settlement alarm cannot see this process at all.
+// But do NOT round that off to "harmless". The wrong rows are PERMANENT:
 //
+//   - the upsert key includes `date`, set to today's UTC midnight, so tomorrow's 08:00
+//     run writes date=D+1 and NEVER revisits date=D;
+//   - updateUserTokens() is a $group sum over ALL of token_transactions with
+//     $out: user_tokens, so every future rebuild re-derives balances from the poisoned
+//     row.
+//
+// So a bad row written today is baked into displayed balances indefinitely. An earlier
+// version of this comment said "the next scheduled run corrects it" - it does not, and
+// that was a worse error than the one it was correcting.
+//
+// claimRewards IS BROKEN, and it is a latent process-killer rather than a no-op.
+// It reads reward_steem_balance / reward_sbd_balance, which DO NOT EXIST on a Hive
+// account object (verified on chain: hiveapi.actifit.io returns neither field for
+// actifit.funds). utils.js uses the correct reward_hive_balance / reward_hbd_balance,
+// with the STEEM names commented out beside them, so the right names are known here.
+//
+// The consequence depends on the account's pending rewards:
+//
+//   - all three balances 0 -> parseFloat(undefined) is NaN, NaN > 0 is false, so the
+//     guard fails and it logs "no rewards to claim for now". Harmless. This is the
+//     CURRENT state - actifit.funds reads 0.000 HIVE / 0.000 HBD / 0.000000 VESTS as
+//     of 2026-09-28, which is why nothing is visibly wrong today.
+//   - any pending reward_vesting_balance -> the guard passes on that third term, and
+//     the very next line does .split(' ') on the ABSENT reward_steem_balance and throws
+//     TypeError. claimRewards is async and called from setInterval with no .catch, and
+//     nothing in delegations.js installs an unhandledRejection handler, so on Node 20
+//     (package.json pins 20.x) that terminates the process.
+//
+// Expected shape if it ever fires: the timer is only installed by runRewards, which on
+// MAIN is called by the 08:00 job - so roughly ONE crash a day, an hour or so after
+// 08:00, followed by a pm2 restart. Not an hourly loop, because a restarted MAIN
+// process only re-schedules 08:00 and does not call runRewards again. Check
+// `pm2 describe delegations` for a restart count that climbs about once a day.
+
 // THE MANUAL RUN IS DELIBERATE AND IN USE, BUT IT DOES NOT HAPPEN ON THIS BOX.
 // Delegator rewards autorun daily here under MAIN. The HIVE/HBD rewards file is
 // generated MANUALLY once per week, on a Monday, from a LOCAL dev machine - not from
