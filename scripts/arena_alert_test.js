@@ -29,7 +29,18 @@ const utils = require('../utils');
 
 	console.log('config.json   : ' + path.resolve('config.json'));
 	console.log('smtp_host     : ' + (config.smtp_host || 'smtp.sparkpostmail.com (default)'));
-	console.log('smtp_port     : ' + (config.smtp_port || 587));
+	const port = Number(config.smtp_port) > 0 ? Number(config.smtp_port) : 587;
+	const secure = typeof config.smtp_secure === 'boolean' ? config.smtp_secure : port === 465;
+	console.log('smtp_port     : ' + port);
+	// The effective `secure` is the field most likely to be silently wrong, and it was
+	// the one field this script did not show.
+	console.log('secure (TLS)  : ' + secure + (typeof config.smtp_secure === 'boolean'
+		? ' (explicit smtp_secure)'
+		: ' (derived from port ' + port + ')'));
+	if (config.smtp_secure !== undefined && typeof config.smtp_secure !== 'boolean') {
+		console.log('  WARNING: smtp_secure is ' + JSON.stringify(config.smtp_secure)
+			+ ' - only a real JSON boolean is honoured, so this value is IGNORED.');
+	}
 	console.log('smtp_usr      : ' + (config.smtp_usr ? 'set' : '*** EMPTY ***'));
 	console.log('smtp_key      : ' + (config.smtp_key ? 'set' : '*** EMPTY ***'));
 	console.log('smtp_from     : ' + (config.smtp_from || '*** EMPTY ***'));
@@ -47,8 +58,9 @@ const utils = require('../utils');
 		process.exit(1);
 	}
 
-	// Required lazily and AFTER the checks above: mail.js builds its transport at
-	// module scope, so requiring it first would obscure a plain missing-config case.
+	// Required after the checks above purely so a plain missing-config case is reported
+	// as a config problem rather than anything to do with SMTP. (createTransport itself
+	// never throws on bad host/port/auth, so this ordering is cosmetic, not load-bearing.)
 	const mail = require('../mail');
 
 	const subject = 'Actifit Arena: alert delivery test (no incident)';
@@ -80,7 +92,10 @@ const utils = require('../utils');
 		console.error('Common causes:');
 		console.error('  EAUTH / 535        - smtp_usr or smtp_key wrong for this host');
 		console.error('  ETIMEDOUT / ECONN  - smtp_host or smtp_port wrong, or the port is blocked');
-		console.error('  ESOCKET            - TLS mismatch; port 465 needs smtp_secure: true');
+		console.error('  ESOCKET            - TLS problem. Either a certificate the host cannot');
+		console.error('                       prove (read the message above - it carries the real');
+		console.error('                       OpenSSL reason), or a port/secure mismatch: 465 needs');
+		console.error('                       smtp_secure true, 587 needs it false.');
 		console.error('  550 / 553          - smtp_from is not an address this account may send as');
 		process.exit(1);
 	}
