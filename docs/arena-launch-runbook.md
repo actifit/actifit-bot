@@ -388,6 +388,40 @@ Alerts go to `config.report_emails` on a state **change** — one mail when it s
 one when it recovers, not one per tick. If `report_emails` is unset the alert is only
 logged, and the log line says so.
 
+## 6c. Server prerequisites - read before running ANY npm command
+
+**Never run `npm ci` on these boxes.** Use `npm install --production`, which is what
+`.github/workflows/deploy.yml` has always run. The difference is not stylistic:
+
+| | packages installed | outcome on api |
+| --- | --- | --- |
+| `npm ci` | ~1,060 (includes devDependencies) | **OOM-killed** (2026-09-28) |
+| `npm install --production` | 30 direct + their tree | fine |
+
+`npm ci` also DELETES `node_modules` before it downloads anything, so an interrupted
+run leaves the app with no dependencies at all - and anything that restarts it in that
+window crash-loops. On 2026-09-28 an `npm ci` on api was OOM-killed, briefly took the
+app with it (api.actifit.io returned 502 for a few minutes), and left the box unable to
+fork a new ssh session. It recovered only because the kill landed during the download
+phase, BEFORE the delete completed.
+
+**Swap is a prerequisite, not a nicety.** api has **957 MB** of RAM. Check before any
+install:
+
+```
+free -m                       # if the Swap row reads 0, add it FIRST
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+This matters beyond manual work: the deploy workflow runs `npm install --production` on
+**every release**, so a box without swap is one release away from a failed deploy.
+
+**If a box is too starved to open a new ssh session,** `kill` is a bash builtin and
+needs no fork - so in the stuck session, Ctrl-Z then `kill -9 %1` works where Ctrl-C
+and a second login both fail. Prefer that to a reboot: a running app keeps serving from
+modules already in memory, while a reboot cannot come back until dependencies exist.
+
 ## 7. Keeping BOT_THREAD from vanishing
 
 `BOT_THREAD` for the `app` process used to live only in on-server pm2 state and
