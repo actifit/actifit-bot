@@ -187,6 +187,74 @@ describe('arena_afit — bounded cap/budget reads', () => {
 		expect(never.shortfall).toMatchObject({ requested: 60000, unsatisfiable: true });
 	});
 
+	// Product decision (2026-09-27): the per-user daily cap does not apply to contest
+	// prizes. It was anti-farming for ACTIVITY rewards; a prize cannot be farmed, each
+	// contest's schedule already bounds it, and all six defaults settle in the same
+	// sweep - so the cap only ever clipped a legitimate multi-contest winner, and that
+	// clipped figure went on-chain as the prize, permanently.
+	test('dailyCap 0 disables the per-user cap entirely', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 480, '2026-08-26T01:00:00Z'),
+		]);
+		// with a 500 cap this would clip to 20; with the cap off it pays in full
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, dailyCap: 0, weeklyBudget: 50000 });
+		expect(res).toMatchObject({ ok: true, credited: 400, capped: false });
+		expect(await afit.balanceOf(db, 'ace')).toBe(880);
+	});
+
+	test('the weekly treasury budget still binds when the daily cap is off', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 49800, '2026-08-26T01:00:00Z'),
+		]);
+		// the treasury guard is untouched: 200 left, 400 asked for -> refuse, not clip
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, dailyCap: 0, weeklyBudget: 50000 });
+		expect(res).toMatchObject({ ok: false, cappedBy: 'weekly_budget', credited: 0 });
+	});
+
+	test('an ABSENT dailyCap still falls back to the 500 default', async () => {
+		const db = createMockDb();
+		db.collection('token_transactions').__seed([
+			arenaRow('ace', 'chEarlier', 480, '2026-08-26T01:00:00Z'),
+		]);
+		// a direct caller that forgets the param must not get an uncapped credit
+		const res = await afit.creditAfitReward(db, { user: 'ace', challengeId: 'chBig', amount: 400, at: AT, weeklyBudget: 50000 });
+		expect(res.credited).toBe(20);
+	});
+
+	// The weekly treasury budget is bucketed by the ledger row's `date`. Because the
+	// write is a replaceOne, a re-credit used to MOVE that date to the retry time - so
+	// a challenge credited in week 1 but healed in week 2 had its week-1 emission
+	// re-charged against week 2's budget, for money already paid and possibly spent.
+	test('a re-credit keeps the ORIGINAL credit date, so weeks are not re-charged', async () => {
+		const db = createMockDb();
+		const WEEK1 = '2026-08-26T10:00:00Z';
+		const WEEK2 = '2026-09-03T10:00:00Z';
+
+		await afit.creditAfitReward(db, { user: 'A', challengeId: 'chBig', amount: 400, at: WEEK1, dailyCap: 0, weeklyBudget: 50000 });
+		const before = await db.collection('token_transactions').findOne({ user: 'A', reward_activity: 'arena_challenge:chBig' });
+		expect(new Date(before.date).getTime()).toBe(Date.parse(WEEK1));
+
+		// the challenge stalls and is retried a week later
+		await afit.creditAfitReward(db, { user: 'A', challengeId: 'chBig', amount: 400, at: WEEK2, dailyCap: 0, weeklyBudget: 50000 });
+		const after = await db.collection('token_transactions').findOne({ user: 'A', reward_activity: 'arena_challenge:chBig' });
+		expect(new Date(after.date).getTime()).toBe(Date.parse(WEEK1));   // NOT moved to WEEK2
+		expect(after.token_count).toBe(400);                       // and not doubled
+
+		// so week 2's budget is untouched by week 1's payout: a fresh 50,000 is available
+		const fresh = await afit.creditAfitReward(db, { user: 'B', challengeId: 'chNew', amount: 49999, at: WEEK2, dailyCap: 0, weeklyBudget: 50000 });
+		expect(fresh).toMatchObject({ ok: true, credited: 49999 });
+	});
+
+	test('a FIRST credit is stamped with the time it actually happened', async () => {
+		const db = createMockDb();
+		const AT2 = '2026-08-26T10:00:00Z';
+		await afit.creditAfitReward(db, { user: 'C', challengeId: 'chX', amount: 10, at: AT2, dailyCap: 0, weeklyBudget: 50000 });
+		const row = await db.collection('token_transactions').findOne({ user: 'C', reward_activity: 'arena_challenge:chX' });
+		expect(new Date(row.date).getTime()).toBe(Date.parse(AT2));
+	});
+
 	test('reconcileBalance still sums the users WHOLE ledger, arena and not', async () => {
 		const db = createMockDb();
 		db.collection('token_transactions').__seed([

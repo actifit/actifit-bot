@@ -228,15 +228,25 @@ async function reconcileBalance(db, user) {
 async function creditAfitReward(db, params) {
 	const { user, challengeId, amount } = params;
 	const at = params.at || new Date().toISOString();
+	// An explicit 0 DISABLES the per-user daily cap, matching how weeklyBudget: 0
+	// already means "off" in this module. An absent value still falls back to
+	// DEFAULT_DAILY_CAP so a direct caller cannot accidentally get an uncapped credit.
 	const dailyCap = Number.isFinite(params.dailyCap) ? params.dailyCap : DEFAULT_DAILY_CAP;
+	// A NEGATIVE value is a config typo, not "off". Treating it as off would fail
+	// OPEN - an uncapped credit from a fat-fingered minus sign - so refuse instead.
+	if (Number.isFinite(params.dailyCap) && params.dailyCap < 0) {
+		return { ok: false, reason: 'dailyCap must be >= 0 (0 disables the cap)' };
+	}
+	const dailyCapOn = dailyCap > 0;
 	if (!user || !challengeId) return { ok: false, reason: 'missing user/challengeId' };
 	if (!(Number(amount) > 0)) return { ok: false, reason: 'amount must be positive' };
 	if (dayKey(at) === null) return { ok: false, reason: 'invalid at timestamp' };
 
 	// Per-user daily room — excludes this challenge's own row so a retry re-credits
 	// the SAME amount (idempotent) rather than being double-counted against room.
-	const dailyAlready = await arenaEmittedOn(db, user, at, challengeId);
-	const dailyRoom = Math.max(0, dailyCap - dailyAlready);
+	// Skipped entirely when the cap is off, which also saves a query per credit.
+	const dailyAlready = dailyCapOn ? await arenaEmittedOn(db, user, at, challengeId) : 0;
+	const dailyRoom = dailyCapOn ? Math.max(0, dailyCap - dailyAlready) : Infinity;
 	// Optional GLOBAL weekly emission budget across all users (treasury protection).
 	// 0 / undefined = disabled (per-user cap only). Same own-row exclusion keeps it
 	// idempotent on retry while still counting other winners in the same run.
@@ -285,8 +295,10 @@ async function creditAfitReward(db, params) {
 	// `unsatisfiable` means no amount of waiting helps: the prize exceeds the whole
 	// budget, not merely what is left of it. Only meaningful when the weekly budget is
 	// actually enabled and binding, which is guaranteed here - cappedBy can only be
-	// 'weekly_budget' when weeklyRoom <= dailyRoom, and dailyRoom is always finite, so
-	// params.weeklyBudget is a finite positive number on this path.
+	// 'weekly_budget' only when weeklyRoom <= dailyRoom AND credited < requested, which
+	// together force weeklyRoom to be a finite number below requested - so
+	// params.weeklyBudget is finite and positive on this path. (dailyRoom itself is
+	// Infinity whenever the per-user cap is disabled, so it is NOT the finite one.)
 	const shortfall = cappedBy
 		? {
 			requested,
@@ -349,7 +361,15 @@ async function creditAfitReward(db, params) {
 				chain: AFIT_CHAIN,
 				orig_account: OFFICIAL_ACCOUNT,
 				challenge_id: challengeId,
-				date: new Date(at),
+				// Keep the ORIGINAL credit date on a re-credit; only a first insert is
+				// stamped now. The write is a replaceOne, so this used to MOVE the row's
+				// date to the retry time - and since the weekly budget is bucketed by
+				// that date, a challenge credited in week 1 but healed in week 2 had its
+				// week-1 emission re-charged to week 2's budget. That both corrupted
+				// per-week emission reporting and made a second exhaustion likelier in
+				// the healing week, for money that had already been paid and in some
+				// cases already spent. The credit happened when it happened.
+				date: (existingRow && existingRow.date) ? existingRow.date : new Date(at),
 			},
 			{ upsert: true }
 		);

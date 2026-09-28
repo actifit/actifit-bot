@@ -1168,6 +1168,24 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 			aggRunning = true;
 			try {
 				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
+				// Heartbeat check for the RESOLVE sweep, from here because this job ticks
+				// 4x more often and keeps running when resolve does not. recordResolveHealth
+				// can only report on sweeps that happen - it says nothing when the cron
+				// stops firing or a hung read wedges the in-flight guard, and nothing else
+				// polls the record.
+				try {
+					const hb = await arenaJobs.checkResolveHeartbeat(db);
+					if (hb.alert) {
+						utils.log('arena aggregate: ALERT (' + hb.alert.kind + ') ' + hb.alert.subject, 'arena');
+						const to = config.report_emails;
+						if (to && to.length) {
+							await require('./mail').sendPlainMail(hb.alert.subject, hb.alert.body, to)
+								.catch((e) => utils.log('arena aggregate: alert mail failed: ' + (e && e.message), 'arena'));
+						}
+					}
+				} catch (e) {
+					utils.log('arena aggregate: heartbeat check failed: ' + (e && e.message), 'arena');
+				}
 			} catch (e) {
 				utils.log(e, 'arena');
 			} finally {
@@ -1215,21 +1233,90 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 		// prevent. resolveDueChallenges handles up to 200 challenges per sweep, so it
 		// can outrun an hourly cron on a busy week.
 		let resolveRunning = false;
+		// Resolve arena_afit_daily_cap tolerantly but NEVER silently. A bare
+		// Number.isFinite() test sent a string "500" - a perfectly ordinary config typo -
+		// straight to the 0 fallback, i.e. a mistyped cap silently DISABLED the cap. Coerce
+		// numerically so "500" means 500, and shout if it is genuinely unparseable rather
+		// than quietly picking a number the operator did not choose.
+		const arenaDailyCap = () => {
+			const raw = config.arena_afit_daily_cap;
+			if (raw === undefined || raw === null || raw === '') return 0; // documented default: off for prizes
+			const n = Number(raw);
+			if (!Number.isFinite(n) || n < 0) {
+				utils.log('arena resolve: arena_afit_daily_cap is not a valid number ('
+					+ JSON.stringify(raw) + ') - falling back to 0 (no per-user daily cap). Fix config.json.', 'arena');
+				return 0;
+			}
+			return n;
+		};
+
 		schedule.scheduleJob(resolveCron, async function(){
 			if (resolveRunning) { utils.log('arena resolve: previous sweep still running, skipping this tick', 'arena'); return; }
 			resolveRunning = true;
 			try {
-				await arenaJobs.resolveDueChallenges(db, {
+				const resolveSummary = await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
-					// Emission guard defaults to the approved values when the live config
-					// omits them, so the treasury protection is correct-by-default and can't
-					// silently ship OFF. An explicit 0 in config still disables the weekly
-					// budget (Number.isFinite(0) === true); only an ABSENT key takes the default.
-					afitDailyCap: Number.isFinite(config.arena_afit_daily_cap) ? config.arena_afit_daily_cap : 500, // per-user/day AFIT reward cap
+					// The GLOBAL weekly budget is the treasury guard and stays defaulted ON:
+					// it is correct-by-default and cannot silently ship off. An explicit 0 in
+					// config disables it (Number.isFinite(0) === true); only an ABSENT key
+					// takes the default.
+					//
+					// The PER-USER DAILY cap now defaults OFF for contest prizes (product
+					// decision, 2026-09-27). It was built as anti-farming for ACTIVITY
+					// rewards, where someone could otherwise mint unbounded AFIT by posting.
+					// A contest prize cannot be farmed - you have to out-rank everyone - and
+					// each contest's own schedule already bounds what one person can take.
+					//
+					// The numbers, since the first version of this comment got them wrong by
+					// comparing a WEEKLY average against a PER-DAY cap: rank 1 in all six on
+					// a day they coincide is 5+100+80+50+250+400 = 885 AFIT, i.e. 1.77x OVER
+					// the 500 cap - so the cap really did clip a legitimate multi-contest
+					// winner, and that clipped figure went on-chain as the prize, forever.
+					// The peak WEEK for one person is 915 AFIT, 1.8% of the weekly budget.
+					// The cadences are 1/7/7/7/14/30 days from a common anchor so all six
+					// rarely coincide - but they can, and re-phasing after a stall makes it
+					// likelier.
+					//
+					// What this does NOT bound: with the cap off, the only per-user limit is
+					// the global weekly budget, so a large backlog replay could in principle
+					// pay one account far more than 915 in a week. The weekly budget (50,000,
+					// still ON) is the backstop. Set arena_afit_daily_cap to re-enable.
+					afitDailyCap: arenaDailyCap(), // 0 = no per-user daily cap on contest prizes
 					afitWeeklyBudget: Number.isFinite(config.arena_afit_weekly_budget) ? config.arena_afit_weekly_budget : 50000, // global weekly emission budget (explicit 0 = off)
 					log: (m) => utils.log(m, 'arena'),
 				});
+				// The summary used to be DISCARDED here, which is why a fully stalled
+				// Arena was indistinguishable from a healthy idle one: the only trace was
+				// a line in arena.log on one box, while every documented health check (the
+				// tailer cursor advancing, /arena/challenges returning rows) kept passing.
+				// Record it, and mail on a state CHANGE so a week of exhaustion is one
+				// page and one all-clear rather than 168 identical messages.
+				try {
+					// `settled` only counts successful BROADCASTS, so with no posting key the
+					// sweep reports failed:0 settled:0 and the record reads healthy while
+					// nothing reaches the chain. Tell it, so that has its own alarm.
+					const h = await arenaJobs.recordResolveHealth(db, resolveSummary, {
+						canBroadcast: !!arenaBroadcastOp,
+					});
+					if (h.alert) {
+						utils.log('arena resolve: ALERT (' + h.alert.kind + ') ' + h.alert.subject, 'arena');
+						const to = config.report_emails;
+						if (to && to.length) {
+							// Never let a mail failure take down the sweep - it runs inside the
+							// in-flight guard, so an escaping throw would leave it wedged.
+							// local require: app.js does not import mail at the top, and this
+							// path runs at most twice per incident, so there is nothing to gain
+							// from loading the SMTP transport at boot.
+							await require('./mail').sendPlainMail(h.alert.subject, h.alert.body, to)
+								.catch((e) => utils.log('arena resolve: alert mail failed: ' + (e && e.message), 'arena'));
+						} else {
+							utils.log('arena resolve: no report_emails configured - alert not delivered', 'arena');
+						}
+					}
+				} catch (e) {
+					utils.log('arena resolve: health recording failed: ' + (e && e.message), 'arena');
+				}
 				// Carry a recurring default's roster into the occurrence it rolled into
 				// (a join is scoped to ONE challenge id, so every new occurrence used to
 				// start empty). DEFERRED by design: it enrols only into a target the tailer

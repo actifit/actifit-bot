@@ -218,7 +218,7 @@ async function resolveDueChallenges(db, opts = {}) {
 		.limit(limit)
 		.toArray();
 
-	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0;
+	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0, budgetExhausted = 0;
 
 	for (const ch of candidates) {
 		try {
@@ -281,6 +281,7 @@ async function resolveDueChallenges(db, opts = {}) {
 					// missed periods simply never existed, which is the honest outcome for a
 					// contest nobody could have been paid for.
 					failed++;
+					if (resolution.budgetExhausted) budgetExhausted++;
 					if (resolution.budgetExhausted && resolution.shortfall && resolution.shortfall.unsatisfiable) {
 						// Never going to clear on its own: one prize is bigger than the
 						// whole weekly budget. Retrying looks identical to congestion, so
@@ -386,9 +387,185 @@ async function resolveDueChallenges(db, opts = {}) {
 		}
 	}
 
-	const summary = { ok: true, processed: candidates.length, resolved, settled, recurred, failed, skipped };
+	const summary = { ok: true, processed: candidates.length, resolved, settled, recurred, failed, skipped, budgetExhausted };
 	log(`arena resolve: processed=${summary.processed} resolved=${resolved} settled=${settled} recurred=${recurred} skipped=${skipped} failed=${failed}`);
 	return summary;
+}
+
+// ---- sweep health + alarm state --------------------------------------------
+
+/** Where the sweep records what it just did, so "is the Arena settling?" is an
+ *  answerable question instead of something you infer from a log file. */
+const HEALTH_COLLECTION = 'arena_health';
+const HEALTH_ID = 'resolve_sweep';
+
+/** How many consecutive stalled sweeps before we page. The resolve cron is hourly,
+ *  so 2 means "still stuck an hour later" - long enough not to page on a single
+ *  transient RPC failure, short enough to matter. */
+const STALL_ALERT_TICKS = 2;
+
+/**
+ * Record what this sweep did and decide whether the state CHANGED enough to alarm.
+ *
+ * Why this exists: a stalled Arena used to be indistinguishable from a healthy idle
+ * one. `resolveDueChallenges` returned a summary and the caller threw it away, the
+ * only trace was a line in arena.log on one box, and every documented health check
+ * - the tailer cursor advancing, /arena/challenges returning rows - kept passing
+ * while settlement was completely stuck. Worse, when the treasury is dry the
+ * recurrence roll is skipped too, so not even the challenge list changes.
+ *
+ * Alarms fire on TRANSITIONS, not every tick, so a week of exhaustion is one page
+ * and one all-clear rather than 168 identical messages.
+ *
+ * Returns `{ alert }` where alert is null or { kind, subject, body } for the caller
+ * to deliver however it likes (this module stays free of mail/transport deps).
+ */
+async function recordResolveHealth(db, summary, opts = {}) {
+	const at = opts.asOf || new Date().toISOString();
+	const col = db.collection(HEALTH_COLLECTION);
+	const threshold = Number.isInteger(opts.stallTicks) && opts.stallTicks > 0
+		? opts.stallTicks
+		: STALL_ALERT_TICKS;
+
+	const prior = (typeof col.findOne === 'function' ? await col.findOne({ _id: HEALTH_ID }) : null) || {};
+	// A sweep is STALLED if ANYTHING failed. A sweep with nothing due is idle, not
+	// stalled - that is the distinction the old log lacked.
+	//
+	// It deliberately does NOT also require settled === 0. That extra condition meant
+	// one permanently stuck challenge was masked by any other challenge happening to
+	// settle in the same sweep: five due, four settle, one fails forever on 'unknown
+	// pool' -> never alerts, every hour, while that contest's winners are never paid.
+	// It also made the alarm's sensitivity depend on what else coincidentally closed
+	// that hour, which is not a property an alarm should have.
+	const stalled = (summary.failed || 0) > 0;
+	// Settlement can also stop WITHOUT failing: `settled` only counts successful
+	// broadcasts, so with no posting key the sweep credits AFIT, writes resolutions,
+	// reports failed:0 settled:0 - and the record reads perfectly healthy while
+	// nothing has ever reached the chain and no recurrence has rolled.
+	const cannotBroadcast = opts.canBroadcast === false;
+	const streak = stalled ? (Number(prior.stalled_ticks) || 0) + 1 : 0;
+	const wasAlerting = !!prior.alerting;
+	const nowStalling = streak >= threshold || cannotBroadcast;
+	// Recovery has to be EARNED by something actually settling. An idle sweep is not
+	// recovery - the stuck challenge may simply have left the due set.
+	const recovered = wasAlerting && !nowStalling && (summary.settled || 0) > 0;
+	// So the alert state PERSISTS across idle sweeps in between. Clearing it on any
+	// quiet tick would both suppress the all-clear and re-arm the alarm, so a
+	// still-broken Arena would page again from scratch every time it went quiet.
+	const nowAlerting = nowStalling || (wasAlerting && !recovered);
+
+	const doc = {
+		_id: HEALTH_ID,
+		last_run_at: at,
+		last_summary: summary,
+		stalled_ticks: streak,
+		alerting: nowAlerting,
+		stalled_since: stalled ? (prior.stalled_since || at) : null,
+		// "last time a settle op was BROADCAST", not "last time something settled".
+		// It is legitimately old during healthy operation - most hourly sweeps have
+		// nothing due - so it is not a stall signal on its own. `alerting` is.
+		last_success_at: (summary.settled || 0) > 0 ? at : (prior.last_success_at || null),
+		can_broadcast: !cannotBroadcast,
+	};
+	if (typeof col.replaceOne === 'function') {
+		await col.replaceOne({ _id: HEALTH_ID }, doc, { upsert: true });
+	}
+
+	let alert = null;
+	if (cannotBroadcast && !wasAlerting) {
+		alert = {
+			kind: 'cannot_broadcast',
+			subject: 'Actifit Arena: NO settle ops can be broadcast - results are not reaching the chain',
+			body: 'The Arena resolution sweep is running, but it has no broadcaster, so NO settle\n'
+				+ 'ops are being sent. AFIT is being credited off-chain and resolutions are being\n'
+				+ 'recorded, but challenges never flip to settled and recurring contests never roll\n'
+				+ 'into their next occurrence.\n\n'
+				+ 'This is almost always a missing or malformed @actifit POSTING key in the api2\n'
+				+ 'process config. It does NOT fix itself.\n\n'
+				+ 'Last sweep: ' + JSON.stringify(summary) + '\n',
+		};
+	} else if (nowStalling && !wasAlerting) {
+		const budget = (summary.budgetExhausted || 0) > 0;
+		alert = {
+			kind: budget ? 'budget_exhausted' : 'settlement_stalled',
+			subject: budget
+				? 'Actifit Arena: weekly AFIT budget exhausted - settlement STOPPED'
+				: 'Actifit Arena: settlement is failing - nothing is being settled',
+			body: (budget
+				? 'The Arena weekly AFIT treasury budget is exhausted. Challenges are NOT being settled,\n'
+					+ 'NO settle ops are being broadcast, and recurring contests are NOT rolling into their\n'
+					+ 'next occurrence. No wrong reward has been written or broadcast - that is the point of\n'
+					+ 'the refusal - and everything will settle by itself once the budget frees.\n\n'
+					+ 'The budget resets on the weekly bucket boundary. To resume sooner, raise\n'
+					+ 'arena_afit_weekly_budget in config.json and restart.\n'
+				: 'The Arena resolution sweep has failed repeatedly with nothing settled. This is NOT the\n'
+					+ 'treasury budget - see the reason below - so it will not clear on its own.\n')
+				+ '\nStalled since: ' + doc.stalled_since
+				+ '\nConsecutive failing sweeps: ' + streak
+				+ '\nLast successful settlement: ' + (doc.last_success_at || 'none recorded')
+				+ '\nLast sweep: ' + JSON.stringify(summary)
+				+ '\n\nCheck arena.log on the SECOND_API box for the per-challenge reason.',
+		};
+	} else if (recovered) {
+		// An all-clear must be earned by something ACTUALLY settling. Clearing on any
+		// non-stalled sweep meant an IDLE sweep mailed "settlement has recovered" with
+		// nothing settled - the stuck challenge had merely left the due set (someone
+		// abandoned it, or the tailer flipped it terminal), which is not recovery.
+		alert = {
+			kind: 'recovered',
+			subject: 'Actifit Arena: settlement has recovered',
+			body: 'The Arena resolution sweep is settling again.\n\nLast sweep: '
+				+ JSON.stringify(summary) + '\n',
+		};
+	}
+	return { ok: true, health: doc, alert };
+}
+
+/**
+ * Has the resolve sweep stopped running at all?
+ *
+ * recordResolveHealth can only report on sweeps that HAPPEN. It says nothing when
+ * the cron stops firing, when a hung read wedges the in-flight guard, or when the
+ * process is up but the schedule was never registered - in every one of those the
+ * record simply goes stale and nothing notices, because nothing polls it.
+ *
+ * So this is called from a DIFFERENT, more frequent job (the aggregation sweep),
+ * which is the only in-process vantage point that keeps ticking when resolve does
+ * not. It cannot detect the case where the whole Arena block is skipped - an unset
+ * BOT_THREAD kills the aggregation sweep too - and that genuinely needs outside
+ * monitoring; the runbook says so rather than pretending otherwise.
+ *
+ * @returns {Promise<{ok, stale, sinceMs, alert}>}
+ */
+async function checkResolveHeartbeat(db, opts = {}) {
+	const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
+	// The resolve cron is hourly; 3h means two consecutive ticks were missed.
+	const maxAgeMs = Number.isFinite(opts.maxAgeMs) && opts.maxAgeMs > 0 ? opts.maxAgeMs : 3 * 60 * 60 * 1000;
+	const col = db.collection(HEALTH_COLLECTION);
+	const doc = (typeof col.findOne === 'function' ? await col.findOne({ _id: HEALTH_ID }) : null);
+	// Never run = nothing to compare against. Not an alarm: a freshly deployed box
+	// has not reached its first :35 yet.
+	if (!doc || !doc.last_run_at) return { ok: true, stale: false, sinceMs: null, alert: null };
+
+	const sinceMs = nowMs - Date.parse(doc.last_run_at);
+	const stale = Number.isFinite(sinceMs) && sinceMs > maxAgeMs;
+	let alert = null;
+	if (stale && !doc.heartbeat_alerted) {
+		alert = {
+			kind: 'resolve_not_running',
+			subject: 'Actifit Arena: the settlement sweep has STOPPED RUNNING',
+			body: 'The Arena resolution sweep has not run for ' + Math.round(sinceMs / 60000) + ' minutes.\n'
+				+ 'It is scheduled hourly, so it has missed at least two ticks.\n\n'
+				+ 'This is not budget exhaustion - that still runs and reports. Likely causes: the\n'
+				+ 'process restarted without the scheduler, a previous sweep is wedged on a hung\n'
+				+ 'database read (there is no socket timeout), or the job is disabled.\n\n'
+				+ 'Last run: ' + doc.last_run_at + '\nLast sweep: ' + JSON.stringify(doc.last_summary || {}) + '\n',
+		};
+	}
+	if (typeof col.updateOne === 'function' && stale !== !!doc.heartbeat_alerted) {
+		await col.updateOne({ _id: HEALTH_ID }, { $set: { heartbeat_alerted: stale } });
+	}
+	return { ok: true, stale, sinceMs, alert };
 }
 
 // ---- auto-enrolment of a rolled recurrence (F5b) ---------------------------
@@ -714,6 +891,11 @@ module.exports = {
 	isRecurringDefault,
 	nextOccurrence,
 	autoEnrollRecurrences,
+	recordResolveHealth,
+	checkResolveHeartbeat,
+	HEALTH_COLLECTION,
+	HEALTH_ID,
+	STALL_ALERT_TICKS,
 	AUTO_ENROLL_CHUNK,
 	AUTO_ENROLL_LOOKBACK_DAYS,
 	AUTO_ENROLL_MAX_ROSTER,

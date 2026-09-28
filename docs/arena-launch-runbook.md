@@ -236,7 +236,7 @@ double-run a payout even with identical config.
 | `arena_fund_cut_pct` | `5` | Platform fee on a funded pool (burned) |
 | `arena_fund_min_pool` | `50` | Minimum funded prize |
 
-These now **default correctly in code** (`app.js`), so the guard cannot ship OFF
+These default in code (`app.js`), so the **weekly treasury budget** cannot ship OFF by omission. `arena_afit_daily_cap` is the deliberate exception: it defaults to **0 (no per-user cap on contest prizes)** — see the table above.
 by omission. The weekly budget is a *ceiling, not a target* (~5x expected launch
 emission). An explicit `0` disables it — don't.
 
@@ -277,10 +277,116 @@ Data + flags:
       `/arena/challenges` returns 6 (a stalled cursor looks identical to a
       healthy idle tailer — check the number moves, not just the log line)
 - [ ] `arena_jobs_enabled: true`; both jobs logged on **api2** (SECOND_API) only (step 5)
-- [ ] Emission guards present and non-zero (step 5 table)
+- [ ] `arena_afit_weekly_budget` present and non-zero (step 5 table). NOTE
+      `arena_afit_daily_cap` is deliberately **0/absent** — it does not apply to
+      contest prizes. Set it explicitly in `config.json` so the choice is declared
+      rather than inherited from a code default.
+- [ ] A test email actually ARRIVES from the box. `report_emails` alone is NOT
+      enough — `smtp_host`, `smtp_usr`, `smtp_key` and `smtp_from` all have to be
+      right, and a wrong one usually hangs or fails silently rather than erroring.
+      Prove it, do not assume it:
+
+      ```
+      cd /home/actifit-bot && node scripts/arena_alert_test.js
+      ```
+
+      It sends one real alert through the exact path the alarm uses and writes
+      nothing. A page nobody receives is worse than no page, because this checklist
+      says it is covered.
 - [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
 - [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
+- [ ] `config.report_emails` set, so a settlement stall actually pages someone
+      (step 6b). Without it the alarm is log-only.
+- [ ] `db.arena_health.findOne({_id:'resolve_sweep'})` returns a record with
+      `alerting: false` after the first sweep (step 6b) — this is the ONLY check
+      that distinguishes a stalled Arena from a healthy idle one
+
+## 6b. Is settlement actually running?
+
+**This is the check to run when someone asks "is the Arena healthy?".** Every other
+check in this runbook can pass while settlement is completely stopped:
+
+- the tailer cursor keeps advancing (the tailer is a separate job and is fine)
+- `/arena/challenges` keeps returning 6 (when the treasury is dry the recurrence
+  roll is skipped too, so the challenge list does not change either)
+- no process has crashed and nothing looks wrong in `pm2 status`
+
+Settlement records its own state, so ask it directly:
+
+```js
+// on the SECOND_API box, or any mongo client against the live DB
+db.arena_health.findOne({ _id: 'resolve_sweep' })
+```
+
+| field | meaning |
+| --- | --- |
+| `last_run_at` | when the sweep last ran. Stale by more than ~1h = the cron is not firing at all |
+| `last_success_at` | when something last actually settled |
+| `stalled_ticks` | consecutive sweeps that failed with nothing settled. `0` is healthy |
+| `alerting` | true once `stalled_ticks` reaches 2 (~1h stuck) |
+| `stalled_since` | when the current stall began |
+| `last_summary.budgetExhausted` | `> 0` means the weekly AFIT treasury budget is dry |
+
+A sweep with nothing due reports `stalled_ticks: 0` — **idle is not stalled**, and the
+record distinguishes them.
+
+`last_success_at` means *the last time a settle op was broadcast*, not the last time a
+sweep ran. Most hourly sweeps legitimately have nothing due, and the seeded cadences
+close at 1 / 7 / 14 / 30 day intervals — so **a `last_success_at` days old is normal**
+and is not by itself a stall. `alerting` is the signal; `last_success_at` is context.
+
+### What this alarm does NOT cover
+
+Be honest about the edges, because the checklist implies more coverage than exists:
+
+| Failure | Caught? |
+| --- | --- |
+| Weekly treasury exhausted | yes — mails, and clears itself |
+| A challenge failing every sweep | yes — even if others settle alongside it |
+| No posting key / broadcaster dead | yes — its own `cannot_broadcast` alert |
+| Resolve cron stopped, or a hung read wedged the in-flight guard | yes — the aggregation sweep heartbeats it |
+| `arena_jobs_enabled: false` | **no** |
+| `BOT_THREAD` unset, so the whole Arena block is skipped | **NO — and this is the known silent killer** |
+
+The last two cannot be detected from inside a process that was never scheduled to run.
+They need **outside** monitoring: alert if `arena_health.resolve_sweep.last_run_at`
+stops advancing, from something that is not this app.
+
+### If `budgetExhausted > 0`
+
+The weekly AFIT treasury budget is exhausted. This is a controlled stop, not damage:
+
+- **no wrong reward has been written or broadcast** — the refusal is the point. Before
+  this guard existed, winners were settled at a reduced amount (or zero) on-chain,
+  permanently, and never retried
+- challenges are NOT settled, NO settle ops are broadcast, and recurring contests do
+  NOT roll into their next occurrence, so no unpayable contests are created
+- it clears by itself when the weekly bucket rolls over, and everything settles then
+
+To resume sooner, raise `arena_afit_weekly_budget` in `config.json` and restart.
+
+**Do not lower `arena_afit_daily_cap` in response to this alarm.** It does not help —
+the constraint is the weekly budget, not the per-user cap. (An earlier version of this
+note claimed lowering it could reduce a reward a winner had already banked: that is
+**not** true — a re-credit never writes less than the row already present. The reason
+is simply that it does nothing for this problem.)
+
+### If `alerting` is true but `budgetExhausted` is 0
+
+Something else is failing and it will **not** clear on its own. Read `arena.log` on the
+SECOND_API box for the per-challenge reason.
+
+### Alert mail
+
+The transport defaults to SparkPost but is not limited to it — set `smtp_host` /
+`smtp_port` (and `smtp_secure: true` for port 465) to use an ordinary mailbox. Whatever
+you choose, `smtp_from` must be an address that provider has authorised this account to
+send as, which is the usual reason mail is accepted and then never arrives.
+
+Alerts go to `config.report_emails` on a state **change** — one mail when it starts,
+one when it recovers, not one per tick. If `report_emails` is unset the alert is only
+logged, and the log line says so.
 
 ## 7. Keeping BOT_THREAD from vanishing
 
