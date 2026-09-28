@@ -38,19 +38,33 @@
 // delegator rewards, the 10:00 AFIT-to-Hive-Engine move, the 11:00 delegation
 // cancellation, the 00:01 gadget buy prize, and processBSCTransfers every 3 minutes.
 //
-// If it is absent the process does NOT go quiet. Read delegations.js around the
-// `else` at the end of the bootstrap: it calls `runRewards(false, false)` IMMEDIATELY,
-// unscheduled, at boot. `testRun` is false, so that is a real reward pass - it writes
-// token_transactions rows and updateUserTokens() then rebuilds user_tokens from them.
-// Worse, the second argument is `updateDelegations = false`, so it pays from a STALE
-// delegation snapshot, and because the 08:00 job never registers in this mode nothing
-// ever corrects the rows it wrote.
+// If it is absent the process does NOT go quiet, and it does NOT pay either - both of
+// which this comment has claimed at various points. What actually happens: the `else`
+// at the end of the bootstrap calls `runRewards(false, false)` immediately at boot,
+// which is the MANUAL-RUN entry point, in active weekly use (see below). It:
 //
-// So a missing BOT_THREAD is not a silent no-op, it is a silent WRONG PAYOUT, repeated
-// on every restart if pm2 crash-loops the process. An earlier version of this comment
-// claimed it "silently pays NOBODY", which is backwards and would lead an operator to
-// treat a missing env as harmless. Nothing alarms either way: the Arena settlement
-// alarm cannot see this process at all.
+//   - recomputes today's off-chain AFIT delegator rows via upsertRewardTransaction,
+//     a keyed replaceOne(upsert) - so it OVERWRITES today's rows rather than doubling
+//     them - and updateUserTokens() then rebuilds user_tokens from them;
+//   - on a MONDAY only, runs processSteemRewards, which computes HIVE/HBD amounts and
+//     writes them to HIVErewards<date>.json. The transfer code there is commented out;
+//   - installs setInterval(claimRewards, 1h), which claims @actifit's OWN pending
+//     rewards. Benign, but the timers and MongoClients accumulate per invocation.
+//
+// NOTHING IS BROADCAST AND NO FUNDS MOVE on this path. So an accidental start is a
+// wrong-VALUE bug in the off-chain ledger - today's rows recomputed from a delegation
+// snapshot up to ~24h old, since the scheduled 08:00 job refreshes it daily - not a
+// wrong payout. It is bounded, and the next scheduled run corrects it.
+//
+// It is still worth not doing accidentally, because updateUserTokens() propagates the
+// wrong values into displayed balances. Nothing alarms either way: the Arena
+// settlement alarm cannot see this process at all.
+//
+// THE MANUAL RUN IS DELIBERATE AND IN USE. Delegator rewards autorun daily under
+// MAIN; the HIVE/HBD rewards file is generated MANUALLY once per week, on a Monday,
+// through exactly this branch (`npm run delegate` / node delegations.js with no
+// BOT_THREAD). Do not "fix" the else branch into a no-op without replacing that
+// entry point - see issue #107.
 //
 // cwd is load-bearing, not tidiness. utils.getConfig() reads "config.json" on a
 // RELATIVE path resolved from process.cwd(), so a process started from anywhere else

@@ -320,7 +320,8 @@ Data + flags:
       a time, never both. And `systemctl start` restores from the last `pm2 save`
       dump, not from the repo configs, so run it only AFTER adopting the configs and
       saving - otherwise the box comes back on the old env, which for `delegations`
-      means the wrong-payout branch described in the pm2 section below.
+      means the manual-run branch described in the pm2 section below (no funds move,
+      but today's AFIT ledger rows get recomputed).
 
       The unit is named after the user pm2 runs as. `pm2-root` is correct only if that
       is root - otherwise it is `pm2-<user>`, and checking `pm2-root` fails
@@ -547,15 +548,34 @@ covers the 08:00 delegator rewards, the 10:00 AFIT-to-Hive-Engine move, the **11
 delegation cancellation**, the 00:01 gadget prize, and **`processBSCTransfers` every 3
 minutes**.
 
-**A missing `BOT_THREAD` here does not make the process go quiet — it makes it pay
-wrongly.** The `else` branch in `delegations.js` calls `runRewards(false, false)`
-immediately at boot, unscheduled. `testRun` is `false`, so that is a real reward pass:
-it writes `token_transactions` rows and `updateUserTokens()` rebuilds `user_tokens` from
-them. The second argument is `updateDelegations = false`, so it pays from a **stale**
-delegation snapshot, and since the 08:00 job never registers in this mode nothing later
-corrects those rows. An earlier version of this runbook said it "silently pays nobody" —
-that is backwards, and it would lead you to treat a missing env as harmless. Nothing
-alarms either way; the Arena settlement alarm cannot see this process at all.
+**A missing `BOT_THREAD` here does not make the process go quiet — but it does not pay
+either.** This runbook has claimed both at different times; here is what the code does.
+
+The `else` branch in `delegations.js` calls `runRewards(false, false)` immediately at
+boot. That is the **manual-run entry point, and it is in active weekly use** — see
+below. It:
+
+- recomputes today's off-chain AFIT delegator rows via `upsertRewardTransaction`, a
+  keyed `replaceOne(upsert)`, so it **overwrites** today's rows rather than doubling
+  them; `updateUserTokens()` then rebuilds `user_tokens` from them;
+- **on a Monday only**, runs `processSteemRewards`, which computes HIVE/HBD amounts and
+  writes them to `HIVErewards<date>.json`. The transfer code there is commented out;
+- installs `setInterval(claimRewards, 1h)` — @actifit claiming its **own** pending
+  rewards. Benign, though the timers and MongoClients accumulate per invocation.
+
+**Nothing is broadcast and no funds move on this path.** So an accidental start is a
+wrong-**value** bug in the off-chain ledger — today's rows recomputed from a delegation
+snapshot up to ~24h old, since the scheduled 08:00 job refreshes it daily — not a wrong
+payout. It is bounded, and the next scheduled run corrects it. Still worth avoiding,
+because `updateUserTokens()` propagates the wrong values into displayed balances.
+
+Nothing alarms either way; the Arena settlement alarm cannot see this process at all.
+
+> **The manual run is deliberate.** Delegator rewards autorun daily under `MAIN`. The
+> **HIVE/HBD rewards file is generated manually once per week, on a Monday**, through
+> exactly this branch (`npm run delegate`, or `node delegations.js` with no
+> `BOT_THREAD`). The Monday gate lives inside `startProcess`, so the day matters. Do
+> not turn that branch into a no-op without replacing the entry point — see issue #107.
 
 `delegationsconfig.js` pins that env, plus `cwd` (getConfig reads `config.json` relative
 to the working directory) and `fork`/`instances: 1`.
@@ -604,9 +624,10 @@ the env took effect, so that line's presence is the proof. `pm2 env <id> | grep
 BOT_THREAD` works too. `pm2 status` does **not** - it shows name, pid and uptime, never
 the environment, so a green row proves only that something started.
 
-This matters more here than anywhere else in this runbook: per the section below, a
-`delegations` process that comes up *without* the env does not sit idle waiting to be
-noticed - it runs a reward pass immediately.
+This matters here because a `delegations` process that comes up *without* the env does
+not sit idle waiting to be noticed - it takes the manual-run branch and recomputes
+today's AFIT ledger rows. No funds move (see below), but the values are wrong until the
+next scheduled run.
 
 **Check `pm2 status` against the config's `name` field before adopting any of these
 files.** pm2 keys processes by name, so a config whose `name` does not match the
