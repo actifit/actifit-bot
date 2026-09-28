@@ -47,6 +47,9 @@
   "mongo_local": "mongodb://localhost:27017",
   "db_name": "actifit",
   "report_emails": "report@email.com",
+  "smtp_host": "smtp.sparkpostmail.com",
+  "smtp_port": 587,
+  "smtp_secure": false,
   "smtp_usr": "SMTP USER NAME",
   "smtp_from": "'FROM NANE' <from@email.fun>",
   "smtp_key": "smtp_key_or_password"
