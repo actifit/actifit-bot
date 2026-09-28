@@ -18,8 +18,9 @@
 // That last line is the verification, and it is not optional. delegations.js prints
 // '>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<' when the env took effect, so look for
 // it. `pm2 status` will NOT tell you - it shows name/pid/uptime, never the
-// environment, so a green row proves only that something started. And per the note
-// below, a process that came up without BOT_THREAD does not wait to be noticed.
+// environment, so a green row proves only that something started. A process that came
+// up WITHOUT BOT_THREAD does not sit idle waiting to be noticed - see the analysis
+// below for what it does instead, and how much it matters.
 //
 // Adopt it OUTSIDE 07:50-11:10 UTC and away from the :03-:57 BSC ticks. node-schedule
 // does not backfill a missed fire, and reward rows are stamped with the run's own date
@@ -38,10 +39,9 @@
 // delegator rewards, the 10:00 AFIT-to-Hive-Engine move, the 11:00 delegation
 // cancellation, the 00:01 gadget buy prize, and processBSCTransfers every 3 minutes.
 //
-// If it is absent the process does NOT go quiet, and it does NOT pay either - both of
-// which this comment has claimed at various points. What actually happens: the `else`
-// at the end of the bootstrap calls `runRewards(false, false)` immediately at boot,
-// which is the MANUAL-RUN entry point, in active weekly use (see below). It:
+// If it is absent the process neither goes quiet nor pays anyone. The `else` at the end
+// of the bootstrap calls `runRewards(false, false)` immediately at boot - the same entry
+// point the weekly local run uses (see below). It:
 //
 //   - recomputes today's off-chain AFIT delegator rows via upsertRewardTransaction,
 //     a keyed replaceOne(upsert) on {user, chain, date, reward_activity, orig_account}
@@ -69,9 +69,10 @@
 //     $out: user_tokens, so every future rebuild re-derives balances from the poisoned
 //     row.
 //
-// So a bad row written today is baked into displayed balances indefinitely. An earlier
-// version of this comment said "the next scheduled run corrects it" - it does not, and
-// that was a worse error than the one it was correcting.
+// So a bad row written today is baked into displayed balances indefinitely - UNLESS the
+// accidental start was before 08:00 UTC, in which case that day's scheduled pass writes
+// the same date key with a fresh snapshot and overwrites it. After 08:00, repair is
+// manual; the runbook has the procedure.
 //
 // claimRewards IS BROKEN, and it is a latent process-killer rather than a no-op.
 // It reads reward_steem_balance / reward_sbd_balance, which DO NOT EXIST on a Hive
@@ -96,7 +97,10 @@
 // 08:00, followed by a pm2 restart. Not an hourly loop, because a restarted MAIN
 // process only re-schedules 08:00 and does not call runRewards again. Check
 // `pm2 describe delegations` for a restart count that climbs about once a day.
-
+//
+// Tracked as issue #109, with the on-chain verification and the fix. Do not
+// rediagnose it from this comment.
+//
 // THE MANUAL RUN IS DELIBERATE AND IN USE, BUT IT DOES NOT HAPPEN ON THIS BOX.
 // Delegator rewards autorun daily here under MAIN. The HIVE/HBD rewards file is
 // generated MANUALLY once per week, on a Monday, from a LOCAL dev machine - not from
@@ -105,6 +109,11 @@
 // So on THIS box the else branch has no legitimate use: every way of reaching it here
 // is an accident. Do not "fix" it into a no-op anyway - that would break the local
 // weekly run, which is what it exists for.
+//
+// That weekly run is NOT read-only: startProcess writes token_transactions and rebuilds
+// user_tokens BEFORE it reaches the Monday gate, against production Mongo, and the
+// process does not exit on its own. See section 8 of docs/arena-launch-runbook.md for
+// the actual procedure - do not reconstruct it from this comment.
 //
 // cwd is load-bearing, not tidiness. utils.getConfig() reads "config.json" on a
 // RELATIVE path resolved from process.cwd(), so a process started from anywhere else
@@ -125,10 +134,10 @@
 //    blind to it.
 //  - It does not stop this one process from duplicating work internally.
 //    processBSCTransfers has no in-flight guard and fires 19x/hour, and each runRewards
-//    call registers ANOTHER setInterval(claimRewards, 1h) and opens another MongoClient,
-//    so the timers accumulate for as long as the process lives.
-//  - `pm2 scale` is cluster-only, so it is not actually the threat an earlier version
-//    of this comment named.
+//    call registers ANOTHER pair of timers (claimRewards hourly, loadSteemPrices every
+//    5 min) and opens another MongoClient, none of which is ever cleared.
+//  - `pm2 scale` is cluster-only and is refused on a fork app, so the risk is this
+//    config shipping as cluster mode, not someone typing `scale`.
 //
 // Why any of this matters more here than on the api processes: the jobs on this side
 // move real value OUTWARD and are not all idempotent.
@@ -158,8 +167,9 @@ module.exports = {
     // the 10:00 AFIT-to-Hive-Engine move and the 00:01 gadget prize. Two full payout
     // runs, with nothing downstream de-duplicating them.
     //
-    // An earlier draft of this file said 'api-delegations', which is exactly that bug.
-    // Check `pm2 status` against this line before adopting the config anywhere.
+    // This is not hypothetical: `api-delegations` is a plausible-looking name that does
+    // NOT match the live process, and it would have doubled the worker rather than
+    // failing. Check `pm2 status` against this line before adopting the config anywhere.
     name: 'delegations',
     script: 'delegations.js',
     cwd: '/home/actifit-bot',
