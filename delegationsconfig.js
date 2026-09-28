@@ -60,11 +60,14 @@
 // wrong values into displayed balances. Nothing alarms either way: the Arena
 // settlement alarm cannot see this process at all.
 //
-// THE MANUAL RUN IS DELIBERATE AND IN USE. Delegator rewards autorun daily under
-// MAIN; the HIVE/HBD rewards file is generated MANUALLY once per week, on a Monday,
-// through exactly this branch (`npm run delegate` / node delegations.js with no
-// BOT_THREAD). Do not "fix" the else branch into a no-op without replacing that
-// entry point - see issue #107.
+// THE MANUAL RUN IS DELIBERATE AND IN USE, BUT IT DOES NOT HAPPEN ON THIS BOX.
+// Delegator rewards autorun daily here under MAIN. The HIVE/HBD rewards file is
+// generated MANUALLY once per week, on a Monday, from a LOCAL dev machine - not from
+// api2 - through this same else branch (`npm run delegate`, no BOT_THREAD set).
+//
+// So on THIS box the else branch has no legitimate use: every way of reaching it here
+// is an accident. Do not "fix" it into a no-op anyway - that would break the local
+// weekly run, which is what it exists for.
 //
 // cwd is load-bearing, not tidiness. utils.getConfig() reads "config.json" on a
 // RELATIVE path resolved from process.cwd(), so a process started from anywhere else

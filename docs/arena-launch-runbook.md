@@ -571,11 +571,25 @@ because `updateUserTokens()` propagates the wrong values into displayed balances
 
 Nothing alarms either way; the Arena settlement alarm cannot see this process at all.
 
-> **The manual run is deliberate.** Delegator rewards autorun daily under `MAIN`. The
-> **HIVE/HBD rewards file is generated manually once per week, on a Monday**, through
-> exactly this branch (`npm run delegate`, or `node delegations.js` with no
-> `BOT_THREAD`). The Monday gate lives inside `startProcess`, so the day matters. Do
-> not turn that branch into a no-op without replacing the entry point — see issue #107.
+> **The manual run is deliberate — and it does not happen on api2.**
+>
+> Delegator rewards autorun daily on api2 under `MAIN`. The **HIVE/HBD rewards file is
+> generated manually once per week, on a Monday, from a local dev machine** — via
+> `npm run delegate` (or `node delegations.js`) with no `BOT_THREAD` set, which takes
+> the same `else` branch. The Monday gate (`d.getDay() == 1`) lives inside
+> `startProcess`, so the day of the week is load-bearing.
+>
+> Two consequences:
+>
+> 1. **On api2, that branch has no legitimate use** — every route to it there is an
+>    accident (stale `pm2 save` dump, env lost on restart, typo in an ecosystem file).
+> 2. **The local run reads the LOCAL `config.json`**, because `getConfig()` resolves it
+>    relative to the working directory. Run it from the repo root, and be aware it is
+>    pointed at production Mongo. The output lands in the working directory as
+>    `HIVErewards<date>.json` (gitignored).
+>
+> Do not turn the branch into a no-op — that would break the local weekly run, which is
+> what it exists for. (Considered and rejected in issue #107.)
 
 `delegationsconfig.js` pins that env, plus `cwd` (getConfig reads `config.json` relative
 to the working directory) and `fork`/`instances: 1`.
