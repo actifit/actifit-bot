@@ -361,7 +361,15 @@ async function creditAfitReward(db, params) {
 				chain: AFIT_CHAIN,
 				orig_account: OFFICIAL_ACCOUNT,
 				challenge_id: challengeId,
-				date: new Date(at),
+				// Keep the ORIGINAL credit date on a re-credit; only a first insert is
+				// stamped now. The write is a replaceOne, so this used to MOVE the row's
+				// date to the retry time - and since the weekly budget is bucketed by
+				// that date, a challenge credited in week 1 but healed in week 2 had its
+				// week-1 emission re-charged to week 2's budget. That both corrupted
+				// per-week emission reporting and made a second exhaustion likelier in
+				// the healing week, for money that had already been paid and in some
+				// cases already spent. The credit happened when it happened.
+				date: (existingRow && existingRow.date) ? existingRow.date : new Date(at),
 			},
 			{ upsert: true }
 		);
