@@ -437,10 +437,24 @@ CORS silently dropping on the primary API box (`app.js` flips its `!= 'SECOND_AP
 branch false), breaking the mobile app and web frontend - before any Arena
 double-run matters.
 
-**Not covered here:** the `delegations` process has the identical exposure. Its
-whole reward pipeline is gated on `BOT_THREAD == 'MAIN'`, and if that value also
-lives only in on-server pm2 state, delegator rewards can vanish just as silently.
-It has no committed ecosystem file yet.
+**The `delegations` process has the same exposure and its own config.** Its whole
+reward pipeline - the 08:00 delegator rewards, the 10:00 AFIT-to-Hive-Engine move and
+the 00:01 gadget prize - is gated on `BOT_THREAD == 'MAIN'`. Without it the process
+starts, logs, and silently pays nobody, and the Arena settlement alarm cannot see that
+process at all. `delegationsconfig.js` pins it, along with `cwd` (getConfig reads
+config.json relative to the working directory) and `fork`/`instances: 1` (in cluster
+mode every worker would schedule the same reward jobs and pay delegators N times).
+
+Same pre-step as above - capture `pm2 env <id>` BEFORE `pm2 delete api-delegations`,
+because the delete discards anything living only in pm2's state:
+
+```
+cd /home/actifit-bot
+pm2 env <id>                   # diff against delegationsconfig.js first
+pm2 delete api-delegations
+pm2 start delegationsconfig.js
+pm2 save
+```
 
 They are separate files on purpose: one shared config started on both boxes
 would make both `SECOND_API` and double-run the payout sweeps. Both pin
