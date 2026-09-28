@@ -281,9 +281,18 @@ Data + flags:
       `arena_afit_daily_cap` is deliberately **0/absent** — it does not apply to
       contest prizes. Set it explicitly in `config.json` so the choice is declared
       rather than inherited from a code default.
-- [ ] A test email actually ARRIVES from the box (`smtp_usr`/`smtp_key`/`smtp_from`
-      must be set — `report_emails` alone is not enough). A page nobody receives is
-      worse than no page, because this checklist says it is covered.
+- [ ] A test email actually ARRIVES from the box. `report_emails` alone is NOT
+      enough — `smtp_host`, `smtp_usr`, `smtp_key` and `smtp_from` all have to be
+      right, and a wrong one usually hangs or fails silently rather than erroring.
+      Prove it, do not assume it:
+
+      ```
+      cd /home/actifit-bot && node scripts/arena_alert_test.js
+      ```
+
+      It sends one real alert through the exact path the alarm uses and writes
+      nothing. A page nobody receives is worse than no page, because this checklist
+      says it is covered.
 - [ ] One tailer/jobs instance only (api2); `@actifit` RC headroom confirmed
 - [ ] `@actifit` **posting** key in the api2 process config (settle/recurrence
       broadcasts are skipped without it — never the active key)
@@ -369,6 +378,11 @@ Something else is failing and it will **not** clear on its own. Read `arena.log`
 SECOND_API box for the per-challenge reason.
 
 ### Alert mail
+
+The transport defaults to SparkPost but is not limited to it — set `smtp_host` /
+`smtp_port` (and `smtp_secure: true` for port 465) to use an ordinary mailbox. Whatever
+you choose, `smtp_from` must be an address that provider has authorised this account to
+send as, which is the usual reason mail is accepted and then never arrives.
 
 Alerts go to `config.report_emails` on a state **change** — one mail when it starts,
 one when it recovers, not one per tick. If `report_emails` is unset the alert is only

@@ -4,15 +4,22 @@ var utils = require('./utils');
 
 const config = utils.getConfig();
 
-// create reusable transporter object using the default SMTP transport
+// Reusable SMTP transport.
+//
+// Host/port/TLS are configurable, defaulting to the previous hardcoded SparkPost
+// values so an existing deployment behaves identically. They used to be fixed, which
+// quietly made this SparkPost-only: pointing smtp_usr/smtp_key at an ordinary mailbox
+// (Google Workspace, a host's own server) authenticated against the wrong machine.
+const smtpPort = Number(config.smtp_port) > 0 ? Number(config.smtp_port) : 587;
 let transporter = nodemailer.createTransport({
-	service: 'sparkpostmail',
-    host: 'smtp.sparkpostmail.com',
-    port: 587,
-    secure: false, // true for 465, false for other ports
+    host: config.smtp_host || 'smtp.sparkpostmail.com',
+    port: smtpPort,
+    // 465 is implicit TLS, everything else STARTTLS. Getting that pair wrong is the
+    // usual cause of a transport that connects and then hangs.
+    secure: typeof config.smtp_secure === 'boolean' ? config.smtp_secure : smtpPort === 465,
     auth: {
-        user: config.smtp_usr, 
-        pass: config.smtp_key 
+        user: config.smtp_usr,
+        pass: config.smtp_key
     }
 });
 
