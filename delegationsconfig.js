@@ -13,6 +13,13 @@
 //   pm2 delete delegations
 //   pm2 start delegationsconfig.js
 //   pm2 save                       # REQUIRED, or a reboot loses the env again
+//   pm2 logs delegations --lines 30 --nostream
+//
+// That last line is the verification, and it is not optional. delegations.js prints
+// '>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<' when the env took effect, so look for
+// it. `pm2 status` will NOT tell you - it shows name/pid/uptime, never the
+// environment, so a green row proves only that something started. And per the note
+// below, a process that came up without BOT_THREAD does not wait to be noticed.
 //
 // Adopt it OUTSIDE 07:50-11:10 UTC and away from the :03-:57 BSC ticks. node-schedule
 // does not backfill a missed fire, and reward rows are stamped with the run's own date
@@ -47,8 +54,12 @@
 //
 // cwd is load-bearing, not tidiness. utils.getConfig() reads "config.json" on a
 // RELATIVE path resolved from process.cwd(), so a process started from anywhere else
-// reads a different file - or none. That is a silent wrong-config failure, and it is
-// why getConfig() now logs the resolved path it actually loaded.
+// reads a DIFFERENT file - or none.
+//
+// The "or none" case is loud: getConfig() logs `FATAL: cannot read config.json from
+// <resolved path>` and rethrows. The dangerous case is the other one - a valid but
+// stale config.json in an unexpected cwd, which is indistinguishable from a correct
+// one at runtime. That is why getConfig() now logs the path it actually loaded.
 //
 // exec_mode 'fork' + instances 1 keeps pm2 from cloning this entry into N workers,
 // each of which would inherit the same env and schedule the same reward jobs. That is

@@ -16,8 +16,10 @@
 //   pm2 save            <-- REQUIRED, or a reboot loses it again
 //   curl -s localhost:3120/thread_param/   # must print SECOND_API
 //
-// instances/exec_mode are pinned deliberately: `pm2 scale app 2` would inherit
-// BOT_THREAD into every instance and run two tailers and two payout sweeps.
+// instances/exec_mode are pinned deliberately: in CLUSTER mode pm2 gives every worker
+// the same env, so BOT_THREAD would reach each one and run two tailers and two payout
+// sweeps. (`pm2 scale` itself is cluster-only and is refused on a fork app, so it is
+// not the command to worry about - the risk is the config shipping as cluster mode.)
 module.exports = {
   apps: [{
     name: 'app',
