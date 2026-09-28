@@ -2,7 +2,7 @@
 //
 // Start it with:
 //   cd /home/actifit-bot
-//   pm2 delete api-delegations
+//   pm2 delete delegations
 //   pm2 start delegationsconfig.js
 //   pm2 save                       # REQUIRED, or a reboot loses the env again
 //
@@ -26,7 +26,7 @@
 //
 // exec_mode 'fork' + instances 1 is a MONEY guard. In cluster mode pm2 gives every
 // worker the same env, so each one would schedule the same reward jobs and pay
-// delegators N times over. `pm2 scale api-delegations 2` would do the same thing.
+// delegators N times over. `pm2 scale delegations 2` would do the same thing.
 // This process moves more value than the api ones, and nothing downstream
 // de-duplicates a second full payout run.
 //
@@ -36,7 +36,16 @@
 // crash-looped it. See the comment above that guard in delegations.js.
 module.exports = {
   apps: [{
-    name: 'api-delegations',
+    // This MUST match the name of the process already running on the box, which is
+    // `delegations`. pm2 keys processes BY NAME: start this file under any other name
+    // and pm2 does not replace the running worker or complain, it happily adds a
+    // SECOND one alongside it - and then both schedule the 08:00 delegator rewards,
+    // the 10:00 AFIT-to-Hive-Engine move and the 00:01 gadget prize. Two full payout
+    // runs, with nothing downstream de-duplicating them.
+    //
+    // An earlier draft of this file said 'api-delegations', which is exactly that bug.
+    // Check `pm2 status` against this line before adopting the config anywhere.
+    name: 'delegations',
     script: 'delegations.js',
     cwd: '/home/actifit-bot',
     exec_mode: 'fork',

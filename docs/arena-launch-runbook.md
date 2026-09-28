@@ -301,6 +301,19 @@ Data + flags:
 - [ ] `db.arena_health.findOne({_id:'resolve_sweep'})` returns a record with
       `alerting: false` after the first sweep (step 6b) — this is the ONLY check
       that distinguishes a stalled Arena from a healthy idle one
+- [ ] **Both boxes have an ENABLED pm2 boot unit**: `systemctl is-enabled pm2-root`
+      prints `enabled` on api AND api2. Neither box had one before 2026-09-27, which
+      meant an unattended reboot of api2 would silently stop Arena settlement *and*
+      the delegator reward pipeline. Create it with `pm2 startup` (run the command it
+      prints), then `pm2 save`. Verify without rebooting: `pm2 kill` followed by
+      `systemctl start pm2-root`, then `pm2 status`.
+
+      The in-process alarm **cannot** cover this. It only reports on sweeps that
+      happen, so a process that never started is invisible to it — which is exactly
+      what a reboot produces.
+- [ ] Every pm2 config's `name` matches what `pm2 status` actually shows, on the box
+      it will be started on. A mismatch silently DOUBLES the process rather than
+      replacing it (see the pm2 section below).
 
 ## 6b. Is settlement actually running?
 
@@ -479,16 +492,26 @@ process at all. `delegationsconfig.js` pins it, along with `cwd` (getConfig read
 config.json relative to the working directory) and `fork`/`instances: 1` (in cluster
 mode every worker would schedule the same reward jobs and pay delegators N times).
 
-Same pre-step as above - capture `pm2 env <id>` BEFORE `pm2 delete api-delegations`,
+Same pre-step as above - capture `pm2 env <id>` BEFORE `pm2 delete delegations`,
 because the delete discards anything living only in pm2's state:
 
 ```
 cd /home/actifit-bot
+pm2 status                     # CONFIRM the running name matches the config's `name`
 pm2 env <id>                   # diff against delegationsconfig.js first
-pm2 delete api-delegations
+pm2 delete delegations
 pm2 start delegationsconfig.js
 pm2 save
 ```
+
+**Check `pm2 status` against the config's `name` field before adopting any of these
+files.** pm2 keys processes by name, so a config whose `name` does not match the
+running process does not replace it and does not warn - it starts a SECOND worker
+beside it. For `delegations` that means two processes both running the 08:00 delegator
+rewards, the 10:00 AFIT-to-Hive-Engine move and the 00:01 gadget prize: two full payout
+runs, with nothing downstream de-duplicating them. This is not hypothetical - the first
+version of `delegationsconfig.js` in this repo said `api-delegations` while the live
+process was `delegations`.
 
 They are separate files on purpose: one shared config started on both boxes
 would make both `SECOND_API` and double-run the payout sweeps. Both pin
