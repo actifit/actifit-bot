@@ -867,12 +867,60 @@ app.get('/hivePrice', async function (req, res){
 		}
 	}
 	if (refetch){
-		let hivePriceQuery = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=hive&vs_currencies=usd');
-		hivePrice = await hivePriceQuery.json();
-		hivePriceLastUpdate = new Date();
+		const fresh = await fetchHivePriceUsd();
+		if (fresh != null){
+			hivePrice = { hive: { usd: fresh } };
+			hivePriceLastUpdate = new Date();
+		}
 	}
-	res.send({hive:hivePrice.hive});
+	// Always answer. The previous version awaited a bare fetch().json() with no
+	// try/catch, so when CoinGecko started returning an HTML error page instead of
+	// JSON the handler threw, NEVER sent a response, and the request hung until the
+	// client timed out - leaking a socket each time. Clients read the missing price
+	// as a default of 1, which silently turned HIVE amounts into "USD" figures
+	// across the site (vote values were ~17x overstated).
+	if (hivePrice == null){
+		res.status(503).send({error: 'hive price unavailable'});
+		return;
+	}
+	res.send({hive: hivePrice.hive});
 })
+
+/**
+ * Resolve the HIVE price in USD, or null if every source fails.
+ *
+ * Primary source is the blockchain's own median price feed. It needs no API key,
+ * cannot be rate-limited, and is the exact rate the chain uses to value rewards -
+ * which makes it the right number for anything payout-shaped. It is quoted in HBD,
+ * which is dollar-pegged, so base/quote is already a USD figure.
+ *
+ * Binance is the fallback for the case where the feed is unreadable. CoinGecko is
+ * deliberately NOT used: its free endpoint now requires a key and answers with an
+ * HTML error page, which is what broke this endpoint in the first place.
+ */
+async function fetchHivePriceUsd(){
+	try{
+		const feed = await axios.post(config.active_hive_node || 'https://api.hive.blog', {
+			jsonrpc: '2.0', method: 'condenser_api.get_current_median_history_price', params: [], id: 1
+		}, { timeout: 10000 });
+		const r = feed && feed.data && feed.data.result;
+		if (r && r.base && r.quote){
+			const base = parseFloat(String(r.base).split(' ')[0]);   // HBD
+			const quote = parseFloat(String(r.quote).split(' ')[0]); // HIVE
+			if (base > 0 && quote > 0) return base / quote;
+		}
+	}catch(err){
+		console.log('hivePrice: median feed failed - ' + (err && err.message));
+	}
+	try{
+		const tick = await axios.get('https://api.binance.com/api/v3/ticker/price?symbol=HIVEUSDT', { timeout: 10000 });
+		const px = tick && tick.data && parseFloat(tick.data.price);
+		if (px > 0) return px;
+	}catch(err){
+		console.log('hivePrice: binance fallback failed - ' + (err && err.message));
+	}
+	return null;
+}
 
 app.get('/adjustBannedRewards/:user/?:date', async function(req, res){
 	res.send({});
