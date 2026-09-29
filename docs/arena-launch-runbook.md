@@ -230,15 +230,16 @@ double-run a payout even with identical config.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `arena_afit_daily_cap` | `500` | Max AFIT a single user can be credited per day |
+| `arena_afit_daily_cap` | **`0` (off)** | Per-user daily AFIT ceiling. **Deliberately OFF for contest prizes** (2026-09-27) - a prize cannot be farmed, and each contest's own schedule bounds it. Set a positive number to re-enable. |
 | `arena_afit_weekly_budget` | `50000` | Global rolling-7-day treasury emission ceiling |
 | `arena_funded_min_afit` | `20000` | Holdings gate to fund a creator prize |
 | `arena_fund_cut_pct` | `5` | Platform fee on a funded pool (burned) |
 | `arena_fund_min_pool` | `50` | Minimum funded prize |
 
-These default in code (`app.js`), so the **weekly treasury budget** cannot ship OFF by omission. `arena_afit_daily_cap` is the deliberate exception: it defaults to **0 (no per-user cap on contest prizes)** — see the table above.
-by omission. The weekly budget is a *ceiling, not a target* (~5x expected launch
-emission). An explicit `0` disables it — don't.
+These default in code (`app.js`), so the **weekly treasury budget** cannot ship OFF
+by omission. It is a *ceiling, not a target* (~5x expected launch emission); an
+explicit `0` disables it — don't. `arena_afit_daily_cap` is the deliberate exception:
+it defaults to **0**, i.e. no per-user cap on contest prizes.
 
 Creator-funded pools are debited from the funder's own off-chain AFIT at ingest,
 split 50/30/20, the funder is excluded from winning (invariant I7), and any
@@ -301,6 +302,42 @@ Data + flags:
 - [ ] `db.arena_health.findOne({_id:'resolve_sweep'})` returns a record with
       `alerting: false` after the first sweep (step 6b) — this is the ONLY check
       that distinguishes a stalled Arena from a healthy idle one
+- [ ] **Both boxes have an ENABLED pm2 boot unit**: `systemctl is-enabled pm2-root`
+      prints `enabled` on api AND api2. Neither box had one before 2026-09-27, which
+      meant an unattended reboot of api2 would silently stop Arena settlement *and*
+      the delegator reward pipeline. Create it with `pm2 startup` (run the command it
+      prints), then `pm2 save`.
+
+      Verify without rebooting: `pm2 kill`, then `systemctl start pm2-root`, then
+      **check the env, not just the process list** - `curl -s localhost:3120/thread_param/`
+      for `app` and `pm2 env <id> | grep BOT_THREAD` for `delegations`. `pm2 status`
+      only proves the processes came back by NAME; whether `BOT_THREAD` survived the
+      resurrect is the entire point of the test, and `status` cannot show it.
+
+      **Two further warnings.** `pm2 kill` stops the daemon and
+      EVERY process on that box - on api that is api.actifit.io, on api2 it is the
+      Arena tailer and `delegations` - so it is a deliberate short outage: one box at
+      a time, never both. And `systemctl start` restores from the last `pm2 save`
+      dump, not from the repo configs, so run it only AFTER adopting the configs and
+      saving - otherwise the box comes back on the old env, which for `delegations`
+      means the wrong-payout branch described in the pm2 section below.
+
+      The unit is named after the user pm2 runs as. `pm2-root` is correct only if that
+      is root - otherwise it is `pm2-<user>`, and checking `pm2-root` fails
+      misleadingly.
+
+      The in-process alarm **cannot** cover this. It only reports on sweeps that
+      happen, so a process that never started is invisible to it — which is exactly
+      what a reboot produces.
+- [ ] Every pm2 config's `name` matches what `pm2 status` actually shows, on the box
+      it will be started on. A mismatch silently DOUBLES the process rather than
+      replacing it (see the pm2 section below).
+- [ ] **`free -m` shows non-zero Swap on api AND api2 — read §6c BEFORE promoting.**
+      Promoting to `master` triggers `npm install --production` on both boxes. api has
+      957 MB of RAM, and a box without swap is one release away from a failed deploy
+      that can take the API down with it. §6c sits after this checklist for length
+      reasons, but it is a **precondition of the Deploy items above**, not a follow-up.
+      Never run `npm ci` on these boxes.
 
 ## 6b. Is settlement actually running?
 
@@ -388,6 +425,45 @@ Alerts go to `config.report_emails` on a state **change** — one mail when it s
 one when it recovers, not one per tick. If `report_emails` is unset the alert is only
 logged, and the log line says so.
 
+## 6c. Server prerequisites - read before running ANY npm command
+
+**Never run `npm ci` on these boxes.** Use `npm install --production`, which is what
+`.github/workflows/deploy.yml` has always run. The difference is not stylistic:
+
+| | packages installed | outcome on api |
+| --- | --- | --- |
+| `npm ci` | ~1,060 (includes devDependencies) | **OOM-killed** (2026-09-28) |
+| `npm install --production` | 30 direct + their tree | fine |
+
+`npm ci` also DELETES `node_modules` before it installs, so an interrupted run can
+leave the app with no dependencies at all - and anything that restarts it in that
+window crash-loops.
+
+What was actually observed on 2026-09-28: an `npm ci` on api was OOM-killed, briefly
+took the app with it (api.actifit.io returned 502 for a few minutes), and left the box
+unable to fork a new ssh session. Afterwards `node_modules` was still intact and the
+app came back on restart. (An earlier version of this note asserted the kill "landed
+during the download phase, BEFORE the delete completed" - that contradicts the deletion
+order stated above and was never verified, so treat the recovery as luck of unknown
+shape rather than a mechanism to rely on.)
+
+**Swap is a prerequisite, not a nicety.** api has **957 MB** of RAM. Check before any
+install:
+
+```
+free -m                       # if the Swap row reads 0, add it FIRST
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+This matters beyond manual work: the deploy workflow runs `npm install --production` on
+**every release**, so a box without swap is one release away from a failed deploy.
+
+**If a box is too starved to open a new ssh session,** `kill` is a bash builtin and
+needs no fork - so in the stuck session, Ctrl-Z then `kill -9 %1` works where Ctrl-C
+and a second login both fail. Prefer that to a reboot: a running app keeps serving from
+modules already in memory, while a reboot cannot come back until dependencies exist.
+
 ## 7. Keeping BOT_THREAD from vanishing
 
 `BOT_THREAD` for the `app` process used to live only in on-server pm2 state and
@@ -396,25 +472,52 @@ some point, and nothing could restore it because nothing recorded what it should
 be. With the Arena gated on `SECOND_API`, losing it on api2 stops settlement
 **silently** - winners are not paid and nothing alarms.
 
-Two committed pm2 configs now pin it, deliberately one per server:
+Three committed pm2 configs now pin it, deliberately one per process:
 
-| Server | File | `BOT_THREAD` |
-| --- | --- | --- |
-| api2.actifit.io | `appconfig.api2.js` | `SECOND_API` (runs the Arena) |
-| api.actifit.io | `appconfig.api.js` | unset (correct - keeps CORS) |
+| Server | pm2 process | File | `BOT_THREAD` |
+| --- | --- | --- | --- |
+| api2.actifit.io | `app` | `appconfig.api2.js` | `SECOND_API` (runs the Arena) |
+| api.actifit.io | `app` | `appconfig.api.js` | unset (correct - keeps CORS) |
+| api2.actifit.io **only** | `delegations` | `delegationsconfig.js` | `MAIN` (reward pipeline) |
+
+`delegationsconfig.js` is deployed to both boxes but must only ever be STARTED on
+api2 - see the delegations section below.
 
 **Capture the existing environment FIRST.** `pm2 delete app` discards every
 variable that lives only in pm2's stored state - which is the exact failure this
 PR exists to end, so do not reproduce it while fixing it. `app.js` reads
 `BOT_THREAD`, `NODE_ENV`, `PORT`, `TRUST_PROXY_HOPS`, `X_BEARER_TOKEN` and
-`X_ACTIFITAPP_USER_ID`. Most have a `config.json` fallback that takes precedence,
-but `X_BEARER_TOKEN` failing over produces a silently broken X engagement path
-(logged to console only, no alarm), and a wrong `TRUST_PROXY_HOPS` breaks every
-rate-limit bucket.
+`X_ACTIFITAPP_USER_ID`. **Three of the five have a `config.json` fallback; two do
+not:**
+
+| Var | `config.json` fallback | If it goes missing |
+| --- | --- | --- |
+| `TRUST_PROXY_HOPS` | `trust_proxy_hops` | every rate-limit bucket breaks |
+| `X_BEARER_TOKEN` | `x_bearer_token` | X engagement path silently broken (console only, no alarm) |
+| `X_ACTIFITAPP_USER_ID` | `x_actifitapp_user_id` | same path |
+| `PORT` | **none** — `app.js` is `process.env.PORT \|\| 3120` | **silently rebinds to 3120** |
+| `NODE_ENV` | **none** | test-mode guards change meaning |
+
+`PORT` is the trap, because neither `appconfig.api.js` nor `appconfig.api2.js` pins
+it. If a box's `app` has `PORT` living only in pm2 state - which is this section's
+whole premise - then `pm2 delete` + `pm2 start appconfig.*.js` moves the listener to
+3120 without saying so. Worse, the verification below *assumes* 3120, so a
+non-default `PORT` makes that curl fail in a way that looks like a `BOT_THREAD`
+problem. Check `pm2 env <id> | grep PORT` before deleting, and if it is set to
+anything other than 3120, add it to the config file first.
+
+`delegations.js` reads only `BOT_THREAD` and `NODE_ENV`, so `delegationsconfig.js`
+pinning `BOT_THREAD` alone is complete for that process.
 
 ```
-pm2 describe app            # or: pm2 env <id>
+pm2 status                  # get the numeric <id>, and CONFIRM the running name
+pm2 env <id>                # `pm2 describe` does NOT list the variables
 ```
+
+Use `pm2 env`, not `pm2 describe`. `describe` prints a process summary with no
+environment in it, so capturing with it looks like it worked, captures nothing, and
+then `pm2 delete app` destroys the only copy - the exact failure this section exists
+to end.
 
 Diff that against the config file and add anything it declares that the file does
 not. Only then:
@@ -437,15 +540,99 @@ CORS silently dropping on the primary API box (`app.js` flips its `!= 'SECOND_AP
 branch false), breaking the mobile app and web frontend - before any Arena
 double-run matters.
 
-**Not covered here:** the `delegations` process has the identical exposure. Its
-whole reward pipeline is gated on `BOT_THREAD == 'MAIN'`, and if that value also
-lives only in on-server pm2 state, delegator rewards can vanish just as silently.
-It has no committed ecosystem file yet.
+**The `delegations` process has the same exposure and its own config — and it is
+api2-only.** `delegationsconfig.js` ships to both boxes via `deploy.yml`, but only api2
+may ever start it. Its scheduler branch is selected by `BOT_THREAD == 'MAIN'` and
+covers the 08:00 delegator rewards, the 10:00 AFIT-to-Hive-Engine move, the **11:00
+delegation cancellation**, the 00:01 gadget prize, and **`processBSCTransfers` every 3
+minutes**.
+
+**A missing `BOT_THREAD` here does not make the process go quiet — it makes it pay
+wrongly.** The `else` branch in `delegations.js` calls `runRewards(false, false)`
+immediately at boot, unscheduled. `testRun` is `false`, so that is a real reward pass:
+it writes `token_transactions` rows and `updateUserTokens()` rebuilds `user_tokens` from
+them. The second argument is `updateDelegations = false`, so it pays from a **stale**
+delegation snapshot, and since the 08:00 job never registers in this mode nothing later
+corrects those rows. An earlier version of this runbook said it "silently pays nobody" —
+that is backwards, and it would lead you to treat a missing env as harmless. Nothing
+alarms either way; the Arena settlement alarm cannot see this process at all.
+
+`delegationsconfig.js` pins that env, plus `cwd` (getConfig reads `config.json` relative
+to the working directory) and `fork`/`instances: 1`.
+
+**Be precise about what `instances: 1` protects.** It stops pm2 cloning one entry into
+N workers. It does **not** stop a second differently-named entry (below), and it does
+**not** stop this single process duplicating work internally — `processBSCTransfers` has
+no in-flight guard at 19 fires/hour, and each `runRewards` call adds another
+`setInterval(claimRewards, 1h)` and another MongoClient that live for the life of the
+process.
+
+Which jobs actually double-spend, if a duplicate ever does run:
+
+| Job | Duplicate-safe? |
+| --- | --- |
+| 08:00 delegator rewards | **yes** — `upsertRewardTransaction` is a keyed `replaceOne(upsert)` on `user+chain+date+reward_activity+orig_account`, so a same-day rerun replaces |
+| `processBSCTransfers` (every 3 min) | **NO** — sends real BEP20 AFIT from `config.bridgeWallet`, then marks the queue row *after* the send |
+| 00:01 gadget prize | **NO** — broadcasts the Hive transfer first, inserts the draw record after; no pre-claim lock |
+| 10:00 `moveAFITToSE` | **NO** — broadcasts per `powering_down_he` row |
+| 11:00 `redeemDelegations` | unverified — treat as unsafe |
+
+So the exposure window is **minutes, not three clock times a day**. A duplicate alive
+for three minutes re-sends the entire pending BSC bridge queue.
+
+**Adopt outside 07:50–11:10 UTC and away from the :03–:57 BSC ticks.** `pm2 delete` then
+`pm2 start` leaves a gap with no scheduler, and node-schedule does not backfill a missed
+fire. Reward rows are stamped with the run's own date, so a job whose clock time lands
+in that gap is a **skipped day**, not a deferred one.
+
+Same pre-step as above - capture `pm2 env <id>` BEFORE `pm2 delete delegations`,
+because the delete discards anything living only in pm2's state:
+
+```
+cd /home/actifit-bot
+pm2 status                     # CONFIRM the running name matches the config's `name`
+pm2 env <id>                   # diff against delegationsconfig.js first
+pm2 delete delegations
+pm2 start delegationsconfig.js
+pm2 save
+pm2 logs delegations --lines 30 --nostream   # <- the actual verification
+```
+
+**Verify, do not assume.** The `app` path has `curl /thread_param/`; this one has the
+boot log. `delegations.js` prints `>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<` when
+the env took effect, so that line's presence is the proof. `pm2 env <id> | grep
+BOT_THREAD` works too. `pm2 status` does **not** - it shows name, pid and uptime, never
+the environment, so a green row proves only that something started.
+
+This matters more here than anywhere else in this runbook: per the section below, a
+`delegations` process that comes up *without* the env does not sit idle waiting to be
+noticed - it runs a reward pass immediately.
+
+**Check `pm2 status` against the config's `name` field before adopting any of these
+files.** pm2 keys processes by name, so a config whose `name` does not match the
+running process does not replace it and does not warn - it starts a SECOND worker
+beside it. For `delegations` that means two processes both running the 08:00 delegator
+rewards, the 10:00 AFIT-to-Hive-Engine move and the 00:01 gadget prize: two full payout
+runs, with nothing downstream de-duplicating them. This is not hypothetical - the first
+version of `delegationsconfig.js` in this repo said `api-delegations` while the live
+process was `delegations`.
+
+**These files are documentation until someone adopts them.** `deploy.yml` runs `pm2
+restart all`, which reuses pm2's *stored* env and never re-reads an ecosystem file. So
+editing `appconfig.*.js` or `delegationsconfig.js` - including following their own
+"add anything missing here FIRST" instruction - changes nothing on the boxes until a
+human re-runs `pm2 delete` + `pm2 start <file>` + `pm2 save` there.
+
+Nothing detects that drift. The repo can say one thing and the box do another, which is
+a softer version of the bug these files exist to prevent - so treat a config edit as
+needing a deployment step of its own, and re-verify with the checks above afterwards.
 
 They are separate files on purpose: one shared config started on both boxes
-would make both `SECOND_API` and double-run the payout sweeps. Both pin
-`instances: 1` / `exec_mode: fork`, because `pm2 scale app 2` would inherit the
-env into every instance and run two tailers and two settlement sweeps.
+would make both `SECOND_API` and double-run the payout sweeps. All three pin
+`instances: 1` / `exec_mode: fork`, because in cluster mode pm2 hands every worker
+the same env, so `BOT_THREAD` would reach each one and run two tailers and two
+settlement sweeps. (`pm2 scale` is cluster-only and is refused on a fork app, so the
+risk is a config shipping as cluster mode, not someone typing `scale`.)
 
 ---
 
