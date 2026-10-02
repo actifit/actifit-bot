@@ -113,7 +113,7 @@ describe('arena_jobs.resolveDueChallenges', () => {
 			post('farmer', '2026-08-03T10:00:00Z', 1),       // 1 step — did not
 		]);
 		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
-		expect(await afit.balanceOf(db, 'achiever')).toBe(5);  // def_daily_focus flat 5 AFIT
+		expect(await afit.balanceOf(db, 'achiever')).toBe(50); // def_daily_focus flat 50 AFIT
 		expect(await afit.balanceOf(db, 'farmer')).toBe(0);
 	});
 

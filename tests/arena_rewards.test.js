@@ -20,7 +20,7 @@ describe('arena_rewards.prizesForStandings', () => {
 
 	test('daily focus: flat AFIT for every qualifying finisher (rank-agnostic)', () => {
 		const p = rewards.prizesForStandings(official('def_daily_focus'), standings(3));
-		expect(p).toEqual([{ rank: 1, afit: 5 }, { rank: 2, afit: 5 }, { rank: 3, afit: 5 }]);
+		expect(p).toEqual([{ rank: 1, afit: 50 }, { rank: 2, afit: 50 }, { rank: 3, afit: 50 }]);
 	});
 
 	test('a finisher with zero verified score earns nothing', () => {
@@ -31,7 +31,7 @@ describe('arena_rewards.prizesForStandings', () => {
 
 	test('an official recurrence instance (parent_id) uses the base schedule', () => {
 		const p = rewards.prizesForStandings(official('def_daily_focus@2026-09-10', { parent_id: 'def_daily_focus' }), standings(2));
-		expect(p).toEqual([{ rank: 1, afit: 5 }, { rank: 2, afit: 5 }]);
+		expect(p).toEqual([{ rank: 1, afit: 50 }, { rank: 2, afit: 50 }]);
 	});
 
 	test('FARM VECTOR BLOCKED — a friendly challenge spoofing parent_id gets NO system AFIT', () => {
