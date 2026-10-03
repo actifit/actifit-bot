@@ -20,7 +20,13 @@
 // Otherwise `top` pays the named ranks and `participation` pays every other
 // qualifying finisher. AFIT amounts.
 const SCHEDULES = {
-	def_daily_focus:        { flat: 5 },
+	// Raised 5 -> 50 (2026-10-02). At 5 AFIT the daily was not worth entering: it
+	// ran 8 times and paid 5 AFIT in total, to one person. Note the prize is only
+	// half the story - def_daily_focus scores goal_hit/threshold at 10,000 steps in
+	// a SINGLE day, which almost no current participant clears, so most entrants
+	// score 0 and earn nothing regardless of the prize. See the threshold note in
+	// docs/arena-launch-runbook.md.
+	def_daily_focus:        { flat: 50 },
 	def_weekly_step_league: { top: { 1: 100, 2: 60, 3: 40 }, participation: 10 },
 	def_season_ladder:      { top: { 1: 250, 2: 150, 3: 100 }, participation: 20 },
 	def_weekly_top_n:       { top: { 1: 80, 2: 60, 3: 45, 4: 25, 5: 25, 6: 25, 7: 25, 8: 25, 9: 25, 10: 25 }, participation: 10 },

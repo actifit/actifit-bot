@@ -226,6 +226,44 @@ double-run a payout even with identical config.
   → emit F6 notifications. Idempotent per challenge (unique
   `challenge_resolutions.challenge_id`) and per credit.
 
+### Daily Focus: the prize was never the binding constraint (2026-10-02)
+
+First production review of the live contests. In the first 9 days the Arena settled
+12 challenges, all with on-chain settle trx, and paid **475 AFIT** across 9 payments -
+about **1% of the 50,000/week budget**. The machinery is fine. Participation is not:
+**6 people have ever entered, 3 have ever earned.**
+
+`def_daily_focus` ran **8 times and paid 5 AFIT in total**, to one person. The flat
+prize is now 50, but the prize was only half the problem:
+
+```
+def_daily_focus    {"metric":"goal_hit","rule":"threshold","threshold":10000}
+```
+
+Every other default scores `activity_count` / `max`. Daily Focus demands **10,000 steps
+in a SINGLE day**, and `prizesForStandings` pays nothing to a finisher whose verified
+score is 0. Measured against the people actually playing:
+
+| user | weekly total | daily avg | clears 10k/day |
+| --- | --- | --- | --- |
+| wahaceggy | 103,963 | ~14,850 | yes - the only 5 AFIT ever paid |
+| rajpootg | 23,455 (3 days) | ~7,800 | no |
+| thepavsalford | 10,748 | ~1,500 | no |
+
+thepavsalford's total for the entire WEEK is 10,748 - just over what the daily asks for
+in one day. So entrants log real activity, score 0, and earn nothing. That is working as
+designed and still wrong: the threshold is set above what this user base walks.
+
+**Changing it is not a code edit.** `scoring` lives on the challenge document, which
+comes from the on-chain `challenge_create` op, and `arena_jobs.nextOccurrence` copies
+`scoring: ch.scoring` forward - so each occurrence inherits the previous one's threshold
+indefinitely. Lowering it means broadcasting a corrected contest, not patching a
+constant. Worth deciding alongside the prize.
+
+**Emission impact of flat 50:** the zero-score rule still gates it, so only finishers who
+clear the threshold are paid. Today that is one person: 50/day, 350/week. A six-person
+roster all clearing it would be 300/day, 2,100/week - **4.2%** of the weekly budget.
+
 ### Reward guards (confirmed 2026-09-12, defaulted in code by #79)
 
 | Key | Default | Meaning |
