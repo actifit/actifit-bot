@@ -254,11 +254,20 @@ thepavsalford's total for the entire WEEK is 10,748 - just over what the daily a
 in one day. So entrants log real activity, score 0, and earn nothing. That is working as
 designed and still wrong: the threshold is set above what this user base walks.
 
-**Changing it is not a code edit.** `scoring` lives on the challenge document, which
-comes from the on-chain `challenge_create` op, and `arena_jobs.nextOccurrence` copies
-`scoring: ch.scoring` forward - so each occurrence inherits the previous one's threshold
-indefinitely. Lowering it means broadcasting a corrected contest, not patching a
-constant. Worth deciding alongside the prize.
+**Lowered to 5,000 on 2026-10-03** (`arena_jobs.SCORING_OVERRIDES`).
+
+Changing a live contest's scoring is not a normal edit. `scoring` arrives on the
+challenge document from the on-chain `challenge_create` op; `challenge_update` can only
+change `state`, and editing the Mongo document directly would diverge from the chain,
+which is the system of record. `arena_jobs.nextOccurrence` also copies
+`scoring: ch.scoring` forward, so a bad threshold inherits indefinitely.
+
+The override is applied where the next occurrence is BUILT, so it is broadcast by
+@actifit as an ordinary signed `challenge_create` carrying the new value - chain and
+index agree, and it propagates forward on its own. It takes effect at the next roll,
+not retroactively, and re-applying it every roll is harmless.
+
+To change another contest's scoring, add an entry keyed by its BASE id.
 
 **Emission impact of flat 50:** the zero-score rule still gates it, so only finishers who
 clear the threshold are paid. Today that is one person: 50/day, 350/week. A six-person

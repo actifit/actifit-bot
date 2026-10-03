@@ -149,6 +149,31 @@ function presentationOf(ch) {
  * (observed in production 2026-09-25). The next window therefore starts one
  * CADENCE after this one started, and keeps this one's length.
  */
+// Corrected `scoring` for a recurring default, keyed by its BASE id and applied
+// when the next occurrence is broadcast.
+//
+// This is the only legitimate way to change a live contest's scoring. `scoring`
+// arrives on the challenge document from the on-chain `challenge_create` op, and
+// `challenge_update` can only change `state` - it cannot touch scoring. Editing
+// the Mongo document directly would diverge from the chain, which is the system of
+// record. Applying the correction HERE means the next occurrence is broadcast by
+// @actifit as a normal signed challenge_create carrying the new value, so chain and
+// index agree and the change propagates forward by itself.
+//
+// def_daily_focus shipped with threshold 10000 - 10,000 steps in a SINGLE day. In
+// the first 9 days it ran 8 times and paid 5 AFIT in total, to one person, because
+// prizesForStandings pays nothing to a finisher whose verified score is 0 and
+// almost nobody cleared the bar: of three regulars, one averaged ~14,850/day and
+// the other two ~7,800 and ~1,500. thepavsalford's total for the entire WEEK was
+// 10,748 - just over what the daily asked for in one day. Lowered to 5,000
+// (2026-10-03) so the contest is winnable by the people actually playing.
+//
+// Leaving an entry here is harmless once it has taken effect: it is re-applied
+// every roll, so it is idempotent, and it documents the intended value.
+const SCORING_OVERRIDES = {
+	def_daily_focus: { metric: 'goal_hit', rule: 'threshold', threshold: 5000 },
+};
+
 function nextOccurrence(ch, nowMs) {
 	if (!isRecurringDefault(ch) || !hasWindow(ch.window)) return null;
 	const base = ch.parent_id || ch.id;
@@ -177,7 +202,7 @@ function nextOccurrence(ch, nowMs) {
 		participants_kind: ch.participants_kind || 'user',
 		window: { start: startIso, end: new Date(nextEnd).toISOString(), tz: (ch.window && ch.window.tz) || 'UTC' },
 		entry: { mode: 'free' },
-		scoring: ch.scoring,
+		scoring: SCORING_OVERRIDES[base] || ch.scoring,
 		rewards: ch.rewards || null,
 		parent_id: base,
 		...presentationOf(ch),
