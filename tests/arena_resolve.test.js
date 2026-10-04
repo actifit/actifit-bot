@@ -113,7 +113,7 @@ describe('arena_jobs.resolveDueChallenges', () => {
 			post('farmer', '2026-08-03T10:00:00Z', 1),       // 1 step — did not
 		]);
 		await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
-		expect(await afit.balanceOf(db, 'achiever')).toBe(5);  // def_daily_focus flat 5 AFIT
+		expect(await afit.balanceOf(db, 'achiever')).toBe(50); // def_daily_focus flat 50 AFIT
 		expect(await afit.balanceOf(db, 'farmer')).toBe(0);
 	});
 
@@ -150,6 +150,26 @@ describe('arena_jobs.nextOccurrence / isRecurringDefault', () => {
 		expect(jobs.isRecurringDefault({ id: 'ch_user', recurrence: 'Weekly' })).toBe(false);
 		expect(jobs.isRecurringDefault({ id: 'def_x', recurrence: 'Never' })).toBe(false);
 		expect(jobs.isRecurringDefault({ id: 'def_daily_focus@2026-09-10', parent_id: 'def_daily_focus', recurrence: 'Daily' })).toBe(true);
+	});
+
+	test('nextOccurrence applies the SCORING_OVERRIDE for def_daily_focus (10k -> 5k)', () => {
+		// scoring cannot be changed by challenge_update (state only) and must not be
+		// edited in Mongo, which would diverge from the chain. The override is applied
+		// when the next occurrence is BROADCAST, so the corrected value goes on-chain.
+		const ch = { id: 'def_daily_focus@2026-10-02', parent_id: 'def_daily_focus', recurrence: 'Daily',
+			type: 'daily_focus', scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 10000 },
+			window: { start: '2026-10-02T13:06:00Z', end: '2026-10-03T13:06:00Z', tz: 'UTC' } };
+		const next = jobs.nextOccurrence(ch, Date.parse('2026-10-03T14:00:00Z'));
+		expect(next.scoring).toEqual({ metric: 'goal_hit', rule: 'threshold', threshold: 5000 });
+		expect(next.parent_id).toBe('def_daily_focus');
+	});
+
+	test('nextOccurrence leaves scoring untouched for a contest with no override', () => {
+		const ch = { id: 'def_weekly_top_n', recurrence: 'Weekly', type: 'liveops',
+			scoring: { metric: 'activity_count', rule: 'max' },
+			window: { start: '2026-09-30T13:06:00Z', end: '2026-10-07T13:06:00Z', tz: 'UTC' } };
+		const next = jobs.nextOccurrence(ch, Date.parse('2026-10-07T14:00:00Z'));
+		expect(next.scoring).toEqual({ metric: 'activity_count', rule: 'max' });
 	});
 
 	test('nextOccurrence skips ahead past a long outage so the new window is current', () => {
