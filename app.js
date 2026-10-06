@@ -2046,6 +2046,35 @@ app.get('/verifyLoginCaptcha', async function (req, res){
 	utils.log('verifyLoginCaptcha: rejected - ' + JSON.stringify(codes)
 		+ ' hostname=' + ((data && data.hostname) || 'n/a')
 		+ ' score=' + ((data && data.score) !== undefined ? data.score : 'n/a'), 'api');
+
+	// 'browser-error' means reCAPTCHA could not COMPLETE its checks in the browser,
+	// not that the visitor failed them. reCAPTCHA v3 scores by fingerprinting
+	// (canvas, WebGL, audio context); a browser that randomises those - Brave with
+	// Shields up and "Block fingerprinting" on, Firefox strict mode, several privacy
+	// extensions - makes that impossible, and the token comes back encoding this.
+	//
+	// Treat it as CAPTCHA UNAVAILABLE and let the login proceed. This does not weaken
+	// anything: the captcha is bot-deterrence in FRONT of the real check, and
+	// loginAuth still verifies the posting key against the chain. An attacker who
+	// suppresses the captcha this way still has to present a valid key.
+	//
+	// Found 2026-10-06, after posting-key login started failing for every Brave user
+	// with no code change on either side - Brave and reCAPTCHA each update
+	// independently, so a working combination can break silently. Worse than the
+	// outage was the message: the client reported "your account and/or private
+	// posting key is incorrect", sending people to hunt a key problem that did not
+	// exist. Nobody reports that as a captcha bug.
+	//
+	// Deliberately narrow. Only this one code falls through. invalid-input-secret
+	// (our config is broken), invalid-input-response (token not ours),
+	// timeout-or-duplicate (expired or replayed) and hostname-mismatch all still
+	// fail CLOSED - none of them indicates a visitor who simply cannot be scored.
+	if (codes.length === 1 && codes[0] === 'browser-error') {
+		utils.log('verifyLoginCaptcha: allowing browser-error through - captcha could not run '
+			+ 'in this browser; posting key is still verified by loginAuth', 'api');
+		return res.send({success: true, degraded: 'browser-error'});
+	}
+
 	return res.send({error:'error', reason: codes.join(',') || 'unknown'});
 })
 
