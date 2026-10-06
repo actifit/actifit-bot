@@ -2001,27 +2001,52 @@ const getAFITPCSPrice = async function (token, api){
 }
 
 app.get('/verifyLoginCaptcha', async function (req, res){
+	// NOTE the missing `return` below used to be a bug in waiting: without a token
+	// this responded AND then carried on to call Google with response:undefined.
 	if (!req.query.token){
-		res.send({error:'error'})
+		return res.send({error:'error', reason:'missing-token'})
 	}
 	let recaptchaToken = req.query.token;
-	const response = await axios.post(config.captchaVerifyUrl,
-        new URLSearchParams({
-          secret: config.captchaVerifySecret,
-          response: recaptchaToken,
-        }).toString(),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-      )
-
-	const data = response.data
-
-	if (data.success) {
-        // continue with form submission
-		res.send({success: true});
-	} else {
-        // handle error
-		res.send({error:'error'})
+	let data;
+	try {
+		const response = await axios.post(config.captchaVerifyUrl,
+			new URLSearchParams({
+				secret: config.captchaVerifySecret,
+				response: recaptchaToken,
+			}).toString(),
+			{ headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 10000 }
+		);
+		data = response.data;
+	} catch (err) {
+		// A failed call to Google is NOT the same as a rejected token, and the old
+		// code could not tell them apart: the throw escaped the handler, so the
+		// client saw a 500 with no explanation and the server logged nothing.
+		utils.log('verifyLoginCaptcha: siteverify call failed - ' + (err && err.message), 'api');
+		return res.status(502).send({error:'error', reason:'verify-unreachable'});
 	}
+
+	if (data && data.success) {
+		return res.send({success: true});
+	}
+
+	// Google says exactly WHY it refused, in error-codes. The previous version
+	// discarded it and answered a bare {error:'error'} for every cause, which made
+	// a login outage undiagnosable from outside: a wrong secret, an expired or
+	// reused token and a hostname mismatch all looked identical. The codes are not
+	// sensitive - they describe the request, never the secret - so they are logged
+	// AND returned.
+	//
+	// The ones worth recognising:
+	//   invalid-input-secret    - the configured secret is wrong/revoked
+	//   invalid-input-response  - the token is malformed or not ours
+	//   timeout-or-duplicate    - token already used, or older than ~2 minutes
+	//   hostname-mismatch       - token minted on a domain not registered to this key
+	//   bad-request             - malformed call
+	const codes = (data && data['error-codes']) || [];
+	utils.log('verifyLoginCaptcha: rejected - ' + JSON.stringify(codes)
+		+ ' hostname=' + ((data && data.hostname) || 'n/a')
+		+ ' score=' + ((data && data.score) !== undefined ? data.score : 'n/a'), 'api');
+	return res.send({error:'error', reason: codes.join(',') || 'unknown'});
 })
 
 //for the purposes of this document
