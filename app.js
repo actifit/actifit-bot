@@ -7192,7 +7192,11 @@ app.get('/getEstimatedReward', async function(req, res) {
 		const activityScore = utils.calcScore(REWARD_SCORING_RULES.activity, REWARD_SCORING_FACTORS.activity, stepCount);
 
 		// 6. Content score — plain-text length of post body
-		const bodyText     = (hivePost.body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+		// Same reasoning as the replies guard below: hivePost comes off the same
+		// Promise.all and is read three times (body here, net_votes and active_votes
+		// further down) with no check that the node returned an object at all.
+		const post = (hivePost && typeof hivePost === 'object') ? hivePost : {};
+		const bodyText     = (post.body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 		const contentScore  = utils.calcScore(REWARD_SCORING_RULES.content, REWARD_SCORING_FACTORS.content, bodyText.length);
 
 		// 7. Media score — user images from verified post metadata (capped at 5)
@@ -7201,17 +7205,23 @@ app.get('/getEstimatedReward', async function(req, res) {
 		const mediaScore = utils.calcScore(REWARD_SCORING_RULES.media, REWARD_SCORING_FACTORS.media, imgCount);
 
 		// 8. Upvote score
-		const netVotes    = hivePost.net_votes || 0;
+		const netVotes    = post.net_votes || 0;
 		const upvoteScore  = utils.calcScore(REWARD_SCORING_RULES.upvotes, REWARD_SCORING_FACTORS.upvotes, netVotes);
 
 		// 9. Comment score — replies with meaningful content (> 50 chars)
-		const qualifyingComments = (hiveReplies || [])
-			.filter(c => (c.body || '').replace(/\s+/g, ' ').trim().length > 50).length;
+		// Array.isArray, not `|| []`: the guard has to reject a TRUTHY non-array, which
+		// is what the node returns when it errors or answers with an object. `|| []`
+		// only substitutes for null/undefined, so it passed the bad value straight
+		// through and .filter threw - observed live in app-error.log on 2026-10-12.
+		const replies = Array.isArray(hiveReplies) ? hiveReplies : [];
+		const qualifyingComments = replies
+			.filter(c => c && (c.body || '').replace(/\s+/g, ' ').trim().length > 50).length;
 		const commentScore = utils.calcScore(REWARD_SCORING_RULES.comments, REWARD_SCORING_FACTORS.comments, qualifyingComments);
 
 		// 10. Moderator upvote score
 		const modNames       = moderatorList.map(m => m.name);
-		const hadModVote     = (hivePost.active_votes || []).some(v => modNames.includes(v.voter) && v.voter !== username);
+		const activeVotes    = Array.isArray(post.active_votes) ? post.active_votes : [];
+		const hadModVote     = activeVotes.some(v => v && modNames.includes(v.voter) && v.voter !== username);
 		const moderatorScore = hadModVote ? REWARD_SCORING_FACTORS.moderator : 0;
 
 		// 11. User rank score

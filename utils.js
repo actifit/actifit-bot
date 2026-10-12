@@ -827,9 +827,30 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let fv_th_id;
 		let matchFound = false;
 		let matchTrx;
-				
+
+		// Parse the caller-supplied operation ONCE, before polling starts. It is
+		// deterministic input: if it is malformed, every one of the 30 ticks below would
+		// throw the identical SyntaxError, and inside an async setInterval callback that
+		// is an UNHANDLED REJECTION - nothing in this codebase installs an
+		// unhandledRejection handler and package.json pins Node 20, so it terminates the
+		// API process. Doing it here turns a process kill into a returned error.
+		let expectedOps;
+		try{
+			expectedOps = JSON.parse(req.query.operation);
+		}catch(err){
+			console.log('findVerifyTrx: operation parameter is not valid JSON - ' + (err && err.message ? err.message : err));
+			return false;
+		}
+
 		return new Promise((resolve, reject) => {
 			fv_th_id = setInterval(async function(){
+			  // EVERYTHING awaited in here must stay inside this try. This callback is
+			  // async, so any rejection that escapes it is unhandled and ends the process
+			  // - and this poll runs for 150s (30 x 5s) per signup/payment verification,
+			  // reached from a dozen routes, so an escape takes every in-flight
+			  // verification down with it. A node 429/503, a node without the
+			  // account-history plugin, or a Mongo blip are all ordinary causes.
+			  try{
 				if (attempts < max_attempts){
 					attempts += 1;
 					let chainLnk = await setProperNode(bchain);
@@ -843,7 +864,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					if (matchTrx && matchTrx.transaction_id && Array.isArray(matchTrx.operations)){
 						console.log('potential match')
 						//need to stringify first part as the second is already stringified
-						if (customArraysEqual(matchTrx.operations, JSON.parse(req.query.operation))){
+						if (customArraysEqual(matchTrx.operations, expectedOps)){
 						//if (customArraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
 						//if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
 							let now = moment(new Date()); //todays date
@@ -853,15 +874,17 @@ async function fetchOneAccount(chainLnk, account_name, label){
 							//transaction needs to have been concluded within 7 hours.
 							console.log(hrs);
 							if (hrs < 7){
-								matchFound = true;
-								//break;
-								
-								if (nostore){
-									
-								}else{
+								// Record BEFORE declaring a match. verified_tx is the
+								// replay guard this function checks on entry, so a store
+								// that failed while matchFound was already true would
+								// report success for a transaction nothing had recorded,
+								// leaving it replayable. If the store throws we fall to
+								// the catch and the next tick retries.
+								if (!nostore){
 									//store transaction
 									await storeVerifiedTrx(matchTrx, db);
 								}
+								matchFound = true;
 							}
 						}
 						
@@ -870,7 +893,14 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					console.log('not found after '+attempts+' attempts');
 					clearInterval(fv_th_id);
 					resolve(false);
+					return;
 				}
+			  }catch(err){
+				// Swallow and let the next tick retry. A persistent fault simply burns
+				// the remaining attempts and resolves false, which is what the caller
+				// already handles.
+				console.log('findVerifyTrx: attempt ' + attempts + ' failed for ' + req.params.trxID + ' - ' + (err && err.message ? err.message : err));
+			  }
 				if (matchFound){
 					//need to look again
 					console.log('found');
@@ -2572,30 +2602,49 @@ async function claimRewards(target_account, p_key, target_chain) {
 	let chainLnk
 	if (target_chain == 'HIVE'){
 		chainLnk = hive;
-		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		// fetchOneAccount collapses the three ways this can fail - node error, node
+		// timeout, and an account that simply does not exist - into a single null.
+		//
+		// It replaces `.catch(err => {return err;})`, which caught the error INTO THE
+		// VALUE: targetAccount then held an Error, the guard below passed because an
+		// Error is truthy, targetAccount[0] was undefined, and the next property read
+		// threw. The guard also tested the ARRAY rather than the element, so a genuine
+		// [] from a nonexistent account took exactly the same path and the
+		// 'account not found' branch was unreachable.
+		//
+		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
+		// which is async with no try/catch - and with no process-level
+		// unhandledRejection handler on Node 20, that ENDS THE API PROCESS. The BLURT
+		// leg below runs on every call and most Hive users have no Blurt account, so []
+		// was the common case rather than the rare one.
+		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');
 		if (!targetAccount){
 			return {error: 'account not found'};
 		}
-		targetAccount = targetAccount[0];
 		//console.log(targetAccount);
 		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		console.log('pending HBD'+claim_currency_stable);
 	}else if (target_chain == 'BLURT'){
 		chainLnk = blurt;
-		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		// Same fix as the HIVE branch above, and this is the leg that actually fired:
+		// /claimRewards always calls BLURT, and an account that exists on Hive but not
+		// on Blurt answers [] - which is most users.
+		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards BLURT');
 		if (!targetAccount){
 			return {error: 'account not found'};
 		}
-		targetAccount = targetAccount[0];
 		//console.log(targetAccount);
 		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance).catch(err => {return err;});
+			// Log the real failure instead of resolving the Error as the value: reading
+			// .ref_block_num off an Error silently reported 'n/a' and threw the cause away.
+			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance)
+				.catch(err => { console.log('claimRewards BLURT: broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
 			//return outc;
 			//console.log(outc);
-			if (outc.ref_block_num){
+			if (outc && outc.ref_block_num){
 				console.log('success');
 				return {success: true};
 			}else{
@@ -2613,9 +2662,11 @@ async function claimRewards(target_account, p_key, target_chain) {
 		
 		console.log('>>CLAIMING<<')
 		
-		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance).catch(err => {return err;});
+		// As above - surface the cause rather than reporting a bare 'n/a'.
+		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance)
+			.catch(err => { console.log('claimRewards ' + target_chain + ': broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
 		//console.log(outc);
-		if (outc.ref_block_num){
+		if (outc && outc.ref_block_num){
 			console.log('success');
 			return {success: true};
 		}else{
