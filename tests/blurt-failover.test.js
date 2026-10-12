@@ -1,19 +1,34 @@
 /**
  * Blurt RPC endpoint rotation.
  *
- * Background: a dead Blurt node used to be indistinguishable from a bad password.
- * fetchOneAccount returned null, validateAccountLogin returned {result:false}, and
- * /fetchUserData answered "403 Invalid user". On 2026-10-12 both configured nodes
- * went down together and Blurt login broke outright.
+ * Background: a dead Blurt node was indistinguishable from a bad password.
+ * fetchOneAccount returned null, validateAccountLogin turned that into
+ * {result:false}, and /fetchUserData answered "403 Invalid user". On 2026-10-12 both
+ * configured nodes went down together and Blurt login broke outright.
  *
- * The rotation has to live in our code: blurtjs ships a failover, but notifyError()
- * - which does the rotating - is only reached from call()/signedCall(), while every
- * generated method including getAccountsAsync goes through send() -> transport,
- * which never notifies it. So setting failover_threshold alone changes nothing for
- * this path, and these tests are what prove the rotation actually happens.
+ * The rotation cannot use blurtjs's own failover: notifyError() - which does the
+ * rotating - is only reached from call()/signedCall(), while every generated method
+ * including getAccountsAsync goes through send() -> transport, which never notifies.
  *
- * No network: blurt.api.getAccountsAsync and setOptions are spied on the shared
- * module singleton that utils.js already holds a reference to.
+ * HOW THESE TESTS INTERCEPT, and why it is not the obvious way:
+ *
+ * fetchOneAccount builds a PRIVATE client per attempt (`new BlurtApi({url})`) and
+ * never re-points the blurt.api singleton. So stubbing `blurt.api.getAccountsAsync`
+ * would test nothing - the code under test does not call it. The generated methods
+ * are own properties assigned per instance, so there is nothing to stub on the
+ * prototype either.
+ *
+ * Instead we stub `BlurtApi.prototype.send`, which every generated method funnels
+ * through, and route on `this.options.uri` - the instance's REAL resolved endpoint.
+ * That keeps the real constructor, the real getAccountsAsync wrapper and the real
+ * parameter marshalling in the test, and means assertions are made against actual
+ * client state rather than against a spy's call log.
+ *
+ * That distinction matters: an earlier version of this suite stubbed setOptions inert
+ * and asserted the call log, which let a mutation that reintroduced the original
+ * process-wide stranding bug pass all 16 tests.
+ *
+ * No network.
  */
 
 const blurt = require('@blurtfoundation/blurtjs');
@@ -21,31 +36,54 @@ const hive = require('@hiveio/hive-js');
 const utils = require('../utils');
 
 // utils.js does NOT require('./config.json') - getConfig() parses the file itself
-// into a module-local object, so requiring the JSON here would hand back a
-// different object and the overrides below would silently do nothing.
+// into a module-local object, so requiring the JSON here would hand back a different
+// object and the overrides below would silently do nothing.
 const config = utils.getConfig();
 
+const BlurtApi = blurt.api.constructor;
 const ACCT = { name: 'actifit.pay', posting: { key_auths: [['BLT6EqeJ', 1]] } };
+
+/**
+ * Stub the transport for every per-attempt client.
+ * `router(url, params)` returns the account array, or throws to simulate a failure.
+ * Records the endpoint of every dispatched call, in order.
+ */
+const tried = [];
+function stubBlurt(router){
+  return jest.spyOn(BlurtApi.prototype, 'send').mockImplementation(function (api, data, cb) {
+    const url = this.options.uri;
+    tried.push(url);
+    try {
+      const out = router(url, data.params);
+      if (out === '__hang__') return; // never calls back
+      cb(null, out);
+    } catch (err) {
+      cb(err);
+    }
+  });
+}
 
 describe('Blurt RPC failover', () => {
   let origNode;
   let origAlts;
-  let origOptions;
+  let singletonUrlBefore;
 
   beforeEach(() => {
+    tried.length = 0;
     origNode = config.blurt_node;
     origAlts = config.alt_blurt_nodes;
-    // Some tests below set blurt.api.options to drive the restore path. That is a
-    // shared module singleton, so put it back afterwards.
-    origOptions = blurt.api.options;
-    // setOptions would really re-point the shared client; keep it inert.
-    jest.spyOn(blurt.api, 'setOptions').mockImplementation(() => {});
+    singletonUrlBefore = blurt.api.options.url;
   });
 
   afterEach(() => {
-    config.blurt_node = origNode;
-    config.alt_blurt_nodes = origAlts;
-    blurt.api.options = origOptions;
+    if (origNode === undefined) delete config.blurt_node; else config.blurt_node = origNode;
+    if (origAlts === undefined) delete config.alt_blurt_nodes; else config.alt_blurt_nodes = origAlts;
+    // The implementation must never move the singleton, but put it back if it did -
+    // otherwise one leak poisons the next test's baseline and the singleton guards
+    // below silently stop guarding anything.
+    if (blurt.api.options.url !== singletonUrlBefore){
+      blurt.api.setOptions({ url: singletonUrlBefore });
+    }
     jest.useRealTimers();
     jest.restoreAllMocks();
   });
@@ -63,8 +101,8 @@ describe('Blurt RPC failover', () => {
     });
 
     it('de-duplicates when the primary is also listed as an alternate', () => {
-      // This is the recommended config shape - the primary is repeated in the alt
-      // list so blurtjs can line up its api_index - so it must not be tried twice.
+      // The recommended config shape repeats the primary in the alt list, so it must
+      // not be tried twice.
       config.blurt_node = 'https://primary.test';
       config.alt_blurt_nodes = ['https://primary.test', 'https://alt1.test'];
 
@@ -72,12 +110,28 @@ describe('Blurt RPC failover', () => {
     });
 
     it('treats a trailing slash as the same host', () => {
-      // The live config has exactly this shape - an alt with a trailing slash - so a
-      // plain string compare would miss the duplicate and try the same node twice.
+      // The live config has exactly this shape.
       config.blurt_node = 'https://primary.test';
       config.alt_blurt_nodes = ['https://primary.test/', 'https://alt1.test'];
 
       expect(utils.blurtNodes()).toEqual(['https://primary.test', 'https://alt1.test']);
+    });
+
+    it('drops junk entries instead of turning them into endpoints', () => {
+      // Normalisation runs BEFORE filtering, so an entry of only slashes becomes ''
+      // and must not survive as a blank endpoint burning an attempt. Without the
+      // scheme test, String(undefined) would become the literal endpoint "undefined".
+      config.blurt_node = 'https://primary.test';
+      config.alt_blurt_nodes = ['/', '', '   ', null, undefined, 42, 'rpc.no-scheme.test', 'https://ok.test'];
+
+      expect(utils.blurtNodes()).toEqual(['https://primary.test', 'https://ok.test']);
+    });
+
+    it('returns an empty list when nothing usable is configured', () => {
+      delete config.blurt_node;
+      delete config.alt_blurt_nodes;
+
+      expect(utils.blurtNodes()).toEqual([]);
     });
 
     it('still returns the primary when no alternates are configured', () => {
@@ -93,6 +147,18 @@ describe('Blurt RPC failover', () => {
 
       expect(utils.blurtNodes()).toEqual(['https://primary.test']);
     });
+
+    it('caps the list so a long config cannot outlive the socket timeout', () => {
+      // Worst case is attempts x NODE_CALL_TIMEOUT_MS (10s), plus a Hive lookup, against
+      // srvr.setTimeout(120000). Four is the number that keeps that at 50s.
+      config.blurt_node = 'https://p.test';
+      config.alt_blurt_nodes = ['https://a.test', 'https://b.test', 'https://c.test',
+        'https://d.test', 'https://e.test'];
+
+      expect(utils.blurtNodes()).toEqual([
+        'https://p.test', 'https://a.test', 'https://b.test', 'https://c.test',
+      ]);
+    });
   });
 
   describe('fetchOneAccount rotation', () => {
@@ -102,153 +168,160 @@ describe('Blurt RPC failover', () => {
     });
 
     it('walks past failing endpoints and returns the account from a live one', async () => {
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockImplementation(() => {
-        const current = calls[calls.length - 1];
-        if (current === 'https://live.test') return Promise.resolve([ACCT]);
-        return Promise.reject(new Error('HTTP 503'));
+      stubBlurt((url) => {
+        if (url === 'https://live.test') return [ACCT];
+        throw new Error('HTTP 503');
       });
 
       const out = await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
 
       expect(out).toEqual(ACCT);
-      expect(calls).toEqual(['https://dead.test', 'https://alsodead.test', 'https://live.test']);
+      expect(tried).toEqual(['https://dead.test', 'https://alsodead.test', 'https://live.test']);
+    });
+
+    it('asks for the account as an array, the shape the RPC expects', async () => {
+      // getAccountsAsync(name) instead of getAccountsAsync([name]) breaks every lookup
+      // on both chains and is otherwise invisible to these tests.
+      let seen = null;
+      stubBlurt((url, params) => { seen = params; return [ACCT]; });
+
+      await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
+
+      expect(seen).toEqual([['actifit.pay']]);
+    });
+
+    it('never re-points the shared blurt.api singleton', async () => {
+      // THE load-bearing guarantee. Re-pointing the singleton meant two overlapping
+      // walks could strand the process on a dead node, and exposed every other Blurt
+      // caller (payment verification, broadcasts) to whatever node a walk had reached.
+      stubBlurt((url) => {
+        if (url === 'https://live.test') return [ACCT];
+        throw new Error('HTTP 503');
+      });
+
+      await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
+
+      expect(blurt.api.options.url).toBe(singletonUrlBefore);
+    });
+
+    it('leaves the singleton alone even when every endpoint fails', async () => {
+      stubBlurt(() => { throw new Error('HTTP 503'); });
+
+      await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
+
+      expect(blurt.api.options.url).toBe(singletonUrlBefore);
+    });
+
+    it('two overlapping walks cannot disturb each other', async () => {
+      // Reproduces the interleaving that broke the previous revision: one lookup for a
+      // real account and one for a typo, in flight together.
+      stubBlurt((url, params) => {
+        if (params[0][0] === 'ghost') throw new Error('HTTP 503');
+        if (url === 'https://live.test') return [ACCT];
+        throw new Error('HTTP 503');
+      });
+
+      const [real, ghost] = await Promise.all([
+        utils.fetchOneAccount(blurt, 'actifit.pay', 'A'),
+        utils.fetchOneAccount(blurt, 'ghost', 'B'),
+      ]);
+
+      expect(real).toEqual(ACCT);
+      expect(ghost).toBeNull();
+      expect(blurt.api.options.url).toBe(singletonUrlBefore);
     });
 
     it('treats a 200-with-no-result as a failure and keeps going', async () => {
       // A desynced node answers 200 OK with result: null. That must not be read as
       // "this account does not exist".
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockImplementation(() => {
-        const current = calls[calls.length - 1];
-        if (current === 'https://live.test') return Promise.resolve([ACCT]);
-        return Promise.resolve([null]);
-      });
+      stubBlurt((url) => (url === 'https://live.test' ? [ACCT] : [null]));
 
       const out = await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
 
       expect(out).toEqual(ACCT);
-      expect(calls).toHaveLength(3);
+      expect(tried).toHaveLength(3);
     });
 
     it('stops at the first endpoint that answers', async () => {
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockResolvedValue([ACCT]);
+      stubBlurt(() => [ACCT]);
 
       await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
 
-      expect(calls).toEqual(['https://dead.test']);
+      expect(tried).toEqual(['https://dead.test']);
     });
 
     it('returns null, not a rejection, when every endpoint fails', async () => {
       // validateAccountLogin depends on this: it turns a null into
       // {result:false, node_error:true} rather than letting the request blow up.
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockRejectedValue(new Error('HTTP 503'));
+      stubBlurt(() => { throw new Error('HTTP 503'); });
 
       await expect(utils.fetchOneAccount(blurt, 'actifit.pay', 'test')).resolves.toBeNull();
-      expect(blurt.api.getAccountsAsync).toHaveBeenCalledTimes(3);
+      expect(tried).toEqual(['https://dead.test', 'https://alsodead.test', 'https://live.test']);
     });
 
     it('returns null for an account that genuinely does not exist anywhere', async () => {
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockResolvedValue([]);
+      stubBlurt(() => []);
 
       await expect(utils.fetchOneAccount(blurt, 'ghost', 'test')).resolves.toBeNull();
-      expect(blurt.api.getAccountsAsync).toHaveBeenCalledTimes(3);
+      expect(tried).toHaveLength(3);
     });
 
-    it('leaves the shared client on the endpoint that answered', async () => {
-      // The pointer is a process-wide singleton, so where it ends up is what every
-      // other Blurt caller uses next. Staying on a healthy node is the point.
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockImplementation(() => {
-        return calls[calls.length - 1] === 'https://live.test'
-          ? Promise.resolve([ACCT])
-          : Promise.reject(new Error('HTTP 503'));
-      });
-
-      await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
-
-      expect(calls[calls.length - 1]).toBe('https://live.test');
-    });
-
-    it('restores the original endpoint when every node fails', async () => {
-      // Regression guard. Without this the rotation stranded the singleton on the
-      // LAST endpoint tried - in the live config an NXDOMAIN host - breaking every
-      // non-rotating Blurt caller (getChainInfo, getTransactionAsync used for payment
-      // verification, all broadcasts) for the life of the process. Reachable with one
-      // unauthenticated, unlimited GET /getAccountData using a nonexistent username,
-      // because "no such account" walks the whole list exactly like an outage does.
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockRejectedValue(new Error('HTTP 503'));
-      blurt.api.options = { url: 'https://entry.test' };
-
-      await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
-
-      expect(calls[calls.length - 1]).toBe('https://entry.test');
-    });
-
-    it('restores the original endpoint when the account simply does not exist', async () => {
-      // Same guard, via the cheaper trigger: every node answers authoritatively with
-      // [] and nothing is wrong with any of them.
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockResolvedValue([]);
-      blurt.api.options = { url: 'https://entry.test' };
-
-      await utils.fetchOneAccount(blurt, 'ghost', 'test');
-
-      expect(calls[calls.length - 1]).toBe('https://entry.test');
-    });
-
-    it('gives up after MAX_BLURT_ENDPOINT_ATTEMPTS so a long config cannot outlive the socket', async () => {
-      // Worst case is attempts x NODE_CALL_TIMEOUT_MS, against srvr.setTimeout(120000).
+    it('attempts no more than the cap, whatever the config says', async () => {
       config.alt_blurt_nodes = ['https://a.test', 'https://b.test', 'https://c.test',
         'https://d.test', 'https://e.test', 'https://f.test'];
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockRejectedValue(new Error('HTTP 503'));
+      stubBlurt(() => { throw new Error('HTTP 503'); });
 
       await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
 
-      expect(blurt.api.getAccountsAsync.mock.calls.length).toBeLessThanOrEqual(4);
+      expect(tried).toEqual(['https://dead.test', 'https://a.test', 'https://b.test', 'https://c.test']);
+    });
+
+    it('makes no call and says so loudly when no endpoint is configured', async () => {
+      // config-example.json ships without these keys, so this is the shape a freshly
+      // provisioned host starts from. Silence here would be the same undiagnosable
+      // failure this change exists to end.
+      delete config.blurt_node;
+      delete config.alt_blurt_nodes;
+      const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+      stubBlurt(() => [ACCT]);
+
+      const out = await utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
+
+      expect(out).toBeNull();
+      expect(tried).toEqual([]);
+      expect(log.mock.calls.flat().join(' ')).toMatch(/no usable Blurt endpoint configured/);
     });
 
     it('treats a hung node as a failure and moves on', async () => {
       // withTimeout is what turns a stalled node into a rotation rather than a hung
-      // request. An implementation that dropped it would still pass every other test.
+      // request. An implementation that dropped it would pass every other test here.
       jest.useFakeTimers();
-      const calls = [];
-      jest.spyOn(blurt.api, 'setOptions').mockImplementation((o) => calls.push(o.url));
-      jest.spyOn(blurt.api, 'getAccountsAsync').mockImplementation(() => {
-        return calls[calls.length - 1] === 'https://live.test'
-          ? Promise.resolve([ACCT])
-          : new Promise(() => {}); // never settles
-      });
+      stubBlurt((url) => (url === 'https://live.test' ? [ACCT] : '__hang__'));
 
       const pending = utils.fetchOneAccount(blurt, 'actifit.pay', 'test');
-      // Two hung endpoints ahead of the live one; let both time out.
-      await jest.advanceTimersByTimeAsync(60000);
+      // Nothing should have given up before the timeout elapses.
+      await jest.advanceTimersByTimeAsync(9000);
+      expect(tried).toEqual(['https://dead.test']);
+      // Past it, the walk moves on and reaches the live node.
+      await jest.advanceTimersByTimeAsync(20000);
       const out = await pending;
 
-      jest.useRealTimers();
       expect(out).toEqual(ACCT);
-      expect(calls).toContain('https://live.test');
+      expect(tried).toEqual(['https://dead.test', 'https://alsodead.test', 'https://live.test']);
     });
 
     it('does not rotate for Hive, which has its own endpoint list', async () => {
       // hive-js gets alternative_api_endpoints wired up at module load, so adding a
-      // second layer here would just multiply retries.
-      const hiveSetOptions = jest.spyOn(hive.api, 'setOptions').mockImplementation(() => {});
+      // second layer here would just multiply retries. hive.api is a different class,
+      // so the Blurt stub cannot reach it.
       jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue([ACCT]);
 
       const out = await utils.fetchOneAccount(hive, 'actifit.pay', 'test');
 
       expect(out).toEqual(ACCT);
       expect(hive.api.getAccountsAsync).toHaveBeenCalledTimes(1);
-      expect(hiveSetOptions).not.toHaveBeenCalled();
+      expect(hive.api.getAccountsAsync).toHaveBeenCalledWith(['actifit.pay']);
+      expect(tried).toEqual([]);
     });
   });
 });

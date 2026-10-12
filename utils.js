@@ -167,86 +167,108 @@ function withTimeout(promise, ms, label){
 // each attempt can burn NODE_CALL_TIMEOUT_MS. app.js sets srvr.setTimeout(120000),
 // and /getAccountData with no bchain does a Hive lookup AND a Blurt one in sequence,
 // so an unbounded list read from config could outlive the socket. Cap the attempts
-// so growing alt_blurt_nodes can never do that.
+// so growing alt_blurt_nodes can never do that: 4 x 10s + 10s Hive = 50s, against a
+// 120s socket timeout.
 const MAX_BLURT_ENDPOINT_ATTEMPTS = 4;
 
-// Every Blurt endpoint we know of, primary first, de-duplicated. Trailing slashes are
-// normalised away first, because config carries both forms ("https://rpc.blurt.world/"
-// as an alt against a slashless blurt_node) and a string compare would miss the match
-// and try the same host twice.
+// blurtjs exports a configured singleton (blurt.api) but not the class behind it.
+// We need per-call instances - see fetchOneAccount - so take the constructor off the
+// singleton. Verified it builds a working http client: new BlurtApi({url}) answers
+// getAccountsAsync correctly and leaves blurt.api untouched.
+const BlurtApi = blurt.api.constructor;
+
+// Every Blurt endpoint we know of, primary first, de-duplicated.
+//
+// Normalise BEFORE filtering, not after: config carries both forms
+// ("https://rpc.blurt.world/" as an alt against a slashless blurt_node), and an entry
+// that is only slashes normalises to '' - which would otherwise survive as a blank
+// endpoint and silently burn one of the attempts.
 function blurtNodes(){
 	let list = [config.blurt_node];
 	if (Array.isArray(config.alt_blurt_nodes)) list = list.concat(config.alt_blurt_nodes);
 	return list
-		.filter(Boolean)
-		.map((n) => String(n).replace(/\/+$/, ''))
+		.map((n) => (n === null || n === undefined) ? '' : String(n).trim().replace(/\/+$/, ''))
+		.filter((n) => /^https?:\/\/.+/i.test(n))
 		.filter((n, i, a) => a.indexOf(n) === i)
 		.slice(0, MAX_BLURT_ENDPOINT_ATTEMPTS);
 }
 
 // Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
 // answers 200 OK with result: null. Returns the account object, or null.
-
 async function fetchOneAccount(chainLnk, account_name, label){
-	// For Blurt, walk the configured endpoints instead of giving up on the first one.
-	//
-	// This rotation has to live here because blurtjs's own failover is UNREACHABLE for
-	// the calls we make: notifyError() - which does the rotating - is only invoked from
-	// call() and signedCall(), while every generated method, getAccountsAsync included,
-	// goes through send() -> transport, which never notifies. Verified by driving
-	// getAccountsAsync at a dead primary with failover_threshold set: error_count never
-	// left 0 and the endpoint never changed. Setting the library options is still worth
-	// doing (see setOptions above) but cannot be relied on for this path.
-	//
-	// Why it matters: a dead node made validateAccountLogin return {result:false}, which
-	// /fetchUserData reports as "403 Invalid user". A node outage was indistinguishable
-	// from a bad password. On 2026-10-12 both configured nodes went down together and
-	// Blurt login broke completely.
-	//
-	// Hive is deliberately left single-shot: hive-js has working
-	// alternative_api_endpoints wired up at module load.
-	const endpoints = (chainLnk === blurt) ? blurtNodes() : [null];
-
-	// setOptions re-points a module-level singleton shared by the whole process, so
-	// whatever this loop leaves behind is what every OTHER Blurt caller uses next -
-	// getChainInfo, getTransactionAsync (payment verification), processSteemTrx
-	// broadcasts - and none of those rotate. Landing on a working node is useful;
-	// landing on a dead one is a process-wide outage.
-	//
-	// So: keep the move only if an endpoint actually answered. On total failure put it
-	// back. Otherwise one `GET /getAccountData?user=<typo>&bchain=BLURT` - which needs
-	// no auth and has no rate limit - would walk the whole list, legitimately find
-	// nothing, and strand the singleton on the last (worst) endpoint indefinitely.
-	const entryUrl = (chainLnk === blurt && chainLnk.api && chainLnk.api.options)
-		? chainLnk.api.options.url
-		: null;
-
-	for (const endpoint of endpoints){
-		const via = endpoint ? ' @' + endpoint : '';
-		if (endpoint){
-			try{ chainLnk.api.setOptions({ url: endpoint }); }catch(err){
-				console.log(label + ': could not select endpoint' + via + ' - ' + (err && err.message ? err.message : err));
-				continue;
-			}
-		}
+	// Hive keeps its original single-shot behaviour: hive-js already has working
+	// alternative_api_endpoints wired up at module load, so a second layer here would
+	// only multiply retries.
+	if (chainLnk !== blurt){
 		try{
 			let account_res = await withTimeout(
 				chainLnk.api.getAccountsAsync([account_name]),
 				NODE_CALL_TIMEOUT_MS,
-				label + ' getAccounts(' + account_name + ')' + via
+				label + ' getAccounts(' + account_name + ')'
 			);
-			// Success: leave the pointer here so a healthy node stays selected.
 			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
 			// a broken/desynced node can answer 200 OK with result: null
-			console.log(label + ': node returned no account data for ' + account_name + via);
+			console.log(label + ': node returned no account data for ' + account_name);
+			return null;
 		}catch(err){
-			console.log(label + ': account lookup failed for ' + account_name + via + ' - ' + (err && err.message ? err.message : err));
+			console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
+			return null;
 		}
 	}
 
-	if (entryUrl){
-		try{ chainLnk.api.setOptions({ url: entryUrl }); }catch(err){
-			console.log(label + ': could not restore endpoint @' + entryUrl + ' - ' + (err && err.message ? err.message : err));
+	// Blurt walks the configured endpoints instead of giving up on the first one,
+	// because a dead node used to be indistinguishable from a bad password:
+	// fetchOneAccount returned null, validateAccountLogin turned that into
+	// {result:false}, and /fetchUserData reported "403 Invalid user". On 2026-10-12
+	// both configured nodes went down together and Blurt login broke outright.
+	//
+	// The rotation cannot use blurtjs's own failover: notifyError() - which does the
+	// rotating - is only reached from call()/signedCall(), while every generated
+	// method including getAccountsAsync goes through send() -> transport, which never
+	// notifies. Driving getAccountsAsync at a dead primary with failover_threshold set
+	// leaves error_count at 0 and never changes endpoint.
+	//
+	// EACH ATTEMPT GETS ITS OWN CLIENT, and blurt.api is never re-pointed. An earlier
+	// revision rotated the shared singleton and restored it afterwards; three separate
+	// problems came out of that, all of which this avoids by construction:
+	//   - two overlapping walks interleaved, and the loser's "restore" wrote a dead
+	//     endpoint over the winner's healthy one. Reproduced with two concurrent
+	//     requests - and GET /getAccountData needs no auth and has no rate limit.
+	//   - for the length of a walk, every OTHER Blurt caller on the singleton
+	//     (getChainInfo, getTransactionAsync payment verification, every broadcast via
+	//     processSteemTrx) was pointed at whatever node the walk had reached.
+	//   - a broadcast straddling a rotation could take its TaPoS reference block from
+	//     one node and broadcast to another.
+	// Those callers now keep config.blurt_node exactly as they did before this change.
+	// They still have no failover of their own - that is unchanged, not regressed, and
+	// is worth a follow-up rather than widening this.
+	const endpoints = blurtNodes();
+	if (!endpoints.length){
+		// Loud on purpose. Silence here would be the same undiagnosable failure this
+		// change exists to end - config-example.json ships without these keys.
+		console.log(label + ': no usable Blurt endpoint configured (check blurt_node / alt_blurt_nodes) - cannot look up ' + account_name);
+		return null;
+	}
+
+	for (const endpoint of endpoints){
+		const via = ' @' + endpoint;
+		let api;
+		try{
+			api = new BlurtApi({ url: endpoint });
+		}catch(err){
+			console.log(label + ': could not build client' + via + ' - ' + (err && err.message ? err.message : err));
+			continue;
+		}
+		try{
+			let account_res = await withTimeout(
+				api.getAccountsAsync([account_name]),
+				NODE_CALL_TIMEOUT_MS,
+				label + ' getAccounts(' + account_name + ')' + via
+			);
+			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+			console.log(label + ': node returned no account data for ' + account_name + via);
+		}catch(err){
+			console.log(label + ': account lookup failed for ' + account_name + via + ' - ' + (err && err.message ? err.message : err));
 		}
 	}
 	return null;
