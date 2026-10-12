@@ -193,6 +193,30 @@ function blurtNodes(){
 		.slice(0, MAX_BLURT_ENDPOINT_ATTEMPTS);
 }
 
+// Run a dblurt read/broadcast against each configured Blurt endpoint until one
+// succeeds. #120 added endpoint rotation for blurtjs (via fetchOneAccount) but the
+// dblurt `blurtClient` used by createAccount was never covered, so a single dead
+// Blurt node (HTTP 503 on 2026-10-12) threw straight out of createAccount and
+// aborted an otherwise-healthy signup, Hive leg included. Like #120's final form we
+// build a fresh client per attempt instead of re-pointing the shared singleton
+// (which also serves payment verification and broadcasts elsewhere).
+async function blurtCallWithFailover(run, label){
+	let lastErr = null;
+	for (const url of blurtNodes()){
+		try{
+			return await withTimeout(
+				Promise.resolve(run(new dblurt.Client(url))),
+				NODE_CALL_TIMEOUT_MS,
+				'blurt ' + label + ' @' + url
+			);
+		}catch(err){
+			lastErr = err;
+			console.log('blurt failover: ' + label + ' failed @' + url + ' - ' + (err && err.message ? err.message : err));
+		}
+	}
+	throw lastErr || new Error('blurt failover: no endpoints available for ' + label);
+}
+
 // Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
 // answers 200 OK with result: null. Returns the account object, or null.
 async function fetchOneAccount(chainLnk, account_name, label){
@@ -1145,112 +1169,133 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
-		
+
+		// A node outage on ONE chain must never abort the whole signup. Each chain's
+		// existence check is wrapped so that if its node(s) are unreachable we skip
+		// creating on that chain and still create on the healthy one(s). Incident
+		// 2026-10-12: a Blurt HTTP 503 in the un-guarded dblurt existence check threw
+		// out of here and killed an otherwise-healthy Hive signup.
+		let skipHive = false;
+		let skipBlurt = false;
+
 		if (!chain || chain.includes('HIVE')){
-			//check if account exists		
-			const _account = await hiveClient.database.call('get_accounts', [[username]]);
-			//account not available to register
-			if (_account.length>0) {
-				console.log('account already exists');
-				console.log(_account);
-				return false;
+			//check if account exists
+			try{
+				const _account = await hiveClient.database.call('get_accounts', [[username]]);
+				//account not available to register
+				if (_account.length>0) {
+					console.log('account already exists');
+					console.log(_account);
+					return false;
+				}
+			}catch(err){
+				console.log('hive existence check failed, skipping Hive creation - ' + (err && err.message ? err.message : err));
+				skipHive = true;
 			}
-		}	
-		
+		}
+
 		if (!chain || chain.includes('BLURT')){
-			//check if account exists		
-			const _account = await blurtClient.database.call('get_accounts', [[username]]);
-			//account not available to register
-			if (_account.length>0) {
-				console.log('account already exists');
-				console.log(_account);
-				return false;
+			//check if account exists (rotates Blurt endpoints; a dead node skips Blurt, not the signup)
+			try{
+				const _account = await blurtCallWithFailover(
+					(c) => c.database.call('get_accounts', [[username]]),
+					'get_accounts ' + username
+				);
+				//account not available to register
+				if (_account.length>0) {
+					console.log('account already exists');
+					console.log(_account);
+					return false;
+				}
+			}catch(err){
+				console.log('blurt existence check failed, skipping Blurt creation - ' + (err && err.message ? err.message : err));
+				skipBlurt = true;
 			}
-		}	
-		
+		}
+
 		console.log('account available');
-					
-		
+
+
 		//container for required ops
-		let ops = [];
 		let hiveOps = [];
 		let blurtOps = [];
-		
+
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
-		
+
 		let hiveAccountSuccess = false;
-		
-		if (!chain || chain.includes('HIVE')){
-			const _creator_account = await hiveClient.database.call('get_accounts', [
-				[creator],
-			]);
-			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
-			
-			//create keys for new account
-			const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
-			const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
-			const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
-			let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-			
-			//create auth values for passing to account creation
-			const ownerAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[ownerKey.createPublic(), 1]],
-			};
-			const activeAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[activeKey.createPublic(), 1]],
-			};
-			const postingAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[postingKey.createPublic(), 1]],
-			};
-			
-			if (_creator_account[0].pending_claimed_accounts > 0) {		
-			
-				//the create discounted account operation
-				const create_op = [
-					'create_claimed_account',
-					{
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				hiveOps.push(create_op);
-			}else{
-			
-				const create_op = [
-					'account_create',
-					{
-						fee: '3.000 HIVE',
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				hiveOps.push(create_op);
-			}
-			
-			const privateKey = dhive.PrivateKey.fromString(config.active_key);
-			//proceed executing the selected operation(s)
-			let result = '';
+		let blurtAccountSuccess = false;
+
+		if ((!chain || chain.includes('HIVE')) && !skipHive){
+			//whole leg wrapped so a creator-lookup/broadcast failure fails only Hive, not Blurt
 			try{
-				result = await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
+				const _creator_account = await hiveClient.database.call('get_accounts', [
+					[creator],
+				]);
+				console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+
+				//create keys for new account
+				const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
+				const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
+				const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
+				let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+
+				//create auth values for passing to account creation
+				const ownerAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[ownerKey.createPublic(), 1]],
+				};
+				const activeAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[activeKey.createPublic(), 1]],
+				};
+				const postingAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[postingKey.createPublic(), 1]],
+				};
+
+				if (_creator_account[0].pending_claimed_accounts > 0) {
+
+					//the create discounted account operation
+					const create_op = [
+						'create_claimed_account',
+						{
+							creator: creator,
+							new_account_name: username,
+							owner: ownerAuth,
+							active: activeAuth,
+							posting: postingAuth,
+							memo_key: memoKey,
+							json_metadata: '',
+							extensions: [],
+						}
+					];
+					hiveOps.push(create_op);
+				}else{
+
+					const create_op = [
+						'account_create',
+						{
+							fee: '3.000 HIVE',
+							creator: creator,
+							new_account_name: username,
+							owner: ownerAuth,
+							active: activeAuth,
+							posting: postingAuth,
+							memo_key: memoKey,
+							json_metadata: '',
+							extensions: [],
+						}
+					];
+					hiveOps.push(create_op);
+				}
+
+				const privateKey = dhive.PrivateKey.fromString(config.active_key);
+				//proceed executing the selected operation(s)
+				await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
 				console.log('success');
 				hiveAccountSuccess = true;
 			}catch(err){
@@ -1258,38 +1303,41 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				hiveAccountSuccess = false;
 			}
 		}
-		
-		if (!chain || chain.includes('BLURT')){
-			const _creator_account = await blurtClient.database.call('get_accounts', [
-				[creator],
-			]);
-			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
-			
-			//create keys for new account
-			const ownerKey = dblurt.PrivateKey.fromLogin(username, password, 'owner');
-			const activeKey = dblurt.PrivateKey.fromLogin(username, password, 'active');
-			const postingKey = dblurt.PrivateKey.fromLogin(username, password, 'posting');
-			let memoKey = dblurt.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-			
-			//create auth values for passing to account creation
-			const ownerAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[ownerKey.createPublic(), 1]],
-			};
-			const activeAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[activeKey.createPublic(), 1]],
-			};
-			const postingAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[postingKey.createPublic(), 1]],
-			};
-			
-			
-			//BLURT only supports fee-based account creation
+
+		if ((!chain || chain.includes('BLURT')) && !skipBlurt){
+			//whole leg wrapped so a creator-lookup/broadcast failure fails only Blurt, not Hive
+			try{
+				const _creator_account = await blurtCallWithFailover(
+					(c) => c.database.call('get_accounts', [[creator]]),
+					'get_accounts ' + creator
+				);
+				console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+
+				//create keys for new account
+				const ownerKey = dblurt.PrivateKey.fromLogin(username, password, 'owner');
+				const activeKey = dblurt.PrivateKey.fromLogin(username, password, 'active');
+				const postingKey = dblurt.PrivateKey.fromLogin(username, password, 'posting');
+				let memoKey = dblurt.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+
+				//create auth values for passing to account creation
+				const ownerAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[ownerKey.createPublic(), 1]],
+				};
+				const activeAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[activeKey.createPublic(), 1]],
+				};
+				const postingAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[postingKey.createPublic(), 1]],
+				};
+
+
+				//BLURT only supports fee-based account creation
 				const create_op = [
 					'account_create',
 					{
@@ -1305,13 +1353,13 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					}
 				];
 				blurtOps.push(create_op);
-			//}
-			
-			const privateKey = dblurt.PrivateKey.fromString(config.active_key);
-			//proceed executing the selected operation(s)
-			let result = '';
-			try{
-				result = await blurtClient.broadcast.sendOperations(blurtOps, privateKey);
+
+				const privateKey = dblurt.PrivateKey.fromString(config.active_key);
+				//proceed executing the selected operation(s), rotating Blurt endpoints
+				await blurtCallWithFailover(
+					(c) => c.broadcast.sendOperations(blurtOps, privateKey),
+					'account_create ' + username
+				);
 				console.log('success');
 				blurtAccountSuccess = true;
 			}catch(err){
@@ -3002,6 +3050,9 @@ async function countUserCommentsToday(username) {
    // keeps a single dead Blurt node from reading as "invalid user"
    blurtNodes: blurtNodes,
    fetchOneAccount: fetchOneAccount,
+   // exported for tests/createaccount-blurt-failover.test.js - rotation for the
+   // dblurt client createAccount uses (not covered by #120's blurtjs rotation)
+   blurtCallWithFailover: blurtCallWithFailover,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
