@@ -803,10 +803,19 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			try{
 				let transaction = await db.collection('verified_tx').insertOne(tx_entry);
 				console.log('success inserting transaction details');
+				return true;
 			}catch(err){
-				console.log(err);
+				// Report the failure instead of swallowing it. verified_tx is both the
+				// replay guard findVerifyTrx checks on entry AND the data source the
+				// stage-two verifiers (verifyGadgetTransaction and friends) re-read, so
+				// a silently-lost row means the caller is told the payment verified
+				// while nothing can redeem it.
+				console.log('failed inserting transaction details for ' + tx.transaction_id + ' - ' + (err && err.message ? err.message : err));
+				return false;
 			}
 		}
+		// nothing to store (no ref_block_num) is not a storage failure
+		return true;
 	}
 	
 	async function findVerifyTrx (req, db, nostore){
@@ -815,7 +824,19 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let bchain = req.query.bchain?req.query.bchain:'HIVE'
 		
 		//first check trx to see if it has been processed
-		let trx = await db.collection('verified_tx').findOne({tx_id: req.params.trxID});
+		// Guarded: this is the FIRST Mongo call on the path and it sits outside the
+		// polling loop's protection. All 13 callers are unauthenticated routes whose
+		// handlers are async with no try/catch, so a Mongo blip here rejected straight
+		// out of the process. Failing closed (treat as "already processed") is the safe
+		// direction - it declines the request rather than risking a double-credit on a
+		// transaction we cannot check against the replay guard.
+		let trx;
+		try{
+			trx = await db.collection('verified_tx').findOne({tx_id: req.params.trxID});
+		}catch(err){
+			console.log('findVerifyTrx: replay-guard lookup failed for ' + req.params.trxID + ' - ' + (err && err.message ? err.message : err));
+			return ({error: 'verification unavailable'});
+		}
 		//this shouldnt be there, so if it is skip
 		if (trx){
 			
@@ -880,11 +901,18 @@ async function fetchOneAccount(chainLnk, account_name, label){
 								// report success for a transaction nothing had recorded,
 								// leaving it replayable. If the store throws we fall to
 								// the catch and the next tick retries.
+								// Gate the match on the row actually being written. storeVerifiedTrx
+								// returns false rather than throwing, so testing its result is the
+								// only way this can work - an earlier revision just reordered the
+								// call and the guarantee it claimed never existed.
+								let stored = true;
 								if (!nostore){
 									//store transaction
-									await storeVerifiedTrx(matchTrx, db);
+									stored = await storeVerifiedTrx(matchTrx, db);
 								}
-								matchFound = true;
+								if (stored){
+									matchFound = true;
+								}
 							}
 						}
 						

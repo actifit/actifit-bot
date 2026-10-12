@@ -1873,13 +1873,30 @@ function encrypt(text) {
 }
 
 function decrypt(text) {
- //let iv = Buffer.from(text.iv, 'hex');
- //let encryptedText = Buffer.from(text.encryptedData, 'hex');
- let encryptedText = Buffer.from(text, 'hex');
- let decipher = crypto.createDecipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
- let decrypted = decipher.update(encryptedText);
- decrypted = Buffer.concat([decrypted, decipher.final()]);
- return decrypted.toString();
+ // Returns null rather than throwing. Every one of the 8 call sites is
+ // `const receivedPlaintext = decrypt(req.ppkey);` inside an ASYNC route handler with
+ // no try/catch, and there is no Express error handler, so on Node 20 a throw here is
+ // an unhandled rejection - i.e. the API process exits.
+ //
+ // It is reachable without anything being wrong: checkHdrs assigns
+ // `req.ppkey = user_tkn[0].ppkey` with no existence check, and the Keychain login path
+ // only PRESERVES a previously stored ppkey - a Keychain-only user has none. So
+ // `Buffer.from(undefined, 'hex')` threw for any such user hitting /claimRewards,
+ // /fetchUserData and five other routes. decipher.final() throws 'bad decrypt' the same
+ // way if user_ppkey_db/_iv ever differ between hosts sharing one Mongo.
+ if (typeof text !== 'string' || text === '') {
+  return null;
+ }
+ try {
+  let encryptedText = Buffer.from(text, 'hex');
+  let decipher = crypto.createDecipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
+  let decrypted = decipher.update(encryptedText);
+  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  return decrypted.toString();
+ } catch (err) {
+  console.log('decrypt failed - ' + (err && err.message ? err.message : err));
+  return null;
+ }
 }
 
 function _fundsKey() {
@@ -2412,7 +2429,14 @@ app.get('/claimRewards', checkHdrs, async function (req, res){
 	}
 	
 	const receivedPlaintext = decrypt(req.ppkey);
-	
+
+	// No stored key (Keychain-only login) or an undecryptable one. Say so instead of
+	// broadcasting with a null key.
+	if (!receivedPlaintext){
+		res.send({error: 'no posting key on file for this login'});
+		return;
+	}
+
 	let userKey = receivedPlaintext;
 	
 	/*res.send({'hive': {'success': true}, 'blurt': {'success': true}});*/
@@ -7192,10 +7216,20 @@ app.get('/getEstimatedReward', async function(req, res) {
 		const activityScore = utils.calcScore(REWARD_SCORING_RULES.activity, REWARD_SCORING_FACTORS.activity, stepCount);
 
 		// 6. Content score — plain-text length of post body
-		// Same reasoning as the replies guard below: hivePost comes off the same
-		// Promise.all and is read three times (body here, net_votes and active_votes
-		// further down) with no check that the node returned an object at all.
-		const post = (hivePost && typeof hivePost === 'object') ? hivePost : {};
+		// The node answering with an error object or a string is a TRANSIENT upstream
+		// fault, not a scoreable post. Defaulting to {} would ship an authoritative
+		// -looking score_breakdown with contentScore/upvoteScore/moderatorScore all 0 -
+		// a materially understated AFIT estimate presented as fact. This handler already
+		// has a clean error path (see the catch at the end), so say so instead.
+		// `typeof === 'object'` is not enough: an RPC error answer ({error:{code:-32000}})
+		// is also an object. A real post always carries a string body - which this
+		// handler needs anyway to score content - so that is the honest test.
+		if (!hivePost || typeof hivePost !== 'object' || Array.isArray(hivePost)
+			|| hivePost.error || typeof hivePost.body !== 'string'){
+			console.log('getEstimatedReward: node returned no usable post for ' + latestPost.author + '/' + latestPost.permlink);
+			return res.send({ error: 'post data unavailable', status: 'node_unavailable' });
+		}
+		const post = hivePost;
 		const bodyText     = (post.body || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
 		const contentScore  = utils.calcScore(REWARD_SCORING_RULES.content, REWARD_SCORING_FACTORS.content, bodyText.length);
 
