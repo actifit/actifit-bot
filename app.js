@@ -9136,8 +9136,15 @@ const handleConfirmPayment = async function(req,res){
 			if (req.query.promo_code){
 			  let promo_match = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
 			  console.log(promo_match);
-			  
-			  if (promo_match && parseInt(promo_match.entries) > 0){
+
+			  //distinguish the three ways this path can end short so the caller
+			  //(and support) can tell them apart instead of one opaque "false"
+			  let reason = '';
+			  if (!promo_match){
+				reason = 'invalid_promo_code';
+			  }else if (parseInt(promo_match.entries) <= 0){
+				reason = 'promo_code_exhausted';
+			  }else{
 				//proceed creating account
 				req.query.promo_proceed = true;
 				req.query.signup_reward = promo_match.signup_reward;
@@ -9147,49 +9154,59 @@ const handleConfirmPayment = async function(req,res){
 				req.query.afit_reward = promoSignupAfitReward(promo_match, req.query.afit_reward);
 				try {
 					accountCreated = await claimAndCreateAccount(req);
-					
-					// only delegate if account created and delegation is enabled
-					if (accountCreated && promo_match.delegation) {
-						await utils.delegateToAccount(
-							req.query.new_account,
-							spToDelegate,
-							req.query.cur_bchain
-						);
-					}
-					
-					// decrease number of permitted entries
-					promo_match.entries = parseInt(promo_match.entries) - 1;
-					
-					// Extreme case: prevent negative entries
-					if (promo_match.entries < 0) {
-						promo_match.entries = 0;
-					}
-					
-					console.log('promo_match.entries: ' + promo_match.entries);
 
-					try {
-						// FIX: Replace .save() with .replaceOne() and ADD 'await'
-						// Using _id ensures we update the exact promo code document
-						await db.collection('signup_promo_codes').replaceOne(
-							{ _id: promo_match._id }, 
-							promo_match, 
-							{ upsert: true }
-						);
-						console.log('success updating pending entries');
-					} catch (err) {
-						console.error('Database error updating promo entries:', err);
-						return;
+					if (accountCreated){
+						// only delegate if delegation is enabled
+						if (promo_match.delegation) {
+							await utils.delegateToAccount(
+								req.query.new_account,
+								spToDelegate,
+								req.query.cur_bchain
+							);
+						}
+
+						// consume one entry ONLY on a successful creation. A failed
+						// attempt must never burn a single-use link (incident
+						// 2026-10-12: a failed first try left entries at 0 and the
+						// user could never retry with the link we gave them).
+						promo_match.entries = parseInt(promo_match.entries) - 1;
+
+						// Extreme case: prevent negative entries
+						if (promo_match.entries < 0) {
+							promo_match.entries = 0;
+						}
+
+						console.log('promo_match.entries: ' + promo_match.entries);
+
+						try {
+							// Using _id ensures we update the exact promo code document
+							await db.collection('signup_promo_codes').replaceOne(
+								{ _id: promo_match._id },
+								promo_match,
+								{ upsert: true }
+							);
+							console.log('success updating pending entries');
+						} catch (err) {
+							// log and carry on: the account already exists on-chain,
+							// so we must still return success and end the response
+							console.error('Database error updating promo entries:', err);
+						}
+
+						paymentReceivedTx = req.query.promo_code;
+					} else {
+						reason = 'account_creation_failed';
 					}
 				} catch (e) {
 					console.error('Process error:', e);
+					reason = 'account_creation_failed';
 				}
-				paymentReceivedTx = req.query.promo_code;
 			  }
-			  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+			  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated, 'reason': reason}));
 			  res.end();
 			}else{
 			    req.query.promo_proceed = false;
-			
+				let reason = '';
+
 				//first step is to ensure memo has not been tampered with, nor has it been claimed before
 				//to do that, let's try to find if any signup has been done using this memo
 				let memo_used = await db.collection('signup_transactions').findOne({memo: req.query.memo});
@@ -9215,14 +9232,23 @@ const handleConfirmPayment = async function(req,res){
 							accountCreated = await claimAndCreateAccount(req);
 							if (accountCreated){
 								await utils.delegateToAccount(req.query.new_account, spToDelegate, req.query.bchain);
+							}else{
+								reason = 'account_creation_failed';
 							}
 						}catch(e){
 							console.log(e);
+							reason = 'account_creation_failed';
 						}
+					}else{
+						//no matching payment found on-chain within the poll window
+						reason = 'payment_not_confirmed';
 					}
+				}else{
+					//this memo was already consumed by an earlier signup
+					reason = 'memo_already_used';
 				}
 				//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
-				res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated}));
+				res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated, 'reason': reason}));
 				res.end();
 			}
 		}catch(err){
