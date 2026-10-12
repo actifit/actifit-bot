@@ -1388,7 +1388,40 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				blurtAccountSuccess = false;
 			}
 		}
-		return (hiveAccountSuccess || blurtAccountSuccess);
+		// WHICH chains the caller actually asked for. An absent/empty cur_bchain means
+		// "both" - app.js passes req.query.cur_bchain straight through with no
+		// validation, so that is reachable from any client that omits it.
+		const wantHive = !chain || chain.includes('HIVE');
+		const wantBlurt = !chain || chain.includes('BLURT');
+
+		if (wantHive && !hiveAccountSuccess){
+			console.log('createAccount: HIVE was requested for ' + username + ' but not created'
+				+ (skipHive ? ' (existence check failed, leg skipped)' : '') + ' - reporting failure so the signup stays retryable');
+		}
+		if (wantBlurt && !blurtAccountSuccess){
+			console.log('createAccount: BLURT was requested for ' + username + ' but not created'
+				+ (skipBlurt ? ' (existence check failed, leg skipped)' : ''));
+		}
+
+		// `hiveAccountSuccess || blurtAccountSuccess` was wrong once a leg could be
+		// SKIPPED rather than merely attempted. With both chains requested and the Hive
+		// existence check throwing, skipHive skipped the Hive leg, Blurt succeeded, and
+		// the OR returned true: the caller stored the signup with the memo, paid the
+		// referral and answered accountCreated:true for a user who paid for a Hive
+		// account, got a Blurt-only one, and could no longer retry - the memo answers
+		// memo_already_used and a promo code promo_code_exhausted. Before the skip flags
+		// existed that same node error threw, the caller's catch left accountCreated
+		// false, and the signup stayed retryable.
+		//
+		// The asymmetry below is deliberate, not an oversight: the signup is PAID FOR on
+		// Hive (claimed account tokens, creator config.account), so Hive is the chain
+		// that has to succeed. Blurt is best-effort alongside it - which is exactly what
+		// the Blurt failover work set out to protect, and this keeps that: Hive created
+		// plus Blurt skipped is still a success.
+		if (wantHive){
+			return hiveAccountSuccess;
+		}
+		return blurtAccountSuccess;
 	}
 
 	//function handles delegating to a specific account
