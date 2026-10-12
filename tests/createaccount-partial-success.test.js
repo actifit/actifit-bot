@@ -163,4 +163,36 @@ describe('createAccount — partial success must not read as success', () => {
 
     await expect(utils.createAccount('newguy', 'pass', '')).resolves.toBe(false);
   });
+
+  describe('retry after a half-completed signup', () => {
+    it('creates the missing Hive account when Blurt already exists', async () => {
+      // The scenario the fix would otherwise have STRANDED. Attempt one created the
+      // Blurt account and failed on Hive. Reporting failure (correctly) sends the user
+      // back to retry — but "already exists" used to abort the WHOLE call from either
+      // chain's check, so every retry tripped the Blurt check and returned false before
+      // reaching Hive. The user could never get the account they paid for.
+      script(dblurt, { exists: true });   // Blurt account is already there
+      script(dhive, {});                  // Hive is free and healthy
+
+      await expect(utils.createAccount('newguy', 'pass', '')).resolves.toBe(true);
+    });
+
+    it('does not re-broadcast a Blurt account that already exists', async () => {
+      let blurtSends = 0;
+      script(dblurt, { exists: true });
+      dblurt.__Client.__send = () => { blurtSends += 1; return Promise.resolve({ id: 'tx' }); };
+      script(dhive, {});
+
+      await utils.createAccount('newguy', 'pass', '');
+
+      expect(blurtSends).toBe(0);
+    });
+
+    it('still refuses a Blurt-only request when the Blurt account already exists', async () => {
+      // Nobody asked for Hive here, so an existing Blurt account IS the refusal.
+      script(dblurt, { exists: true });
+
+      await expect(utils.createAccount('newguy', 'pass', 'BLURT')).resolves.toBe(false);
+    });
+  });
 });
