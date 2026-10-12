@@ -1175,18 +1175,26 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		// creating on that chain and still create on the healthy one(s). Incident
 		// 2026-10-12: a Blurt HTTP 503 in the un-guarded dblurt existence check threw
 		// out of here and killed an otherwise-healthy Hive signup.
+		// WHICH chains the caller asked for. An absent/empty cur_bchain means "both" -
+		// app.js passes req.query.cur_bchain straight through with no validation, so
+		// that is reachable from any client that omits it.
+		const wantHive = !chain || chain.includes('HIVE');
+		const wantBlurt = !chain || chain.includes('BLURT');
+
 		let skipHive = false;
 		let skipBlurt = false;
+		let hiveExists = false;
+		let blurtExists = false;
+		let blurtExistingOwnerKey = null;
 
-		if (!chain || chain.includes('HIVE')){
+		if (wantHive){
 			//check if account exists
 			try{
 				const _account = await hiveClient.database.call('get_accounts', [[username]]);
 				//account not available to register
 				if (_account.length>0) {
-					console.log('account already exists');
-					console.log(_account);
-					return false;
+					console.log('account already exists on HIVE');
+					hiveExists = true;
 				}
 			}catch(err){
 				console.log('hive existence check failed, skipping Hive creation - ' + (err && err.message ? err.message : err));
@@ -1194,7 +1202,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			}
 		}
 
-		if (!chain || chain.includes('BLURT')){
+		if (wantBlurt){
 			//check if account exists (rotates Blurt endpoints; a dead node skips Blurt, not the signup)
 			try{
 				const _account = await blurtCallWithFailover(
@@ -1203,14 +1211,64 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				);
 				//account not available to register
 				if (_account.length>0) {
-					console.log('account already exists');
-					console.log(_account);
-					return false;
+					console.log('account already exists on BLURT');
+					blurtExists = true;
+					blurtExistingOwnerKey = (_account[0] && _account[0].owner && Array.isArray(_account[0].owner.key_auths)
+						&& _account[0].owner.key_auths[0]) ? _account[0].owner.key_auths[0][0] : null;
 				}
 			}catch(err){
 				console.log('blurt existence check failed, skipping Blurt creation - ' + (err && err.message ? err.message : err));
 				skipBlurt = true;
 			}
+		}
+
+		// "Already exists" is only a refusal for the chain the caller is actually paying
+		// for. It used to abort the WHOLE call from either check, which made a retry
+		// after a partial creation impossible: the first attempt could create the Blurt
+		// account and fail on Hive, and every retry then tripped the Blurt check and
+		// returned false before reaching Hive. The user could never obtain the Hive
+		// account they paid for.
+		if (wantHive && hiveExists){
+			console.log('createAccount: ' + username + ' already exists on HIVE - cannot create');
+			return false;
+		}
+		if (!wantHive && wantBlurt && blurtExists){
+			console.log('createAccount: ' + username + ' already exists on BLURT - cannot create');
+			return false;
+		}
+		// An existing Blurt account is either OURS - created by an earlier attempt that
+		// then failed on Hive, which is exactly the case this function has to let the
+		// user finish - or it belongs to a stranger who happens to hold that name on
+		// Blurt. Those need opposite answers, and `blurtExists` alone cannot tell them
+		// apart, so derive the owner key from the credentials in hand: a retry uses the
+		// same username and password, so the derived key matches what is on chain.
+		// A stranger's will not.
+		let blurtIsOurs = false;
+		if (blurtExists){
+			try{
+				const expectedOwner = dblurt.PrivateKey.fromLogin(username, password, 'owner').createPublic().toString();
+				// Compare the key material, not the prefix, so a BLT/STM mismatch between
+				// library versions cannot read as "a stranger owns this".
+				blurtIsOurs = !!blurtExistingOwnerKey
+					&& String(blurtExistingOwnerKey).slice(3) === String(expectedOwner).slice(3);
+			}catch(err){
+				console.log('createAccount: could not derive the Blurt owner key for ' + username + ' - ' + (err && err.message ? err.message : err));
+				blurtIsOurs = false;
+			}
+		}
+
+		// Someone else holds the name on Blurt. Refuse before creating anything, which is
+		// what the pre-per-chain code did for ANY existing account. Without this, a user
+		// who ticked Blurt - and is charged double for it by the web client - would get
+		// the Hive account, be told "success", and silently never receive the Blurt one.
+		if (wantBlurt && blurtExists && !blurtIsOurs){
+			console.log('createAccount: ' + username + ' already exists on BLURT under different keys - refusing rather than delivering a partial signup');
+			return false;
+		}
+		if (blurtExists){
+			// Ours, from an earlier half-completed attempt. Nothing to create - but it
+			// must not block the Hive leg, which is the whole point.
+			console.log('createAccount: ' + username + ' already exists on BLURT from an earlier attempt - skipping the Blurt leg');
 		}
 
 		console.log('account available');
@@ -1226,7 +1284,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let hiveAccountSuccess = false;
 		let blurtAccountSuccess = false;
 
-		if ((!chain || chain.includes('HIVE')) && !skipHive){
+		if (wantHive && !skipHive && !hiveExists){
 			//whole leg wrapped so a creator-lookup/broadcast failure fails only Hive, not Blurt
 			try{
 				const _creator_account = await hiveClient.database.call('get_accounts', [
@@ -1304,7 +1362,15 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			}
 		}
 
-		if ((!chain || chain.includes('BLURT')) && !skipBlurt){
+		// Gated on the Hive outcome: if Hive was requested and did not land, this call is
+		// about to return false, the caller will store nothing, and the user will retry.
+		// Broadcasting the Blurt account anyway spends 100.000 BLURT on an account no
+		// record will ever reference and nothing reconciles.
+		const blurtWouldBeOrphaned = wantHive && !hiveAccountSuccess;
+		if (blurtWouldBeOrphaned && wantBlurt && !skipBlurt && !blurtExists){
+			console.log('createAccount: skipping the Blurt leg for ' + username + ' - the Hive leg did not land, so the signup fails and a Blurt account would be orphaned');
+		}
+		if (wantBlurt && !skipBlurt && !blurtExists && !blurtWouldBeOrphaned){
 			//whole leg wrapped so a creator-lookup/broadcast failure fails only Blurt, not Hive
 			try{
 				const _creator_account = await blurtCallWithFailover(
@@ -1388,7 +1454,46 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				blurtAccountSuccess = false;
 			}
 		}
-		return (hiveAccountSuccess || blurtAccountSuccess);
+		// One structured line carrying the request AND the per-chain outcome. Support
+		// otherwise has nothing: the HTTP response is a bare boolean and
+		// signup_transactions stores no chain field at all, so "I signed up but have no
+		// Blurt account" is indistinguishable from a full two-chain success. Persisting
+		// this on the signup document is the real fix and is filed separately; this at
+		// least makes it answerable from the logs.
+		const chainOutcome = (want, created, exists, skipped) => !want ? 'not_requested'
+			: (created ? 'created' : (exists ? 'already_exists' : (skipped ? 'skipped_node_down' : 'failed')));
+		console.log('createAccount outcome for ' + username + ': cur_bchain=' + JSON.stringify(chain)
+			+ ' HIVE=' + chainOutcome(wantHive, hiveAccountSuccess, hiveExists, skipHive)
+			+ ' BLURT=' + chainOutcome(wantBlurt, blurtAccountSuccess, blurtExists, skipBlurt));
+
+		if (wantHive && !hiveAccountSuccess){
+			console.log('createAccount: HIVE was requested for ' + username + ' but not created'
+				+ (skipHive ? ' (existence check failed, leg skipped)' : '') + ' - reporting failure so the signup stays retryable');
+		}
+		if (wantBlurt && !blurtAccountSuccess && !blurtExists){
+			console.log('createAccount: BLURT was requested for ' + username + ' but not created'
+				+ (skipBlurt ? ' (existence check failed, leg skipped)' : ''));
+		}
+
+		// `hiveAccountSuccess || blurtAccountSuccess` was wrong once a leg could be
+		// SKIPPED rather than merely attempted. With both chains requested and the Hive
+		// existence check throwing, skipHive skipped the Hive leg, Blurt succeeded, and
+		// the OR returned true: the caller stored the signup with the memo, paid the
+		// referral and answered accountCreated:true for a user who paid for a Hive
+		// account, got a Blurt-only one, and could no longer retry - the memo answers
+		// memo_already_used and a promo code promo_code_exhausted. Before the skip flags
+		// existed that same node error threw, the caller's catch left accountCreated
+		// false, and the signup stayed retryable.
+		//
+		// The asymmetry below is deliberate, not an oversight: the signup is PAID FOR on
+		// Hive (claimed account tokens, creator config.account), so Hive is the chain
+		// that has to succeed. Blurt is best-effort alongside it - which is exactly what
+		// the Blurt failover work set out to protect, and this keeps that: Hive created
+		// plus Blurt skipped is still a success.
+		if (wantHive){
+			return hiveAccountSuccess;
+		}
+		return blurtAccountSuccess;
 	}
 
 	//function handles delegating to a specific account
