@@ -9134,18 +9134,27 @@ const handleConfirmPayment = async function(req,res){
 		try{
 			//check if promo code was sent, and confirm against available promo codes
 			if (req.query.promo_code){
-			  let promo_match = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
+			  //Atomically claim one entry up front so two concurrent requests with the
+			  //same single-use code cannot both proceed (a read-then-decrement left a
+			  //double-spend window). The claim+restore below keeps the entry only on a
+			  //successful creation: a failed attempt gives it back, so a failed try
+			  //still never burns the link (incident 2026-10-12).
+			  let promo_match = await db.collection('signup_promo_codes').findOneAndUpdate(
+				  { code: req.query.promo_code, entries: { $gt: 0 } },
+				  { $inc: { entries: -1 } },
+				  { includeResultMetadata: false }
+			  );
 			  console.log(promo_match);
 
-			  //distinguish the three ways this path can end short so the caller
-			  //(and support) can tell them apart instead of one opaque "false"
+			  //distinguish the ways this path can end short so the caller (and support)
+			  //can tell them apart instead of one opaque "false"
 			  let reason = '';
 			  if (!promo_match){
-				reason = 'invalid_promo_code';
-			  }else if (parseInt(promo_match.entries) <= 0){
-				reason = 'promo_code_exhausted';
+				//the claim matched nothing: either no such code, or it had no entries left
+				let existing = await db.collection('signup_promo_codes').findOne({code: req.query.promo_code});
+				reason = existing ? 'promo_code_exhausted' : 'invalid_promo_code';
 			  }else{
-				//proceed creating account
+				//we now hold one claimed entry; create the account
 				req.query.promo_proceed = true;
 				req.query.signup_reward = promo_match.signup_reward;
 				req.query.referrer_reward = promo_match.referrer_reward;
@@ -9156,49 +9165,38 @@ const handleConfirmPayment = async function(req,res){
 					accountCreated = await claimAndCreateAccount(req);
 
 					if (accountCreated){
-						// only delegate if delegation is enabled
-						if (promo_match.delegation) {
-							await utils.delegateToAccount(
-								req.query.new_account,
-								spToDelegate,
-								req.query.cur_bchain
-							);
-						}
-
-						// consume one entry ONLY on a successful creation. A failed
-						// attempt must never burn a single-use link (incident
-						// 2026-10-12: a failed first try left entries at 0 and the
-						// user could never retry with the link we gave them).
-						promo_match.entries = parseInt(promo_match.entries) - 1;
-
-						// Extreme case: prevent negative entries
-						if (promo_match.entries < 0) {
-							promo_match.entries = 0;
-						}
-
-						console.log('promo_match.entries: ' + promo_match.entries);
-
-						try {
-							// Using _id ensures we update the exact promo code document
-							await db.collection('signup_promo_codes').replaceOne(
-								{ _id: promo_match._id },
-								promo_match,
-								{ upsert: true }
-							);
-							console.log('success updating pending entries');
-						} catch (err) {
-							// log and carry on: the account already exists on-chain,
-							// so we must still return success and end the response
-							console.error('Database error updating promo entries:', err);
-						}
-
 						paymentReceivedTx = req.query.promo_code;
+						//delegation is a bonus; its failure must not flip a created account to "failed"
+						if (promo_match.delegation) {
+							try {
+								await utils.delegateToAccount(
+									req.query.new_account,
+									spToDelegate,
+									req.query.cur_bchain
+								);
+							} catch (delErr) {
+								console.error('delegation failed (account still created):', delErr);
+							}
+						}
 					} else {
 						reason = 'account_creation_failed';
 					}
 				} catch (e) {
 					console.error('Process error:', e);
 					reason = 'account_creation_failed';
+				}
+
+				if (!accountCreated){
+					//creation failed: give the claimed entry back so the link stays usable
+					try {
+						await db.collection('signup_promo_codes').updateOne(
+							{ _id: promo_match._id },
+							{ $inc: { entries: 1 } }
+						);
+						console.log('restored unused promo entry for ' + req.query.promo_code);
+					} catch (err) {
+						console.error('Database error restoring promo entry:', err);
+					}
 				}
 			  }
 			  res.write(JSON.stringify({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated, 'reason': reason}));
@@ -9253,10 +9251,19 @@ const handleConfirmPayment = async function(req,res){
 			}
 		}catch(err){
 			console.log(err);
+			//close the response even on an unexpected throw, so the client and the
+			//6s keep-alive interval don't hang until socket timeout
+			if (!res.writableEnded){
+				try{
+					res.end(JSON.stringify({'paymentReceivedTx':'', 'accountCreated': false, 'reason': 'server_error'}));
+				}catch(endErr){
+					console.log(endErr);
+				}
+			}
 		}
 		//we're done, let's clear our running interval
 		clearInterval(intID);
-		
+
 	}
 };
 
