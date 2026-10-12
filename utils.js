@@ -43,10 +43,53 @@ hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node});
 try{
-	blurt.api.setOptions({ url: config.blurt_node})
+	// Blurt had NO failover at all. Two separate gaps closed it off:
+	//
+	// 1. config.alt_blurt_nodes was never read anywhere in this codebase - only
+	//    blurt_node was - so Blurt ran on a single URL while Hive had the fallback
+	//    list set just above.
+	// 2. blurtjs gates its own rotation on `failover_threshold`, but its constructor
+	//    only sets `error_threshold` (a different name), so notifyError() returns
+	//    immediately and the rotation never runs. Its built-in default list is
+	//    unusable anyway: ["https://rpc.blurt.world", "https://rpc.blurt.world"] -
+	//    the same host twice, and that domain is now NXDOMAIN.
+	//
+	// So one dead node took Blurt down completely. That happened 2026-10-12: both
+	// configured nodes went down together and validateAccountLogin started answering
+	// "403 Invalid user", which the browser then showed as a CORS error.
+	//
+	// 3. and even with 1 and 2 fixed it would still not help, because notifyError()
+	//    is only called from call() and signedCall(). Every generated method -
+	//    getAccountsAsync included - goes through send() -> transport, which never
+	//    notifies. The rotation that actually matters therefore lives in
+	//    fetchOneAccount(), not here.
+	//
+	// Which makes the two options below worth setting but WORTH NOTHING TODAY: there
+	// is currently no Blurt call()/signedCall() site in this repo, so the library path
+	// they enable is unreachable. Keep them so that if one is ever added it inherits a
+	// real endpoint list rather than the NXDOMAIN default - do not mistake them for
+	// the working failover.
+	//
+	// Pass the list only when it is actually a non-empty array. setOptions assigns
+	// alternative_api_endpoints BEFORE reading .length on it (lib/api/index.js:249
+	// then :262), so an undefined throws. The try/catch here would swallow that, so
+	// the process would survive - but it would survive with failover silently off,
+	// which is the state this whole change exists to end.
+	//
+	// Keep config.blurt_node as alt_blurt_nodes[0]: setOptions looks options.url up
+	// in that list to initialise api_index and defaults to 0 when it is absent, so a
+	// primary missing from the list fails over to itself once before making progress.
+	let blurtOpts = { url: config.blurt_node };
+	if (Array.isArray(config.alt_blurt_nodes) && config.alt_blurt_nodes.length){
+		blurtOpts.alternative_api_endpoints = config.alt_blurt_nodes;
+		blurtOpts.failover_threshold = 3;
+	}else{
+		console.log('blurt: no alt_blurt_nodes configured - running with no failover');
+	}
+	blurt.api.setOptions(blurtOpts)
 }catch(err){
 	console.log(err)
-	
+
 }
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -120,23 +163,139 @@ function withTimeout(promise, ms, label){
 	return Promise.race([promise, timer]).finally(function(){ clearTimeout(t); });
 }
 
+// Walking every endpoint multiplies the worst case by the length of the list, and
+// each attempt can burn NODE_CALL_TIMEOUT_MS. app.js sets srvr.setTimeout(120000),
+// and /getAccountData with no bchain does a Hive lookup AND a Blurt one in sequence,
+// so an unbounded list read from config could outlive the socket. Cap the attempts
+// so growing alt_blurt_nodes can never do that: 4 x 10s + 10s Hive = 50s, against a
+// 120s socket timeout.
+const MAX_BLURT_ENDPOINT_ATTEMPTS = 4;
+
+// blurtjs exports a configured singleton (blurt.api) but not the class behind it.
+// We need per-call instances - see fetchOneAccount - so take the constructor off the
+// singleton. Verified it builds a working http client: new BlurtApi({url}) answers
+// getAccountsAsync correctly and leaves blurt.api untouched.
+const BlurtApi = blurt.api.constructor;
+
+// Every Blurt endpoint we know of, primary first, de-duplicated.
+//
+// Normalise BEFORE filtering, not after: config carries both forms
+// ("https://rpc.blurt.world/" as an alt against a slashless blurt_node), and an entry
+// that is only slashes normalises to '' - which would otherwise survive as a blank
+// endpoint and silently burn one of the attempts.
+function blurtNodes(){
+	let list = [config.blurt_node];
+	if (Array.isArray(config.alt_blurt_nodes)) list = list.concat(config.alt_blurt_nodes);
+	return list
+		.map((n) => (n === null || n === undefined) ? '' : String(n).trim().replace(/\/+$/, ''))
+		.filter((n) => /^https?:\/\/.+/i.test(n))
+		.filter((n, i, a) => a.indexOf(n) === i)
+		.slice(0, MAX_BLURT_ENDPOINT_ATTEMPTS);
+}
+
+// Run a dblurt read/broadcast against each configured Blurt endpoint until one
+// succeeds. #120 added endpoint rotation for blurtjs (via fetchOneAccount) but the
+// dblurt `blurtClient` used by createAccount was never covered, so a single dead
+// Blurt node (HTTP 503 on 2026-10-12) threw straight out of createAccount and
+// aborted an otherwise-healthy signup, Hive leg included. Like #120's final form we
+// build a fresh client per attempt instead of re-pointing the shared singleton
+// (which also serves payment verification and broadcasts elsewhere).
+async function blurtCallWithFailover(run, label){
+	let lastErr = null;
+	for (const url of blurtNodes()){
+		try{
+			return await withTimeout(
+				Promise.resolve(run(new dblurt.Client(url))),
+				NODE_CALL_TIMEOUT_MS,
+				'blurt ' + label + ' @' + url
+			);
+		}catch(err){
+			lastErr = err;
+			console.log('blurt failover: ' + label + ' failed @' + url + ' - ' + (err && err.message ? err.message : err));
+		}
+	}
+	throw lastErr || new Error('blurt failover: no endpoints available for ' + label);
+}
+
 // Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
 // answers 200 OK with result: null. Returns the account object, or null.
 async function fetchOneAccount(chainLnk, account_name, label){
-	try{
-		let account_res = await withTimeout(
-			chainLnk.api.getAccountsAsync([account_name]),
-			NODE_CALL_TIMEOUT_MS,
-			label + ' getAccounts(' + account_name + ')'
-		);
-		if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
-		// a broken/desynced node can answer 200 OK with result: null
-		console.log(label + ': node returned no account data for ' + account_name);
-		return null;
-	}catch(err){
-		console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
+	// Hive keeps its original single-shot behaviour: hive-js already has working
+	// alternative_api_endpoints wired up at module load, so a second layer here would
+	// only multiply retries.
+	if (chainLnk !== blurt){
+		try{
+			let account_res = await withTimeout(
+				chainLnk.api.getAccountsAsync([account_name]),
+				NODE_CALL_TIMEOUT_MS,
+				label + ' getAccounts(' + account_name + ')'
+			);
+			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+			// a broken/desynced node can answer 200 OK with result: null
+			console.log(label + ': node returned no account data for ' + account_name);
+			return null;
+		}catch(err){
+			console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
+			return null;
+		}
+	}
+
+	// Blurt walks the configured endpoints instead of giving up on the first one,
+	// because a dead node used to be indistinguishable from a bad password:
+	// fetchOneAccount returned null, validateAccountLogin turned that into
+	// {result:false}, and /fetchUserData reported "403 Invalid user". On 2026-10-12
+	// both configured nodes went down together and Blurt login broke outright.
+	//
+	// The rotation cannot use blurtjs's own failover: notifyError() - which does the
+	// rotating - is only reached from call()/signedCall(), while every generated
+	// method including getAccountsAsync goes through send() -> transport, which never
+	// notifies. Driving getAccountsAsync at a dead primary with failover_threshold set
+	// leaves error_count at 0 and never changes endpoint.
+	//
+	// EACH ATTEMPT GETS ITS OWN CLIENT, and blurt.api is never re-pointed. An earlier
+	// revision rotated the shared singleton and restored it afterwards; three separate
+	// problems came out of that, all of which this avoids by construction:
+	//   - two overlapping walks interleaved, and the loser's "restore" wrote a dead
+	//     endpoint over the winner's healthy one. Reproduced with two concurrent
+	//     requests - and GET /getAccountData needs no auth and has no rate limit.
+	//   - for the length of a walk, every OTHER Blurt caller on the singleton
+	//     (getChainInfo, getTransactionAsync payment verification, every broadcast via
+	//     processSteemTrx) was pointed at whatever node the walk had reached.
+	//   - a broadcast straddling a rotation could take its TaPoS reference block from
+	//     one node and broadcast to another.
+	// Those callers now keep config.blurt_node exactly as they did before this change.
+	// They still have no failover of their own - that is unchanged, not regressed, and
+	// is worth a follow-up rather than widening this.
+	const endpoints = blurtNodes();
+	if (!endpoints.length){
+		// Loud on purpose. Silence here would be the same undiagnosable failure this
+		// change exists to end - config-example.json ships without these keys.
+		console.log(label + ': no usable Blurt endpoint configured (check blurt_node / alt_blurt_nodes) - cannot look up ' + account_name);
 		return null;
 	}
+
+	for (const endpoint of endpoints){
+		const via = ' @' + endpoint;
+		let api;
+		try{
+			api = new BlurtApi({ url: endpoint });
+		}catch(err){
+			console.log(label + ': could not build client' + via + ' - ' + (err && err.message ? err.message : err));
+			continue;
+		}
+		try{
+			let account_res = await withTimeout(
+				api.getAccountsAsync([account_name]),
+				NODE_CALL_TIMEOUT_MS,
+				label + ' getAccounts(' + account_name + ')' + via
+			);
+			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+			console.log(label + ': node returned no account data for ' + account_name + via);
+		}catch(err){
+			console.log(label + ': account lookup failed for ' + account_name + via + ' - ' + (err && err.message ? err.message : err));
+		}
+	}
+	return null;
 }
 
  async function getAccountData(account_name, bchain){
@@ -1010,112 +1169,133 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
 		}
-		
+
+		// A node outage on ONE chain must never abort the whole signup. Each chain's
+		// existence check is wrapped so that if its node(s) are unreachable we skip
+		// creating on that chain and still create on the healthy one(s). Incident
+		// 2026-10-12: a Blurt HTTP 503 in the un-guarded dblurt existence check threw
+		// out of here and killed an otherwise-healthy Hive signup.
+		let skipHive = false;
+		let skipBlurt = false;
+
 		if (!chain || chain.includes('HIVE')){
-			//check if account exists		
-			const _account = await hiveClient.database.call('get_accounts', [[username]]);
-			//account not available to register
-			if (_account.length>0) {
-				console.log('account already exists');
-				console.log(_account);
-				return false;
+			//check if account exists
+			try{
+				const _account = await hiveClient.database.call('get_accounts', [[username]]);
+				//account not available to register
+				if (_account.length>0) {
+					console.log('account already exists');
+					console.log(_account);
+					return false;
+				}
+			}catch(err){
+				console.log('hive existence check failed, skipping Hive creation - ' + (err && err.message ? err.message : err));
+				skipHive = true;
 			}
-		}	
-		
+		}
+
 		if (!chain || chain.includes('BLURT')){
-			//check if account exists		
-			const _account = await blurtClient.database.call('get_accounts', [[username]]);
-			//account not available to register
-			if (_account.length>0) {
-				console.log('account already exists');
-				console.log(_account);
-				return false;
+			//check if account exists (rotates Blurt endpoints; a dead node skips Blurt, not the signup)
+			try{
+				const _account = await blurtCallWithFailover(
+					(c) => c.database.call('get_accounts', [[username]]),
+					'get_accounts ' + username
+				);
+				//account not available to register
+				if (_account.length>0) {
+					console.log('account already exists');
+					console.log(_account);
+					return false;
+				}
+			}catch(err){
+				console.log('blurt existence check failed, skipping Blurt creation - ' + (err && err.message ? err.message : err));
+				skipBlurt = true;
 			}
-		}	
-		
+		}
+
 		console.log('account available');
-					
-		
+
+
 		//container for required ops
-		let ops = [];
 		let hiveOps = [];
 		let blurtOps = [];
-		
+
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
 		let creator = config.account;
-		
+
 		let hiveAccountSuccess = false;
-		
-		if (!chain || chain.includes('HIVE')){
-			const _creator_account = await hiveClient.database.call('get_accounts', [
-				[creator],
-			]);
-			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
-			
-			//create keys for new account
-			const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
-			const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
-			const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
-			let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-			
-			//create auth values for passing to account creation
-			const ownerAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[ownerKey.createPublic(), 1]],
-			};
-			const activeAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[activeKey.createPublic(), 1]],
-			};
-			const postingAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[postingKey.createPublic(), 1]],
-			};
-			
-			if (_creator_account[0].pending_claimed_accounts > 0) {		
-			
-				//the create discounted account operation
-				const create_op = [
-					'create_claimed_account',
-					{
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				hiveOps.push(create_op);
-			}else{
-			
-				const create_op = [
-					'account_create',
-					{
-						fee: '3.000 HIVE',
-						creator: creator,
-						new_account_name: username,
-						owner: ownerAuth,
-						active: activeAuth,
-						posting: postingAuth,
-						memo_key: memoKey,
-						json_metadata: '',
-						extensions: [],
-					}
-				];
-				hiveOps.push(create_op);
-			}
-			
-			const privateKey = dhive.PrivateKey.fromString(config.active_key);
-			//proceed executing the selected operation(s)
-			let result = '';
+		let blurtAccountSuccess = false;
+
+		if ((!chain || chain.includes('HIVE')) && !skipHive){
+			//whole leg wrapped so a creator-lookup/broadcast failure fails only Hive, not Blurt
 			try{
-				result = await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
+				const _creator_account = await hiveClient.database.call('get_accounts', [
+					[creator],
+				]);
+				console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+
+				//create keys for new account
+				const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
+				const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
+				const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
+				let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+
+				//create auth values for passing to account creation
+				const ownerAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[ownerKey.createPublic(), 1]],
+				};
+				const activeAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[activeKey.createPublic(), 1]],
+				};
+				const postingAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[postingKey.createPublic(), 1]],
+				};
+
+				if (_creator_account[0].pending_claimed_accounts > 0) {
+
+					//the create discounted account operation
+					const create_op = [
+						'create_claimed_account',
+						{
+							creator: creator,
+							new_account_name: username,
+							owner: ownerAuth,
+							active: activeAuth,
+							posting: postingAuth,
+							memo_key: memoKey,
+							json_metadata: '',
+							extensions: [],
+						}
+					];
+					hiveOps.push(create_op);
+				}else{
+
+					const create_op = [
+						'account_create',
+						{
+							fee: '3.000 HIVE',
+							creator: creator,
+							new_account_name: username,
+							owner: ownerAuth,
+							active: activeAuth,
+							posting: postingAuth,
+							memo_key: memoKey,
+							json_metadata: '',
+							extensions: [],
+						}
+					];
+					hiveOps.push(create_op);
+				}
+
+				const privateKey = dhive.PrivateKey.fromString(config.active_key);
+				//proceed executing the selected operation(s)
+				await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
 				console.log('success');
 				hiveAccountSuccess = true;
 			}catch(err){
@@ -1123,38 +1303,41 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				hiveAccountSuccess = false;
 			}
 		}
-		
-		if (!chain || chain.includes('BLURT')){
-			const _creator_account = await blurtClient.database.call('get_accounts', [
-				[creator],
-			]);
-			console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
-			
-			//create keys for new account
-			const ownerKey = dblurt.PrivateKey.fromLogin(username, password, 'owner');
-			const activeKey = dblurt.PrivateKey.fromLogin(username, password, 'active');
-			const postingKey = dblurt.PrivateKey.fromLogin(username, password, 'posting');
-			let memoKey = dblurt.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-			
-			//create auth values for passing to account creation
-			const ownerAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[ownerKey.createPublic(), 1]],
-			};
-			const activeAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[activeKey.createPublic(), 1]],
-			};
-			const postingAuth = {
-				weight_threshold: 1,
-				account_auths: [],
-				key_auths: [[postingKey.createPublic(), 1]],
-			};
-			
-			
-			//BLURT only supports fee-based account creation
+
+		if ((!chain || chain.includes('BLURT')) && !skipBlurt){
+			//whole leg wrapped so a creator-lookup/broadcast failure fails only Blurt, not Hive
+			try{
+				const _creator_account = await blurtCallWithFailover(
+					(c) => c.database.call('get_accounts', [[creator]]),
+					'get_accounts ' + creator
+				);
+				console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
+
+				//create keys for new account
+				const ownerKey = dblurt.PrivateKey.fromLogin(username, password, 'owner');
+				const activeKey = dblurt.PrivateKey.fromLogin(username, password, 'active');
+				const postingKey = dblurt.PrivateKey.fromLogin(username, password, 'posting');
+				let memoKey = dblurt.PrivateKey.fromLogin(username, password, 'memo').createPublic();
+
+				//create auth values for passing to account creation
+				const ownerAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[ownerKey.createPublic(), 1]],
+				};
+				const activeAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[activeKey.createPublic(), 1]],
+				};
+				const postingAuth = {
+					weight_threshold: 1,
+					account_auths: [],
+					key_auths: [[postingKey.createPublic(), 1]],
+				};
+
+
+				//BLURT only supports fee-based account creation
 				const create_op = [
 					'account_create',
 					{
@@ -1170,15 +1353,36 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					}
 				];
 				blurtOps.push(create_op);
-			//}
-			
-			const privateKey = dblurt.PrivateKey.fromString(config.active_key);
-			//proceed executing the selected operation(s)
-			let result = '';
-			try{
-				result = await blurtClient.broadcast.sendOperations(blurtOps, privateKey);
-				console.log('success');
-				blurtAccountSuccess = true;
+
+				const privateKey = dblurt.PrivateKey.fromString(config.active_key);
+				//proceed executing the selected operation(s), rotating Blurt endpoints
+				try{
+					await blurtCallWithFailover(
+						(c) => c.broadcast.sendOperations(blurtOps, privateKey),
+						'account_create ' + username
+					);
+					console.log('success');
+					blurtAccountSuccess = true;
+				}catch(bcErr){
+					//The broadcast is state-changing, so a thrown error is NOT proof the
+					//account was not created: a node can accept the create and then be
+					//slow/drop (withTimeout stops waiting, it cannot abort a submitted tx),
+					//and a retried op on another node is rejected "already exists". Treat
+					//the chain as source of truth -- if the account now exists, it landed.
+					console.log(bcErr);
+					try{
+						const check = await blurtCallWithFailover(
+							(c) => c.database.call('get_accounts', [[username]]),
+							'verify after create ' + username
+						);
+						if (Array.isArray(check) && check.length > 0){
+							console.log('blurt account present after broadcast error - treating as created');
+							blurtAccountSuccess = true;
+						}
+					}catch(verifyErr){
+						console.log(verifyErr);
+					}
+				}
 			}catch(err){
 				console.log(err);
 				blurtAccountSuccess = false;
@@ -2863,6 +3067,13 @@ async function countUserCommentsToday(username) {
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
+   // exported for tests/blurt-failover.test.js - the rotation is the thing that
+   // keeps a single dead Blurt node from reading as "invalid user"
+   blurtNodes: blurtNodes,
+   fetchOneAccount: fetchOneAccount,
+   // exported for tests/createaccount-blurt-failover.test.js - rotation for the
+   // dblurt client createAccount uses (not covered by #120's blurtjs rotation)
+   blurtCallWithFailover: blurtCallWithFailover,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,

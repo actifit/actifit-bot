@@ -28,6 +28,8 @@
   "signupFallbackHiveUsd": 0.05,
   "active_hive_node": "https://hiveapi.actifit.io",
   "alt_hive_nodes": ["https://api.hive.blog", "https://api.deathwing.me"],
+  "blurt_node": "https://rpc.blurt.blog",
+  "alt_blurt_nodes": ["https://rpc.blurt.blog", "https://rpc.drakernoise.com", "https://blurtrpc.dagobert.uk"],
   "arena_tailer_enabled": false,
   "arena_tailer_start_block": 0,
   "arena_official_account": "actifit",
