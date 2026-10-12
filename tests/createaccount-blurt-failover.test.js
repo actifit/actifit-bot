@@ -97,4 +97,26 @@ describe('blurtCallWithFailover', () => {
     expect(res).toEqual([]);
     expect(seen).toEqual([A, B, C]);
   });
+
+  test('rotates past an ASYNC rejection (the real dblurt 503 shape) and recovers', async () => {
+    // real dblurt database.call returns a promise that REJECTS on a 503, not a sync throw
+    const seen = [];
+    dblurt.Client.__router = (url) => {
+      seen.push(url);
+      if (url === A) return Promise.reject(new Error('HTTP 503: Service Temporarily Unavailable'));
+      return Promise.resolve([{ name: 'async-ok' }]);
+    };
+    const res = await utils.blurtCallWithFailover((c) => c.database.call('get_accounts', [['x']]), 'async');
+    expect(res).toEqual([{ name: 'async-ok' }]);
+    expect(seen).toEqual([A, B]);
+  });
+
+  test('rejects after every endpoint rejects asynchronously', async () => {
+    const seen = [];
+    dblurt.Client.__router = (url) => { seen.push(url); return Promise.reject(new Error('async down')); };
+    await expect(
+      utils.blurtCallWithFailover((c) => c.database.call('get_accounts', [['x']]), 'async-all-fail')
+    ).rejects.toThrow();
+    expect(seen).toEqual([A, B, C]);
+  });
 });

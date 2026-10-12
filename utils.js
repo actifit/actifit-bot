@@ -1356,12 +1356,33 @@ async function fetchOneAccount(chainLnk, account_name, label){
 
 				const privateKey = dblurt.PrivateKey.fromString(config.active_key);
 				//proceed executing the selected operation(s), rotating Blurt endpoints
-				await blurtCallWithFailover(
-					(c) => c.broadcast.sendOperations(blurtOps, privateKey),
-					'account_create ' + username
-				);
-				console.log('success');
-				blurtAccountSuccess = true;
+				try{
+					await blurtCallWithFailover(
+						(c) => c.broadcast.sendOperations(blurtOps, privateKey),
+						'account_create ' + username
+					);
+					console.log('success');
+					blurtAccountSuccess = true;
+				}catch(bcErr){
+					//The broadcast is state-changing, so a thrown error is NOT proof the
+					//account was not created: a node can accept the create and then be
+					//slow/drop (withTimeout stops waiting, it cannot abort a submitted tx),
+					//and a retried op on another node is rejected "already exists". Treat
+					//the chain as source of truth -- if the account now exists, it landed.
+					console.log(bcErr);
+					try{
+						const check = await blurtCallWithFailover(
+							(c) => c.database.call('get_accounts', [[username]]),
+							'verify after create ' + username
+						);
+						if (Array.isArray(check) && check.length > 0){
+							console.log('blurt account present after broadcast error - treating as created');
+							blurtAccountSuccess = true;
+						}
+					}catch(verifyErr){
+						console.log(verifyErr);
+					}
+				}
 			}catch(err){
 				console.log(err);
 				blurtAccountSuccess = false;
