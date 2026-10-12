@@ -101,7 +101,14 @@ jest.doMock('dblurt', () => ({
 
 jest.doMock('@hiveio/hive-js', () => ({
   config: { set: jest.fn() },
-  api: { setOptions: jest.fn(), getAccountsAsync: jest.fn(() => Promise.resolve([{}])), getDynamicGlobalPropertiesAsync: jest.fn(() => Promise.resolve({})) },
+  api: {
+    setOptions: jest.fn(),
+    getAccountsAsync: jest.fn(() => Promise.resolve([{}])),
+    getDynamicGlobalPropertiesAsync: jest.fn(() => Promise.resolve({})),
+    // Needed by /getEstimatedReward; its shape guards are what the tests below pin.
+    getContentAsync: jest.fn(() => Promise.resolve({})),
+    getContentRepliesAsync: jest.fn(() => Promise.resolve([])),
+  },
   broadcast: {},
 }));
 
@@ -212,6 +219,88 @@ describe('App Endpoints', () => {
       expect(res.status).toBe(200);
       // grabUserTokensFunc is not mocked here, response depends on its internals
       expect(typeof res.body).toBe('object');
+    });
+  });
+
+  // Regression cover for the RPC-shape guards in getEstimatedReward.
+  //
+  // The bug was taken from a live error log: `(hiveReplies || []).filter is not a
+  // function`. `|| []` only substitutes for null/undefined, so a TRUTHY non-array -
+  // which is what a node returns when it errors - went straight through and threw.
+  //
+  // This route is NOT a process kill: it has its own try/catch. The symptom was that
+  // every caller silently got `{error:'failed to calculate estimate'}` instead of a
+  // number. These tests pin the difference between a degraded-but-honest answer and a
+  // confidently wrong one.
+  describe('GET /getEstimatedReward — upstream shape guards', () => {
+    const utilsMod = require('../utils');
+
+    const primeDb = () => {
+      global.__mockFindOne
+        // verified_posts: the user's latest post
+        .mockImplementationOnce(() => Promise.resolve({
+          author: 'alice', permlink: 'p1', date: new Date(),
+          json_metadata: { step_count: 9000, image: [] },
+        }))
+        // token_transactions: not already rewarded
+        .mockImplementationOnce(() => Promise.resolve(null))
+        // user_tokens via grabUserTokensFunc: clear the AFIT eligibility floor
+        .mockImplementationOnce(() => Promise.resolve({ _id: 'alice', tokens: 10000 }));
+    };
+
+    test('scores the post when the node answers with a truthy non-array for replies', async () => {
+      primeDb();
+      utilsMod.hive.api.getContentAsync.mockResolvedValue({
+        body: 'x'.repeat(500), net_votes: 12, active_votes: [],
+      });
+      // The exact shape that threw in production.
+      utilsMod.hive.api.getContentRepliesAsync.mockResolvedValue({ error: { code: -32000 } });
+
+      const res = await request(app).get('/getEstimatedReward?user=alice');
+
+      expect(res.status).toBe(200);
+      expect(res.body.error).toBeUndefined();
+      expect(typeof res.body.estimated_afit).toBe('number');
+    });
+
+    test('tolerates a replies array containing a null element', async () => {
+      primeDb();
+      utilsMod.hive.api.getContentAsync.mockResolvedValue({
+        body: 'x'.repeat(500), net_votes: 3, active_votes: [],
+      });
+      utilsMod.hive.api.getContentRepliesAsync.mockResolvedValue([null, { body: 'y'.repeat(80) }]);
+
+      const res = await request(app).get('/getEstimatedReward?user=alice');
+
+      expect(res.body.error).toBeUndefined();
+      expect(typeof res.body.estimated_afit).toBe('number');
+    });
+
+    test('reports node_unavailable rather than scoring a post it never read', async () => {
+      // Deliberately NOT a silent zero: defaulting the post to {} would ship an
+      // authoritative-looking breakdown with content, upvote and moderator scores all
+      // zero - a materially understated estimate presented as fact.
+      primeDb();
+      utilsMod.hive.api.getContentAsync.mockResolvedValue({ error: { code: -32000 } });
+      utilsMod.hive.api.getContentRepliesAsync.mockResolvedValue([]);
+
+      const res = await request(app).get('/getEstimatedReward?user=alice');
+
+      expect(res.body.status).toBe('node_unavailable');
+      expect(res.body.estimated_afit).toBeUndefined();
+    });
+
+    test('tolerates a truthy non-array for active_votes', async () => {
+      primeDb();
+      utilsMod.hive.api.getContentAsync.mockResolvedValue({
+        body: 'x'.repeat(500), net_votes: 5, active_votes: { oops: true },
+      });
+      utilsMod.hive.api.getContentRepliesAsync.mockResolvedValue([]);
+
+      const res = await request(app).get('/getEstimatedReward?user=alice');
+
+      expect(res.body.error).toBeUndefined();
+      expect(typeof res.body.estimated_afit).toBe('number');
     });
   });
 

@@ -803,10 +803,19 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			try{
 				let transaction = await db.collection('verified_tx').insertOne(tx_entry);
 				console.log('success inserting transaction details');
+				return true;
 			}catch(err){
-				console.log(err);
+				// Report the failure instead of swallowing it. verified_tx is both the
+				// replay guard findVerifyTrx checks on entry AND the data source the
+				// stage-two verifiers (verifyGadgetTransaction and friends) re-read, so
+				// a silently-lost row means the caller is told the payment verified
+				// while nothing can redeem it.
+				console.log('failed inserting transaction details for ' + tx.transaction_id + ' - ' + (err && err.message ? err.message : err));
+				return false;
 			}
 		}
+		// nothing to store (no ref_block_num) is not a storage failure
+		return true;
 	}
 	
 	async function findVerifyTrx (req, db, nostore){
@@ -815,7 +824,19 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let bchain = req.query.bchain?req.query.bchain:'HIVE'
 		
 		//first check trx to see if it has been processed
-		let trx = await db.collection('verified_tx').findOne({tx_id: req.params.trxID});
+		// Guarded: this is the FIRST Mongo call on the path and it sits outside the
+		// polling loop's protection. All 13 callers are unauthenticated routes whose
+		// handlers are async with no try/catch, so a Mongo blip here rejected straight
+		// out of the process. Failing closed (treat as "already processed") is the safe
+		// direction - it declines the request rather than risking a double-credit on a
+		// transaction we cannot check against the replay guard.
+		let trx;
+		try{
+			trx = await db.collection('verified_tx').findOne({tx_id: req.params.trxID});
+		}catch(err){
+			console.log('findVerifyTrx: replay-guard lookup failed for ' + req.params.trxID + ' - ' + (err && err.message ? err.message : err));
+			return ({error: 'verification unavailable'});
+		}
 		//this shouldnt be there, so if it is skip
 		if (trx){
 			
@@ -827,9 +848,30 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let fv_th_id;
 		let matchFound = false;
 		let matchTrx;
-				
+
+		// Parse the caller-supplied operation ONCE, before polling starts. It is
+		// deterministic input: if it is malformed, every one of the 30 ticks below would
+		// throw the identical SyntaxError, and inside an async setInterval callback that
+		// is an UNHANDLED REJECTION - nothing in this codebase installs an
+		// unhandledRejection handler and package.json pins Node 20, so it terminates the
+		// API process. Doing it here turns a process kill into a returned error.
+		let expectedOps;
+		try{
+			expectedOps = JSON.parse(req.query.operation);
+		}catch(err){
+			console.log('findVerifyTrx: operation parameter is not valid JSON - ' + (err && err.message ? err.message : err));
+			return false;
+		}
+
 		return new Promise((resolve, reject) => {
 			fv_th_id = setInterval(async function(){
+			  // EVERYTHING awaited in here must stay inside this try. This callback is
+			  // async, so any rejection that escapes it is unhandled and ends the process
+			  // - and this poll runs for 150s (30 x 5s) per signup/payment verification,
+			  // reached from a dozen routes, so an escape takes every in-flight
+			  // verification down with it. A node 429/503, a node without the
+			  // account-history plugin, or a Mongo blip are all ordinary causes.
+			  try{
 				if (attempts < max_attempts){
 					attempts += 1;
 					let chainLnk = await setProperNode(bchain);
@@ -843,7 +885,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					if (matchTrx && matchTrx.transaction_id && Array.isArray(matchTrx.operations)){
 						console.log('potential match')
 						//need to stringify first part as the second is already stringified
-						if (customArraysEqual(matchTrx.operations, JSON.parse(req.query.operation))){
+						if (customArraysEqual(matchTrx.operations, expectedOps)){
 						//if (customArraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
 						//if (arraysEqual(JSON.stringify(matchTrx.operations), req.query.operation)){
 							let now = moment(new Date()); //todays date
@@ -853,14 +895,23 @@ async function fetchOneAccount(chainLnk, account_name, label){
 							//transaction needs to have been concluded within 7 hours.
 							console.log(hrs);
 							if (hrs < 7){
-								matchFound = true;
-								//break;
-								
-								if (nostore){
-									
-								}else{
+								// Record BEFORE declaring a match. verified_tx is the
+								// replay guard this function checks on entry, so a store
+								// that failed while matchFound was already true would
+								// report success for a transaction nothing had recorded,
+								// leaving it replayable. If the store throws we fall to
+								// the catch and the next tick retries.
+								// Gate the match on the row actually being written. storeVerifiedTrx
+								// returns false rather than throwing, so testing its result is the
+								// only way this can work - an earlier revision just reordered the
+								// call and the guarantee it claimed never existed.
+								let stored = true;
+								if (!nostore){
 									//store transaction
-									await storeVerifiedTrx(matchTrx, db);
+									stored = await storeVerifiedTrx(matchTrx, db);
+								}
+								if (stored){
+									matchFound = true;
 								}
 							}
 						}
@@ -870,7 +921,14 @@ async function fetchOneAccount(chainLnk, account_name, label){
 					console.log('not found after '+attempts+' attempts');
 					clearInterval(fv_th_id);
 					resolve(false);
+					return;
 				}
+			  }catch(err){
+				// Swallow and let the next tick retry. A persistent fault simply burns
+				// the remaining attempts and resolves false, which is what the caller
+				// already handles.
+				console.log('findVerifyTrx: attempt ' + attempts + ' failed for ' + req.params.trxID + ' - ' + (err && err.message ? err.message : err));
+			  }
 				if (matchFound){
 					//need to look again
 					console.log('found');
@@ -1175,18 +1233,26 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		// creating on that chain and still create on the healthy one(s). Incident
 		// 2026-10-12: a Blurt HTTP 503 in the un-guarded dblurt existence check threw
 		// out of here and killed an otherwise-healthy Hive signup.
+		// WHICH chains the caller asked for. An absent/empty cur_bchain means "both" -
+		// app.js passes req.query.cur_bchain straight through with no validation, so
+		// that is reachable from any client that omits it.
+		const wantHive = !chain || chain.includes('HIVE');
+		const wantBlurt = !chain || chain.includes('BLURT');
+
 		let skipHive = false;
 		let skipBlurt = false;
+		let hiveExists = false;
+		let blurtExists = false;
+		let blurtExistingOwnerKey = null;
 
-		if (!chain || chain.includes('HIVE')){
+		if (wantHive){
 			//check if account exists
 			try{
 				const _account = await hiveClient.database.call('get_accounts', [[username]]);
 				//account not available to register
 				if (_account.length>0) {
-					console.log('account already exists');
-					console.log(_account);
-					return false;
+					console.log('account already exists on HIVE');
+					hiveExists = true;
 				}
 			}catch(err){
 				console.log('hive existence check failed, skipping Hive creation - ' + (err && err.message ? err.message : err));
@@ -1194,7 +1260,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			}
 		}
 
-		if (!chain || chain.includes('BLURT')){
+		if (wantBlurt){
 			//check if account exists (rotates Blurt endpoints; a dead node skips Blurt, not the signup)
 			try{
 				const _account = await blurtCallWithFailover(
@@ -1203,14 +1269,64 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				);
 				//account not available to register
 				if (_account.length>0) {
-					console.log('account already exists');
-					console.log(_account);
-					return false;
+					console.log('account already exists on BLURT');
+					blurtExists = true;
+					blurtExistingOwnerKey = (_account[0] && _account[0].owner && Array.isArray(_account[0].owner.key_auths)
+						&& _account[0].owner.key_auths[0]) ? _account[0].owner.key_auths[0][0] : null;
 				}
 			}catch(err){
 				console.log('blurt existence check failed, skipping Blurt creation - ' + (err && err.message ? err.message : err));
 				skipBlurt = true;
 			}
+		}
+
+		// "Already exists" is only a refusal for the chain the caller is actually paying
+		// for. It used to abort the WHOLE call from either check, which made a retry
+		// after a partial creation impossible: the first attempt could create the Blurt
+		// account and fail on Hive, and every retry then tripped the Blurt check and
+		// returned false before reaching Hive. The user could never obtain the Hive
+		// account they paid for.
+		if (wantHive && hiveExists){
+			console.log('createAccount: ' + username + ' already exists on HIVE - cannot create');
+			return false;
+		}
+		if (!wantHive && wantBlurt && blurtExists){
+			console.log('createAccount: ' + username + ' already exists on BLURT - cannot create');
+			return false;
+		}
+		// An existing Blurt account is either OURS - created by an earlier attempt that
+		// then failed on Hive, which is exactly the case this function has to let the
+		// user finish - or it belongs to a stranger who happens to hold that name on
+		// Blurt. Those need opposite answers, and `blurtExists` alone cannot tell them
+		// apart, so derive the owner key from the credentials in hand: a retry uses the
+		// same username and password, so the derived key matches what is on chain.
+		// A stranger's will not.
+		let blurtIsOurs = false;
+		if (blurtExists){
+			try{
+				const expectedOwner = dblurt.PrivateKey.fromLogin(username, password, 'owner').createPublic().toString();
+				// Compare the key material, not the prefix, so a BLT/STM mismatch between
+				// library versions cannot read as "a stranger owns this".
+				blurtIsOurs = !!blurtExistingOwnerKey
+					&& String(blurtExistingOwnerKey).slice(3) === String(expectedOwner).slice(3);
+			}catch(err){
+				console.log('createAccount: could not derive the Blurt owner key for ' + username + ' - ' + (err && err.message ? err.message : err));
+				blurtIsOurs = false;
+			}
+		}
+
+		// Someone else holds the name on Blurt. Refuse before creating anything, which is
+		// what the pre-per-chain code did for ANY existing account. Without this, a user
+		// who ticked Blurt - and is charged double for it by the web client - would get
+		// the Hive account, be told "success", and silently never receive the Blurt one.
+		if (wantBlurt && blurtExists && !blurtIsOurs){
+			console.log('createAccount: ' + username + ' already exists on BLURT under different keys - refusing rather than delivering a partial signup');
+			return false;
+		}
+		if (blurtExists){
+			// Ours, from an earlier half-completed attempt. Nothing to create - but it
+			// must not block the Hive leg, which is the whole point.
+			console.log('createAccount: ' + username + ' already exists on BLURT from an earlier attempt - skipping the Blurt leg');
 		}
 
 		console.log('account available');
@@ -1226,7 +1342,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		let hiveAccountSuccess = false;
 		let blurtAccountSuccess = false;
 
-		if ((!chain || chain.includes('HIVE')) && !skipHive){
+		if (wantHive && !skipHive && !hiveExists){
 			//whole leg wrapped so a creator-lookup/broadcast failure fails only Hive, not Blurt
 			try{
 				const _creator_account = await hiveClient.database.call('get_accounts', [
@@ -1304,7 +1420,15 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			}
 		}
 
-		if ((!chain || chain.includes('BLURT')) && !skipBlurt){
+		// Gated on the Hive outcome: if Hive was requested and did not land, this call is
+		// about to return false, the caller will store nothing, and the user will retry.
+		// Broadcasting the Blurt account anyway spends 100.000 BLURT on an account no
+		// record will ever reference and nothing reconciles.
+		const blurtWouldBeOrphaned = wantHive && !hiveAccountSuccess;
+		if (blurtWouldBeOrphaned && wantBlurt && !skipBlurt && !blurtExists){
+			console.log('createAccount: skipping the Blurt leg for ' + username + ' - the Hive leg did not land, so the signup fails and a Blurt account would be orphaned');
+		}
+		if (wantBlurt && !skipBlurt && !blurtExists && !blurtWouldBeOrphaned){
 			//whole leg wrapped so a creator-lookup/broadcast failure fails only Blurt, not Hive
 			try{
 				const _creator_account = await blurtCallWithFailover(
@@ -1388,7 +1512,46 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				blurtAccountSuccess = false;
 			}
 		}
-		return (hiveAccountSuccess || blurtAccountSuccess);
+		// One structured line carrying the request AND the per-chain outcome. Support
+		// otherwise has nothing: the HTTP response is a bare boolean and
+		// signup_transactions stores no chain field at all, so "I signed up but have no
+		// Blurt account" is indistinguishable from a full two-chain success. Persisting
+		// this on the signup document is the real fix and is filed separately; this at
+		// least makes it answerable from the logs.
+		const chainOutcome = (want, created, exists, skipped) => !want ? 'not_requested'
+			: (created ? 'created' : (exists ? 'already_exists' : (skipped ? 'skipped_node_down' : 'failed')));
+		console.log('createAccount outcome for ' + username + ': cur_bchain=' + JSON.stringify(chain)
+			+ ' HIVE=' + chainOutcome(wantHive, hiveAccountSuccess, hiveExists, skipHive)
+			+ ' BLURT=' + chainOutcome(wantBlurt, blurtAccountSuccess, blurtExists, skipBlurt));
+
+		if (wantHive && !hiveAccountSuccess){
+			console.log('createAccount: HIVE was requested for ' + username + ' but not created'
+				+ (skipHive ? ' (existence check failed, leg skipped)' : '') + ' - reporting failure so the signup stays retryable');
+		}
+		if (wantBlurt && !blurtAccountSuccess && !blurtExists){
+			console.log('createAccount: BLURT was requested for ' + username + ' but not created'
+				+ (skipBlurt ? ' (existence check failed, leg skipped)' : ''));
+		}
+
+		// `hiveAccountSuccess || blurtAccountSuccess` was wrong once a leg could be
+		// SKIPPED rather than merely attempted. With both chains requested and the Hive
+		// existence check throwing, skipHive skipped the Hive leg, Blurt succeeded, and
+		// the OR returned true: the caller stored the signup with the memo, paid the
+		// referral and answered accountCreated:true for a user who paid for a Hive
+		// account, got a Blurt-only one, and could no longer retry - the memo answers
+		// memo_already_used and a promo code promo_code_exhausted. Before the skip flags
+		// existed that same node error threw, the caller's catch left accountCreated
+		// false, and the signup stayed retryable.
+		//
+		// The asymmetry below is deliberate, not an oversight: the signup is PAID FOR on
+		// Hive (claimed account tokens, creator config.account), so Hive is the chain
+		// that has to succeed. Blurt is best-effort alongside it - which is exactly what
+		// the Blurt failover work set out to protect, and this keeps that: Hive created
+		// plus Blurt skipped is still a success.
+		if (wantHive){
+			return hiveAccountSuccess;
+		}
+		return blurtAccountSuccess;
 	}
 
 	//function handles delegating to a specific account
@@ -2572,30 +2735,49 @@ async function claimRewards(target_account, p_key, target_chain) {
 	let chainLnk
 	if (target_chain == 'HIVE'){
 		chainLnk = hive;
-		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		// fetchOneAccount collapses the three ways this can fail - node error, node
+		// timeout, and an account that simply does not exist - into a single null.
+		//
+		// It replaces `.catch(err => {return err;})`, which caught the error INTO THE
+		// VALUE: targetAccount then held an Error, the guard below passed because an
+		// Error is truthy, targetAccount[0] was undefined, and the next property read
+		// threw. The guard also tested the ARRAY rather than the element, so a genuine
+		// [] from a nonexistent account took exactly the same path and the
+		// 'account not found' branch was unreachable.
+		//
+		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
+		// which is async with no try/catch - and with no process-level
+		// unhandledRejection handler on Node 20, that ENDS THE API PROCESS. The BLURT
+		// leg below runs on every call and most Hive users have no Blurt account, so []
+		// was the common case rather than the rare one.
+		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');
 		if (!targetAccount){
 			return {error: 'account not found'};
 		}
-		targetAccount = targetAccount[0];
 		//console.log(targetAccount);
 		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		console.log('pending HBD'+claim_currency_stable);
 	}else if (target_chain == 'BLURT'){
 		chainLnk = blurt;
-		targetAccount = await chainLnk.api.getAccountsAsync([target_account]).catch(err => {return err;});; 
+		// Same fix as the HIVE branch above, and this is the leg that actually fired:
+		// /claimRewards always calls BLURT, and an account that exists on Hive but not
+		// on Blurt answers [] - which is most users.
+		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards BLURT');
 		if (!targetAccount){
 			return {error: 'account not found'};
 		}
-		targetAccount = targetAccount[0];
 		//console.log(targetAccount);
 		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
 		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
 		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance).catch(err => {return err;});
+			// Log the real failure instead of resolving the Error as the value: reading
+			// .ref_block_num off an Error silently reported 'n/a' and threw the cause away.
+			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance)
+				.catch(err => { console.log('claimRewards BLURT: broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
 			//return outc;
 			//console.log(outc);
-			if (outc.ref_block_num){
+			if (outc && outc.ref_block_num){
 				console.log('success');
 				return {success: true};
 			}else{
@@ -2613,9 +2795,11 @@ async function claimRewards(target_account, p_key, target_chain) {
 		
 		console.log('>>CLAIMING<<')
 		
-		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance).catch(err => {return err;});
+		// As above - surface the cause rather than reporting a bare 'n/a'.
+		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance)
+			.catch(err => { console.log('claimRewards ' + target_chain + ': broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
 		//console.log(outc);
-		if (outc.ref_block_num){
+		if (outc && outc.ref_block_num){
 			console.log('success');
 			return {success: true};
 		}else{
