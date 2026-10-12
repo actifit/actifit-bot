@@ -43,10 +43,39 @@ hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 
 hive.api.setOptions({ url: config.active_hive_node});
 try{
-	blurt.api.setOptions({ url: config.blurt_node})
+	// Blurt had NO failover at all. Two separate gaps closed it off:
+	//
+	// 1. config.alt_blurt_nodes was never read anywhere in this codebase - only
+	//    blurt_node was - so Blurt ran on a single URL while Hive had the fallback
+	//    list set just above.
+	// 2. blurtjs gates its own rotation on `failover_threshold`, but its constructor
+	//    only sets `error_threshold` (a different name), so notifyError() returns
+	//    immediately and the rotation never runs. Its built-in default list is
+	//    unusable anyway: ["https://rpc.blurt.world", "https://rpc.blurt.world"] -
+	//    the same host twice, and that domain is now NXDOMAIN.
+	//
+	// So one dead node took Blurt down completely. That happened 2026-10-12: both
+	// configured nodes went down together and validateAccountLogin started answering
+	// "403 Invalid user", which the browser then showed as a CORS error.
+	//
+	// Pass the list only when it is actually a non-empty array. setOptions assigns
+	// alternative_api_endpoints BEFORE reading .length on it (lib/api/index.js:249
+	// then :262), so handing it an undefined would throw right here at module load.
+	//
+	// Keep config.blurt_node as alt_blurt_nodes[0]: setOptions looks options.url up
+	// in that list to initialise api_index and defaults to 0 when it is absent, so a
+	// primary missing from the list fails over to itself once before making progress.
+	let blurtOpts = { url: config.blurt_node };
+	if (Array.isArray(config.alt_blurt_nodes) && config.alt_blurt_nodes.length){
+		blurtOpts.alternative_api_endpoints = config.alt_blurt_nodes;
+		blurtOpts.failover_threshold = 3;
+	}else{
+		console.log('blurt: no alt_blurt_nodes configured - running with no failover');
+	}
+	blurt.api.setOptions(blurtOpts)
 }catch(err){
 	console.log(err)
-	
+
 }
 var STEEMIT_100_PERCENT = 10000;
 var STEEMIT_VOTE_REGENERATION_SECONDS = (5 * 60 * 60 * 24);
@@ -122,21 +151,57 @@ function withTimeout(promise, ms, label){
 
 // Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
 // answers 200 OK with result: null. Returns the account object, or null.
+// Every Blurt endpoint we know of, primary first, de-duplicated.
+function blurtNodes(){
+	let list = [config.blurt_node];
+	if (Array.isArray(config.alt_blurt_nodes)) list = list.concat(config.alt_blurt_nodes);
+	return list.filter(Boolean).filter((n, i, a) => a.indexOf(n) === i);
+}
+
 async function fetchOneAccount(chainLnk, account_name, label){
-	try{
-		let account_res = await withTimeout(
-			chainLnk.api.getAccountsAsync([account_name]),
-			NODE_CALL_TIMEOUT_MS,
-			label + ' getAccounts(' + account_name + ')'
-		);
-		if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
-		// a broken/desynced node can answer 200 OK with result: null
-		console.log(label + ': node returned no account data for ' + account_name);
-		return null;
-	}catch(err){
-		console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
-		return null;
+	// For Blurt, walk the configured endpoints instead of giving up on the first one.
+	//
+	// This rotation has to live here because blurtjs's own failover is UNREACHABLE for
+	// the calls we make: notifyError() - which does the rotating - is only invoked from
+	// call() and signedCall(), while every generated method, getAccountsAsync included,
+	// goes through send() -> transport, which never notifies. Verified by driving
+	// getAccountsAsync at a dead primary with failover_threshold set: error_count never
+	// left 0 and the endpoint never changed. Setting the library options is still worth
+	// doing (see setOptions above) but cannot be relied on for this path.
+	//
+	// Why it matters: a dead node made validateAccountLogin return {result:false}, which
+	// /fetchUserData reports as "403 Invalid user". A node outage was indistinguishable
+	// from a bad password. On 2026-10-12 both configured nodes went down together and
+	// Blurt login broke completely.
+	//
+	// Hive is deliberately left single-shot: hive-js has working
+	// alternative_api_endpoints wired up at module load.
+	const endpoints = (chainLnk === blurt) ? blurtNodes() : [null];
+
+	for (const endpoint of endpoints){
+		const via = endpoint ? ' @' + endpoint : '';
+		if (endpoint){
+			// Leaves the module pointed at whichever endpoint answered, so a healthy
+			// node stays selected for subsequent calls rather than re-walking the list.
+			try{ chainLnk.api.setOptions({ url: endpoint }); }catch(err){
+				console.log(label + ': could not select endpoint' + via + ' - ' + (err && err.message ? err.message : err));
+				continue;
+			}
+		}
+		try{
+			let account_res = await withTimeout(
+				chainLnk.api.getAccountsAsync([account_name]),
+				NODE_CALL_TIMEOUT_MS,
+				label + ' getAccounts(' + account_name + ')' + via
+			);
+			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+			// a broken/desynced node can answer 200 OK with result: null
+			console.log(label + ': node returned no account data for ' + account_name + via);
+		}catch(err){
+			console.log(label + ': account lookup failed for ' + account_name + via + ' - ' + (err && err.message ? err.message : err));
+		}
 	}
+	return null;
 }
 
  async function getAccountData(account_name, bchain){
@@ -2863,6 +2928,10 @@ async function countUserCommentsToday(username) {
    confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
+   // exported for tests/blurt-failover.test.js - the rotation is the thing that
+   // keeps a single dead Blurt node from reading as "invalid user"
+   blurtNodes: blurtNodes,
+   fetchOneAccount: fetchOneAccount,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
