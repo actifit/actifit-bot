@@ -350,6 +350,55 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	return decrypted;
  }
  
+// Broadcast a Blurt transaction, rotating endpoints on failure.
+//
+// WHY THIS EXISTS: processSteemTrx is every Blurt WRITE this service performs - reward
+// claims, votes, transfers, comments and web posts all funnel through /performTrx and
+// /performTrxPost. It used blurtjs's broadcast, which is bound to a module-level
+// singleton pinned to config.blurt_node at load: one node, one attempt, no retry. A
+// public node throttling writes (observed: HTTP 429 on claim_reward_balance) failed the
+// user's action outright. Reads got endpoint rotation and account creation got dblurt
+// failover; writes were the remaining gap.
+//
+// WHY NOT ROTATE THE blurtjs SINGLETON: blurtjs's broadcast module hard-requires the
+// DEFAULT api instance, so it cannot be pointed at a per-attempt client. Rotating the
+// shared one mid-broadcast is worse than the bug - a broadcast is three sequential
+// calls, and a concurrent rotation between them takes the TaPoS reference block from
+// one node and broadcasts to another, producing a transaction the chain rejects.
+//
+// Doing the prepare/sign/send steps here rather than calling dblurt's sendOperations is
+// deliberate twofold: all three run against the SAME per-attempt client, so TaPoS can
+// never split across nodes; and sendOperations returns only the confirmation, while
+// both callers treat ref_block_num as the success signal - so we must return it.
+async function broadcastBlurtWithFailover(ops, key, label){
+	let privKey;
+	try{
+		privKey = dblurt.PrivateKey.fromString(key);
+	}catch(err){
+		return {error: 'invalid Blurt key: ' + (err && err.message ? err.message : err)};
+	}
+	try{
+		return await blurtCallWithFailover(async (c) => {
+			// TaPoS and the broadcast MUST come from this one client.
+			const props = await c.database.getDynamicGlobalProperties();
+			const ref_block_num = props.head_block_number & 0xffff;
+			const ref_block_prefix = Buffer.from(props.head_block_id, 'hex').readUInt32LE(4);
+			const expiration = new Date(new Date(props.time + 'Z').getTime() + 60000)
+				.toISOString().slice(0, -5);
+			const unsigned = { expiration, extensions: [], operations: ops, ref_block_num, ref_block_prefix };
+			const confirmation = await c.broadcast.send(c.broadcast.sign(unsigned, privKey));
+			if (confirmation && confirmation.expired === true){
+				throw new Error('transaction expired');
+			}
+			// Carry ref_block_num back out: /performTrx and /performTrxPost both read it
+			// to decide success, and verified_tx stores it.
+			return Object.assign({}, confirmation, { ref_block_num, ref_block_prefix, expiration });
+		}, label);
+	}catch(err){
+		return {error: err && err.message ? err.message : String(err)};
+	}
+}
+
  async function processSteemTrx(ops, userKey, bchain, db, active){
 	console.log('utils processSteemTrx');
 	//console.log(operation);
@@ -361,7 +410,12 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	let tx;
 	//console.log('using active:'+active);
 	//console.log(userKey);
-	if (active){
+	if (bchain == 'BLURT'){
+		// Blurt goes through the rotating dblurt path; Hive keeps its existing client,
+		// which already has alternative_api_endpoints configured at module load.
+		tx = await broadcastBlurtWithFailover(ops, active || userKey,
+			'broadcast ' + (Array.isArray(ops) && ops[0] ? ops[0][0] : 'ops'));
+	}else if (active){
 		console.log('active key')
 		tx = await chainLnk.broadcast.sendAsync( 
 		   { operations: ops, extensions: [] },
@@ -3258,6 +3312,7 @@ async function countUserCommentsToday(username) {
    // exported for tests/createaccount-blurt-failover.test.js - rotation for the
    // dblurt client createAccount uses (not covered by #120's blurtjs rotation)
    blurtCallWithFailover: blurtCallWithFailover,
+   broadcastBlurtWithFailover: broadcastBlurtWithFailover,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
