@@ -177,7 +177,9 @@ client.connect()
 	    arenaStandings.ensureStandingsIndexes(db);
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
-	    arenaApi.ensureEventsIndexes(db);
+	    // Not awaited, so .catch() is load-bearing (see the ensureAfitIndexes note below):
+	    // an index-build rejection must not become an unhandled rejection and a crash loop.
+	    arenaApi.ensureEventsIndexes(db).catch((e) => { try { utils.log('ensureEventsIndexes failed: ' + (e && e.message), 'arena'); } catch (_) { /* logging must not throw */ } });
 	    // local require: arena_afit is declared far below (line ~804), unlike its
 	    // siblings at the top of this file. Same pattern as the tailer require below.
 	    // .catch() is LOAD-BEARING, not defensive noise: this call is not awaited, so
@@ -1205,6 +1207,12 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 	// challenge_participants.score + the per-challenge standings board. It emits no
 	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
 	if (config.arena_jobs_enabled) {
+		// Arena notifications (results + closing-soon reminders): an inbox entry plus a
+		// phone push through the existing sendNotification, under the 'arena' settings
+		// category so users can switch them off. ON by default; set
+		// arena_notify_enabled: false in config.json to stop them.
+		const arenaNotifyUser = (config.arena_notify_enabled === false || config.arena_notify_enabled === 'false') ? null
+			: (n) => utils.sendNotification(db, n.user, 'actifit', n.type, n.category, n.details, n.url);
 		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
 		// In-flight guard: node-schedule fires on the clock regardless of whether the
 		// previous async invocation finished. A sweep that outruns its own interval
@@ -1216,6 +1224,18 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 			aggRunning = true;
 			try {
 				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
+				// Remind participants whose multi-day challenge closes soon and who haven't
+				// posted today. Once per (user, challenge); never fails the sweep.
+				if (arenaNotifyUser) {
+					try {
+						const closing = await require('./arena_notify').notifyClosingSoon(db, {
+							notify: arenaNotifyUser, log: (m) => utils.log(m, 'arena'),
+						});
+						if (closing.notified) utils.log('arena notify: ' + closing.notified + ' closing-soon reminder(s) sent', 'arena');
+					} catch (e) {
+						utils.log('arena notify: closing-soon sweep failed: ' + (e && e.message), 'arena');
+					}
+				}
 				// Heartbeat check for the RESOLVE sweep, from here because this job ticks
 				// 4x more often and keeps running when resolve does not. recordResolveHealth
 				// can only report on sweeps that happen - it says nothing when the cron
@@ -1305,6 +1325,7 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 				const resolveSummary = await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
+					notify: arenaNotifyUser,
 					// The GLOBAL weekly budget is the treasury guard and stays defaulted ON:
 					// it is correct-by-default and cannot silently ship off. An explicit 0 in
 					// config disables it (Number.isFinite(0) === true); only an ABSENT key
@@ -2721,7 +2742,11 @@ app.get('/userSettings/', async function (req, res) {
 
 
 app.get('/notificationTypes/', async function (req, res) {
-	res.send(config.notificationTypes);
+	// Arena notifications use the 'arena' category; list it even where a server's config
+	// predates it, so the settings screens always offer the opt-out.
+	const types = Array.isArray(config.notificationTypes) ? config.notificationTypes.slice() : [];
+	if (!types.some((t) => t && t.category === 'arena')) types.push({ category: 'arena', name: 'Arena' });
+	res.send(types);
 });
 
 const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
