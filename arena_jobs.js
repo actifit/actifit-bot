@@ -350,74 +350,81 @@ async function resolveDueChallenges(db, opts = {}) {
 				// settle broadcast and recurrence below, so slow pushes never delay the
 				// on-chain settle. Set only on the first resolution (inside this branch), so a
 				// re-run that finds the resolution marker never notifies twice.
-				pendingResults = { rewards: resolution.settlePayload && resolution.settlePayload.rewards, rankByEntity };
-			}
-
-			// Refund any UNPAID balance of a CREATOR-FUNDED pool back to the creator
-			// (idempotent, safe on every pass — including a crash-retry where the
-			// resolution marker landed but the refund hadn't). A challenge that drew
-			// fewer than the funded ranks never burns the creator's prize.
-			if (ch.pool_ref) {
-				try {
-					await arenaFund.refundUnpaid(db, { challengeId: ch.id, poolId: ch.pool_ref, creator: ch.created_by, at: asOf });
-				} catch (e) {
-					log(`arena resolve: refund ${ch.id} failed: ${e && e.message}`);
+				// A noop means another run already wrote the resolution (and notified).
+				if (!resolution.noop) {
+					pendingResults = { rewards: resolution.settlePayload && resolution.settlePayload.rewards, rankByEntity };
 				}
 			}
 
-			// Broadcast the authoritative on-chain settle op — once. The resolution
-			// record carries settle_trx after a successful broadcast, so a re-run (while
-			// the tailer hasn't yet flipped the challenge to settled) never double-sends.
-			if (broadcast && resolution.settlePayload) {
-				const marker = prior || await resolutionsC.findOne({ challenge_id: ch.id });
-				if (!marker || !marker.settle_trx) {
+			// The AFIT is already credited, so the winners are told even if a read below
+			// throws; the next sweep would take the resolved branch and never tell them.
+			try {
+				// Refund any UNPAID balance of a CREATOR-FUNDED pool back to the creator
+				// (idempotent, safe on every pass — including a crash-retry where the
+				// resolution marker landed but the refund hadn't). A challenge that drew
+				// fewer than the funded ranks never burns the creator's prize.
+				if (ch.pool_ref) {
 					try {
-						const r = await broadcast(resolution.settlePayload);
-						settled++;
-						await resolutionsC.updateOne(
-							{ challenge_id: ch.id },
-							{ $set: { settle_trx: (r && (r.id || r.trx_id)) || true, settled_at: asOf } }
-						);
+						await arenaFund.refundUnpaid(db, { challengeId: ch.id, poolId: ch.pool_ref, creator: ch.created_by, at: asOf });
 					} catch (e) {
-						log(`arena resolve: settle broadcast ${ch.id} failed: ${e && e.message}`);
+						log(`arena resolve: refund ${ch.id} failed: ${e && e.message}`);
 					}
 				}
-			}
 
-			// Recurrence — roll a recurring default into its next window ONCE. Guarded
-			// by a `recurred_to` marker on the resolution record (robust even if the
-			// tailer hasn't yet indexed the new challenge), plus a belt-and-suspenders
-			// check that the next id doesn't already exist.
-			if (broadcast && isRecurringDefault(ch)) {
-				const marker = await resolutionsC.findOne({ challenge_id: ch.id });
-				if (marker && !marker.recurred_to) {
-					const next = nextOccurrence(ch, nowMs);
-					// Guard against a double-roll: skip if the exact next id exists, OR
-					// if ANY successor of this base already covers a window at/after this
-					// one's end (the next id is now-derived via skip-ahead, so a crash-
-					// retry across a period boundary could otherwise compute a new id).
-					const base = ch.parent_id || ch.id;
-					const siblings = await challengesC.find({ parent_id: base }).toArray();
-					const alreadyRolled = next && (
-						siblings.some((s) => s.id === next.id) ||
-						siblings.some((s) => s.window && Date.parse(s.window.start) >= Date.parse(ch.window.end))
-					);
-					if (next && !alreadyRolled) {
+				// Broadcast the authoritative on-chain settle op — once. The resolution
+				// record carries settle_trx after a successful broadcast, so a re-run (while
+				// the tailer hasn't yet flipped the challenge to settled) never double-sends.
+				if (broadcast && resolution.settlePayload) {
+					const marker = prior || await resolutionsC.findOne({ challenge_id: ch.id });
+					if (!marker || !marker.settle_trx) {
 						try {
-							await broadcast(next);
-							recurred++;
-							await resolutionsC.updateOne({ challenge_id: ch.id }, { $set: { recurred_to: next.id } });
-							log(`arena resolve: rolled ${ch.id} -> ${next.id}`);
+							const r = await broadcast(resolution.settlePayload);
+							settled++;
+							await resolutionsC.updateOne(
+								{ challenge_id: ch.id },
+								{ $set: { settle_trx: (r && (r.id || r.trx_id)) || true, settled_at: asOf } }
+							);
 						} catch (e) {
-							log(`arena resolve: recurrence ${ch.id} failed: ${e && e.message}`);
+							log(`arena resolve: settle broadcast ${ch.id} failed: ${e && e.message}`);
 						}
 					}
 				}
-			}
 
-			// Never throws (per-user errors are caught inside).
-			if (pendingResults) {
-				await arenaNotify.notifyResults(ch, pendingResults.rewards, pendingResults.rankByEntity, { notify: opts.notify, log });
+				// Recurrence — roll a recurring default into its next window ONCE. Guarded
+				// by a `recurred_to` marker on the resolution record (robust even if the
+				// tailer hasn't yet indexed the new challenge), plus a belt-and-suspenders
+				// check that the next id doesn't already exist.
+				if (broadcast && isRecurringDefault(ch)) {
+					const marker = await resolutionsC.findOne({ challenge_id: ch.id });
+					if (marker && !marker.recurred_to) {
+						const next = nextOccurrence(ch, nowMs);
+						// Guard against a double-roll: skip if the exact next id exists, OR
+						// if ANY successor of this base already covers a window at/after this
+						// one's end (the next id is now-derived via skip-ahead, so a crash-
+						// retry across a period boundary could otherwise compute a new id).
+						const base = ch.parent_id || ch.id;
+						const siblings = await challengesC.find({ parent_id: base }).toArray();
+						const alreadyRolled = next && (
+							siblings.some((s) => s.id === next.id) ||
+							siblings.some((s) => s.window && Date.parse(s.window.start) >= Date.parse(ch.window.end))
+						);
+						if (next && !alreadyRolled) {
+							try {
+								await broadcast(next);
+								recurred++;
+								await resolutionsC.updateOne({ challenge_id: ch.id }, { $set: { recurred_to: next.id } });
+								log(`arena resolve: rolled ${ch.id} -> ${next.id}`);
+							} catch (e) {
+								log(`arena resolve: recurrence ${ch.id} failed: ${e && e.message}`);
+							}
+						}
+					}
+				}
+			} finally {
+				// Never throws (per-user errors are caught inside).
+				if (pendingResults) {
+					await arenaNotify.notifyResults(ch, pendingResults.rewards, pendingResults.rankByEntity, { notify: opts.notify, log });
+				}
 			}
 		} catch (e) {
 			failed++;

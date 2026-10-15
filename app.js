@@ -2740,7 +2740,11 @@ app.get('/userSettings/', async function (req, res) {
 
 
 app.get('/notificationTypes/', async function (req, res) {
-	res.send(config.notificationTypes);
+	// Arena notifications use the 'arena' category; list it even where a server's config
+	// predates it, so the settings screens always offer the opt-out.
+	const types = Array.isArray(config.notificationTypes) ? config.notificationTypes.slice() : [];
+	if (!types.some((t) => t && t.category === 'arena')) types.push({ category: 'arena', name: 'Arena' });
+	res.send(types);
 });
 
 const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
