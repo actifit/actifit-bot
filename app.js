@@ -177,7 +177,9 @@ client.connect()
 	    arenaStandings.ensureStandingsIndexes(db);
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
-	    arenaApi.ensureEventsIndexes(db);
+	    // Not awaited, so .catch() is load-bearing (see the ensureAfitIndexes note below):
+	    // an index-build rejection must not become an unhandled rejection and a crash loop.
+	    arenaApi.ensureEventsIndexes(db).catch((e) => { try { utils.log('ensureEventsIndexes failed: ' + (e && e.message), 'arena'); } catch (_) { /* logging must not throw */ } });
 	    // local require: arena_afit is declared far below (line ~804), unlike its
 	    // siblings at the top of this file. Same pattern as the tailer require below.
 	    // .catch() is LOAD-BEARING, not defensive noise: this call is not awaited, so
@@ -2740,7 +2742,11 @@ app.get('/userSettings/', async function (req, res) {
 
 
 app.get('/notificationTypes/', async function (req, res) {
-	res.send(config.notificationTypes);
+	// Arena notifications use the 'arena' category; list it even where a server's config
+	// predates it, so the settings screens always offer the opt-out.
+	const types = Array.isArray(config.notificationTypes) ? config.notificationTypes.slice() : [];
+	if (!types.some((t) => t && t.category === 'arena')) types.push({ category: 'arena', name: 'Arena' });
+	res.send(types);
 });
 
 const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });

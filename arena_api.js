@@ -229,7 +229,11 @@ async function listEvents(db, user, opts = {}) {
 /** Index the append-only, per-user-polled event stream. Safe no-op if absent. */
 async function ensureEventsIndexes(db) {
 	const col = db.collection(COLLECTIONS.EVENTS);
-	if (typeof col.createIndex === 'function') await col.createIndex({ user: 1, at: -1 });
+	if (typeof col.createIndex === 'function') {
+		await col.createIndex({ user: 1, at: -1 });
+		// The closing-soon sweep looks up who was already reminded, per challenge.
+		await col.createIndex({ challenge_id: 1, type: 1 });
+	}
 }
 
 // ---- SEED default contest set (§7.5) -------------------------------------

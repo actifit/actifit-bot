@@ -19,16 +19,39 @@ function recorder() {
 }
 
 describe('arena_notify messages', () => {
+	const official = (title) => ({ id: 'ch_x', title, origin_tier: 'official', visibility: 'public' });
+
 	test('results message names rank, AFIT and a single badge', () => {
-		expect(notify.resultsMessage({ title: 'Weekly Step League' }, { rank: 2, afit: 60, badges: [] }))
+		expect(notify.resultsMessage(official('Weekly Step League'), { rank: 2, afit: 60, badges: [] }))
 			.toBe('You finished #2 in "Weekly Step League" and earned 60 AFIT.');
-		expect(notify.resultsMessage({ title: 'Sprint' }, { rank: 1, afit: 0, badges: ['Champ'] }))
+		expect(notify.resultsMessage(official('Sprint'), { rank: 1, afit: 0, badges: ['Champ'] }))
 			.toBe('You finished #1 in "Sprint" and earned the "Champ" badge.');
 	});
 
 	test('results message without a rank still says what was earned', () => {
-		expect(notify.resultsMessage({ id: 'ch_x' }, { rank: null, afit: 12.5 }))
+		expect(notify.resultsMessage(official(''), { rank: null, afit: 12.5 }))
 			.toBe('Results are in for "ch_x": you earned 12.5 AFIT.');
+	});
+
+	test('user-created titles are never quoted (phishing), only official public ones', () => {
+		const phish = { id: 'ch_p', title: 'Your account is suspended, verify keys at evil.example',
+			origin_tier: 'community', visibility: 'public' };
+		expect(notify.resultsMessage(phish, { rank: 1, afit: 50 }))
+			.toBe('You finished #1 in an Arena challenge and earned 50 AFIT.');
+		expect(notify.closingMessage(phish, 3))
+			.toBe('An Arena challenge you joined ends in about 3 hours. Post today\'s report so your activity counts.');
+	});
+
+	test('a non-public challenge is never named (the inbox is readable without login)', () => {
+		expect(notify.quotableTitle({ id: 'x', title: 'Secret', origin_tier: 'official', visibility: 'private' })).toBeNull();
+	});
+
+	test('quoted titles are single-line, trimmed and capped', () => {
+		expect(notify.quotableTitle(official('a\n\tb   c'))).toBe('a b c');
+		const long = notify.quotableTitle(official('x'.repeat(200)));
+		expect(long.length).toBe(80);
+		expect(long.endsWith('…')).toBe(true);
+		expect(notify.quotableTitle(official({ evil: true }))).toBe('ch_x');
 	});
 
 	test('challenge URL encodes rolled-over ids', () => {
@@ -42,7 +65,7 @@ describe('arena_notify.notifyClosingSoon', () => {
 		const db = createMockDb();
 		db.collection('challenges').__seed([
 			// weekly, closes in 6h -> eligible
-			{ id: 'weekly', state: 'open', title: 'Weekly Step League',
+			{ id: 'weekly', state: 'open', title: 'Weekly Step League', origin_tier: 'official', visibility: 'public',
 			  window: { start: new Date(NOW - 7 * 24 * HOUR + 6 * HOUR).toISOString(), end: new Date(NOW + 6 * HOUR).toISOString() } },
 			// daily, closes in 6h -> excluded (would nag every day)
 			{ id: 'daily', state: 'open', title: 'Daily Focus',
@@ -126,7 +149,7 @@ describe('resolution sends results notifications', () => {
 		db.collection('challenges').__seed([
 			{ id: 'def_weekly_step_league', state: 'open', type: 'league_fixture', window: CLOSED,
 			  scoring: { metric: 'activity_count', rule: 'max' }, recurrence: 'Weekly', art: 'step-league',
-			  origin_tier: 'official', title: 'Weekly Step League' },
+			  origin_tier: 'official', visibility: 'public', title: 'Weekly Step League' },
 		]);
 		db.collection('challenge_participants').__seed([
 			{ challenge_id: 'def_weekly_step_league', entity: 'alice', flags: [], state: 'enrolled' },
@@ -168,6 +191,26 @@ describe('resolution sends results notifications', () => {
 		const r = recorder();
 		await jobs.resolveDueChallenges(db, { now: '2026-08-10T00:00:00Z', notify: r.hook, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
 		expect(r.sent).toHaveLength(0);
+	});
+
+	test('winners are still told when a read after settlement throws', async () => {
+		const db = seed();
+		const r = recorder();
+		// Fail the first read that happens AFTER the resolution record exists, i.e. once
+		// AFIT is credited (the broadcast step's marker read).
+		const resC = db.collection('challenge_resolutions');
+		const realFindOne = resC.findOne.bind(resC);
+		let thrown = false;
+		resC.findOne = async (q) => {
+			const doc = await realFindOne(q);
+			if (doc && !thrown) { thrown = true; throw new Error('mongo blip'); }
+			return doc;
+		};
+		const res = await jobs.resolveDueChallenges(db, {
+			now: '2026-08-10T00:00:00Z', notify: r.hook, broadcastOp: async (op) => ({ id: 'trx_' + op.op }),
+		});
+		expect(res.failed).toBe(1);
+		expect(r.sent.map((n) => n.user).sort()).toEqual(['alice', 'bob']);
 	});
 
 	test('a failing notification does not fail the resolution', async () => {
