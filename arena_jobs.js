@@ -34,6 +34,7 @@ const arenaPools = require('./arena_pools');
 const arenaRewards = require('./arena_rewards');
 const arenaFund = require('./arena_fund');
 const arenaApi = require('./arena_api');
+const arenaNotify = require('./arena_notify');
 
 // States a challenge can be aggregated in — everything that isn't terminal.
 // (draft challenges have no participants yet; open/active/resolving do.)
@@ -343,6 +344,11 @@ async function resolveDueChallenges(db, opts = {}) {
 						}
 					}
 				}
+				// ...and tell them: inbox entry + phone push, via the injected opts.notify.
+				// Only on the first resolution (inside this branch), so a re-run that finds
+				// the resolution marker never notifies twice. Never throws.
+				await arenaNotify.notifyResults(ch, resolution.settlePayload && resolution.settlePayload.rewards,
+					rankByEntity, { notify: opts.notify, log });
 			}
 
 			// Refund any UNPAID balance of a CREATOR-FUNDED pool back to the creator

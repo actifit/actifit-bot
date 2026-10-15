@@ -1205,6 +1205,12 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 	// challenge_participants.score + the per-challenge standings board. It emits no
 	// Merits and broadcasts nothing — settlement/payout is a separate job (F5).
 	if (config.arena_jobs_enabled) {
+		// Arena notifications (results + closing-soon reminders): an inbox entry plus a
+		// phone push through the existing sendNotification, under the 'arena' settings
+		// category so users can switch them off. ON by default; set
+		// arena_notify_enabled: false in config.json to stop them.
+		const arenaNotifyUser = config.arena_notify_enabled === false ? null
+			: (n) => utils.sendNotification(db, n.user, 'actifit', n.type, n.category, n.details, n.url);
 		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
 		// In-flight guard: node-schedule fires on the clock regardless of whether the
 		// previous async invocation finished. A sweep that outruns its own interval
@@ -1216,6 +1222,18 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 			aggRunning = true;
 			try {
 				await arenaJobs.aggregateActiveChallenges(db, { log: (m) => utils.log(m, 'arena') });
+				// Remind participants whose multi-day challenge closes soon and who haven't
+				// posted today. Once per (user, challenge); never fails the sweep.
+				if (arenaNotifyUser) {
+					try {
+						const closing = await require('./arena_notify').notifyClosingSoon(db, {
+							notify: arenaNotifyUser, log: (m) => utils.log(m, 'arena'),
+						});
+						if (closing.notified) utils.log('arena notify: ' + closing.notified + ' closing-soon reminder(s) sent', 'arena');
+					} catch (e) {
+						utils.log('arena notify: closing-soon sweep failed: ' + (e && e.message), 'arena');
+					}
+				}
 				// Heartbeat check for the RESOLVE sweep, from here because this job ticks
 				// 4x more often and keeps running when resolve does not. recordResolveHealth
 				// can only report on sweeps that happen - it says nothing when the cron
@@ -1305,6 +1323,7 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 				const resolveSummary = await arenaJobs.resolveDueChallenges(db, {
 					officialAccount: arenaOfficialAccount,
 					broadcastOp: arenaBroadcastOp,
+					notify: arenaNotifyUser,
 					// The GLOBAL weekly budget is the treasury guard and stays defaulted ON:
 					// it is correct-by-default and cannot silently ship off. An explicit 0 in
 					// config disables it (Number.isFinite(0) === true); only an ABSENT key
