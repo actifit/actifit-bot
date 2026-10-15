@@ -177,7 +177,9 @@ client.connect()
 	    arenaStandings.ensureStandingsIndexes(db);
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
-	    arenaApi.ensureEventsIndexes(db);
+	    // Not awaited, so .catch() is load-bearing (see the ensureAfitIndexes note below):
+	    // an index-build rejection must not become an unhandled rejection and a crash loop.
+	    arenaApi.ensureEventsIndexes(db).catch((e) => { try { utils.log('ensureEventsIndexes failed: ' + (e && e.message), 'arena'); } catch (_) { /* logging must not throw */ } });
 	    // local require: arena_afit is declared far below (line ~804), unlike its
 	    // siblings at the top of this file. Same pattern as the tailer require below.
 	    // .catch() is LOAD-BEARING, not defensive noise: this call is not awaited, so

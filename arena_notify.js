@@ -97,19 +97,19 @@ async function notifyResults(ch, rewards, rankByEntity, opts = {}) {
 	const log = typeof opts.log === 'function' ? opts.log : () => {};
 	if (!notify || !notifiable(ch)) return 0;
 	let sent = 0;
-	for (const rw of rewards || []) {
+	for (const rw of Array.isArray(rewards) ? rewards : []) {
 		if (!rw || !rw.entity) continue;
 		const badges = Array.isArray(rw.badges) ? rw.badges : [];
 		if (!(Number(rw.afit) > 0 || badges.length > 0)) continue;
 		try {
-			await notify({
+			const delivered = await notify({
 				user: rw.entity,
 				type: TYPE_RESULTS,
 				category: CATEGORY,
 				details: resultsMessage(ch, { rank: rankByEntity && rankByEntity.get(rw.entity), afit: rw.afit, badges }),
 				url: challengeUrl(ch.id),
 			});
-			sent++;
+			if (delivered !== false) sent++;
 		} catch (e) {
 			log(`arena notify: results for ${rw.entity} on ${ch.id} failed: ${e && e.message}`);
 		}
@@ -134,7 +134,9 @@ async function notifyClosingSoon(db, opts = {}) {
 	dayStart.setUTCHours(0, 0, 0, 0);
 
 	const challenges = await db.collection('challenges').find({ state: { $in: ['open', 'active'] } }).toArray();
-	let notified = 0, alreadySent = 0, postedToday = 0, optedOut = 0;
+	// sendNotification returns false (no throw) both when the user opted out and when the
+	// inbox insert failed, so "not delivered" is all we can honestly report.
+	let notified = 0, alreadySent = 0, postedToday = 0, notDelivered = 0;
 	for (const ch of challenges) {
 		if (!notifiable(ch, minWindowMs)) continue;
 		const end = Date.parse(ch.window.end);
@@ -152,7 +154,7 @@ async function notifyClosingSoon(db, opts = {}) {
 			.toArray()).map((v) => v.author));
 
 		for (const p of parts) {
-			if (notified >= maxPerRun) return { ok: true, notified, alreadySent, postedToday, optedOut, capped: true };
+			if (notified >= maxPerRun) return { ok: true, notified, alreadySent, postedToday, notDelivered, capped: true };
 			if (reminded.has(p.entity)) { alreadySent++; continue; }
 			if (posted.has(p.entity)) { postedToday++; continue; }
 
@@ -175,14 +177,14 @@ async function notifyClosingSoon(db, opts = {}) {
 					details: closingMessage(ch, hoursLeft),
 					url: challengeUrl(ch.id),
 				});
-				if (delivered === false) optedOut++;
+				if (delivered === false) notDelivered++;
 				else notified++;
 			} catch (e) {
 				log(`arena notify: closing reminder for ${p.entity} on ${ch.id} failed: ${e && e.message}`);
 			}
 		}
 	}
-	return { ok: true, notified, alreadySent, postedToday, optedOut };
+	return { ok: true, notified, alreadySent, postedToday, notDelivered };
 }
 
 module.exports = {
