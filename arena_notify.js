@@ -9,8 +9,11 @@
  *   - arena_results: a rewarded finisher's outcome, sent from the resolution sweep.
  *   - arena_closing: a joined multi-day challenge ends within a few hours and the user
  *     has not posted a report today. Sent at most once per (user, challenge); the
- *     `window_closing` arena event doubles as the dedupe record. Daily challenges are
- *     excluded on purpose — they close every day and would become a daily nag.
+ *     `window_closing` arena event doubles as the dedupe record.
+ *
+ * Both skip challenges shorter than two days (Daily Focus closes and pays every day, so
+ * either message would become a daily nag) and squad challenges (a squad id is not a
+ * user who can receive a notification).
  *
  * Every notification links to https://actifit.io/arena/<id>; the apps open their native
  * challenge screen for that URL and the web opens the page.
@@ -30,6 +33,16 @@ const CATEGORY = 'arena';
 
 function challengeUrl(id) {
 	return 'https://actifit.io/arena/' + encodeURIComponent(id);
+}
+
+const MIN_WINDOW_MS = 2 * DAY;
+
+/** Whether a challenge is one we notify about at all (see the header). */
+function notifiable(ch, minWindowMs = MIN_WINDOW_MS) {
+	if (!ch || (ch.participants_kind || 'user') !== 'user') return false;
+	const start = Date.parse(ch.window && ch.window.start);
+	const end = Date.parse(ch.window && ch.window.end);
+	return Number.isFinite(start) && Number.isFinite(end) && end - start >= minWindowMs;
 }
 
 function titleOf(ch) {
@@ -64,7 +77,7 @@ function closingMessage(ch, hoursLeft) {
 async function notifyResults(ch, rewards, rankByEntity, opts = {}) {
 	const notify = typeof opts.notify === 'function' ? opts.notify : null;
 	const log = typeof opts.log === 'function' ? opts.log : () => {};
-	if (!notify) return 0;
+	if (!notify || !notifiable(ch)) return 0;
 	let sent = 0;
 	for (const rw of rewards || []) {
 		if (!rw || !rw.entity) continue;
@@ -97,7 +110,7 @@ async function notifyClosingSoon(db, opts = {}) {
 	if (!notify) return { ok: false, reason: 'no notify hook' };
 	const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
 	const hoursBefore = Number.isFinite(opts.hoursBefore) && opts.hoursBefore > 0 ? opts.hoursBefore : 12;
-	const minWindowMs = (Number.isFinite(opts.minWindowDays) && opts.minWindowDays > 0 ? opts.minWindowDays : 2) * DAY;
+	const minWindowMs = Number.isFinite(opts.minWindowDays) && opts.minWindowDays > 0 ? opts.minWindowDays * DAY : MIN_WINDOW_MS;
 	const maxPerRun = Number.isInteger(opts.maxPerRun) && opts.maxPerRun > 0 ? opts.maxPerRun : 500;
 	const dayStart = new Date(nowMs);
 	dayStart.setUTCHours(0, 0, 0, 0);
@@ -105,30 +118,37 @@ async function notifyClosingSoon(db, opts = {}) {
 	const challenges = await db.collection('challenges').find({ state: { $in: ['open', 'active'] } }).toArray();
 	let notified = 0, alreadySent = 0, postedToday = 0;
 	for (const ch of challenges) {
-		const start = Date.parse(ch.window && ch.window.start);
-		const end = Date.parse(ch.window && ch.window.end);
-		if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+		if (!notifiable(ch, minWindowMs)) continue;
+		const end = Date.parse(ch.window.end);
 		if (end <= nowMs || end - nowMs > hoursBefore * HOUR) continue;
-		if (end - start < minWindowMs) continue;
 
-		const parts = await db.collection(arenaApi.COLLECTIONS.PARTICIPANTS).find({ challenge_id: ch.id }).toArray();
+		const parts = (await db.collection(arenaApi.COLLECTIONS.PARTICIPANTS).find({ challenge_id: ch.id }).toArray())
+			.filter((p) => p && p.entity && p.state !== 'left');
+		if (!parts.length) continue;
+		// Two queries per challenge, not two per participant: who was already reminded,
+		// and who already posted today (their activity is in — nothing to act on).
+		const reminded = new Set((await db.collection(arenaApi.COLLECTIONS.EVENTS)
+			.find({ type: 'window_closing', challenge_id: ch.id }).toArray()).map((e) => e.user));
+		const posted = new Set((await db.collection('verified_posts')
+			.find({ author: { $in: parts.map((p) => p.entity) }, date: { $gte: dayStart } }).toArray()).map((v) => v.author));
+
 		for (const p of parts) {
 			if (notified >= maxPerRun) return { ok: true, notified, alreadySent, postedToday, capped: true };
-			if (!p || !p.entity || p.state === 'left') continue;
-			const prior = await db.collection(arenaApi.COLLECTIONS.EVENTS)
-				.findOne({ type: 'window_closing', user: p.entity, challenge_id: ch.id });
-			if (prior) { alreadySent++; continue; }
-			// Already posted today: their activity is in, so there is nothing to act on.
-			const posted = await db.collection('verified_posts').findOne({ author: p.entity, date: { $gte: dayStart } });
-			if (posted) { postedToday++; continue; }
+			if (reminded.has(p.entity)) { alreadySent++; continue; }
+			if (posted.has(p.entity)) { postedToday++; continue; }
 
 			const hoursLeft = (end - nowMs) / HOUR;
 			try {
 				// Record first: a failed push must not turn into a reminder on every tick.
-				await arenaApi.emitEvent(db, {
+				// Without the record there is no dedupe, so don't send at all.
+				const rec = await arenaApi.emitEvent(db, {
 					type: 'window_closing', user: p.entity, challenge_id: ch.id,
 					data: { hours_left: Math.round(hoursLeft) }, at: new Date(nowMs).toISOString(),
 				});
+				if (!rec || !rec.ok) {
+					log(`arena notify: could not record closing reminder for ${p.entity} on ${ch.id}: ${rec && rec.reason}`);
+					continue;
+				}
 				await notify({
 					user: p.entity,
 					type: TYPE_CLOSING,

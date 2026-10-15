@@ -1209,7 +1209,7 @@ if (process.env.BOT_THREAD == 'SECOND_API'){
 		// phone push through the existing sendNotification, under the 'arena' settings
 		// category so users can switch them off. ON by default; set
 		// arena_notify_enabled: false in config.json to stop them.
-		const arenaNotifyUser = config.arena_notify_enabled === false ? null
+		const arenaNotifyUser = (config.arena_notify_enabled === false || config.arena_notify_enabled === 'false') ? null
 			: (n) => utils.sendNotification(db, n.user, 'actifit', n.type, n.category, n.details, n.url);
 		const aggCron = config.arena_aggregate_cron || '*/15 * * * *';
 		// In-flight guard: node-schedule fires on the clock regardless of whether the

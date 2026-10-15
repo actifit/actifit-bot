@@ -100,6 +100,18 @@ describe('arena_notify.notifyClosingSoon', () => {
 		expect(calls).toBe(1);
 	});
 
+	test('squad challenges are skipped (a squad id is not a user)', async () => {
+		const db = seed();
+		db.collection('challenges').__seed([
+			{ id: 'squads', state: 'open', title: 'Squads', participants_kind: 'squad',
+			  window: { start: new Date(NOW - 7 * 24 * HOUR).toISOString(), end: new Date(NOW + 3 * HOUR).toISOString() } },
+		]);
+		db.collection('challenge_participants').__seed([{ challenge_id: 'squads', entity: 'team_red', state: 'enrolled' }]);
+		const r = recorder();
+		await notify.notifyClosingSoon(db, { notify: r.hook, now: NOW });
+		expect(r.sent.map((n) => n.user)).toEqual(['alice']);
+	});
+
 	test('does nothing without a notify hook', async () => {
 		const res = await notify.notifyClosingSoon(seed(), { now: NOW });
 		expect(res.ok).toBe(false);
@@ -140,6 +152,22 @@ describe('resolution sends results notifications', () => {
 		expect(byUser.alice).toMatchObject({ type: 'arena_results', category: 'arena', url: 'https://actifit.io/arena/def_weekly_step_league' });
 		expect(byUser.alice.details).toBe('You finished #1 in "Weekly Step League" and earned 100 AFIT.');
 		expect(byUser.bob.details).toBe('You finished #2 in "Weekly Step League" and earned 60 AFIT.');
+	});
+
+	test('daily challenges get no results push (they pay every day)', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'def_daily_focus', state: 'open', type: 'daily_focus', title: 'Daily Focus Goal', origin_tier: 'official',
+			  window: { start: '2026-08-08T00:00:00Z', end: '2026-08-09T00:00:00Z', tz: 'UTC' },
+			  scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 5000 } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_daily_focus', entity: 'alice', flags: [], state: 'enrolled' },
+		]);
+		db.collection('verified_posts').__seed([post('alice', '2026-08-08T10:00:00Z', 9000)]);
+		const r = recorder();
+		await jobs.resolveDueChallenges(db, { now: '2026-08-10T00:00:00Z', notify: r.hook, broadcastOp: async (op) => ({ id: 'trx_' + op.op }) });
+		expect(r.sent).toHaveLength(0);
 	});
 
 	test('a failing notification does not fail the resolution', async () => {

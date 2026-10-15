@@ -247,6 +247,8 @@ async function resolveDueChallenges(db, opts = {}) {
 	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0, budgetExhausted = 0;
 
 	for (const ch of candidates) {
+		// Results to announce once this challenge's settlement steps are done.
+		let pendingResults = null;
 		try {
 			if (!hasWindow(ch.window)) { skipped++; continue; }
 			// Not DUE until the window has closed.
@@ -344,11 +346,11 @@ async function resolveDueChallenges(db, opts = {}) {
 						}
 					}
 				}
-				// ...and tell them: inbox entry + phone push, via the injected opts.notify.
-				// Only on the first resolution (inside this branch), so a re-run that finds
-				// the resolution marker never notifies twice. Never throws.
-				await arenaNotify.notifyResults(ch, resolution.settlePayload && resolution.settlePayload.rewards,
-					rankByEntity, { notify: opts.notify, log });
+				// ...and tell them (inbox entry + phone push) — but only after the refund,
+				// settle broadcast and recurrence below, so slow pushes never delay the
+				// on-chain settle. Set only on the first resolution (inside this branch), so a
+				// re-run that finds the resolution marker never notifies twice.
+				pendingResults = { rewards: resolution.settlePayload && resolution.settlePayload.rewards, rankByEntity };
 			}
 
 			// Refund any UNPAID balance of a CREATOR-FUNDED pool back to the creator
@@ -411,6 +413,11 @@ async function resolveDueChallenges(db, opts = {}) {
 						}
 					}
 				}
+			}
+
+			// Never throws (per-user errors are caught inside).
+			if (pendingResults) {
+				await arenaNotify.notifyResults(ch, pendingResults.rewards, pendingResults.rankByEntity, { notify: opts.notify, log });
 			}
 		} catch (e) {
 			failed++;
