@@ -1009,6 +1009,7 @@ app.get('/adRewardsReview/', async function (req, res) {
 
 app.get('/ssv-verify',
   async (req, res, next) => {
+	return securityDisabled(res, '/ssv-verify');
     try {
       const url = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
       await verifyAdMobSSV(url, true); // true for throwing errors
@@ -2265,6 +2266,7 @@ app.get('/userVotedSurvey', async function (req, res){
 });
 
 app.get('/voteSurvey', checkHdrs, async function (req, res){
+	return securityDisabled(res, '/voteSurvey');
 	if (!req.query || !req.query.user || !req.query.id || !req.query.option){
 		res.send({'error':''})
 		return
@@ -2344,9 +2346,17 @@ app.get('/voteSurvey', checkHdrs, async function (req, res){
 
 
 
+// Temporarily disabled pending security review; each route stays off until it is
+// reworked and re-reviewed.
+function securityDisabled(res, route) {
+	console.log('blocked disabled route: ' + route);
+	return res.status(503).send({ error: 'This feature is temporarily disabled for security maintenance.' });
+}
+
 app.post('/performTrxPost', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/performTrxPost');
 	console.log('>>performTrx');
-	
+
 	
 	const receivedPlaintext = decrypt(req.ppkey);
 	
@@ -2410,6 +2420,7 @@ app.get('/delegateRC', checkHdrs, async function (req, res) {
 });
 
 app.post('/memoDecode', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/memoDecode');
 	console.log('memo decode');
 	//set HIVE as default
 	let bchain = 'HIVE';
@@ -2428,6 +2439,7 @@ app.post('/memoDecode', checkHdrs, async function (req, res) {
 });
 
 app.get('/performTrx', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/performTrx');
 	console.log('>>performTrx');
 	
 	
@@ -2621,6 +2633,7 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 });
 
 app.get('/resetFundsPass', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/resetFundsPass');
 	let collection = db.collection('account_funds_pass')
 
 	let user = req.query.user.trim().toLowerCase();
@@ -2780,6 +2793,7 @@ const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHe
 const modActionRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
 
 app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
+	return securityDisabled(res, '/loginKeychain');
 	try{
 		console.log('loginkeychain');
 		//const username = sanitize(req.body.username);
@@ -2816,6 +2830,7 @@ app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
    Keychain logins store no posting key, so this issues a longer-lived token used purely for
    authenticating checkHdrs API calls (e.g. setUserFundsPass). */
 app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
+	return securityDisabled(res, '/loginKeychainVerify');
 	try {
 		const username = req.body.username;
 		const decrypted = req.body.decrypted;
@@ -2846,13 +2861,14 @@ app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
 		let token = jwt.sign({ username: username }, config.secret, { expiresIn: '30d' });
 
 		let db_col = db.collection('user_login_token');
-		// preserve any existing record fields (e.g. a previously stored ppkey) and just refresh the token
+		// refresh the token on the existing record; posting keys are never kept
 		let user_tkn = await db_col.findOne({ user: username });
 		if (!user_tkn) {
 			user_tkn = {};
 		}
 		user_tkn.user = username;
 		user_tkn.token = token;
+		delete user_tkn.ppkey;
 		user_tkn.lastlogin = new Date();
 		user_tkn.loginsrc = 'keychain';
 
@@ -2886,15 +2902,18 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//find existing login entry in DB to override
 				let user_tkn = await db_col.findOne({user: username});
 				//console.log(user_tkn);
-				
-				//encode ppkey
-				const ciphertext = encrypt(ppkey);
-				
+
+				// The posting key is verified against the chain here and never stored.
+
 				let bchain = 'HIVE';
 				if (req.body && req.body.bchain){
 					bchain = req.body.bchain;
 				}
-				
+				// Hive login only for now.
+				if (bchain !== 'HIVE') {
+					return res.status(403).json({ success: false, message: 'Only Hive login is currently supported.' });
+				}
+
 				//validate proper data used
 				let isValidUser = await utils.validateAccountLogin(username, ppkey, bchain);
 				console.log('isValidUser');
@@ -2913,7 +2932,7 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 
 					user_tkn.user = username;
 					user_tkn.token = token;
-					user_tkn.ppkey = ciphertext;
+					delete user_tkn.ppkey; // also drop any key stored before this fix
 					user_tkn.lastlogin = new Date();
 
 					// Keep record free from deletion on cleanup
@@ -3282,6 +3301,7 @@ app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
 });
 
 app.get('/claimFreeSignupAccounts/:user', async function (req, res) {
+	return securityDisabled(res, '/claimFreeSignupAccounts');
     try {
         const outc = await claimableAccountsCount(req, res);
         
@@ -4082,6 +4102,7 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 
 /* end point for tracking AFIT buy orders */
 app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async function (req, res) {
+	return securityDisabled(res, '/buyAFITHive');
 	
 	let user = req.params.user;
 	//HIVE amount paid
@@ -4818,6 +4839,7 @@ app.get('/realProductsBought/', checkHdrs, async function (req, res) {
 
 /* end point for purchasing real products */
 app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/purchaseRealProduct');
 	if (!req.query.user){
 		res.send({'error': 'User not found'});
 		return;
@@ -6490,6 +6512,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(re
 
 /* function handles the processing of a buy order */
 app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
+	return securityDisabled(res, '/tipAccount');
 	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
@@ -8058,6 +8081,7 @@ app.get('/confirmAFITSEReceipt', checkHdrs, async function(req,res){
 
 //function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
 app.get('/proceedAfitxTransition', async function(req,res){
+	return securityDisabled(res, '/proceedAfitxTransition');
 	if (!req.query.user || !req.query.amount || !req.query.txid){
 		res.send('{}');
 	}else{
@@ -8136,6 +8160,7 @@ app.get('/proceedAfitxTransition', async function(req,res){
 
 //function handles the process of confirming AFIT S-E receipt into proper account, and then duplicating to new exchange
 app.get('/proceedAfitTransition', async function(req,res){
+	return securityDisabled(res, '/proceedAfitTransition');
 	if (!req.query.user || !req.query.amount || !req.query.txid){
 		res.send('{}');
 	}else{
@@ -8216,6 +8241,7 @@ app.get('/proceedAfitTransition', async function(req,res){
 
 /* function handles the processing of a buy order paid in HIVE */
 app.get('/processBuyOrderHive', async function(req, res){
+	return securityDisabled(res, '/processBuyOrderHive');
 	if (!req.query.user || !req.query.product_id) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
@@ -8313,6 +8339,7 @@ app.get('/processBuyOrderHive', async function(req, res){
 
 /* function handles the processing of a buy order */
 app.get('/processBuyOrder', async function(req, res){
+	return securityDisabled(res, '/processBuyOrder');
 	if (!req.query.user || !req.query.product_id) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
@@ -9912,6 +9939,7 @@ app.get('/getFullFundsAccountList/', async function(req, res){
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange */
 app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, res){
+	return securityDisabled(res, '/performAfitSteemExchange');
 	if ((typeof req.body.user == 'undefined') || req.body.user == '' ||
 		(typeof req.body.pass == 'undefined') || req.body.pass == '' ||
 		(typeof req.body.tokens == 'undefined') || req.body.tokens == '') {
@@ -10596,6 +10624,7 @@ app.get('/latestXPost', async function (req, res) {
 
 /* Links a user's X account — stores OAuth tokens server-side */
 app.post('/linkXAccount', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/linkXAccount');
 	const user = req.query.user;
 	const { xUserId, xUsername, accessToken, refreshToken } = req.body;
 
@@ -10618,6 +10647,7 @@ app.post('/linkXAccount', checkHdrs, async function (req, res) {
 
 /* Verifies that the user liked the latest Actifit X post and awards AFIT */
 app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/claimXEngagementReward');
 	const user = req.query.user;
 	const tweetId = req.query.tweetId;
 
