@@ -5,7 +5,7 @@ Guidance for Claude Code when working in this repo.
 ## Repo basics
 
 - Node/Express backend serving `api2.actifit.io`. Native MongoDB driver
-  (`db.collection(...)`, dependency-injected `db`), dhive/hive-js. Node 20.
+  (`db.collection(...)`, dependency-injected `db`), dhive/hive-js. Node 22.
 - **No CI.** `master` auto-deploys to 2 servers via GitHub Actions **and** a
   separate `git push heroku master`. Never merge to `master` without explicit
   user confirmation.
@@ -26,35 +26,28 @@ Compliance invariants I1–I7 are enforced in code + `tests/compliance.test.js`
 skill/goal scoring, etc.). **No gambling / wagering / user-staked pots / paid
 random crates.** Do not weaken these.
 
-### ⚠️ TECH DEBT: default contests are seeded INDEX-ONLY, not on-chain
+### Default contests are on-chain (resolved 2026-09-23)
 
-`scripts/seed_arena_contests.js` (and `arena_api.seedDefaultContests`) write the
-six default contests **directly into the `challenges` collection** with a
-synthetic `trx_id` (`seed_<id>`) via `arena.indexArenaOp`. **Nothing is
-broadcast to Hive.** This was used on 2026-08-27 to seed the live DB
-(`heroku_ch0sdt2p`) so the web `/arena` page had data.
+The six `def_*` default contests were first seeded **index-only** (2026-08-27,
+synthetic `seed_<id>` trx ids, nothing on Hive). That was fixed on 2026-09-23 via
+Path B in `docs/arena-launch-runbook.md`: the index-only rows were deleted, the six
+ops were broadcast signed by @actifit (blocks 110164368-110164374), and the tailer
+indexed them with real `trx_id`/`block_num`. Recurring instances now roll forward
+on-chain as `def_<name>@<date>` with `parent_id` set.
 
-Consequence: those six `def_*` challenges exist in the index but have **no
-on-chain record**, which violates the chain-first "Hive is the system of record"
-guarantee. This is a deliberate shortcut for first-visibility, **not** the
-launch path.
+Do **not** run `scripts/seed_arena_contests.js` against the live DB again: it writes
+index-only rows, and `indexArenaOp` rejects a `challenge_create` for an existing id
+(it never overwrites provenance), so a stray seed would block the real op.
 
-**Fix properly down the road (Path B in `docs/arena-launch-runbook.md`):**
-1. Broadcast the six ops from `arena_api.defaultContests(Date.now())` signed by
-   @actifit (real `custom_json` on Hive).
-2. Enable the tailer (`config.arena_tailer_enabled: true` +
-   `arena_tailer_start_block`) so it indexes them from the chain with real
-   `trx_id`/`block_num`.
-3. **Delete the index-only `def_*` rows FIRST** (`node scripts/seed_arena_contests.js
-   --clear`) before broadcasting. `indexArenaOp` **rejects** a `challenge_create`
-   for an existing id — it does NOT overwrite provenance (`arena.js:307-314`), so
-   without the delete the tailer skips the on-chain ops and the fake `seed_*`
-   trx / `block_num:0` remain. Also clear the `arena_tailer_state` cursor if the
-   tailer ran before (the saved cursor overrides `arena_tailer_start_block`).
-   Tooling + full steps: `scripts/broadcast_arena_contests.js` and
-   `docs/arena-launch-runbook.md` §3.
+### Arena notifications
 
-Until this is done, treat the seeded defaults as staging data.
+`arena_notify.js` sends results (`arena_results`) and closing-soon reminders
+(`arena_closing`) through `utils.sendNotification` (inbox + FCM), category `arena`.
+Only official, public challenges are named in the text (user titles would be a
+phishing vector, and the inbox is readable without login). On by default inside
+`arena_jobs_enabled`; to stop it set `arena_notify_enabled: false` in **api2's**
+config.json and `pm2 restart app` (never `pm2 delete` + start by hand — that drops
+`BOT_THREAD` and stops settlement). Heroku also auto-deploys from `master`.
 
 ## Conventions
 
