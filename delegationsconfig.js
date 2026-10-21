@@ -89,8 +89,8 @@
 //   - any pending reward_vesting_balance -> the guard passes on that third term, and
 //     the very next line does .split(' ') on the ABSENT reward_steem_balance and throws
 //     TypeError. claimRewards is async and called from setInterval with no .catch, and
-//     nothing in delegations.js installs an unhandledRejection handler, so on Node 20
-//     (package.json pins 20.x) that terminates the process.
+//     nothing in delegations.js installs an unhandledRejection handler, and Node
+//     terminates on an unhandled rejection by default, so that kills the process.
 //
 // Expected shape if it ever fires: the timer is only installed by runRewards, which on
 // MAIN is called by the 08:00 job - so roughly ONE crash a day, an hour or so after

@@ -184,7 +184,7 @@ client.connect()
 	    // siblings at the top of this file. Same pattern as the tailer require below.
 	    // .catch() is LOAD-BEARING, not defensive noise: this call is not awaited, so
 	    // the synchronous try/catch around it cannot see a rejected promise. There is
-	    // no process-level unhandledRejection handler anywhere in this app, and Node 20
+	    // no process-level unhandledRejection handler anywhere in this app, and Node
 	    // terminates on an unhandled rejection by default - so an index build that fails
 	    // would exit the process, pm2 would restart it, and it would re-issue the same
 	    // build on a 23M-document collection in a crash loop. Unlike its siblings above
@@ -1896,7 +1896,7 @@ function encrypt(text) {
 function decrypt(text) {
  // Returns null rather than throwing. Every one of the 8 call sites is
  // `const receivedPlaintext = decrypt(req.ppkey);` inside an ASYNC route handler with
- // no try/catch, and there is no Express error handler, so on Node 20 a throw here is
+ // no try/catch, and there is no Express error handler, so a throw here is
  // an unhandled rejection - i.e. the API process exits.
  //
  // It is reachable without anything being wrong: checkHdrs assigns
@@ -1942,8 +1942,9 @@ function verifyFundsPass(plaintext, stored) {
 		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
 		return enc === ciphertext;
 	}
-	// legacy: stored value has no IV prefix (old createCipher format)
-	const cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
+	// legacy: stored value has no IV prefix (old createCipher format). createCipher was
+	// removed in Node 22; createLegacyCipher reproduces its derivation byte-for-byte.
+	const cipher = utils.createLegacyCipher(config.funds_encr_mode, config.funds_encr_key);
 	const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
 	return enc === stored;
 }

@@ -5,7 +5,7 @@ Guidance for Claude Code when working in this repo.
 ## Repo basics
 
 - Node/Express backend serving `api2.actifit.io`. Native MongoDB driver
-  (`db.collection(...)`, dependency-injected `db`), dhive/hive-js. Node 20.
+  (`db.collection(...)`, dependency-injected `db`), dhive/hive-js. Node 22.
 - **No CI.** `master` auto-deploys to 2 servers via GitHub Actions **and** a
   separate `git push heroku master`. Never merge to `master` without explicit
   user confirmation.

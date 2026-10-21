@@ -53,7 +53,7 @@
     "start": "node app.js"
   },
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "author": "cryptouru",
   "license": "MIT",
