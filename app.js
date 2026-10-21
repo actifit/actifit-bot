@@ -1934,19 +1934,45 @@ function encryptFundsPass(plaintext) {
 	return iv.toString('hex') + ':' + enc;
 }
 
+// Returns a boolean and NEVER throws. All six call sites are bare calls inside async
+// Express handlers with no try/catch, there is no Express error handler, and there is no
+// process-level unhandledRejection handler - so any throw in here ends the API process
+// instead of failing one request. That is the same failure mode the Node 22 createCipher
+// removal produced, and it is reachable without the config being wrong at all:
+//
+//   - plaintext is taken straight from req.query/req.body at every call site. A missing
+//     or non-string value (?pass omitted, repeated ?pass= giving an array, a JSON body
+//     with "pass": {}) makes cipher.update() throw TypeError. /validatePassForDownload
+//     has no auth and no rate limiter, so that is one unauthenticated request away.
+//   - a stored value with a malformed iv: prefix throws "Invalid initialization vector".
+//   - createLegacyCipher throws by design for an unmapped funds_encr_mode.
+//
+// A non-string password can never be the correct password, so rejecting it is also the
+// right answer on the merits - this fails closed, it does not paper over a real fault.
+// An unexpected error is logged rather than swallowed silently.
 function verifyFundsPass(plaintext, stored) {
-	if (stored && stored.includes(':')) {
-		const [ivHex, ciphertext] = stored.split(':');
-		const iv = Buffer.from(ivHex, 'hex');
-		const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
-		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
-		return enc === ciphertext;
+	if (typeof plaintext !== 'string' || plaintext === '' || typeof stored !== 'string' || stored === '') {
+		return false;
 	}
-	// legacy: stored value has no IV prefix (old createCipher format). createCipher was
-	// removed in Node 22; createLegacyCipher reproduces its derivation byte-for-byte.
-	const cipher = utils.createLegacyCipher(config.funds_encr_mode, config.funds_encr_key);
-	const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
-	return enc === stored;
+	try {
+		if (stored.includes(':')) {
+			const [ivHex, ciphertext] = stored.split(':');
+			const iv = Buffer.from(ivHex, 'hex');
+			const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
+			const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
+			return enc === ciphertext;
+		}
+		// legacy: stored value has no IV prefix (old createCipher format). createCipher was
+		// removed in Node 22; createLegacyCipher reproduces its derivation byte-for-byte.
+		const cipher = utils.createLegacyCipher(config.funds_encr_mode, config.funds_encr_key);
+		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
+		return enc === stored;
+	} catch (err) {
+		// Not an incorrect password - an internal fault. Logged so it is diagnosable
+		// rather than indistinguishable from a wrong password in the caller's response.
+		console.log('verifyFundsPass error: ' + err.message);
+		return false;
+	}
 }
 
 const getTotalSupplyAFIT = async function (){

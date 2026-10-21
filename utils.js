@@ -426,7 +426,13 @@ function createLegacyCipher(algorithm, password){
 	if (!lens){
 		throw new Error('unsupported legacy cipher algorithm: ' + algorithm);
 	}
-	const pw = Buffer.from(password, 'binary');
+	// utf8, NOT 'binary'/latin1. createCipher coerced a string password with utf8 on
+	// every Node from v6 to v21 (latin1 only on v4). Verified empirically against the
+	// genuine createCipher on Node 20.20.2: utf8 agreed on 4/4 keys, 'binary' only on
+	// the 2 ASCII ones. The live key is ASCII, where the two encodings coincide - which
+	// is exactly why the production byte-identity check could not catch this.
+	// evp_bytestokey in node_modules uses 'binary'; that is a known divergence from Node.
+	const pw = Buffer.from(password, 'utf8');
 	let d = Buffer.alloc(0);
 	let all = Buffer.alloc(0);
 	while (all.length < lens[0] + lens[1]){

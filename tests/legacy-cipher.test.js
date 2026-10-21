@@ -88,6 +88,53 @@ describe('createLegacyCipher — byte-identical to the removed crypto.createCiph
     expect(encrypt('password123', KEY, 'aes-192-cbc')).toBe(VECTORS['password123']);
   });
 
+  // REGRESSION GUARD. The first version of createLegacyCipher used
+  // Buffer.from(password, 'binary') (latin1), copied from evp_bytestokey, which diverges
+  // from Node. The genuine createCipher coerced a string password with utf8 on every Node
+  // from v6 to v21. Every vector above shares one ASCII key, where latin1 and utf8
+  // coincide byte for byte - so the whole set above passed against the wrong encoding,
+  // and so did a byte-identity check run against the real (also ASCII) production key.
+  // Only a non-ASCII key can see the difference. Measured on Node 20.20.2 against the
+  // genuine createCipher: utf8 agreed on 4/4 keys, 'binary' on only the 2 ASCII ones.
+  describe('password encoding is utf8, not latin1', () => {
+    const NON_ASCII_KEY = 'pässwörd-schlüssel';
+    // Generated on Node v20.20.2 by: crypto.createCipher('aes192', NON_ASCII_KEY)
+    const NON_ASCII_VECTORS = {
+      '': '65ae15e3a9f1c15489333086d9afb148',
+      'a': 'c34134eb4df79d61e9e13948842bee66',
+      'password123': 'e4dfdff037cacad1560216128ff4b87c',
+      'ünïcødé-çase': '8a0932d00042b168827e41e12e06c252bc343057b8550b73c4736a9b162d121a',
+    };
+
+    it.each(Object.entries(NON_ASCII_VECTORS))('reproduces %j under a non-ASCII key', (plaintext, expected) => {
+      expect(encrypt(plaintext, NON_ASCII_KEY)).toBe(expected);
+    });
+
+    it('does NOT match the latin1 derivation it was once written with', () => {
+      // Pins the direction of the fix. Without this, a revert to 'binary' would only be
+      // caught indirectly, and only by the vectors above.
+      const latin1 = (() => {
+        const pw = Buffer.from(NON_ASCII_KEY, 'binary');
+        let d = Buffer.alloc(0), all = Buffer.alloc(0);
+        while (all.length < 40) {
+          d = require('crypto').createHash('md5').update(Buffer.concat([d, pw])).digest();
+          all = Buffer.concat([all, d]);
+        }
+        const c = require('crypto').createCipheriv('aes-192-cbc', all.slice(0, 24), all.slice(24, 40));
+        return c.update('password123', 'utf8', 'hex') + c.final('hex');
+      })();
+
+      expect(latin1).not.toBe(NON_ASCII_VECTORS['password123']);
+      expect(encrypt('password123', NON_ASCII_KEY)).not.toBe(latin1);
+    });
+
+    it('is unaffected for an ASCII key, where the two encodings coincide', () => {
+      // Why the live system was never broken by the latin1 version: the production key
+      // is ASCII. This is the fact that made the bug invisible, so it is worth pinning.
+      expect(encrypt('password123')).toBe(VECTORS['password123']);
+    });
+  });
+
   it('throws on an algorithm it cannot faithfully reproduce', () => {
     // Guessing key/IV lengths for an unmapped algorithm would produce plausible-looking
     // ciphertext that silently fails to match anything stored.
