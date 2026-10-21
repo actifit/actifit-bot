@@ -1905,6 +1905,32 @@ const generatePassword = function (multip) {
 //const key = crypto.randomBytes(32);
 //const iv = crypto.randomBytes(16);
 
+// Redacts secrets before a request object is logged.
+//
+// WHY THIS EXISTS: handleConfirmPayment does `req.query = { ...req.body }` and the body
+// carries `new_pass` - the MASTER PASSWORD of the account about to be created. It is fed
+// to utils.createAccount(), which derives owner/active/posting/memo keys from it via
+// PrivateKey.fromLogin(). Logging that object wrote an owner-key-equivalent secret to
+// stdout for every account created through paid signup, readable by anyone with pm2 /
+// Heroku log access.
+//
+// Returns a shallow copy; never mutates the request. Unknown-but-suspicious keys are
+// caught by the substring pass so a newly added field does not silently start leaking.
+const SENSITIVE_LOG_KEYS = ['new_pass', 'pass', 'ppkey', 'password', 'active_key', 'posting_key',
+	'userKey', 'wif', 'token', 'confirm_payment_token', 'secret', 'memo_key'];
+function redactForLog(obj){
+	if (!obj || typeof obj !== 'object'){ return obj; }
+	const out = {};
+	for (const k of Object.keys(obj)){
+		const lower = k.toLowerCase();
+		const sensitive = SENSITIVE_LOG_KEYS.indexOf(k) !== -1 ||
+			lower.indexOf('pass') !== -1 || lower.indexOf('key') !== -1 ||
+			lower.indexOf('secret') !== -1 || lower.indexOf('token') !== -1;
+		out[k] = sensitive ? '[REDACTED]' : obj[k];
+	}
+	return out;
+}
+
 function encrypt(text) {
  let cipher = crypto.createCipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
  let encrypted = cipher.update(text);
@@ -9025,7 +9051,7 @@ app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async functio
 
 app.get("/productBought", async function(req, res) {
 	console.log('productBought');
-	console.log(req.query);
+	console.log(redactForLog(req.query));
   //check if proper params sent
   if (!req.query.user || !req.query.product_id) {
 	//make sure all params are sent
@@ -9395,7 +9421,7 @@ const handleConfirmPayment = async function(req,res){
 						req.query.confirming_tx = paymentReceivedTx;
 						//anchor the reward to what was actually received on chain
 						req.query.afit_reward = capSignupAfitReward(req.query.afit_reward, req.verified_payment);
-						console.log(req.query);
+						console.log(redactForLog(req.query));
 						try{
 							accountCreated = await claimAndCreateAccount(req);
 							if (accountCreated){
