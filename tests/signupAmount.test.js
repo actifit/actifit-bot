@@ -76,7 +76,7 @@ process.on('uncaughtException', () => {});
 const utils = require('../utils');
 const cfg = utils.getConfig();
 
-// Production runs on Node 20 (global fetch + AbortSignal.timeout both native). The local Jest
+// Production runs on Node 22 (global fetch + AbortSignal.timeout both native). The local Jest
 // runner may be an older Node that lacks AbortSignal.timeout; shim it so utils.js's real fetch
 // path executes instead of throwing straight into the catch. fetch itself is mocked per-test.
 if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout !== 'function') {

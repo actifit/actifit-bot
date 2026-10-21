@@ -5,7 +5,7 @@
  *
  *  - `claimRewards` (via /claimRewards, app.js) and `findVerifyTrx` (via 13 routes) are
  *    genuine PROCESS KILLS. Those handlers are async with no try/catch, there is no
- *    Express error handler, and Node 20 defaults to --unhandled-rejections=throw.
+ *    Express error handler, and Node defaults to --unhandled-rejections=throw.
  *  - `getEstimatedReward` is NOT. That handler already has its own try/catch; its bug
  *    was a degraded response (`{error:'failed to calculate estimate'}` for every
  *    caller). It is covered in tests/endpoints.test.js, where the supertest harness

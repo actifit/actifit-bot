@@ -11,7 +11,7 @@
 
 ## Setup
 
-1. Node `20.x` is required (`engines` in `package.json`)
+1. Node `22.x` is required (`engines` in `package.json`)
 2. `npm install`
 3. Copy `config-example.json` to `config.json` and configure
 4. MongoDB must be running (app connects on startup)

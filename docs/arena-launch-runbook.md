@@ -11,7 +11,7 @@ Spec: web repo `tasks/challenge-engine-spec.md`. Epic: Trello #171.
 ## 0. Preconditions
 
 - `actifit-bot` deployed from `develop` (or `master` once promoted) with all
-  `arena*.js` modules present. Node 20, MongoDB reachable.
+  `arena*.js` modules present. Node 22, MongoDB reachable.
 - `config.json` has the standard keys plus the arena keys (see
   `config-example.json`): `arena_tailer_enabled`, `arena_tailer_start_block`,
   `arena_official_account`, and `alt_hive_nodes`.
@@ -685,7 +685,8 @@ calls `runRewards`, which installs the same hourly timer.
 on a Hive account object. While `actifit.funds` has no pending rewards the guard fails
 and it logs `no rewards to claim for now` — harmless, and the current state. Once that
 account does have a pending reward, it throws an unhandled `TypeError` from a
-`setInterval` with no `.catch`, which on Node 20 **terminates the process**.
+`setInterval` with no `.catch`, which **terminates the process** (Node exits on an
+unhandled rejection by default).
 
 **Check:** `pm2 describe delegations` on api2. A restart count climbing roughly once a
 day is this bug firing. A flat count means it is still dormant.
