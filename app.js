@@ -3386,7 +3386,7 @@ app.post('/modAction', modActionRateLimit, async function (req, res) {
 		//confirm matching funds password
 		let query = {user: moderator};
 		
-		if (!isModerator(moderator)){
+		if (!(await isModerator(moderator))){
 			res.send({'error': 'Account does not have proper privileges'});
 			return;
 		}
