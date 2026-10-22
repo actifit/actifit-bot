@@ -9948,12 +9948,14 @@ app.get('/getProcessedTokenSwapTrans/', async function(req, res){
 
 /* end point for getting exchanges pending upvotes  */
 app.get('/getUnverifiedFundsAccountList/', async function(req, res){
+	return securityDisabled(res, '/getUnverifiedFundsAccountList');
 	let pendingAccounts = await db.collection('account_funds_pass').find({passVerified: {$in: [null, false, 'false']}}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
 	res.send({pendingAccounts: pendingAccounts, count: pendingAccounts.length});
 });
 
 /* end point for getting exchanges pending upvotes  */
 app.get('/getFullFundsAccountList/', async function(req, res){
+	return securityDisabled(res, '/getFullFundsAccountList');
 	let fullAccountList = await db.collection('account_funds_pass').find({}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
 	res.send({fullAccountList: fullAccountList, count: fullAccountList.length});
 });
