@@ -364,6 +364,21 @@ var bodyParser = require('body-parser');
 app.use(bodyParser.json()); // support json encoded bodies
 app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
+// Request fields are plain values. Reject any request carrying object keys that start
+// with '$' (database query operators) anywhere in the query string or body, and treat
+// input nested deeper than 10 levels as invalid too.
+function hasOperatorKey(value, depth) {
+	if (!value || typeof value !== 'object') return false;
+	if (depth > 10) return true;
+	return Object.keys(value).some(k => k.startsWith('$') || hasOperatorKey(value[k], depth + 1));
+}
+app.use(function (req, res, next) {
+	if (hasOperatorKey(req.query, 0) || hasOperatorKey(req.body, 0)) {
+		return res.status(400).send({ error: 'Invalid request' });
+	}
+	next();
+});
+
 
 let jwt = require('jsonwebtoken');
 
@@ -2408,6 +2423,7 @@ app.get('/availableHiveNodes', async function(req, res){
 });
 
 app.get('/delegateRC', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/delegateRC');
 	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
 		res.send({});
 	}
@@ -2483,6 +2499,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 
 
 app.get('/claimRewards', checkHdrs, async function (req, res){
+	return securityDisabled(res, '/claimRewards');
 	if (!req.query || !req.query.user){
 		res.send({'error':''})
 		return
@@ -6362,6 +6379,7 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
 app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(req, res){
+	return securityDisabled(res, '/initiateAFITMoveSE');
 	if (!req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
@@ -9395,7 +9413,7 @@ const handleConfirmPayment = async function(req,res){
  * by the website, which injects the secret in its own server-side proxy so it
  * is never exposed to the browser.
  */
-app.post('/confirmPayment', handleConfirmPayment);
+app.post('/confirmPayment', function (req, res) { return securityDisabled(res, '/confirmPayment'); });
 
 /*
  * App-facing route. The mobile app cannot hold confirmPaymentToken: anything
@@ -9406,6 +9424,7 @@ app.post('/confirmPayment', handleConfirmPayment);
  * with a decrementing entry count, and afit_reward is now capped server-side.
  */
 app.post('/app/confirmPayment', appSignupRateLimit, async function(req,res){
+	return securityDisabled(res, '/app/confirmPayment');
 	req.body = Object.assign({}, req.body, { confirm_payment_token: config.confirmPaymentToken });
 	return handleConfirmPayment(req, res);
 });
