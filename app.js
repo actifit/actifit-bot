@@ -3621,6 +3621,7 @@ app.get('/pendingBridgeTransactions', async function (req, res) {
 });
 
 app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/appendBridgeTransaction');
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.afitTrx || !req.query.hbdTrx){
 		res.send({error:'missing data'});
