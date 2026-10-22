@@ -3376,6 +3376,7 @@ app.get('/claimableFreeAccounts/:user', async function (req, res){
 
 /* end point for user total token count display */
 app.post('/modAction', modActionRateLimit, async function (req, res) {
+	return securityDisabled(res, '/modAction');
 	if (!req.body.moderator || !req.body.fundsPass || !req.body.targetAction){
 		res.send({'error':'Missing Data'});
 	}else{
