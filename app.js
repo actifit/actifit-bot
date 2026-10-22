@@ -2778,7 +2778,7 @@ app.get('/updateSettings/', checkHdrs, async function (req, res) {
 
 
 app.get('/userSettings/:user', async function (req, res) {
-	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {fields : { _id:0} });
+	let setgs = await db.collection('user_settings').findOne({user: req.params.user}, {projection : { _id:0} });
 	console.log(setgs);
 	if (!setgs){
 		res.send({});
@@ -3035,14 +3035,14 @@ app.get('/transactions/:user?', async function (req, res) {
 	if(req.params.user){
 		query = {user: req.params.user}
 		transactions = await db.collection('token_transactions')
-			.find(query, {fields : { _id:0} })
+			.find(query, {projection : { _id:0} })
 			.sort({date: -1})
 			.skip(skip)
 			.limit(pageSize).toArray();
 	}else{
 		//only limit returned transactions in case this is a general query
 		transactions = await db.collection('token_transactions')
-			.find(query, {fields : { _id:0} })
+			.find(query, {projection : { _id:0} })
 			.sort({date: -1})
 			.skip(skip)
 			.limit(pageSize).toArray();
@@ -3054,7 +3054,7 @@ app.get('/postsbytag/:tag', async function (req, res) {
 	let posts = {};
 	if(req.params.tag){
 		let query = {"json_metadata.tags": {$all: [req.params.tag]}};
-		posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+		posts = await db.collection('verified_posts').find(query, {projection : { _id:0} }).sort({date: -1}).toArray();
 	}
 	res.send(posts);
 });
@@ -3113,15 +3113,20 @@ app.get('/transactionsByType/', async function (req, res) {
 
 
 /* end point for user signup display (per user or general signups */
+// Signup records also hold payment memos, promo codes and contact details; only these
+// fields are needed by the website and apps, so only these are returned.
+const SIGNUP_PUBLIC_PROJECTION = { _id: 0, account_name: 1, date: 1, account_created: 1, referrer: 1,
+	referrer_afit_reward: 1, payment_confirmed: 1, signup_reward: 1, afit_reward: 1 };
+
 app.get('/signups/:user?', async function (req, res) {
 	let query = {account_created: true};
 	var referrals;
 	if(req.params.user){
 		query['referrer'] = req.params.user;
-		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+		referrals = await db.collection('signup_transactions').find(query, {projection : SIGNUP_PUBLIC_PROJECTION}).sort({date: -1}).toArray();
 	}else{
 		//only limit returned referrals in case this is a general query
-		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		referrals = await db.collection('signup_transactions').find(query, {projection : SIGNUP_PUBLIC_PROJECTION}).sort({date: -1}).limit(1000).toArray();
 	}
     res.send(referrals);
 });
@@ -3131,17 +3136,17 @@ app.get('/referrals/:user?', async function (req, res) {
 	let referrals;
 	if(req.params.user){
 		query['referrer'] = req.params.user;
-		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+		referrals = await db.collection('signup_transactions').find(query, {projection : SIGNUP_PUBLIC_PROJECTION}).sort({date: -1}).toArray();
 	}else{
 		//only limit returned referrals in case this is a general query
-		referrals = await db.collection('signup_transactions').find(query, {fields : { _id:0} }).sort({date: -1}).limit(1000).toArray();
+		referrals = await db.collection('signup_transactions').find(query, {projection : SIGNUP_PUBLIC_PROJECTION}).sort({date: -1}).limit(1000).toArray();
 	}
     res.send(referrals);
 });
 
 app.get('/signupInfo/:user', async function (req, res) {
 	let query = {account_name: req.params.user, account_created: true};
-	let referrals = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+	let referrals = await db.collection('signup_transactions').findOne(query, {projection : SIGNUP_PUBLIC_PROJECTION});
     if (!referrals){
 		referrals = {};
 	}
@@ -3182,7 +3187,7 @@ app.get('/activeRefReward/:referred', async function (req, res) {
 	let maxSignupDate = moment(moment().utc().subtract(config.ref_rew_act_days, 'days').toDate()).toDate();
 	console.log(maxSignupDate);
 	let query = {account_name: req.params.referred, account_created: true, date: {$gte: maxSignupDate}};
-	let refReward = await db.collection('signup_transactions').findOne(query, {fields : { _id:0} });
+	let refReward = await db.collection('signup_transactions').findOne(query, {projection : Object.assign({ referrer_cur_rank: 1, referrer_cur_afit: 1, referrer_cur_afitx: 1 }, SIGNUP_PUBLIC_PROJECTION)});
 	console.log(refReward);
 	if (refReward){
 		refReward.ref_rew_act_days = config.ref_rew_act_days;
@@ -3391,7 +3396,7 @@ app.post('/modAction', modActionRateLimit, async function (req, res) {
 			return;
 		}
 		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -3895,7 +3900,7 @@ app.get('/topAFITXHolders', async function (req, res) {
 	}
 	
 	//fetch banned accounts
-	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {projection : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
 	banned_arr.push('afitx.s-e');
@@ -4045,8 +4050,8 @@ app.get('/userBadges/:user', async function (req, res) {
 });
 
 async function getUserFriends(user){
-	let friendsA = await db.collection('friends').find({userA: user}, {fields : {userB:1, _id:0}}).toArray();
-	let friendsB = await db.collection('friends').find({userB: user}, {fields : {userA:1, _id:0}}).toArray();
+	let friendsA = await db.collection('friends').find({userA: user}, {projection : {userB:1, _id:0}}).toArray();
+	let friendsB = await db.collection('friends').find({userB: user}, {projection : {userA:1, _id:0}}).toArray();
 	friendsA = JSON.parse(JSON.stringify(friendsA).replace(/userB/g,'friend'));
 	friendsB = JSON.parse(JSON.stringify(friendsB).replace(/userA/g,'friend'));
 	return friendsA.concat(friendsB);
@@ -6228,7 +6233,7 @@ app.get('/topDelegators', async function (req, res) {
 });
 
 const activeDelegationFunc = async function (userName){
-	let user = await db.collection('hive_active_delegations').findOne({_id: userName}, {fields : { _id:0} });
+	let user = await db.collection('hive_active_delegations').findOne({_id: userName}, {projection : { _id:0} });
 	console.log(user);
 	return user;
 }
@@ -6286,7 +6291,7 @@ app.get('/topTokenHolders', async function (req, res) {
 	var tokenHolders; 
 	
 	//fetch banned accounts
-	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {projection : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
 	banned_arr.push('');
@@ -6353,7 +6358,7 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 		//confirm matching funds password
 		let query = {user: user};
 		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -6412,7 +6417,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(re
 		//confirm matching funds password
 		let query = {user: user};
 		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -6560,7 +6565,7 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
 		//confirm matching funds password
 		let query = {user: user};
 		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -7154,7 +7159,7 @@ const getAltAccountStatusFunc = async function (user){
 			"delegator": user
 		};
 		
-		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {fields : { _id:0} });
+		delegator_info = await db.collection('delegation_alt_beneficiaries').findOne(query_json, {projection : { _id:0} });
 		if (delegator_info==null){
 			delegator_info = {};
 		}
@@ -7176,7 +7181,7 @@ const getAltAccountByNameFunc = async function (targetUser){
 			"alt_account": targetUser
 		};
 		
-		delegator_info = await db.collection('delegation_alt_beneficiaries').find(query_json, {fields : { _id:0} }).toArray();
+		delegator_info = await db.collection('delegation_alt_beneficiaries').find(query_json, {projection : { _id:0} }).toArray();
 		console.log(delegator_info);
 	}
 	return delegator_info;
@@ -7196,7 +7201,7 @@ const getPostRewardFunc = async function(user, url, reward_activity){
 			"url":url
 	};
 	
-	let post_details = await db.collection('token_transactions').findOne(query_json, {fields : { _id:0} });
+	let post_details = await db.collection('token_transactions').findOne(query_json, {projection : { _id:0} });
 	console.log(post_details);
 	//fixing token amount display for 3 digits
 	if (typeof post_details!= "undefined" && post_details!=null){
@@ -8371,7 +8376,7 @@ app.get('/processBuyOrder', async function(req, res){
 		
 		let access_token;
 		
-		/*let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		/*let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -8556,7 +8561,7 @@ app.get('/processBuyOrder', async function(req, res){
 const matchProductTrans = async function (user, product_id){
   let token_match = await db.collection('user_product_key').findOne(
 	{ user: user, product_id: product_id },
-	{ user: 1, product_id: 1 }
+	{ projection: { user: 1, product_id: 1, _id: 0 } }
   );
   console.log(token_match);
   return token_match;
@@ -9036,7 +9041,7 @@ app.get("/validatePassForDownload", async function(req, res) {
 	let user = req.query.user;
 	let product_id = req.query.product_id;
 	let query = {user: user};
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 	if (entryFound == null){
 		res.send({'error': 'Account does not have a recorded funds password'});
@@ -9670,8 +9675,7 @@ app.get('/fetchVerifiedPost', async function(req,res){
 app.get('/userHasFundsPassSet/:user', async function (req, res) {
 	let query = {user: req.params.user};
 	console.log(query);
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
-	console.log(entryFound);
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 	if (entryFound != null){
 		res.send({'hasFundsPass': true, 'passVerified': entryFound.passVerified, 'date': entryFound.date});
 	}else{
@@ -9687,7 +9691,7 @@ app.post('/setUserFundsPass', checkHdrs, async function (req, res) {
 		return res.send({'error': 'Missing password'});
 	}
 	let query = {user: user};
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 	let proceed = true;
 	//password can be set/replaced only if none exists, or its not verified already and has not been 10 mins since setting first attempt
@@ -9747,7 +9751,6 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 			let query = { user: req.query.from };
 			console.log(query);
 			let entryFound = await db.collection('account_funds_pass').findOne(query);
-			console.log(entryFound);
 
 			if (entryFound != null && (!entryFound.passVerified)) {
 				try {
@@ -9885,13 +9888,13 @@ app.get('/confirmBuyAction', checkHdrs, async function(req,res){
 
 /* end point finding whether user has a pending AFIT token swap */
 app.get('/userHasPendingTokenSwap/:user', async function(req, res){
-	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: req.params.user,upvote_processed: {$in: [null, false, 'false']}},{fields : { _id:0} });
+	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: req.params.user,upvote_processed: {$in: [null, false, 'false']}},{projection : { _id:0} });
 	res.send({user_pending_swap: user_pending_swap});
 });
 
 /* end point finding user's historical AFIT token swap */
 app.get('/getUserTokenSwapHistory/:user', async function(req, res){
-	let user_token_swap_hist = await db.collection('exchange_afit_steem').find({user: req.params.user},{fields : { _id:0} }).sort({'date': -1}).toArray();
+	let user_token_swap_hist = await db.collection('exchange_afit_steem').find({user: req.params.user},{projection : { _id:0} }).sort({'date': -1}).toArray();
 	res.send({userTokenSwapHist: user_token_swap_hist});
 });
 
@@ -9904,7 +9907,7 @@ app.get('/getPendingTokenSwapTransCount/', async function(req, res){
 
 const getBannedAccountsArr = async function (){
 	//fetch banned accounts
-	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {projection : { user: 1, _id: 0 } }).toArray();
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
 	banned_arr.push('');
@@ -9949,14 +9952,14 @@ app.get('/getProcessedTokenSwapTrans/', async function(req, res){
 /* end point for getting exchanges pending upvotes  */
 app.get('/getUnverifiedFundsAccountList/', async function(req, res){
 	return securityDisabled(res, '/getUnverifiedFundsAccountList');
-	let pendingAccounts = await db.collection('account_funds_pass').find({passVerified: {$in: [null, false, 'false']}}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
+	let pendingAccounts = await db.collection('account_funds_pass').find({passVerified: {$in: [null, false, 'false']}}, {projection : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
 	res.send({pendingAccounts: pendingAccounts, count: pendingAccounts.length});
 });
 
 /* end point for getting exchanges pending upvotes  */
 app.get('/getFullFundsAccountList/', async function(req, res){
 	return securityDisabled(res, '/getFullFundsAccountList');
-	let fullAccountList = await db.collection('account_funds_pass').find({}, {fields : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
+	let fullAccountList = await db.collection('account_funds_pass').find({}, {projection : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
 	res.send({fullAccountList: fullAccountList, count: fullAccountList.length});
 });
 
@@ -9974,7 +9977,7 @@ app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, re
 		//confirm matching funds password
 		let query = {user: user};
 		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {fields : { _id:0} });
+		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
 
 		if (entryFound == null){
 			res.send({'error': 'Account does not have a recorded funds password'});
@@ -10376,7 +10379,7 @@ app.get('/recentVerifiedPosts', async function(req, res) {
 	
 	
 	//fetch banned accounts
-	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {fields : { user: 1, _id: 0 } }).toArray();
+	let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}, {projection : { user: 1, _id: 0 } }).toArray();
 	
 	//console.log(banned_users);
 	let banned_arr = banned_users.map(entr => entr.user);
@@ -10514,7 +10517,7 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 						{ "json_metadata.bodyfat": {$exists: true} }
 					]
 				}
-	const posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	const posts = await db.collection('verified_posts').find(query, {projection : { _id:0} }).sort({date: -1}).toArray();
 	res.send(posts);
 });
 
@@ -10523,7 +10526,7 @@ app.get('/trackedMeasurements/:user', async function(req, res) {
 /* end point for fetching user's recorded activity records */
 app.get('/trackedActivity/:user', async function(req, res) {
 	let query = {"author": req.params.user}
-	const posts = await db.collection('verified_posts').find(query, {fields : { _id:0} }).sort({date: -1}).toArray();
+	const posts = await db.collection('verified_posts').find(query, {projection : { _id:0} }).sort({date: -1}).toArray();
 	res.send(posts);
 });
 
