@@ -3113,8 +3113,7 @@ app.get('/transactionsByType/', async function (req, res) {
 
 
 /* end point for user signup display (per user or general signups */
-// Signup records also hold payment memos, promo codes and contact details; only these
-// fields are needed by the website and apps, so only these are returned.
+// Only the fields the website and apps need are returned.
 const SIGNUP_PUBLIC_PROJECTION = { _id: 0, account_name: 1, date: 1, account_created: 1, referrer: 1,
 	referrer_afit_reward: 1, payment_confirmed: 1, signup_reward: 1, afit_reward: 1 };
 
