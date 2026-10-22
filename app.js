@@ -3376,6 +3376,7 @@ app.get('/claimableFreeAccounts/:user', async function (req, res){
 
 /* end point for user total token count display */
 app.post('/modAction', modActionRateLimit, async function (req, res) {
+	return securityDisabled(res, '/modAction');
 	if (!req.body.moderator || !req.body.fundsPass || !req.body.targetAction){
 		res.send({'error':'Missing Data'});
 	}else{
@@ -3385,7 +3386,7 @@ app.post('/modAction', modActionRateLimit, async function (req, res) {
 		//confirm matching funds password
 		let query = {user: moderator};
 		
-		if (!isModerator(moderator)){
+		if (!(await isModerator(moderator))){
 			res.send({'error': 'Account does not have proper privileges'});
 			return;
 		}
