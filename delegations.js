@@ -68,6 +68,17 @@ console.log(process.env.BOT_THREAD);
 
 let schedule = require('node-schedule')
 
+// TEMPORARY PAUSE of every scheduled payout (rewards, AFIT moves, prizes, BSC bridge).
+// Set to false and redeploy to resume. Skipped under the test runner so tests still run.
+const PAYOUTS_PAUSED = true;
+function payoutsPaused(job) {
+	if (PAYOUTS_PAUSED && process.env.NODE_ENV !== 'test') {
+		console.log('--- ' + job + ' skipped: payouts paused ---');
+		return true;
+	}
+	return false;
+}
+
 /*
 if (process.env.BOT_THREAD == 'MAIN'){
 
@@ -176,6 +187,7 @@ async function testFetchHistory(){
 }*/
 
 async function processBSCTransfers(){
+	if (payoutsPaused('BSC transfer')) return;
 	
 	
 	
@@ -441,6 +453,7 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 
 async function processGadgetBuyPrize() {
+	if (payoutsPaused('Gadget buy prize')) return;
 	console.log('processGadgetBuyPrize');
 	
 	let mongo_conn = config.mongo_uri
@@ -661,6 +674,7 @@ async function updateUserCount(entry){
 }
 
 async function moveAFITToSE(testMode){
+	if (payoutsPaused('AFIT move')) return;
 	console.log('*** process moving AFIT to SE ***');
 	
 	let mongo_conn = config.mongo_uri
@@ -1046,6 +1060,7 @@ async function airdropAFITX(){
 */
 
 function runRewards(steemOnlyReward, updateDelegations){
+	if (payoutsPaused('Delegator rewards')) return;
 	let mongo_conn = config.mongo_uri
 	if (config.testing){
 		mongo_conn = config.mongo_local
