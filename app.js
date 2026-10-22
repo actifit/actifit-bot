@@ -365,13 +365,15 @@ app.use(bodyParser.json()); // support json encoded bodies
 app.use(bodyParser.urlencoded({ extended: true })); // support encoded bodies
 
 // Request fields are plain values. Reject any request carrying object keys that start
-// with '$' (database query operators) anywhere in the query string, body or params.
+// with '$' (database query operators) anywhere in the query string or body, and treat
+// input nested deeper than 10 levels as invalid too.
 function hasOperatorKey(value, depth) {
-	if (!value || typeof value !== 'object' || depth > 10) return false;
+	if (!value || typeof value !== 'object') return false;
+	if (depth > 10) return true;
 	return Object.keys(value).some(k => k.startsWith('$') || hasOperatorKey(value[k], depth + 1));
 }
 app.use(function (req, res, next) {
-	if (hasOperatorKey(req.query, 0) || hasOperatorKey(req.body, 0) || hasOperatorKey(req.params, 0)) {
+	if (hasOperatorKey(req.query, 0) || hasOperatorKey(req.body, 0)) {
 		return res.status(400).send({ error: 'Invalid request' });
 	}
 	next();
