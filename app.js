@@ -846,7 +846,11 @@ const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
 	isCommunity: async (u) => (await isModerator(u)) || (await arenaAfit.balanceOf(db, u)) >= arenaFundedMinAfit,
 });
 // Injected into the tailer's ingest so a funded create locks the creator's AFIT.
-const arenaFundChallenge = (params) => arenaFund.fundChallenge(db, Object.assign({
+// AFIT-funded challenges are paused: the create is rejected before any AFIT is debited.
+const ARENA_FUNDING_PAUSED = true;
+const arenaFundChallenge = (params) => ARENA_FUNDING_PAUSED
+	? Promise.resolve({ ok: false, reason: 'AFIT-funded challenges are temporarily paused' })
+	: arenaFund.fundChallenge(db, Object.assign({
 	cutPct: config.arena_fund_cut_pct,
 	minPool: config.arena_fund_min_pool,
 }, params));
@@ -2676,6 +2680,8 @@ app.get('/resetLogin', checkHdrs, async function (req, res) {
 
 
 app.get('/updateSettingsKeychain/:trxID', async function (req, res){
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.operation || !req.query.user){
 		res.send({status:'error'})
 	}else{
@@ -2685,7 +2691,9 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 			/*console.log('settings trx found:')
 			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
 			console.log(req.query.user);*/
-			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+			// only the user's own settings operation counts, not any custom_json they signed
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]
+				|| conf_trx.operations[0][0] !== 'custom_json' || conf_trx.operations[0][1].id !== 'actifit-settings'){
 				res.send({status: 'error'});
 				return;
 			}
@@ -2707,6 +2715,8 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 })
 
 app.get('/deleteAccountKeychain/:trxID', async function (req, res){
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.user){
 		res.send({status:'error'})
 	}else{
@@ -2716,7 +2726,9 @@ app.get('/deleteAccountKeychain/:trxID', async function (req, res){
 			/*console.log('settings trx found:')
 			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
 			console.log(req.query.user);*/
-			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+			// only the user's own account-deletion operation counts, not any custom_json they signed
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]
+				|| conf_trx.operations[0][0] !== 'custom_json' || conf_trx.operations[0][1].id !== 'actifit-delete-acct'){
 				res.send({status: 'error'});
 				return;
 			}
@@ -3664,15 +3676,24 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 
 
 app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
-	if (!req.query || !req.query.operation || !req.query.user || !req.query.wallet){
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
+	if (!req.query || !req.query.operation || !req.query.user || typeof req.query.wallet !== 'string'
+		|| typeof req.query.nonce !== 'string' || typeof req.query.sign !== 'string'){
 		res.send({status:'error'})
 	}else{
 		let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
-		nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
-		const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
-		const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
-		const addrBuf = ethutil.pubToAddress(pubKey)
-		const addr = ethutil.bufferToHex(addrBuf)
+		let addr;
+		try {
+			nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
+			const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
+			const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
+			const addrBuf = ethutil.pubToAddress(pubKey)
+			addr = ethutil.bufferToHex(addrBuf)
+		} catch (err) {
+			// a malformed signature must not throw out of this async handler
+			return res.send({status: 'error'});
+		}
 		
 		if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
 			//res.send({success: true});
@@ -3689,6 +3710,11 @@ app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 					return;
 				} 
 			const ops = conf_trx.operations[0][1];
+			// only the user's own wallet-binding operation counts
+			if (conf_trx.operations[0][0] !== 'custom_json' || ops.id !== 'actifit-bsc-wallet'){
+				res.send({status: 'error'});
+				return;
+			}
 			let json;
 			try {
 				json = JSON.parse(ops.json);
@@ -4562,9 +4588,7 @@ async function performBuyHiveTrx(req){
 	//check if query has already been verified
 	let matchingEntries = await db.collection('gadget_transactions_hive').find(
 		{
-			//blockNo: req.params.blockNo,
-			trxID: req.params.trxID,
-			bchain: req.params.bchain
+			trxID: req.params.trxID
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
@@ -5105,9 +5129,7 @@ async function performMultiBuyHiveTrx(req){
 	//check if query has already been verified
 	let matchingEntries = await db.collection('gadget_transactions_hive').find(
 		{
-			blockNo: req.params.blockNo,
-			trxID: req.params.trxID,
-			bchain: req.params.bchain
+			trxID: req.params.trxID
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
@@ -7907,6 +7929,7 @@ app.get('/availableTipBalance', async function (req, res){
 })
 
 app.get('/processTipRequest', async function (req, res){
+	return securityDisabled(res, '/processTipRequest');
 	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	if (!req.query.trxId || !req.query.blkNo){
 		res.send({status: "error", error: "missing data"});
@@ -8790,7 +8813,7 @@ async function performActivateMultiTrx(req){
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db, req.params.benefic || '');
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -8885,7 +8908,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db, req.params.benefic || '');
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -9788,6 +9811,7 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 
 //function handles the process of confirming buy event for AFIT via STEEM
 app.get('/confirmBuyAction', checkHdrs, async function(req,res){
+	return securityDisabled(res, '/confirmBuyAction');
 	if (!req.query.from || req.query.from !== req.user._id) {
 		res.write(JSON.stringify({error: 'Forbidden'}));
 		res.end();
