@@ -4,6 +4,7 @@ const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const keyRotation = require('./key_rotation');
 const loginChallenge = require('./login_challenge');
+const sessionToken = require('./session_token');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -413,7 +414,7 @@ let checkHdrs = (req, res, next) => {
 			//check if user is validated with stored encrypted posting key
 			let db_col = db.collection('user_login_token');
 			//find existing login entry in DB
-			let user_tkn = await db_col.find({user: user, token: req.query.token}).toArray();
+			let user_tkn = await db_col.find(sessionToken.sessionFilter(user, req.query.token)).toArray();
 			if (!Array.isArray(user_tkn) || user_tkn.length == 0){
 				console.error('Authentication failed. Key not found');
 				return res.send({error: 'Authentication failed. Key not found'});
@@ -1505,7 +1506,7 @@ async function disableUserLogin(){
 	if (Array.isArray(items_to_move) && items_to_move.length > 0){
 		console.log('moving and deleting '+ items_to_move.length + ' old logins');
 		//cleanup data to prevent keeping keys
-		items_to_move.forEach(function(ent){ delete ent.ppkey; delete ent.token });
+		items_to_move.forEach(function(ent){ delete ent.ppkey; delete ent.token; delete ent.token_hash });
 		
 		await db_hist_col.insertMany(items_to_move);
 		let result = await db_col.deleteMany({lastlogin: {$lt: dateTarget }});
@@ -2719,7 +2720,7 @@ app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res)
 
 app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let db_col = db.collection('user_login_token');
-	let result = await db_col.deleteMany({user: req.query.user, token: req.query.token});
+	let result = await db_col.deleteMany(sessionToken.sessionFilter(req.query.user, req.query.token));
 	res.send({success: true});
 });
 
@@ -2942,7 +2943,8 @@ app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
 			user_tkn = {};
 		}
 		user_tkn.user = username;
-		user_tkn.token = token;
+		user_tkn.token_hash = sessionToken.hashToken(token);
+		delete user_tkn.token;
 		delete user_tkn.ppkey;
 		user_tkn.lastlogin = new Date();
 		user_tkn.loginsrc = 'keychain';
@@ -2988,7 +2990,9 @@ async function completeLogin(req, res, username, account, loginsrc) {
 	}
 
 	user_tkn.user = username;
-	user_tkn.token = token;
+	// only a hash of the session token is stored; the token itself goes back to the client
+	user_tkn.token_hash = sessionToken.hashToken(token);
+	delete user_tkn.token;
 	delete user_tkn.ppkey; // also drop any key stored before this fix
 	user_tkn.lastlogin = new Date();
 
@@ -3015,10 +3019,10 @@ async function completeLogin(req, res, username, account, loginsrc) {
 		// session rows, then clear the flag. If either step fails the flag stays.
 		if (rotatedFlag) {
 			try {
-				await db_col.deleteMany({ user: username, token: { $ne: token } });
+				await db_col.deleteMany({ user: username, token_hash: { $ne: user_tkn.token_hash } });
 				await keyRotationTracker.clear(username, token);
 				// a concurrent login may have replaced this session meanwhile
-				if (!(await db_col.findOne({ user: username, token: token }))) {
+				if (!(await db_col.findOne({ user: username, token_hash: user_tkn.token_hash }))) {
 					await keyRotationTracker.unclear(username);
 				}
 			} catch (err) {
@@ -10406,7 +10410,7 @@ const rewardActifitTokenWeb = async function (req, reward_activity) {
 			console.log('rewardActifitTokenWeb: missing auth token for ' + req.params.user);
 			return rewarded;
 		}
-		const tokenEntry = await db.collection('user_login_token').findOne({ user: req.params.user, token: userToken });
+		const tokenEntry = await db.collection('user_login_token').findOne(sessionToken.sessionFilter(req.params.user, userToken));
 		if (!tokenEntry) {
 			console.log('rewardActifitTokenWeb: invalid token for user ' + req.params.user);
 			return rewarded;

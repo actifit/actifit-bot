@@ -42,6 +42,7 @@ jest.doMock('web3', () => { const W = jest.fn(() => ({ eth: { Contract: jest.fn(
 jest.doMock('sscjs', () => jest.fn(() => ({ find: jest.fn(() => Promise.resolve([])) })));
 
 const dhive = jest.requireActual('@hiveio/dhive');
+const sha256 = (t) => require('crypto').createHash('sha256').update(t).digest('hex');
 const OLD = dhive.PrivateKey.fromSeed('signed-login-old');
 const NEW = dhive.PrivateKey.fromSeed('signed-login-new');
 const OTHER = dhive.PrivateKey.fromSeed('signed-login-other');
@@ -104,13 +105,15 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		const r1 = await request(app).post('/loginAuth').send({ username: 'alice', ppkey: OLD.toString(), keeploggedin: 'yes', loginsource: 'web' });
 		expect(r1.status).toBe(200);
 		const row1 = await db.collection('user_login_token').findOne({ user: 'alice' });
-		expect(row1).toMatchObject({ token: r1.body.token, keeploggedin: 'yes', loginsrc: 'web', custom: 1 });
+		expect(row1).toMatchObject({ token_hash: sha256(r1.body.token), keeploggedin: 'yes', loginsrc: 'web', custom: 1 });
+		expect(row1.token).toBeUndefined(); // only the hash is stored
 		expect(row1.ppkey).toBeUndefined();
 
 		const r2 = await signedLogin(OLD);
 		expect(r2.status).toBe(200);
 		const row2 = await db.collection('user_login_token').findOne({ user: 'alice' });
-		expect(row2).toMatchObject({ token: r2.body.token, loginsrc: 'signed-keychain' });
+		expect(row2).toMatchObject({ token_hash: sha256(r2.body.token), loginsrc: 'signed-keychain' });
+		expect(row2.token).toBeUndefined();
 		// the session gets past checkHdrs into the handler (which reports this user has no links)
 		const use = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', r2.body.token);
 		expect(use.status).toBe(200);
@@ -118,6 +121,29 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		// a made-up token is stopped by checkHdrs
 		const bad = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', 'not-a-token');
 		expect(bad.body).toMatchObject({ success: false, message: 'Token is not valid' });
+	});
+
+	test('session tokens are stored hashed: the stored value cannot be used as a session', async () => {
+		chain.alice = acct([OLD]);
+		const r = await request(app).post('/loginAuth').send({ username: 'alice', ppkey: OLD.toString() });
+		const row = await db.collection('user_login_token').findOne({ user: 'alice' });
+		expect(row.token_hash).toBe(sha256(r.body.token));
+		const withHash = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', row.token_hash);
+		expect(withHash.body).toMatchObject({ success: false, message: 'Token is not valid' });
+		const withToken = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', r.body.token);
+		expect(withToken.body).toEqual({ error: 'no current free signup links' });
+	});
+
+	test('a session row written before hashing (plaintext token) still works until it expires', async () => {
+		const jwt = require('jsonwebtoken');
+		const cfg = JSON.parse(jest.requireActual('fs').readFileSync(require('path').join(__dirname, '../test-config.json'), 'utf8'));
+		const legacy = jwt.sign({ username: 'legacyuser' }, cfg.secret, { expiresIn: '24h' });
+		await db.collection('user_login_token').insertOne({ user: 'legacyuser', token: legacy, lastlogin: new Date() });
+		const use = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', legacy);
+		expect(use.body).toEqual({ error: 'no current free signup links' });
+		// logout removes the legacy row too
+		await request(app).get('/resetLogin').set('x-acti-token', legacy);
+		expect(await db.collection('user_login_token').countDocuments({ user: 'legacyuser' })).toBe(0);
 	});
 
 	test('the challenge message names actifit.io and the user', async () => {
@@ -155,7 +181,7 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		expect(r.body.security_notice).toBeUndefined();
 		expect((await db.collection('key_rotation_required').findOne({ user: 'alice' })).cleared_at).toBeInstanceOf(Date);
 		const rows = await db.collection('user_login_token').find({ user: 'alice' }).toArray();
-		expect(rows.map((x) => x.token)).toEqual([r.body.token]);
+		expect(rows.map((x) => x.token_hash)).toEqual([sha256(r.body.token)]);
 	});
 
 	test('a key held through an app account authority (account_auths) cannot log in', async () => {
