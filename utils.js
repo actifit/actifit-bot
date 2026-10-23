@@ -21,6 +21,7 @@ var _ = require('lodash');
 const axios = require('axios');
 const dhive = require('@hiveio/dhive');
 const keyRotation = require('./key_rotation');
+const signedTx = require('./signed_tx');
 
 const dblurt = require('dblurt');
 
@@ -487,6 +488,7 @@ function createLegacyCipher(algorithm, password){
 			tx_id: tx.id,
 			ref_block_num: tx.ref_block_num,
 			tx: tx,
+			chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
 			date: new Date(),
 		};
 		try{
@@ -888,7 +890,7 @@ function createLegacyCipher(algorithm, password){
 	}
 	
 
-	async function storeVerifiedTrx(tx, db){
+	async function storeVerifiedTrx(tx, db, bchain){
 		console.log('store transaction')
 		console.log(tx);
 		if (tx && tx.ref_block_num){
@@ -896,6 +898,7 @@ function createLegacyCipher(algorithm, password){
 				tx_id: tx.transaction_id,
 				ref_block_num: tx.ref_block_num,
 				tx: tx,
+				chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
 				date: new Date(),
 			};
 			try{
@@ -1006,7 +1009,7 @@ function createLegacyCipher(algorithm, password){
 								let stored = true;
 								if (!nostore){
 									//store transaction
-									stored = await storeVerifiedTrx(matchTrx, db);
+									stored = await storeVerifiedTrx(matchTrx, db, bchain);
 								}
 								if (stored){
 									matchFound = true;
@@ -2454,12 +2457,18 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 			//let json_data = JSON.parse(trx_details);
 			
 			console.log(trx_details);
+			// only a plain HIVE transfer pays for a gadget
+			if (trx.tx.operations[0][0] !== 'transfer' || typeof trx_details.amount !== 'string'
+				|| trx_details.amount.split(' ')[1] !== 'HIVE'){
+				return false;
+			}
 			let amnt = parseFloat(trx_details.amount.split(' ')[0]);
 			//let json_data = JSON.parse(trx_details.json);
 			console.log(trx_details);
-			if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
+			if (trx_details.from == userA && trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
 				&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
 				console.log('match found');
+				if (!(await signedTx.claimVerifiedTx(db, tx_id, tx_type + '-hive'))) return false;
 				return {'success': true, 'amount_hive': amnt};
 			}
 			console.log('count not find trx A');
@@ -2492,7 +2501,7 @@ async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == user
 				&& json_data.transaction == tx_type){
 				console.log('match found');
-				return true
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('count not find trx');
 			return false;
@@ -2508,7 +2517,8 @@ async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
 	
 }
 
-async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db){
+// `benefic`, when given (activation), must be exactly the beneficiary in the signed json.
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db, benefic){
 	//let trx, th_id;
 	console.log('verifyGadgetTransaction');
 	console.log(tx_id);
@@ -2523,8 +2533,12 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain,
 			console.log(trx_details);
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 				&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+				if (benefic !== undefined && String(json_data.benefic == null ? '' : json_data.benefic) !== String(benefic)){
+					console.log('beneficiary does not match the signed transaction');
+					return false;
+				}
 				console.log('match found');
-				return true
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('count not find trx A');
 			return false;
