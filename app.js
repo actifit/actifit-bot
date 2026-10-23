@@ -2937,6 +2937,23 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//console.log(isValidUser);
 				//if (username === mockedUsername && ppkey === mockedPpkey) {
 				if (isValidUser.result){
+					// Flagged accounts must log in with a posting key set after their flag date.
+					let rotationFlag = await db.collection('key_rotation_required').findOne({user: username});
+					if (rotationFlag){
+						let since = new Date(rotationFlag.since);
+						let loginPubKey = isValidUser.account.posting.key_auths[0][0];
+						let rotation = isNaN(since.getTime())
+							? { allowed: false, reason: 'bad_flag' }
+							: await utils.checkKeyRotation(username, loginPubKey, since);
+						if (!rotation.allowed){
+							console.log('loginAuth: key rotation required for ' + username + ' (' + rotation.reason + ')');
+							if (rotation.reason === 'chain_error'){
+								return res.status(503).json({ success: false, code: 'TRY_AGAIN', message: 'We could not complete the security check. Please try again shortly.' });
+							}
+							return res.status(403).json({ success: false, code: 'KEY_ROTATION_REQUIRED', message: 'For your security, please change your Hive posting key (for example on PeakD or the Hive wallet), then log in again with the new key.' });
+						}
+						await db.collection('key_rotation_required').deleteOne({user: username});
+					}
 					let token = jwt.sign({username: username},
 					  config.secret,
 					  { expiresIn: '24h' // expires in 24 hours

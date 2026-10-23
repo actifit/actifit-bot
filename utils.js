@@ -20,6 +20,7 @@ fbadmin.initializeApp({
 var _ = require('lodash');
 const axios = require('axios');
 const dhive = require('@hiveio/dhive');
+const keyRotation = require('./key_rotation');
 
 const dblurt = require('dblurt');
 
@@ -3310,7 +3311,13 @@ async function countUserCommentsToday(username) {
 	}
 }
 
+// Posting-key rotation check for flagged accounts (see key_rotation.js).
+function checkKeyRotation(username, loginPubKey, since){
+	return keyRotation.checkRotation(hiveClient, username, loginPubKey, since);
+}
+
  module.exports = {
+   checkKeyRotation: checkKeyRotation,
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
    getRC: getRC,
