@@ -79,11 +79,16 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		});
 		mc = await MongoClient.connect(MONGO_URI);
 		db = mc.db(DB_NAME);
-		await new Promise((r) => origSetTimeout(r, 1500)); // let app.js connect
-	}, 30000);
+		// wait until app.js has connected to MongoDB and answers a DB-backed route
+		for (let i = 0; i < 60; i++) {
+			const r = await request(app).get('/userSettings/nobody');
+			if (r.status === 200) break;
+			await new Promise((res) => origSetTimeout(res, 500));
+		}
+	}, 120000);
 	afterAll(async () => {
-		await db.dropDatabase();
-		await mc.close();
+		if (db) await db.dropDatabase();
+		if (mc) await mc.close();
 		await Promise.all(appClients.map((c) => c.close().catch(() => {})));
 	});
 
@@ -106,8 +111,13 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		expect(r2.status).toBe(200);
 		const row2 = await db.collection('user_login_token').findOne({ user: 'alice' });
 		expect(row2).toMatchObject({ token: r2.body.token, loginsrc: 'signed-keychain' });
+		// the session gets past checkHdrs into the handler (which reports this user has no links)
 		const use = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', r2.body.token);
-		expect(use.body && use.body.error).not.toBe('Authentication failed. Key not found');
+		expect(use.status).toBe(200);
+		expect(use.body).toEqual({ error: 'no current free signup links' });
+		// a made-up token is stopped by checkHdrs
+		const bad = await request(app).get('/myFreeSignupLinks/').set('x-acti-token', 'not-a-token');
+		expect(bad.body).toMatchObject({ success: false, message: 'Token is not valid' });
 	});
 
 	test('the challenge message names actifit.io and the user', async () => {

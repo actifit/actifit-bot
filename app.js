@@ -3064,7 +3064,12 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//console.log(isValidUser);
 				//if (username === mockedUsername && ppkey === mockedPpkey) {
 				if (isValidUser.result){
-					return completeLogin(req, res, username, isValidUser.account, req.body && req.body.loginsource);
+					try {
+						return await completeLogin(req, res, username, isValidUser.account, req.body && req.body.loginsource);
+					} catch (err) {
+						console.error('loginAuth error:', err && err.message ? err.message : err);
+						if (!res.headersSent) return res.status(500).json({ success: false, message: 'Database error' });
+					}
 				  } else {
 					res.status(403).send({
 					  success: false,
