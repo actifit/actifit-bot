@@ -3,6 +3,7 @@ var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const keyRotation = require('./key_rotation');
+const loginChallenge = require('./login_challenge');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -2957,6 +2958,105 @@ app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
 	}
 });
 
+/* Issue a session for a user whose control of the account was just proven (posting key
+   checked against the chain, or a signed login challenge). Applies the key-rotation notice
+   and flag clearing, and answers the request. */
+async function completeLogin(req, res, username, account, loginsrc) {
+	let db_col = db.collection('user_login_token');
+	//find existing login entry in DB to override
+	let user_tkn = await db_col.findOne({user: username});
+	// Flagged accounts still log in, but are asked to change their posting key.
+	let securityNotice = null;
+	let rotatedFlag = false;
+	try {
+		let rotation = await keyRotationStatus(username, account, { fresh: true });
+		if (rotation.flagged && !rotation.rotated) {
+			securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
+		}
+		rotatedFlag = rotation.flagged && rotation.rotated;
+	} catch (err) {
+		console.log('login: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+	}
+	let token = jwt.sign({username: username},
+	  config.secret,
+	  { expiresIn: '24h' // expires in 24 hours
+	  }
+	);
+	// Ensure user_tkn is initialized if it wasn't found in a previous findOne
+	if (!user_tkn) {
+		user_tkn = {}; // Modern shorthand for new Object()
+	}
+
+	user_tkn.user = username;
+	user_tkn.token = token;
+	delete user_tkn.ppkey; // also drop any key stored before this fix
+	user_tkn.lastlogin = new Date();
+
+	// Keep record free from deletion on cleanup
+	if (req.body && req.body.keeploggedin) {
+		user_tkn.keeploggedin = req.body.keeploggedin;
+	}
+
+	// Keep record of login source
+	if (loginsrc) {
+		user_tkn.loginsrc = loginsrc;
+	}
+
+	try {
+		// We use { user: username } as the filter to identify the record.
+		// This handles both the update of an existing doc and the creation of a new one.
+		let db_save = await db_col.replaceOne(
+			{ user: username }, 
+			user_tkn, 
+			{ upsert: true }
+		);
+
+		// A flagged account just logged in with its new key: drop any other
+		// session rows, then clear the flag. If either step fails the flag stays.
+		if (rotatedFlag) {
+			try {
+				await db_col.deleteMany({ user: username, token: { $ne: token } });
+				await keyRotationTracker.clear(username, token);
+				// a concurrent login may have replaced this session meanwhile
+				if (!(await db_col.findOne({ user: username, token: token }))) {
+					await keyRotationTracker.unclear(username);
+				}
+			} catch (err) {
+				console.log('login: clearing key rotation flag failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+			}
+		}
+
+		// return the JWT token for the future API calls
+		let loginRes = {
+			success: true,
+			message: 'Authentication successful!',
+			token: token,
+			userdata: account
+		};
+		if (securityNotice) loginRes.security_notice = securityNotice;
+		res.json(loginRes);
+	} catch (err) {
+		console.error("Database save error:", err);
+		res.status(500).json({ success: false, message: "Database error" });
+	}
+}
+
+/* Signed-challenge login (see login_challenge.js). The client gets a one-time challenge,
+   signs it with the account's posting key (Hive Keychain, HiveAuth, or locally), and sends
+   back only the signature. The private key never reaches this server. */
+// Rate limited per IP: challenges have their own allowance, so a signed login does not use
+// up the shared login limit twice. There is deliberately no per-username limit: a signature
+// cannot be guessed, and a per-username limit would let anyone lock a user out.
+const loginChallengeRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+const loginHandlers = loginChallenge.createHandlers({
+	getDb: () => db,
+	getAccount: async (username) => { let data = await utils.getAccountData(username, 'HIVE'); return data && data.HIVE; },
+	isDeleted: async (username) => !!(await db.collection('deleted_accounts').findOne({ user: username })),
+	completeLogin: completeLogin,
+});
+app.post('/loginChallenge', loginChallengeRateLimit, loginHandlers.challenge);
+app.post('/loginVerify', loginRateLimit, loginHandlers.verify);
+
 app.post('/loginAuth', loginRateLimit, async function (req, res) {
 	console.log('login');
 	let username = null;
@@ -2972,10 +3072,6 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 		if (!result){
 
 			if (username && ppkey) {
-				let db_col = db.collection('user_login_token');
-				//find existing login entry in DB to override
-				let user_tkn = await db_col.findOne({user: username});
-				//console.log(user_tkn);
 
 				// The posting key is verified against the chain here and never stored.
 
@@ -2994,79 +3090,11 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//console.log(isValidUser);
 				//if (username === mockedUsername && ppkey === mockedPpkey) {
 				if (isValidUser.result){
-					// Flagged accounts still log in, but are asked to change their posting key.
-					let securityNotice = null;
-					let rotatedFlag = false;
 					try {
-						let rotation = await keyRotationStatus(username, isValidUser.account, { fresh: true });
-						if (rotation.flagged && !rotation.rotated) {
-							securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
-						}
-						rotatedFlag = rotation.flagged && rotation.rotated;
+						return await completeLogin(req, res, username, isValidUser.account, req.body && req.body.loginsource);
 					} catch (err) {
-						console.log('loginAuth: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
-					}
-					let token = jwt.sign({username: username},
-					  config.secret,
-					  { expiresIn: '24h' // expires in 24 hours
-					  }
-					);
-					// Ensure user_tkn is initialized if it wasn't found in a previous findOne
-					if (!user_tkn) {
-						user_tkn = {}; // Modern shorthand for new Object()
-					}
-
-					user_tkn.user = username;
-					user_tkn.token = token;
-					delete user_tkn.ppkey; // also drop any key stored before this fix
-					user_tkn.lastlogin = new Date();
-
-					// Keep record free from deletion on cleanup
-					if (req.body && req.body.keeploggedin) {
-						user_tkn.keeploggedin = req.body.keeploggedin;
-					}
-
-					// Keep record of login source
-					if (req.body && req.body.loginsource) {
-						user_tkn.loginsrc = req.body.loginsource;
-					}
-
-					try {
-						// We use { user: username } as the filter to identify the record.
-						// This handles both the update of an existing doc and the creation of a new one.
-						let db_save = await db_col.replaceOne(
-							{ user: username }, 
-							user_tkn, 
-							{ upsert: true }
-						);
-
-						// A flagged account just logged in with its new key: drop any other
-						// session rows, then clear the flag. If either step fails the flag stays.
-						if (rotatedFlag) {
-							try {
-								await db_col.deleteMany({ user: username, token: { $ne: token } });
-								await keyRotationTracker.clear(username, token);
-								// a concurrent login may have replaced this session meanwhile
-								if (!(await db_col.findOne({ user: username, token: token }))) {
-									await keyRotationTracker.unclear(username);
-								}
-							} catch (err) {
-								console.log('loginAuth: clearing key rotation flag failed for ' + username + ' - ' + (err && err.message ? err.message : err));
-							}
-						}
-
-						// return the JWT token for the future API calls
-						let loginRes = {
-							success: true,
-							message: 'Authentication successful!',
-							token: token,
-							userdata: isValidUser.account
-						};
-						if (securityNotice) loginRes.security_notice = securityNotice;
-						res.json(loginRes);
-					} catch (err) {
-						console.error("Database save error:", err);
-						res.status(500).json({ success: false, message: "Database error" });
+						console.error('loginAuth error:', err && err.message ? err.message : err);
+						if (!res.headersSent) return res.status(500).json({ success: false, message: 'Database error' });
 					}
 				  } else {
 					res.status(403).send({
