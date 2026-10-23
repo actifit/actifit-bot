@@ -130,8 +130,9 @@ async function fetchHistory(hiveClient, username, since) {
 }
 
 const KEY_ROTATION_MESSAGE = 'As a security precaution, please change your Hive password (this replaces your posting key), then log in to Actifit again with the new key. '
-	+ 'You can do it at https://actifit.io/password (the change happens in your browser; your password is never sent to Actifit) '
-	+ 'or at https://wallet.hive.blog. Never enter your master password anywhere else, and never share your keys. '
+	+ 'You can do it at https://actifit.io/password (the change happens in your browser; your password is never sent to Actifit), '
+	+ 'or on another trusted Hive front end: https://peakd.com, https://ecency.com or https://wallet.hive.blog. '
+	+ 'Never enter your master password anywhere else, and never share your keys. '
 	+ 'Some account actions are paused until then.';
 const TRY_AGAIN_MESSAGE = 'We could not complete a security check. Please try again shortly.';
 const LOGIN_AGAIN_MESSAGE = 'Your posting key has changed. Please log in again with your new key.';
