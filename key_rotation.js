@@ -2,13 +2,14 @@
  * Posting-key rotation check for accounts flagged in the `key_rotation_required`
  * collection.
  *
- * A flagged account may only log in with a posting key that was NOT one of its
- * posting keys at the flag's `since` date. Changing a posting key needs the active
- * or owner key, so this asks the account owner for a fresh key without trusting
- * anything a client sends.
+ * A flagged account may have had its posting key exposed. It keeps using the service,
+ * is shown a notice at login, and actions guarded by the gate wait until its current
+ * posting key is one it did NOT have at the flag's `since` date. Changing a posting key
+ * needs the active or owner key, so this cannot be satisfied with the old key alone.
  *
- * The decision (`decideRotation`) is pure and unit-tested; `checkRotation` only
- * fetches the account's authority-changing operations from the chain.
+ * `decideRotation` is pure; `checkRotation` fetches the account's authority-changing
+ * operations from the chain; `createTracker` adds the flag lookup, caching and the
+ * Express middleware.
  */
 
 // Hive operation ids that set an account's posting authority.
@@ -124,4 +125,61 @@ async function fetchHistory(hiveClient, username, since) {
 	return history;
 }
 
-module.exports = { decideRotation, checkRotation, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };
+const KEY_ROTATION_MESSAGE = 'As a security precaution, please change your Hive posting key. '
+	+ 'Use your master password or owner key only on a trusted wallet such as PeakD or Hive Keychain, and never share your keys. '
+	+ 'Some account actions are paused until your posting key has been changed.';
+const TRY_AGAIN_MESSAGE = 'We could not complete a security check. Please try again shortly.';
+const CACHE_MS = 10 * 60 * 1000;
+
+/**
+ * @param {object} deps
+ * @param {() => object} deps.getCollection  the key_rotation_required collection
+ * @param {(username: string) => Promise<object|null>} deps.getAccount  chain account
+ * @param {(username, loginPubKey, since) => Promise<{allowed, reason}>} deps.checkRotation
+ */
+function createTracker({ getCollection, getAccount, checkRotation: check, now = Date.now }) {
+	const cache = new Map(); // user -> { at, reason } while not yet rotated
+
+	// { flagged:false } | { flagged:true, rotated:true } | { flagged:true, rotated:false, reason }
+	async function status(username, account) {
+		const flag = await getCollection().findOne({ user: username });
+		if (!flag) return { flagged: false };
+		if (!(flag.since instanceof Date) || isNaN(flag.since.getTime())) return { flagged: true, rotated: false, reason: 'bad_flag' };
+		const cached = cache.get(username);
+		if (cached && now() - cached.at < CACHE_MS) return { flagged: true, rotated: false, reason: cached.reason };
+		if (!account) account = await getAccount(username);
+		if (!account || !account.posting || !Array.isArray(account.posting.key_auths) || !account.posting.key_auths.length) {
+			return { flagged: true, rotated: false, reason: 'chain_error' };
+		}
+		// login verifies the first posting key (utils.validateAccountLogin)
+		const result = await check(username, account.posting.key_auths[0][0], flag.since);
+		if (result.allowed) {
+			await getCollection().deleteOne({ user: username });
+			cache.delete(username);
+			return { flagged: true, rotated: true };
+		}
+		if (result.reason !== 'chain_error') cache.set(username, { at: now(), reason: result.reason });
+		return { flagged: true, rotated: false, reason: result.reason };
+	}
+
+	// Express middleware, used after checkHdrs. Fails closed.
+	async function gate(req, res, next) {
+		const username = req.user && req.user._id;
+		let st;
+		try {
+			st = await status(username);
+		} catch (err) {
+			console.log('key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+			st = { flagged: true, rotated: false, reason: 'chain_error' };
+		}
+		if (!st.flagged || st.rotated) return next();
+		if (st.reason === 'chain_error') {
+			return res.status(503).json({ success: false, code: 'TRY_AGAIN', error: TRY_AGAIN_MESSAGE, message: TRY_AGAIN_MESSAGE });
+		}
+		return res.status(403).json({ success: false, code: 'KEY_ROTATION_REQUIRED', error: KEY_ROTATION_MESSAGE, message: KEY_ROTATION_MESSAGE });
+	}
+
+	return { status, gate };
+}
+
+module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };

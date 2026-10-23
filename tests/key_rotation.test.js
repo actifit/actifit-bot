@@ -150,3 +150,105 @@ describe('checkRotation', () => {
 		expect(HISTORY_FILTER_LOW).toBe(bits.reduce((m, b) => m + Math.pow(2, b), 0));
 	});
 });
+
+describe('createTracker', () => {
+	const { createTracker } = require('../key_rotation');
+	const account = { posting: { key_auths: [[NEW, 1]] } };
+
+	const setup = ({ flag = { user: 'u', since: SINCE }, check = async () => ({ allowed: false, reason: 'not_rotated' }), acct = account } = {}) => {
+		const col = {
+			findOne: jest.fn(async () => flag),
+			deleteOne: jest.fn(async () => ({ deletedCount: 1 })),
+		};
+		const deps = { getCollection: () => col, getAccount: jest.fn(async () => acct), checkRotation: jest.fn(check) };
+		return { col, deps, tracker: createTracker(deps) };
+	};
+	const runGate = async (tracker, user = 'u') => {
+		const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+		const next = jest.fn();
+		await tracker.gate({ user: { _id: user } }, res, next);
+		return { res, next };
+	};
+
+	test('unflagged account: no chain call, gate passes', async () => {
+		const { deps, tracker } = setup({ flag: null });
+		await expect(tracker.status('u')).resolves.toEqual({ flagged: false });
+		const { next } = await runGate(tracker);
+		expect(next).toHaveBeenCalled();
+		expect(deps.checkRotation).not.toHaveBeenCalled();
+	});
+
+	test('flagged and not rotated: gate answers 403 KEY_ROTATION_REQUIRED', async () => {
+		const { tracker } = setup();
+		const { res, next } = await runGate(tracker);
+		expect(next).not.toHaveBeenCalled();
+		expect(res.statusCode).toBe(403);
+		expect(res.body.code).toBe('KEY_ROTATION_REQUIRED');
+		expect(res.body.error).toBe(res.body.message);
+	});
+
+	test('flagged and rotated: flag removed, gate passes', async () => {
+		const { col, deps, tracker } = setup({ check: async () => ({ allowed: true, reason: 'rotated' }) });
+		const { next } = await runGate(tracker);
+		expect(next).toHaveBeenCalled();
+		expect(col.deleteOne).toHaveBeenCalledWith({ user: 'u' });
+		expect(deps.checkRotation).toHaveBeenCalledWith('u', NEW, SINCE);
+	});
+
+	test('the account passed at login is used instead of a fresh lookup', async () => {
+		const { deps, tracker } = setup();
+		await tracker.status('u', { posting: { key_auths: [[OLD, 1]] } });
+		expect(deps.getAccount).not.toHaveBeenCalled();
+		expect(deps.checkRotation).toHaveBeenCalledWith('u', OLD, SINCE);
+	});
+
+	test('chain error: gate answers 503 TRY_AGAIN and the result is not cached', async () => {
+		const { deps, tracker } = setup({ check: async () => ({ allowed: false, reason: 'chain_error' }) });
+		const { res } = await runGate(tracker);
+		expect(res.statusCode).toBe(503);
+		expect(res.body.code).toBe('TRY_AGAIN');
+		await runGate(tracker);
+		expect(deps.checkRotation).toHaveBeenCalledTimes(2);
+	});
+
+	test('account lookup failure fails closed', async () => {
+		const { tracker } = setup({ acct: null });
+		const { res, next } = await runGate(tracker);
+		expect(next).not.toHaveBeenCalled();
+		expect(res.statusCode).toBe(503);
+	});
+
+	test('a throwing dependency fails closed', async () => {
+		const { deps, tracker } = setup();
+		deps.getCollection = null;
+		const col = { findOne: jest.fn(async () => { throw new Error('db down'); }) };
+		const t2 = createTracker({ getCollection: () => col, getAccount: deps.getAccount, checkRotation: deps.checkRotation });
+		const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const { res, next } = await runGate(t2);
+		log.mockRestore();
+		expect(next).not.toHaveBeenCalled();
+		expect(res.statusCode).toBe(503);
+	});
+
+	test('a flag without a valid Date is refused, never passed', async () => {
+		for (const since of [null, true, '2026-01-10', new Date('nope')]) {
+			const { deps, tracker } = setup({ flag: { user: 'u', since } });
+			const { res, next } = await runGate(tracker);
+			expect(next).not.toHaveBeenCalled();
+			expect(res.statusCode).toBe(403);
+			expect(deps.checkRotation).not.toHaveBeenCalled();
+		}
+	});
+
+	test('a not-rotated result is cached for 10 minutes', async () => {
+		let t = 0;
+		const col = { findOne: jest.fn(async () => ({ user: 'u', since: SINCE })), deleteOne: jest.fn() };
+		const check = jest.fn(async () => ({ allowed: false, reason: 'not_rotated' }));
+		const tracker = createTracker({ getCollection: () => col, getAccount: async () => account, checkRotation: check, now: () => t });
+		await tracker.status('u');
+		t = 9 * 60 * 1000; await tracker.status('u');
+		expect(check).toHaveBeenCalledTimes(1);
+		t = 11 * 60 * 1000; await tracker.status('u');
+		expect(check).toHaveBeenCalledTimes(2);
+	});
+});

@@ -2,6 +2,7 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+const keyRotation = require('./key_rotation');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -430,6 +431,16 @@ let checkHdrs = (req, res, next) => {
 		});
 	  }
 };	
+
+// Posting-key rotation notice and gate for flagged accounts (see key_rotation.js).
+const keyRotationTracker = keyRotation.createTracker({
+	getCollection: () => db.collection('key_rotation_required'),
+	getAccount: async (username) => { let data = await utils.getAccountData(username, 'HIVE'); return data && data.HIVE; },
+	checkRotation: utils.checkKeyRotation,
+});
+const keyRotationStatus = keyRotationTracker.status;
+const keyRotationGate = keyRotationTracker.gate;
+const KEY_ROTATION_MESSAGE = keyRotation.KEY_ROTATION_MESSAGE;
 
 /*************************** WORKOUT API *************************/
 
@@ -2280,7 +2291,7 @@ app.get('/userVotedSurvey', async function (req, res){
 	}
 });
 
-app.get('/voteSurvey', checkHdrs, async function (req, res){
+app.get('/voteSurvey', checkHdrs, keyRotationGate, async function (req, res){
 	return securityDisabled(res, '/voteSurvey');
 	if (!req.query || !req.query.user || !req.query.id || !req.query.option){
 		res.send({'error':''})
@@ -2368,7 +2379,7 @@ function securityDisabled(res, route) {
 	return res.status(503).send({ error: 'This feature is temporarily disabled for security maintenance.' });
 }
 
-app.post('/performTrxPost', checkHdrs, async function (req, res) {
+app.post('/performTrxPost', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/performTrxPost');
 	console.log('>>performTrx');
 
@@ -2422,7 +2433,7 @@ app.get('/availableHiveNodes', async function(req, res){
 	res.send({'hiveNodes':config.alt_hive_nodes})
 });
 
-app.get('/delegateRC', checkHdrs, async function (req, res) {
+app.get('/delegateRC', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/delegateRC');
 	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
 		res.send({});
@@ -2435,7 +2446,7 @@ app.get('/delegateRC', checkHdrs, async function (req, res) {
 	res.send(outc)
 });
 
-app.post('/memoDecode', checkHdrs, async function (req, res) {
+app.post('/memoDecode', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/memoDecode');
 	console.log('memo decode');
 	//set HIVE as default
@@ -2454,7 +2465,7 @@ app.post('/memoDecode', checkHdrs, async function (req, res) {
 	res.send({error:'unable to decode'});
 });
 
-app.get('/performTrx', checkHdrs, async function (req, res) {
+app.get('/performTrx', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/performTrx');
 	console.log('>>performTrx');
 	
@@ -2498,7 +2509,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 });
 
 
-app.get('/claimRewards', checkHdrs, async function (req, res){
+app.get('/claimRewards', checkHdrs, keyRotationGate, async function (req, res){
 	return securityDisabled(res, '/claimRewards');
 	if (!req.query || !req.query.user){
 		res.send({'error':''})
@@ -2649,7 +2660,7 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
-app.get('/resetFundsPass', checkHdrs, async function (req, res) {
+app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/resetFundsPass');
 	let collection = db.collection('account_funds_pass')
 
@@ -2735,7 +2746,7 @@ app.get('/deleteAccountKeychain/:trxID', async function (req, res){
 
 
 
-app.get('/deleteAccount/', checkHdrs, async function (req, res) {
+app.get('/deleteAccount/', checkHdrs, keyRotationGate, async function (req, res) {
 	if (!req.query || !req.query.user){
 		res.send({error:'invalid request'})
 		return;
@@ -2937,23 +2948,15 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//console.log(isValidUser);
 				//if (username === mockedUsername && ppkey === mockedPpkey) {
 				if (isValidUser.result){
-					// Flagged accounts must log in with a posting key set after their flag date.
-					let rotationFlag = await db.collection('key_rotation_required').findOne({user: username});
-					if (rotationFlag){
-						// `since` must be stored as a Date; anything else is refused below
-						let since = rotationFlag.since instanceof Date ? rotationFlag.since : new Date(NaN);
-						let loginPubKey = isValidUser.account.posting.key_auths[0][0];
-						let rotation = isNaN(since.getTime())
-							? { allowed: false, reason: 'bad_flag' }
-							: await utils.checkKeyRotation(username, loginPubKey, since);
-						if (!rotation.allowed){
-							console.log('loginAuth: key rotation required for ' + username + ' (' + rotation.reason + ')');
-							if (rotation.reason === 'chain_error'){
-								return res.status(503).json({ success: false, code: 'TRY_AGAIN', message: 'We could not complete the security check. Please try again shortly.' });
-							}
-							return res.status(403).json({ success: false, code: 'KEY_ROTATION_REQUIRED', message: 'For your security, please change your Hive posting key (for example on PeakD or the Hive wallet), then log in again with the new key.' });
+					// Flagged accounts still log in, but are asked to change their posting key.
+					let securityNotice = null;
+					try {
+						let rotation = await keyRotationStatus(username, isValidUser.account);
+						if (rotation.flagged && !rotation.rotated) {
+							securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
 						}
-						await db.collection('key_rotation_required').deleteOne({user: username});
+					} catch (err) {
+						console.log('loginAuth: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 					}
 					let token = jwt.sign({username: username},
 					  config.secret,
@@ -2990,12 +2993,14 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 						);
 
 						// return the JWT token for the future API calls
-						res.json({
+						let loginRes = {
 							success: true,
 							message: 'Authentication successful!',
 							token: token,
 							userdata: isValidUser.account
-						});
+						};
+						if (securityNotice) loginRes.security_notice = securityNotice;
+						res.json(loginRes);
 					} catch (err) {
 						console.error("Database save error:", err);
 						res.status(500).json({ success: false, message: "Database error" });
@@ -3643,7 +3648,7 @@ app.get('/pendingBridgeTransactions', async function (req, res) {
 	res.send(entries);
 });
 
-app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
+app.get('/appendBridgeTransaction', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/appendBridgeTransaction');
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.afitTrx || !req.query.hbdTrx){
@@ -3757,7 +3762,7 @@ app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
 	}
 })
 
-app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
+app.get('/storeUserWalletAddress', checkHdrs, keyRotationGate, async function (req, res) {
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.wallet){
 		res.send({error:'error'});
@@ -3792,7 +3797,7 @@ async function storeWalletAdd(username, wallet, walletChain){
 }
 
 
-app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {
+app.get('/deleteUserWalletAddress', checkHdrs, keyRotationGate, async function (req, res) {
 	//validate proper data used
 	if (!req.query || !req.query.user){
 		res.send({error:'error'});
@@ -4879,7 +4884,7 @@ app.get('/realProductsBought/', checkHdrs, async function (req, res) {
 });
 
 /* end point for purchasing real products */
-app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
+app.post('/purchaseRealProduct/', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/purchaseRealProduct');
 	if (!req.query.user){
 		res.send({'error': 'User not found'});
@@ -6402,7 +6407,7 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
-app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(req, res){
+app.post('/initiateAFITMoveSE', checkHdrs, keyRotationGate, modActionRateLimit, async function(req, res){
 	return securityDisabled(res, '/initiateAFITMoveSE');
 	if (!req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -6553,7 +6558,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(re
 })
 
 /* function handles the processing of a buy order */
-app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
+app.post('/tipAccount', checkHdrs, keyRotationGate, modActionRateLimit, async function(req, res){
 	return securityDisabled(res, '/tipAccount');
 	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -9701,7 +9706,7 @@ app.get('/userHasFundsPassSet/:user', async function (req, res) {
 });
 
 /* end point for setting a user's funds pass */
-app.post('/setUserFundsPass', checkHdrs, async function (req, res) {
+app.post('/setUserFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	const user = req.user._id;
 	const pass = req.body.pass;
 	if (!pass) {
@@ -10666,7 +10671,7 @@ app.get('/latestXPost', async function (req, res) {
 });
 
 /* Links a user's X account — stores OAuth tokens server-side */
-app.post('/linkXAccount', checkHdrs, async function (req, res) {
+app.post('/linkXAccount', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/linkXAccount');
 	const user = req.query.user;
 	const { xUserId, xUsername, accessToken, refreshToken } = req.body;
@@ -10689,7 +10694,7 @@ app.post('/linkXAccount', checkHdrs, async function (req, res) {
 });
 
 /* Verifies that the user liked the latest Actifit X post and awards AFIT */
-app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
+app.get('/claimXEngagementReward', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/claimXEngagementReward');
 	const user = req.query.user;
 	const tweetId = req.query.tweetId;
