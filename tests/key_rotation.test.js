@@ -25,6 +25,12 @@ describe('decideRotation', () => {
 		expect(decideRotation([created, rotated], 'u', NEW, SINCE)).toEqual({ allowed: true, reason: 'rotated' });
 	});
 
+	test('a new key added while the old key is kept -> refused, whichever key is listed first', () => {
+		const added = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW, OLD)));
+		expect(decideRotation([created, added], 'u', [NEW, OLD], SINCE)).toEqual({ allowed: false, reason: 'old_key' });
+		expect(decideRotation([created, added], 'u', [OLD, NEW], SINCE)).toEqual({ allowed: false, reason: 'old_key' });
+	});
+
 	test('posting authority changed but the old key was kept and used -> refused', () => {
 		const added = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'u' }, posting(OLD, EXTRA)));
 		expect(decideRotation([created, added], 'u', OLD, SINCE)).toEqual({ allowed: false, reason: 'old_key' });
@@ -198,11 +204,29 @@ describe('createTracker', () => {
 		expect(res.body.error).toBe(res.body.message);
 	});
 
-	test('rotated, seen at login (canClear): flag removed', async () => {
+	test('rotated: status reports it without clearing; clear() removes the flag', async () => {
 		const { col, deps, tracker } = setup({ check: async () => ({ allowed: true, reason: 'rotated' }) });
-		await expect(tracker.status('u', account, { canClear: true })).resolves.toEqual({ flagged: true, rotated: true, cleared: true });
+		await expect(tracker.status('u', account, { fresh: true })).resolves.toEqual({ flagged: true, rotated: true });
+		expect(col.deleteOne).not.toHaveBeenCalled();
+		expect(deps.checkRotation).toHaveBeenCalledWith('u', [NEW], SINCE);
+		await tracker.clear('u');
 		expect(col.deleteOne).toHaveBeenCalledWith({ user: 'u' });
-		expect(deps.checkRotation).toHaveBeenCalledWith('u', NEW, SINCE);
+	});
+
+	test('fresh (login) skips a cached not-rotated answer', async () => {
+		let rotated = false;
+		const { deps, tracker } = setup({ check: async () => (rotated ? { allowed: true, reason: 'rotated' } : { allowed: false, reason: 'not_rotated' }) });
+		await tracker.status('u');
+		rotated = true;
+		await expect(tracker.status('u')).resolves.toMatchObject({ rotated: false });
+		await expect(tracker.status('u', account, { fresh: true })).resolves.toEqual({ flagged: true, rotated: true });
+		expect(deps.checkRotation).toHaveBeenCalledTimes(2);
+	});
+
+	test('all current posting keys are checked, not only the first', async () => {
+		const { deps, tracker } = setup();
+		await tracker.status('u', { posting: { key_auths: [[NEW, 1], [OLD, 1]] } });
+		expect(deps.checkRotation).toHaveBeenCalledWith('u', [NEW, OLD], SINCE);
 	});
 
 	test('rotated, seen by the gate on an existing session: sessions ended, 401, flag kept', async () => {
@@ -219,7 +243,7 @@ describe('createTracker', () => {
 		const { deps, tracker } = setup();
 		await tracker.status('u', { posting: { key_auths: [[OLD, 1]] } });
 		expect(deps.getAccount).not.toHaveBeenCalled();
-		expect(deps.checkRotation).toHaveBeenCalledWith('u', OLD, SINCE);
+		expect(deps.checkRotation).toHaveBeenCalledWith('u', [OLD], SINCE);
 	});
 
 	test('chain error: gate answers 503 TRY_AGAIN; retried after 30 seconds, not before', async () => {

@@ -3312,8 +3312,8 @@ async function countUserCommentsToday(username) {
 }
 
 // Posting-key rotation check for flagged accounts (see key_rotation.js).
-function checkKeyRotation(username, loginPubKey, since){
-	return keyRotation.checkRotation(hiveClient, username, loginPubKey, since);
+function checkKeyRotation(username, currentKeys, since){
+	return keyRotation.checkRotation(hiveClient, username, currentKeys, since);
 }
 
  module.exports = {

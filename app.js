@@ -2953,11 +2953,13 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				if (isValidUser.result){
 					// Flagged accounts still log in, but are asked to change their posting key.
 					let securityNotice = null;
+					let rotatedFlag = false;
 					try {
-						let rotation = await keyRotationStatus(username, isValidUser.account, { canClear: true });
+						let rotation = await keyRotationStatus(username, isValidUser.account, { fresh: true });
 						if (rotation.flagged && !rotation.rotated) {
 							securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
 						}
+						rotatedFlag = rotation.flagged && rotation.rotated;
 					} catch (err) {
 						console.log('loginAuth: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 					}
@@ -2994,6 +2996,17 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 							user_tkn, 
 							{ upsert: true }
 						);
+
+						// A flagged account just logged in with its new key: drop any other
+						// session rows, then clear the flag. If either step fails the flag stays.
+						if (rotatedFlag) {
+							try {
+								await db_col.deleteMany({ user: username, token: { $ne: token } });
+								await keyRotationTracker.clear(username);
+							} catch (err) {
+								console.log('loginAuth: clearing key rotation flag failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+							}
+						}
 
 						// return the JWT token for the future API calls
 						let loginRes = {
@@ -5537,7 +5550,7 @@ app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', keyRotationGate
 });
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performMultiBuyTrx(req);
 	res.send(outc)
 });
@@ -5775,7 +5788,7 @@ app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByPara
 })
 
 /* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performBuyTrx(req.params);
 	res.send(outc)
 });
@@ -9008,7 +9021,7 @@ async function performDeactivateTrx(req){
 }
 
 //end point handles deactivating bought gadget via keychain
-app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
+app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -9020,7 +9033,7 @@ app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function
 });
 
 //end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performDeactivateTrx(req);
 	res.send(outc);
 });

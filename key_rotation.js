@@ -51,11 +51,12 @@ function ownPostingKeys(type, op, username) {
  * @param {Array} history  [index, {timestamp, op: [type, payload]}] entries, any order,
  *                         limited to (or containing) posting-authority operations
  * @param {string} username
- * @param {string} loginPubKey  the public posting key the user just proved
+ * @param {string|string[]} currentKeys  the account's current posting key(s); none of
+ *                                       them may be a key it held at `since`
  * @param {Date} since  keys in effect at this moment are treated as exposed
  * @returns {{allowed: boolean, reason: string}}
  */
-function decideRotation(history, username, loginPubKey, since) {
+function decideRotation(history, username, currentKeys, since) {
 	let lastBefore = null; // latest posting authority set at or before `since`
 	let changedAfter = false;
 	for (const [, entry] of history || []) {
@@ -76,19 +77,20 @@ function decideRotation(history, username, loginPubKey, since) {
 	// The posting authority changed, but the key used may have been kept. Without
 	// the earlier key set we cannot tell, so refuse rather than guess.
 	if (!lastBefore) return { allowed: false, reason: 'unknown_prior_keys' };
-	if (lastBefore.keys.includes(loginPubKey)) return { allowed: false, reason: 'old_key' };
+	const keys = Array.isArray(currentKeys) ? currentKeys : [currentKeys];
+	if (!keys.length || keys.some((k) => lastBefore.keys.includes(k))) return { allowed: false, reason: 'old_key' };
 	return { allowed: true, reason: 'rotated' };
 }
 
 /**
  * @param {object} hiveClient  dhive Client
  * @param {string} username
- * @param {string} loginPubKey
+ * @param {string|string[]} currentKeys
  * @param {Date} since
  * @returns {Promise<{allowed: boolean, reason: string}>}  reason 'chain_error' when the
  *          history could not be read in time; callers must treat that as not allowed.
  */
-async function checkRotation(hiveClient, username, loginPubKey, since) {
+async function checkRotation(hiveClient, username, currentKeys, since) {
 	let timer;
 	const deadline = new Promise((resolve) => {
 		timer = setTimeout(() => resolve('timeout'), DEADLINE_MS);
@@ -96,7 +98,7 @@ async function checkRotation(hiveClient, username, loginPubKey, since) {
 	try {
 		const history = await Promise.race([fetchHistory(hiveClient, username, since), deadline]);
 		if (history === 'timeout') throw new Error('timed out after ' + DEADLINE_MS + 'ms');
-		return decideRotation(history, username, loginPubKey, since);
+		return decideRotation(history, username, currentKeys, since);
 	} catch (err) {
 		console.log('key rotation check failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 		return { allowed: false, reason: 'chain_error' };
@@ -136,33 +138,34 @@ const ERROR_CACHE_MS = 30 * 1000;
 /**
  * Flag lookup, caching and Express middleware around checkRotation.
  *
- * A flag is only cleared by a login made with the new key (`status(..., { canClear: true })`
- * from /loginAuth); that login also replaces the session record. Elsewhere a detected
- * change does not clear the flag, because the caller's session or signed transaction may
- * predate it.
+ * A flag is only cleared by a login made with the new key: /loginAuth calls
+ * `status(..., { fresh: true })`, saves the new session, removes any other session rows
+ * and then calls `clear()`. Elsewhere a detected change does not clear the flag, because
+ * the caller's session or signed transaction may predate it.
  *
  * @param {object} deps
  * @param {() => object} deps.getCollection  the key_rotation_required collection
  * @param {(username: string) => Promise<object|null>} deps.getAccount  chain account
- * @param {(username, loginPubKey, since) => Promise<{allowed, reason}>} deps.checkRotation
+ * @param {(username, currentKeys, since) => Promise<{allowed, reason}>} deps.checkRotation
  * @param {(username: string) => Promise<void>} deps.endSessions  remove the user's sessions
  */
 function createTracker({ getCollection, getAccount, checkRotation: check, endSessions, now = Date.now }) {
 	const cache = new Map(); // user -> { until, reason } while not rotated (or briefly after a chain error)
 	const inFlight = new Map(); // user|key -> pending chain check
 
-	function chainCheck(username, pubKey, since) {
-		const key = username + '|' + pubKey;
+	function chainCheck(username, keys, since) {
+		const key = username + '|' + keys.join(',') + '|' + since.getTime();
 		if (!inFlight.has(key)) {
 			inFlight.set(key, Promise.resolve()
-				.then(() => check(username, pubKey, since))
+				.then(() => check(username, keys, since))
 				.finally(() => inFlight.delete(key)));
 		}
 		return inFlight.get(key);
 	}
 
-	// { flagged:false } | { flagged:true, rotated:true, cleared } | { flagged:true, rotated:false, reason }
-	async function status(username, account, { canClear = false } = {}) {
+	// { flagged:false } | { flagged:true, rotated:true } | { flagged:true, rotated:false, reason }
+	// `fresh` skips the cache (used at login, where a stale answer would keep the flag).
+	async function status(username, account, { fresh = false } = {}) {
 		const flag = await getCollection().findOne({ user: username });
 		if (!flag) return { flagged: false };
 		if (!(flag.since instanceof Date) || isNaN(flag.since.getTime())) {
@@ -170,17 +173,17 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 			return { flagged: true, rotated: false, reason: 'bad_flag' };
 		}
 		const cached = cache.get(username);
-		if (cached && now() < cached.until) return { flagged: true, rotated: false, reason: cached.reason };
+		if (!fresh && cached && now() < cached.until) return { flagged: true, rotated: false, reason: cached.reason };
 		if (!account) account = await getAccount(username);
 		if (!account || !account.posting || !Array.isArray(account.posting.key_auths) || !account.posting.key_auths.length) {
 			return { flagged: true, rotated: false, reason: 'chain_error' };
 		}
-		// login verifies the first posting key (utils.validateAccountLogin)
-		const result = await chainCheck(username, account.posting.key_auths[0][0], flag.since);
+		// every current posting key must be new, not just the one login verifies
+		const keys = account.posting.key_auths.map((ka) => ka[0]);
+		const result = await chainCheck(username, keys, flag.since);
 		if (result.allowed) {
 			cache.delete(username);
-			if (canClear) await getCollection().deleteOne({ user: username });
-			return { flagged: true, rotated: true, cleared: canClear };
+			return { flagged: true, rotated: true };
 		}
 		cache.set(username, { until: now() + (result.reason === 'chain_error' ? ERROR_CACHE_MS : CACHE_MS), reason: result.reason });
 		return { flagged: true, rotated: false, reason: result.reason };
@@ -230,7 +233,13 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 		};
 	}
 
-	return { status, gate, gateForUser };
+	// Called by /loginAuth once the session made with the new key is saved.
+	async function clear(username) {
+		cache.delete(username);
+		await getCollection().deleteOne({ user: username });
+	}
+
+	return { status, gate, gateForUser, clear };
 }
 
 module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };
