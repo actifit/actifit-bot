@@ -1,8 +1,8 @@
 /**
  * Signed-challenge login.
  *
- * The server issues a random, single-use nonce. The client signs
- * `actifit-login:<username>:<nonce>` with the account's posting key (Hive Keychain
+ * The server issues a random, single-use nonce. The client signs the message from
+ * loginMessage() ("Log in to actifit.io", the username and the nonce) with the account's posting key (Hive Keychain
  * requestSignBuffer, HiveAuth, or locally in the browser/app) and sends back only the
  * signature. The server checks that the signature recovers a key in the account's
  * current posting authority, as read from the chain. The private key never reaches us.
@@ -14,8 +14,9 @@ const dhive = require('@hiveio/dhive');
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const USERNAME_RE = /^[a-z][a-z0-9.-]{2,15}$/;
 
+// Names the site and purpose, so the signature cannot be passed off as a login elsewhere.
 function loginMessage(username, nonce) {
-	return 'actifit-login:' + username + ':' + nonce;
+	return 'Log in to actifit.io\nuser: ' + username + '\nnonce: ' + nonce;
 }
 
 function validUsername(username) {

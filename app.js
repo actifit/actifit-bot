@@ -3018,15 +3018,17 @@ async function completeLogin(req, res, username, account, loginsrc) {
 /* Signed-challenge login (see login_challenge.js). The client gets a one-time challenge,
    signs it with the account's posting key (Hive Keychain, HiveAuth, or locally), and sends
    back only the signature. The private key never reaches this server. */
-// Rate limited per IP. There is deliberately no per-username limit: a signature cannot be
-// guessed, and a per-username limit would let anyone lock a user out of logging in.
+// Rate limited per IP: challenges have their own allowance, so a signed login does not use
+// up the shared login limit twice. There is deliberately no per-username limit: a signature
+// cannot be guessed, and a per-username limit would let anyone lock a user out.
+const loginChallengeRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
 const loginHandlers = loginChallenge.createHandlers({
 	getDb: () => db,
 	getAccount: async (username) => { let data = await utils.getAccountData(username, 'HIVE'); return data && data.HIVE; },
 	isDeleted: async (username) => !!(await db.collection('deleted_accounts').findOne({ user: username })),
 	completeLogin: completeLogin,
 });
-app.post('/loginChallenge', loginRateLimit, loginHandlers.challenge);
+app.post('/loginChallenge', loginChallengeRateLimit, loginHandlers.challenge);
 app.post('/loginVerify', loginRateLimit, loginHandlers.verify);
 
 app.post('/loginAuth', loginRateLimit, async function (req, res) {
