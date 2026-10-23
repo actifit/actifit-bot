@@ -3678,15 +3678,22 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 	// these accept a Hive transaction only
 	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
-	if (!req.query || !req.query.operation || !req.query.user || !req.query.wallet){
+	if (!req.query || !req.query.operation || !req.query.user || typeof req.query.wallet !== 'string'
+		|| typeof req.query.nonce !== 'string' || typeof req.query.sign !== 'string'){
 		res.send({status:'error'})
 	}else{
 		let nonce = "\x19Ethereum Signed Message:\n" + req.query.nonce.length + req.query.nonce;//"\x19Ethereum Signed Message:\n" + nonce.length + nonce
-		nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
-		const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
-		const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
-		const addrBuf = ethutil.pubToAddress(pubKey)
-		const addr = ethutil.bufferToHex(addrBuf)
+		let addr;
+		try {
+			nonce = ethutil.keccak(Buffer.from(nonce, "utf-8"))
+			const { v, r, s } = ethutil.fromRpcSig(req.query.sign)
+			const pubKey = ethutil.ecrecover(ethutil.toBuffer(nonce), v, r, s)
+			const addrBuf = ethutil.pubToAddress(pubKey)
+			addr = ethutil.bufferToHex(addrBuf)
+		} catch (err) {
+			// a malformed signature must not throw out of this async handler
+			return res.send({status: 'error'});
+		}
 		
 		if (addr.toLowerCase() == req.query.wallet.toLowerCase()){
 			//res.send({success: true});
@@ -3703,6 +3710,11 @@ app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
 					return;
 				} 
 			const ops = conf_trx.operations[0][1];
+			// only the user's own wallet-binding operation counts
+			if (conf_trx.operations[0][0] !== 'custom_json' || ops.id !== 'actifit-bsc-wallet'){
+				res.send({status: 'error'});
+				return;
+			}
 			let json;
 			try {
 				json = JSON.parse(ops.json);
