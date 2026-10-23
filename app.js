@@ -2680,6 +2680,8 @@ app.get('/resetLogin', checkHdrs, async function (req, res) {
 
 
 app.get('/updateSettingsKeychain/:trxID', async function (req, res){
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.operation || !req.query.user){
 		res.send({status:'error'})
 	}else{
@@ -2689,7 +2691,9 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 			/*console.log('settings trx found:')
 			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
 			console.log(req.query.user);*/
-			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+			// only the user's own settings operation counts, not any custom_json they signed
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]
+				|| conf_trx.operations[0][0] !== 'custom_json' || conf_trx.operations[0][1].id !== 'actifit-settings'){
 				res.send({status: 'error'});
 				return;
 			}
@@ -2711,6 +2715,8 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 })
 
 app.get('/deleteAccountKeychain/:trxID', async function (req, res){
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.user){
 		res.send({status:'error'})
 	}else{
@@ -2720,7 +2726,9 @@ app.get('/deleteAccountKeychain/:trxID', async function (req, res){
 			/*console.log('settings trx found:')
 			console.log(conf_trx.operations[0][1].required_posting_auths[0]);
 			console.log(req.query.user);*/
-			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]){
+			// only the user's own account-deletion operation counts, not any custom_json they signed
+			if (!conf_trx || conf_trx.error || req.query.user != conf_trx.operations[0][1].required_posting_auths[0]
+				|| conf_trx.operations[0][0] !== 'custom_json' || conf_trx.operations[0][1].id !== 'actifit-delete-acct'){
 				res.send({status: 'error'});
 				return;
 			}
@@ -3668,6 +3676,8 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 
 
 app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
+	// these accept a Hive transaction only
+	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.operation || !req.query.user || !req.query.wallet){
 		res.send({status:'error'})
 	}else{
