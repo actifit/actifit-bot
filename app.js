@@ -2940,7 +2940,8 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 					// Flagged accounts must log in with a posting key set after their flag date.
 					let rotationFlag = await db.collection('key_rotation_required').findOne({user: username});
 					if (rotationFlag){
-						let since = new Date(rotationFlag.since);
+						// `since` must be stored as a Date; anything else is refused below
+						let since = rotationFlag.since instanceof Date ? rotationFlag.since : new Date(NaN);
 						let loginPubKey = isValidUser.account.posting.key_auths[0][0];
 						let rotation = isNaN(since.getTime())
 							? { allowed: false, reason: 'bad_flag' }

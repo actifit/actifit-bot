@@ -17,27 +17,27 @@ const created = entry('2020-05-01T00:00:00', 'account_create', Object.assign({ n
 
 describe('decideRotation', () => {
 	test('no posting change after the flag date -> refused', () => {
-		expect(decideRotation([created], OLD, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
+		expect(decideRotation([created], 'u', OLD, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
 	});
 
 	test('posting key replaced after the flag date, logging in with the new key -> allowed', () => {
 		const rotated = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW)));
-		expect(decideRotation([created, rotated], NEW, SINCE)).toEqual({ allowed: true, reason: 'rotated' });
+		expect(decideRotation([created, rotated], 'u', NEW, SINCE)).toEqual({ allowed: true, reason: 'rotated' });
 	});
 
 	test('posting authority changed but the old key was kept and used -> refused', () => {
 		const added = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'u' }, posting(OLD, EXTRA)));
-		expect(decideRotation([created, added], OLD, SINCE)).toEqual({ allowed: false, reason: 'old_key' });
+		expect(decideRotation([created, added], 'u', OLD, SINCE)).toEqual({ allowed: false, reason: 'old_key' });
 	});
 
 	test('account_update that leaves posting untouched does not count as a rotation', () => {
 		const memoOnly = entry('2026-01-11T08:00:00', 'account_update', { account: 'u', memo_key: 'STM_MEMO', json_metadata: '' });
-		expect(decideRotation([created, memoOnly], OLD, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
+		expect(decideRotation([created, memoOnly], 'u', OLD, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
 	});
 
 	test('account_update2 with a new posting key counts', () => {
 		const rotated = entry('2026-01-12T00:00:00', 'account_update2', Object.assign({ account: 'u' }, posting(NEW)));
-		expect(decideRotation([created, rotated], NEW, SINCE).allowed).toBe(true);
+		expect(decideRotation([created, rotated], 'u', NEW, SINCE).allowed).toBe(true);
 	});
 
 	test('the prior key set is the LATEST one at or before the flag date', () => {
@@ -45,28 +45,44 @@ describe('decideRotation', () => {
 		const backToOld = entry('2025-06-01T00:00:00', 'account_update', Object.assign({ account: 'u' }, posting(OLD)));
 		const after = entry('2026-01-11T00:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW)));
 		// NEW was in use before 2025 but not at the flag date, so it is acceptable now
-		expect(decideRotation([after, backToOld, created, earlier], NEW, SINCE).allowed).toBe(true);
+		expect(decideRotation([after, backToOld, created, earlier], 'u', NEW, SINCE).allowed).toBe(true);
 	});
 
 	test('a change exactly at the flag date belongs to the exposed key set', () => {
 		const atSince = entry('2026-01-10T12:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW)));
-		expect(decideRotation([created, atSince], NEW, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
+		expect(decideRotation([created, atSince], 'u', NEW, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
 	});
 
 	test('rotated but no earlier key set in history -> refused (cannot verify)', () => {
 		const rotated = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW)));
-		expect(decideRotation([rotated], NEW, SINCE)).toEqual({ allowed: false, reason: 'unknown_prior_keys' });
+		expect(decideRotation([rotated], 'u', NEW, SINCE)).toEqual({ allowed: false, reason: 'unknown_prior_keys' });
 	});
 
 	test('empty or malformed history -> refused', () => {
-		expect(decideRotation([], NEW, SINCE).allowed).toBe(false);
-		expect(decideRotation(null, NEW, SINCE).allowed).toBe(false);
-		expect(decideRotation([[1, null], [2, { op: 'x' }]], NEW, SINCE).allowed).toBe(false);
+		expect(decideRotation([], 'u', NEW, SINCE).allowed).toBe(false);
+		expect(decideRotation(null, 'u', NEW, SINCE).allowed).toBe(false);
+		expect(decideRotation([[1, null], [2, { op: 'x' }]], 'u', NEW, SINCE).allowed).toBe(false);
+	});
+
+	test('accounts the user created for others never count as own key changes', () => {
+		const createdFor = (ts, name, key) => entry(ts, 'create_claimed_account', Object.assign({ creator: 'u', new_account_name: name }, posting(key)));
+		// foreign creations on both sides of the flag date, the user's own key never changed
+		const history = [created, createdFor('2025-12-01T00:00:00', 'friend1', 'STM_FRIEND1'), createdFor('2026-01-11T00:00:00', 'friend2', 'STM_FRIEND2')];
+		expect(decideRotation(history, 'u', OLD, SINCE)).toEqual({ allowed: false, reason: 'not_rotated' });
+		// and after a genuine rotation the user's own pre-flag key set is still the baseline
+		const rotated = entry('2026-01-12T00:00:00', 'account_update', Object.assign({ account: 'u' }, posting(NEW)));
+		expect(decideRotation(history.concat([rotated]), 'u', NEW, SINCE).allowed).toBe(true);
+		expect(decideRotation(history.concat([rotated]), 'u', OLD, SINCE).allowed).toBe(false);
+	});
+
+	test('an update to another account is ignored', () => {
+		const other = entry('2026-01-11T08:00:00', 'account_update', Object.assign({ account: 'someone' }, posting(NEW)));
+		expect(decideRotation([created, other], 'u', NEW, SINCE).allowed).toBe(false);
 	});
 
 	test('unrelated operation types are ignored', () => {
 		const vote = entry('2026-01-11T08:00:00', 'vote', Object.assign({ voter: 'u' }, posting(NEW)));
-		expect(decideRotation([created, vote], NEW, SINCE).allowed).toBe(false);
+		expect(decideRotation([created, vote], 'u', NEW, SINCE).allowed).toBe(false);
 	});
 });
 
@@ -97,10 +113,36 @@ describe('checkRotation', () => {
 		// a full page of post-flag changes, then the creation op on the next page
 		const recent = [];
 		for (let i = 1001; i <= 2000; i++) recent.push([i, { timestamp: '2026-01-11T00:00:00', op: ['account_update', Object.assign({ account: 'u' }, posting(NEW))] }]);
-		const older = [[5, { timestamp: '2020-05-01T00:00:00', op: ['account_create', posting(OLD)] }]];
+		const older = [[5, { timestamp: '2020-05-01T00:00:00', op: ['account_create', Object.assign({ new_account_name: 'u' }, posting(OLD))] }]];
 		const client = clientReturning([recent, older]);
 		await expect(checkRotation(client, 'u', NEW, SINCE)).resolves.toEqual({ allowed: true, reason: 'rotated' });
 		expect(client.calls[1]).toEqual(['u', 1000, 1000, HISTORY_FILTER_LOW, 0]);
+	});
+
+	test('paging does not stop at a foreign creation before reaching the user key set', async () => {
+		const recent = [];
+		for (let i = 1001; i <= 2000; i++) {
+			const ts = i === 1001 ? '2025-12-01T00:00:00' : '2026-01-11T00:00:00';
+			const op = i === 2000
+				? ['account_update', Object.assign({ account: 'u' }, posting(NEW))]
+				: ['create_claimed_account', Object.assign({ creator: 'u', new_account_name: 'f' + i }, posting('STM_F' + i))];
+			recent.push([i, { timestamp: ts, op }]);
+		}
+		const older = [[5, { timestamp: '2020-05-01T00:00:00', op: ['account_create', Object.assign({ new_account_name: 'u' }, posting(OLD))] }]];
+		const client = clientReturning([recent, older]);
+		await expect(checkRotation(client, 'u', NEW, SINCE)).resolves.toEqual({ allowed: true, reason: 'rotated' });
+		expect(client.calls.length).toBe(2);
+	});
+
+	test('a node that never answers fails closed after the deadline', async () => {
+		jest.useFakeTimers();
+		const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const client = { database: { call: jest.fn(() => new Promise(() => {})) } };
+		const pending = checkRotation(client, 'u', NEW, SINCE);
+		jest.advanceTimersByTime(15000);
+		await expect(pending).resolves.toEqual({ allowed: false, reason: 'chain_error' });
+		log.mockRestore();
+		jest.useRealTimers();
 	});
 
 	test('filter covers exactly the posting-authority operations', () => {
