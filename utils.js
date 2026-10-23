@@ -487,7 +487,7 @@ function createLegacyCipher(algorithm, password){
 			tx_id: tx.id,
 			ref_block_num: tx.ref_block_num,
 			tx: tx,
-			chain: String(bchain || 'HIVE').toUpperCase(),
+			chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
 			date: new Date(),
 		};
 		try{
@@ -897,7 +897,7 @@ function createLegacyCipher(algorithm, password){
 				tx_id: tx.transaction_id,
 				ref_block_num: tx.ref_block_num,
 				tx: tx,
-				chain: String(bchain || 'HIVE').toUpperCase(),
+				chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
 				date: new Date(),
 			};
 			try{

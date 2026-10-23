@@ -101,7 +101,10 @@ const uri = process.env.MONGO_TEST_URI;
 	});
 
 	test('database errors fail closed', async () => {
-		const broken = { collection: () => ({ findOneAndUpdate: async () => { throw new Error('down'); } }) };
+		const broken = { collection: () => ({
+			findOne: async () => { throw new Error('down'); },
+			insertOne: async () => { throw new Error('down'); },
+		}) };
 		const log = jest.spyOn(console, 'log').mockImplementation(() => {});
 		expect(await claimVerifiedTx(broken, 'a', 'x')).toBe(false);
 		log.mockRestore();
