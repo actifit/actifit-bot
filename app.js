@@ -2,6 +2,7 @@ var express = require('express');
 var exphbs  = require('express-handlebars');
 const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
+const keyRotation = require('./key_rotation');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -430,6 +431,24 @@ let checkHdrs = (req, res, next) => {
 		});
 	  }
 };	
+
+// Posting-key rotation notice and gate for flagged accounts (see key_rotation.js).
+const keyRotationTracker = keyRotation.createTracker({
+	getCollection: () => db.collection('key_rotation_required'),
+	getAccount: async (username) => { let data = await utils.getAccountData(username, 'HIVE'); return data && data.HIVE; },
+	checkRotation: utils.checkKeyRotation,
+	endSessions: (username) => db.collection('user_login_token').deleteMany({ user: username }),
+});
+const keyRotationStatus = keyRotationTracker.status;
+const keyRotationGate = keyRotationTracker.gate;
+const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query && req.query.user);
+const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user);
+// For session routes that take the user from the URL: it must be the session's user.
+function sameUserParam(req, res, next) {
+	if (!req.params || req.params.user !== req.user._id) return res.send({ error: 'User mismatch' });
+	next();
+}
+const KEY_ROTATION_MESSAGE = keyRotation.KEY_ROTATION_MESSAGE;
 
 /*************************** WORKOUT API *************************/
 
@@ -2310,7 +2329,7 @@ app.get('/userVotedSurvey', async function (req, res){
 	}
 });
 
-app.get('/voteSurvey', checkHdrs, async function (req, res){
+app.get('/voteSurvey', checkHdrs, keyRotationGate, async function (req, res){
 	return securityDisabled(res, '/voteSurvey');
 	if (!req.query || !req.query.user || !req.query.id || !req.query.option){
 		res.send({'error':''})
@@ -2398,7 +2417,7 @@ function securityDisabled(res, route) {
 	return res.status(503).send({ error: 'This feature is temporarily disabled for security maintenance.' });
 }
 
-app.post('/performTrxPost', checkHdrs, async function (req, res) {
+app.post('/performTrxPost', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/performTrxPost');
 	console.log('>>performTrx');
 
@@ -2452,7 +2471,7 @@ app.get('/availableHiveNodes', async function(req, res){
 	res.send({'hiveNodes':config.alt_hive_nodes})
 });
 
-app.get('/delegateRC', checkHdrs, async function (req, res) {
+app.get('/delegateRC', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/delegateRC');
 	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
 		res.send({});
@@ -2465,7 +2484,7 @@ app.get('/delegateRC', checkHdrs, async function (req, res) {
 	res.send(outc)
 });
 
-app.post('/memoDecode', checkHdrs, async function (req, res) {
+app.post('/memoDecode', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/memoDecode');
 	console.log('memo decode');
 	//set HIVE as default
@@ -2484,7 +2503,7 @@ app.post('/memoDecode', checkHdrs, async function (req, res) {
 	res.send({error:'unable to decode'});
 });
 
-app.get('/performTrx', checkHdrs, async function (req, res) {
+app.get('/performTrx', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/performTrx');
 	console.log('>>performTrx');
 	
@@ -2528,7 +2547,7 @@ app.get('/performTrx', checkHdrs, async function (req, res) {
 });
 
 
-app.get('/claimRewards', checkHdrs, async function (req, res){
+app.get('/claimRewards', checkHdrs, keyRotationGate, async function (req, res){
 	return securityDisabled(res, '/claimRewards');
 	if (!req.query || !req.query.user){
 		res.send({'error':''})
@@ -2679,7 +2698,7 @@ app.get('/fetchUserData', checkHdrs, async function (req, res) {
 	}
 });
 
-app.get('/resetFundsPass', checkHdrs, async function (req, res) {
+app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/resetFundsPass');
 	let collection = db.collection('account_funds_pass')
 
@@ -2740,7 +2759,7 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 	}
 })
 
-app.get('/deleteAccountKeychain/:trxID', async function (req, res){
+app.get('/deleteAccountKeychain/:trxID', keyRotationGateByQuery, async function (req, res){
 	// these accept a Hive transaction only
 	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.user){
@@ -2773,7 +2792,7 @@ app.get('/deleteAccountKeychain/:trxID', async function (req, res){
 
 
 
-app.get('/deleteAccount/', checkHdrs, async function (req, res) {
+app.get('/deleteAccount/', checkHdrs, keyRotationGate, async function (req, res) {
 	if (!req.query || !req.query.user){
 		res.send({error:'invalid request'})
 		return;
@@ -2975,6 +2994,18 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 				//console.log(isValidUser);
 				//if (username === mockedUsername && ppkey === mockedPpkey) {
 				if (isValidUser.result){
+					// Flagged accounts still log in, but are asked to change their posting key.
+					let securityNotice = null;
+					let rotatedFlag = false;
+					try {
+						let rotation = await keyRotationStatus(username, isValidUser.account, { fresh: true });
+						if (rotation.flagged && !rotation.rotated) {
+							securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
+						}
+						rotatedFlag = rotation.flagged && rotation.rotated;
+					} catch (err) {
+						console.log('loginAuth: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+					}
 					let token = jwt.sign({username: username},
 					  config.secret,
 					  { expiresIn: '24h' // expires in 24 hours
@@ -3009,13 +3040,30 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 							{ upsert: true }
 						);
 
+						// A flagged account just logged in with its new key: drop any other
+						// session rows, then clear the flag. If either step fails the flag stays.
+						if (rotatedFlag) {
+							try {
+								await db_col.deleteMany({ user: username, token: { $ne: token } });
+								await keyRotationTracker.clear(username, token);
+								// a concurrent login may have replaced this session meanwhile
+								if (!(await db_col.findOne({ user: username, token: token }))) {
+									await keyRotationTracker.unclear(username);
+								}
+							} catch (err) {
+								console.log('loginAuth: clearing key rotation flag failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+							}
+						}
+
 						// return the JWT token for the future API calls
-						res.json({
+						let loginRes = {
 							success: true,
 							message: 'Authentication successful!',
 							token: token,
 							userdata: isValidUser.account
-						});
+						};
+						if (securityNotice) loginRes.security_notice = securityNotice;
+						res.json(loginRes);
 					} catch (err) {
 						console.error("Database save error:", err);
 						res.status(500).json({ success: false, message: "Database error" });
@@ -3346,7 +3394,7 @@ const claimableAccountsCount = async function (req, res){
 }
 
 
-app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
+app.get('/myFreeSignupLinks/', checkHdrs, keyRotationGate, async function (req, res){
 	let match = await db.collection('signup_promo_codes').find(
 		{
 			assigned_user: req.query.user, 
@@ -3663,7 +3711,7 @@ app.get('/pendingBridgeTransactions', async function (req, res) {
 	res.send(entries);
 });
 
-app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
+app.get('/appendBridgeTransaction', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/appendBridgeTransaction');
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.afitTrx || !req.query.hbdTrx){
@@ -3701,7 +3749,7 @@ app.get('/appendBridgeTransaction', checkHdrs, async function (req, res) {
 });
 
 
-app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
+app.get('/verifySignBSCAddKeychain/:trxID', keyRotationGateByQuery, async function (req, res) {
 	// these accept a Hive transaction only
 	if (req.query && req.query.bchain !== undefined && req.query.bchain !== 'HIVE') return res.send({status: 'error'});
 	if (!req.query || !req.query.operation || !req.query.user || typeof req.query.wallet !== 'string'
@@ -3791,7 +3839,7 @@ app.get('/verifySignBSCAdd', checkHdrs, async function (req, res) {
 	}
 })
 
-app.get('/storeUserWalletAddress', checkHdrs, async function (req, res) {
+app.get('/storeUserWalletAddress', checkHdrs, keyRotationGate, async function (req, res) {
 	//validate proper data used
 	if (!req.query || !req.query.user || !req.query.wallet){
 		res.send({error:'error'});
@@ -3826,7 +3874,7 @@ async function storeWalletAdd(username, wallet, walletChain){
 }
 
 
-app.get('/deleteUserWalletAddress', checkHdrs, async function (req, res) {
+app.get('/deleteUserWalletAddress', checkHdrs, keyRotationGate, async function (req, res) {
 	//validate proper data used
 	if (!req.query || !req.query.user){
 		res.send({error:'error'});
@@ -4853,7 +4901,7 @@ app.get('/mintProducts', async function(req,res){
 
 /* end point for checking all products bought */
 /* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
-app.get('/realProductsBought/', checkHdrs, async function (req, res) {
+app.get('/realProductsBought/', checkHdrs, keyRotationGate, async function (req, res) {
 	//if this is user querying different user, bail out
 	if (req.query && req.query.user && req.query.buyer){
 		if (req.query.user != req.query.buyer){
@@ -4911,7 +4959,7 @@ app.get('/realProductsBought/', checkHdrs, async function (req, res) {
 });
 
 /* end point for purchasing real products */
-app.post('/purchaseRealProduct/', checkHdrs, async function (req, res) {
+app.post('/purchaseRealProduct/', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/purchaseRealProduct');
 	if (!req.query.user){
 		res.send({'error': 'User not found'});
@@ -5547,7 +5595,7 @@ async function performMultiBuyTrx(req){
 }
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5559,7 +5607,7 @@ app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function 
 });
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performMultiBuyTrx(req);
 	res.send(outc)
 });
@@ -5785,7 +5833,7 @@ async function performBuyTrx(infoParam){
 }
 
 /* end point for buying gadgets via keychain */
-app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res){
+app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res){
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5797,13 +5845,13 @@ app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, 
 })
 
 /* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performBuyTrx(req.params);
 	res.send(outc)
 });
 
 /* end point for tracking buy workout generation action */
-app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, async function (req, res) {
+app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, sameUserParam, keyRotationGateByParam, async function (req, res) {
 	let outc = await performBuyWorkout(req.params);
 	res.send(outc)
 });
@@ -6432,7 +6480,7 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
-app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(req, res){
+app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/initiateAFITMoveSE');
 	if (!req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -6583,7 +6631,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, async function(re
 })
 
 /* function handles the processing of a buy order */
-app.post('/tipAccount', checkHdrs, modActionRateLimit, async function(req, res){
+app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/tipAccount');
 	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -8901,7 +8949,7 @@ async function performActivateMultiTrx(req){
 	}
 }
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 	console.log('multi gadget activate keychain')
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
@@ -8914,7 +8962,7 @@ app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', 
 });
 
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 		
 	let outc = await performActivateMultiTrx(req);
 	res.send(outc);
@@ -8923,7 +8971,7 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 
 //NOTICE: deprecated in favor of activateMultiGadget
 //end point handles activating a bought gadget
-app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
@@ -9031,7 +9079,7 @@ async function performDeactivateTrx(req){
 }
 
 //end point handles deactivating bought gadget via keychain
-app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
+app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -9043,7 +9091,7 @@ app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function
 });
 
 //end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let outc = await performDeactivateTrx(req);
 	res.send(outc);
 });
@@ -9732,7 +9780,7 @@ app.get('/userHasFundsPassSet/:user', async function (req, res) {
 });
 
 /* end point for setting a user's funds pass */
-app.post('/setUserFundsPass', checkHdrs, async function (req, res) {
+app.post('/setUserFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	const user = req.user._id;
 	const pass = req.body.pass;
 	if (!pass) {
@@ -10698,7 +10746,7 @@ app.get('/latestXPost', async function (req, res) {
 });
 
 /* Links a user's X account — stores OAuth tokens server-side */
-app.post('/linkXAccount', checkHdrs, async function (req, res) {
+app.post('/linkXAccount', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/linkXAccount');
 	const user = req.query.user;
 	const { xUserId, xUsername, accessToken, refreshToken } = req.body;
@@ -10721,7 +10769,7 @@ app.post('/linkXAccount', checkHdrs, async function (req, res) {
 });
 
 /* Verifies that the user liked the latest Actifit X post and awards AFIT */
-app.get('/claimXEngagementReward', checkHdrs, async function (req, res) {
+app.get('/claimXEngagementReward', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/claimXEngagementReward');
 	const user = req.query.user;
 	const tweetId = req.query.tweetId;
