@@ -165,6 +165,7 @@ describe('createTracker', () => {
 		const col = {
 			findOne: jest.fn(async () => flag),
 			deleteOne: jest.fn(async () => ({ deletedCount: 1 })),
+			updateOne: jest.fn(async () => ({ modifiedCount: 1 })),
 		};
 		const deps = {
 			getCollection: () => col,
@@ -204,13 +205,19 @@ describe('createTracker', () => {
 		expect(res.body.error).toBe(res.body.message);
 	});
 
-	test('rotated: status reports it without clearing; clear() removes the flag', async () => {
+	test('rotated: status reports it without clearing; clear() marks the flag cleared', async () => {
 		const { col, deps, tracker } = setup({ check: async () => ({ allowed: true, reason: 'rotated' }) });
 		await expect(tracker.status('u', account, { fresh: true })).resolves.toEqual({ flagged: true, rotated: true });
-		expect(col.deleteOne).not.toHaveBeenCalled();
+		expect(col.updateOne).not.toHaveBeenCalled();
 		expect(deps.checkRotation).toHaveBeenCalledWith('u', [NEW], SINCE);
-		await tracker.clear('u');
-		expect(col.deleteOne).toHaveBeenCalledWith({ user: 'u' });
+		await tracker.clear('u', 'tok');
+		const [filter, update] = col.updateOne.mock.calls[0];
+		expect(filter).toEqual({ user: 'u' });
+		expect(update.$set.cleared_at).toBeInstanceOf(Date);
+		expect(update.$set.cleared_session).toMatch(/^[0-9a-f]{64}$/);
+		expect(update.$set.cleared_session).not.toContain('tok');
+		await tracker.unclear('u');
+		expect(col.updateOne.mock.calls[1][1]).toEqual({ $unset: { cleared_at: '', cleared_session: '' } });
 	});
 
 	test('fresh (login) skips a cached not-rotated answer', async () => {
@@ -302,6 +309,58 @@ describe('createTracker', () => {
 		expect(deps.checkRotation).toHaveBeenCalledTimes(1);
 		t = 11 * 60 * 1000; await tracker.status('u');
 		expect(deps.checkRotation).toHaveBeenCalledTimes(2);
+	});
+
+	describe('after a flag is cleared', () => {
+		const crypto = require('crypto');
+		const hash = (t) => crypto.createHash('sha256').update(t).digest('hex');
+		const CLEARED = new Date('2026-01-12T00:00:00Z');
+		const clearedFlag = { user: 'u', since: SINCE, cleared_at: CLEARED, cleared_session: hash('clearing-token') };
+		const at = (ms) => () => CLEARED.getTime() + ms;
+		const req = (token, iatMs) => ({ user: { _id: 'u' }, query: { token }, decoded: { iat: Math.floor(iatMs / 1000) } });
+
+		test('status is unflagged, with no chain call', async () => {
+			const { deps, tracker } = setup({ flag: clearedFlag, now: at(1000) });
+			await expect(tracker.status('u')).resolves.toMatchObject({ flagged: false });
+			expect(deps.checkRotation).not.toHaveBeenCalled();
+		});
+
+		test('the clearing session passes', async () => {
+			const { tracker } = setup({ flag: clearedFlag, now: at(1000) });
+			const { next } = await runGate(tracker.gate, req('clearing-token', CLEARED.getTime() - 500));
+			expect(next).toHaveBeenCalled();
+		});
+
+		test('a session issued after the clear passes', async () => {
+			const { tracker } = setup({ flag: clearedFlag, now: at(60 * 60 * 1000) });
+			const { next } = await runGate(tracker.gate, req('later-token', CLEARED.getTime() + 30 * 60 * 1000));
+			expect(next).toHaveBeenCalled();
+		});
+
+		test('an older, different session is ended with 401 LOGIN_AGAIN', async () => {
+			const { deps, tracker } = setup({ flag: clearedFlag, now: at(1000) });
+			const { res, next } = await runGate(tracker.gate, req('old-token', CLEARED.getTime() - 2000));
+			expect(next).not.toHaveBeenCalled();
+			expect(res.statusCode).toBe(401);
+			expect(deps.endSessions).toHaveBeenCalledWith('u');
+		});
+
+		test('after the session hold (25h) any session passes', async () => {
+			const { tracker } = setup({ flag: clearedFlag, now: at(26 * 60 * 60 * 1000) });
+			const { next } = await runGate(tracker.gate, req('old-token', CLEARED.getTime() - 2000));
+			expect(next).toHaveBeenCalled();
+		});
+
+		test('transaction-signed routes are held for 8 hours, then open', async () => {
+			const byQuery = (t) => t.gateForUser((r) => r.query && r.query.user);
+			const early = setup({ flag: clearedFlag, now: at(7 * 60 * 60 * 1000) });
+			const held = await runGate(byQuery(early.tracker), { query: { user: 'u' } });
+			expect(held.next).not.toHaveBeenCalled();
+			expect(held.res.statusCode).toBe(403);
+			expect(held.res.body.code).toBe('KEY_ROTATION_HOLD');
+			const late = setup({ flag: clearedFlag, now: at(9 * 60 * 60 * 1000) });
+			expect((await runGate(byQuery(late.tracker), { query: { user: 'u' } })).next).toHaveBeenCalled();
+		});
 	});
 
 	describe('gateForUser (transaction-signed routes)', () => {

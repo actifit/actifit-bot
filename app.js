@@ -443,6 +443,11 @@ const keyRotationStatus = keyRotationTracker.status;
 const keyRotationGate = keyRotationTracker.gate;
 const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query && req.query.user);
 const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user);
+// For session routes that take the user from the URL: it must be the session's user.
+function sameUserParam(req, res, next) {
+	if (!req.params || req.params.user !== req.user._id) return res.send({ error: 'User mismatch' });
+	next();
+}
 const KEY_ROTATION_MESSAGE = keyRotation.KEY_ROTATION_MESSAGE;
 
 /*************************** WORKOUT API *************************/
@@ -3002,7 +3007,11 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 						if (rotatedFlag) {
 							try {
 								await db_col.deleteMany({ user: username, token: { $ne: token } });
-								await keyRotationTracker.clear(username);
+								await keyRotationTracker.clear(username, token);
+								// a concurrent login may have replaced this session meanwhile
+								if (!(await db_col.findOne({ user: username, token: token }))) {
+									await keyRotationTracker.unclear(username);
+								}
 							} catch (err) {
 								console.log('loginAuth: clearing key rotation flag failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 							}
@@ -5794,7 +5803,7 @@ app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByPar
 });
 
 /* end point for tracking buy workout generation action */
-app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, async function (req, res) {
+app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, sameUserParam, keyRotationGateByParam, async function (req, res) {
 	let outc = await performBuyWorkout(req.params);
 	res.send(outc)
 });
