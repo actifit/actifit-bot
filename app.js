@@ -437,9 +437,12 @@ const keyRotationTracker = keyRotation.createTracker({
 	getCollection: () => db.collection('key_rotation_required'),
 	getAccount: async (username) => { let data = await utils.getAccountData(username, 'HIVE'); return data && data.HIVE; },
 	checkRotation: utils.checkKeyRotation,
+	endSessions: (username) => db.collection('user_login_token').deleteMany({ user: username }),
 });
 const keyRotationStatus = keyRotationTracker.status;
 const keyRotationGate = keyRotationTracker.gate;
+const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query && req.query.user);
+const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user);
 const KEY_ROTATION_MESSAGE = keyRotation.KEY_ROTATION_MESSAGE;
 
 /*************************** WORKOUT API *************************/
@@ -2717,7 +2720,7 @@ app.get('/updateSettingsKeychain/:trxID', async function (req, res){
 	}
 })
 
-app.get('/deleteAccountKeychain/:trxID', async function (req, res){
+app.get('/deleteAccountKeychain/:trxID', keyRotationGateByQuery, async function (req, res){
 	if (!req.query || !req.query.user){
 		res.send({status:'error'})
 	}else{
@@ -2951,7 +2954,7 @@ app.post('/loginAuth', loginRateLimit, async function (req, res) {
 					// Flagged accounts still log in, but are asked to change their posting key.
 					let securityNotice = null;
 					try {
-						let rotation = await keyRotationStatus(username, isValidUser.account);
+						let rotation = await keyRotationStatus(username, isValidUser.account, { canClear: true });
 						if (rotation.flagged && !rotation.rotated) {
 							securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
 						}
@@ -3331,7 +3334,7 @@ const claimableAccountsCount = async function (req, res){
 }
 
 
-app.get('/myFreeSignupLinks/', checkHdrs, async function (req, res){
+app.get('/myFreeSignupLinks/', checkHdrs, keyRotationGate, async function (req, res){
 	let match = await db.collection('signup_promo_codes').find(
 		{
 			assigned_user: req.query.user, 
@@ -3686,7 +3689,7 @@ app.get('/appendBridgeTransaction', checkHdrs, keyRotationGate, async function (
 });
 
 
-app.get('/verifySignBSCAddKeychain/:trxID', async function (req, res) {
+app.get('/verifySignBSCAddKeychain/:trxID', keyRotationGateByQuery, async function (req, res) {
 	if (!req.query || !req.query.operation || !req.query.user || !req.query.wallet){
 		res.send({status:'error'})
 	}else{
@@ -5522,7 +5525,7 @@ async function performMultiBuyTrx(req){
 }
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
+app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5760,7 +5763,7 @@ async function performBuyTrx(infoParam){
 }
 
 /* end point for buying gadgets via keychain */
-app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res){
+app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res){
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -6407,7 +6410,7 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
-app.post('/initiateAFITMoveSE', checkHdrs, keyRotationGate, modActionRateLimit, async function(req, res){
+app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/initiateAFITMoveSE');
 	if (!req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -6558,7 +6561,7 @@ app.post('/initiateAFITMoveSE', checkHdrs, keyRotationGate, modActionRateLimit, 
 })
 
 /* function handles the processing of a buy order */
-app.post('/tipAccount', checkHdrs, keyRotationGate, modActionRateLimit, async function(req, res){
+app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/tipAccount');
 	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
 		//make sure all params are sent
@@ -8875,7 +8878,7 @@ async function performActivateMultiTrx(req){
 	}
 }
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 	console.log('multi gadget activate keychain')
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
@@ -8888,7 +8891,7 @@ app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', 
 });
 
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 		
 	let outc = await performActivateMultiTrx(req);
 	res.send(outc);
@@ -8897,7 +8900,7 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 
 //NOTICE: deprecated in favor of activateMultiGadget
 //end point handles activating a bought gadget
-app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	

@@ -125,44 +125,72 @@ async function fetchHistory(hiveClient, username, since) {
 	return history;
 }
 
-const KEY_ROTATION_MESSAGE = 'As a security precaution, please change your Hive posting key. '
+const KEY_ROTATION_MESSAGE = 'As a security precaution, please change your Hive posting key, then log in to Actifit again with the new key. '
 	+ 'Use your master password or owner key only on a trusted wallet such as PeakD or Hive Keychain, and never share your keys. '
-	+ 'Some account actions are paused until your posting key has been changed.';
+	+ 'Some account actions are paused until then.';
 const TRY_AGAIN_MESSAGE = 'We could not complete a security check. Please try again shortly.';
+const LOGIN_AGAIN_MESSAGE = 'Your posting key has changed. Please log in again with your new key.';
 const CACHE_MS = 10 * 60 * 1000;
+const ERROR_CACHE_MS = 30 * 1000;
 
 /**
+ * Flag lookup, caching and Express middleware around checkRotation.
+ *
+ * A flag is only cleared by a login made with the new key (`status(..., { canClear: true })`
+ * from /loginAuth); that login also replaces the session record. Elsewhere a detected
+ * change does not clear the flag, because the caller's session or signed transaction may
+ * predate it.
+ *
  * @param {object} deps
  * @param {() => object} deps.getCollection  the key_rotation_required collection
  * @param {(username: string) => Promise<object|null>} deps.getAccount  chain account
  * @param {(username, loginPubKey, since) => Promise<{allowed, reason}>} deps.checkRotation
+ * @param {(username: string) => Promise<void>} deps.endSessions  remove the user's sessions
  */
-function createTracker({ getCollection, getAccount, checkRotation: check, now = Date.now }) {
-	const cache = new Map(); // user -> { at, reason } while not yet rotated
+function createTracker({ getCollection, getAccount, checkRotation: check, endSessions, now = Date.now }) {
+	const cache = new Map(); // user -> { until, reason } while not rotated (or briefly after a chain error)
+	const inFlight = new Map(); // user|key -> pending chain check
 
-	// { flagged:false } | { flagged:true, rotated:true } | { flagged:true, rotated:false, reason }
-	async function status(username, account) {
+	function chainCheck(username, pubKey, since) {
+		const key = username + '|' + pubKey;
+		if (!inFlight.has(key)) {
+			inFlight.set(key, Promise.resolve()
+				.then(() => check(username, pubKey, since))
+				.finally(() => inFlight.delete(key)));
+		}
+		return inFlight.get(key);
+	}
+
+	// { flagged:false } | { flagged:true, rotated:true, cleared } | { flagged:true, rotated:false, reason }
+	async function status(username, account, { canClear = false } = {}) {
 		const flag = await getCollection().findOne({ user: username });
 		if (!flag) return { flagged: false };
-		if (!(flag.since instanceof Date) || isNaN(flag.since.getTime())) return { flagged: true, rotated: false, reason: 'bad_flag' };
+		if (!(flag.since instanceof Date) || isNaN(flag.since.getTime())) {
+			console.log('key_rotation_required entry for ' + username + ' has no valid Date in `since`');
+			return { flagged: true, rotated: false, reason: 'bad_flag' };
+		}
 		const cached = cache.get(username);
-		if (cached && now() - cached.at < CACHE_MS) return { flagged: true, rotated: false, reason: cached.reason };
+		if (cached && now() < cached.until) return { flagged: true, rotated: false, reason: cached.reason };
 		if (!account) account = await getAccount(username);
 		if (!account || !account.posting || !Array.isArray(account.posting.key_auths) || !account.posting.key_auths.length) {
 			return { flagged: true, rotated: false, reason: 'chain_error' };
 		}
 		// login verifies the first posting key (utils.validateAccountLogin)
-		const result = await check(username, account.posting.key_auths[0][0], flag.since);
+		const result = await chainCheck(username, account.posting.key_auths[0][0], flag.since);
 		if (result.allowed) {
-			await getCollection().deleteOne({ user: username });
 			cache.delete(username);
-			return { flagged: true, rotated: true };
+			if (canClear) await getCollection().deleteOne({ user: username });
+			return { flagged: true, rotated: true, cleared: canClear };
 		}
-		if (result.reason !== 'chain_error') cache.set(username, { at: now(), reason: result.reason });
+		cache.set(username, { until: now() + (result.reason === 'chain_error' ? ERROR_CACHE_MS : CACHE_MS), reason: result.reason });
 		return { flagged: true, rotated: false, reason: result.reason };
 	}
 
-	// Express middleware, used after checkHdrs. Fails closed.
+	function deny(res, httpStatus, code, msg) {
+		return res.status(httpStatus).json({ success: false, code, error: msg, message: msg });
+	}
+
+	// For session routes, after checkHdrs. Fails closed.
 	async function gate(req, res, next) {
 		const username = req.user && req.user._id;
 		let st;
@@ -172,14 +200,37 @@ function createTracker({ getCollection, getAccount, checkRotation: check, now = 
 			console.log('key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 			st = { flagged: true, rotated: false, reason: 'chain_error' };
 		}
-		if (!st.flagged || st.rotated) return next();
-		if (st.reason === 'chain_error') {
-			return res.status(503).json({ success: false, code: 'TRY_AGAIN', error: TRY_AGAIN_MESSAGE, message: TRY_AGAIN_MESSAGE });
+		if (!st.flagged) return next();
+		if (st.rotated) {
+			// The key changed, and this session may have been opened with the old one.
+			try { await endSessions(username); } catch (err) {
+				console.log('key rotation: ending sessions failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+			}
+			return deny(res, 401, 'LOGIN_AGAIN', LOGIN_AGAIN_MESSAGE);
 		}
-		return res.status(403).json({ success: false, code: 'KEY_ROTATION_REQUIRED', error: KEY_ROTATION_MESSAGE, message: KEY_ROTATION_MESSAGE });
+		if (st.reason === 'chain_error') return deny(res, 503, 'TRY_AGAIN', TRY_AGAIN_MESSAGE);
+		return deny(res, 403, 'KEY_ROTATION_REQUIRED', KEY_ROTATION_MESSAGE);
 	}
 
-	return { status, gate };
+	// For routes authorised by a posting-signed transaction instead of a session. A flagged
+	// account is refused outright: the transaction may have been signed with the old key.
+	function gateForUser(getUser) {
+		return async function (req, res, next) {
+			const username = getUser(req);
+			if (!username) return next(); // the route rejects the request itself
+			let flag;
+			try {
+				flag = await getCollection().findOne({ user: String(username) });
+			} catch (err) {
+				console.log('key rotation flag lookup failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+				return deny(res, 503, 'TRY_AGAIN', TRY_AGAIN_MESSAGE);
+			}
+			if (!flag) return next();
+			return deny(res, 403, 'KEY_ROTATION_REQUIRED', KEY_ROTATION_MESSAGE);
+		};
+	}
+
+	return { status, gate, gateForUser };
 }
 
 module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };
