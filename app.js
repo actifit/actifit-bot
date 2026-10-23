@@ -4566,9 +4566,7 @@ async function performBuyHiveTrx(req){
 	//check if query has already been verified
 	let matchingEntries = await db.collection('gadget_transactions_hive').find(
 		{
-			//blockNo: req.params.blockNo,
-			trxID: req.params.trxID,
-			bchain: req.params.bchain
+			trxID: req.params.trxID
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
@@ -5109,9 +5107,7 @@ async function performMultiBuyHiveTrx(req){
 	//check if query has already been verified
 	let matchingEntries = await db.collection('gadget_transactions_hive').find(
 		{
-			blockNo: req.params.blockNo,
-			trxID: req.params.trxID,
-			bchain: req.params.bchain
+			trxID: req.params.trxID
 		}).toArray();
 	
 	if (Array.isArray(matchingEntries) && matchingEntries.length > 0){
@@ -9793,6 +9789,7 @@ app.get('/confirmPaymentPasswordVerify', async function(req,res){
 
 //function handles the process of confirming buy event for AFIT via STEEM
 app.get('/confirmBuyAction', checkHdrs, async function(req,res){
+	return securityDisabled(res, '/confirmBuyAction');
 	if (!req.query.from || req.query.from !== req.user._id) {
 		res.write(JSON.stringify({error: 'Forbidden'}));
 		res.end();

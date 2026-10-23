@@ -28,24 +28,43 @@ const uri = process.env.MONGO_TEST_URI;
 		await client.close();
 	});
 	beforeEach(async () => { await db.collection('verified_tx').deleteMany({}); });
+	// a row as findVerifyTrx stores it: recorded now, signed `signedAgoMs` ago
+	const row = (tx_id, signedAgoMs = 0, extra = {}) => Object.assign({
+		tx_id, date: new Date(),
+		tx: { expiration: new Date(Date.now() - signedAgoMs + 30 * 60 * 1000).toISOString().slice(0, 19) },
+	}, extra);
 
 	test('first claim succeeds, second is refused', async () => {
-		await db.collection('verified_tx').insertOne({ tx_id: 'a', date: new Date() });
+		await db.collection('verified_tx').insertOne(row('a'));
 		expect(await claimVerifiedTx(db, 'a', 'buy-gadget')).toBe(true);
 		expect(await claimVerifiedTx(db, 'a', 'buy-gadget')).toBe(false);
-		const row = await db.collection('verified_tx').findOne({ tx_id: 'a' });
-		expect(row.consumed_for).toBe('buy-gadget');
+		const stored = await db.collection('verified_tx').findOne({ tx_id: 'a' });
+		expect(stored.consumed_for).toBe('buy-gadget');
 	});
 
 	test('concurrent claims: exactly one wins', async () => {
-		await db.collection('verified_tx').insertOne({ tx_id: 'b', date: new Date() });
+		await db.collection('verified_tx').insertOne(row('b'));
 		const results = await Promise.all(Array.from({ length: 20 }, () => claimVerifiedTx(db, 'b', 'activate-gadget')));
 		expect(results.filter(Boolean)).toHaveLength(1);
 	});
 
 	test('rows recorded before the age limit are refused', async () => {
-		await db.collection('verified_tx').insertOne({ tx_id: 'c', date: new Date(Date.now() - SIGNED_TX_MAX_AGE_MS - 60000) });
+		await db.collection('verified_tx').insertOne(row('c', 0, { date: new Date(Date.now() - SIGNED_TX_MAX_AGE_MS - 60000) }));
 		expect(await claimVerifiedTx(db, 'c', 'buy-gadget')).toBe(false);
+	});
+
+	test('an old transaction recorded just now is refused (age is by signing time)', async () => {
+		await db.collection('verified_tx').insertOne(row('old', 30 * 24 * 60 * 60 * 1000));
+		expect(await claimVerifiedTx(db, 'old', 'buy-gadget')).toBe(false);
+	});
+
+	test('the same transaction stored twice still authorises only one action', async () => {
+		await db.collection('verified_tx').insertMany([row('dup'), row('dup')]);
+		const sequential = [await claimVerifiedTx(db, 'dup', 'x'), await claimVerifiedTx(db, 'dup', 'x')];
+		expect(sequential).toEqual([true, false]);
+		await db.collection('verified_tx').insertMany([row('dup2'), row('dup2'), row('dup2')]);
+		const concurrent = await Promise.all([1, 2, 3].map(() => claimVerifiedTx(db, 'dup2', 'x')));
+		expect(concurrent.filter(Boolean).length).toBeLessThanOrEqual(1);
 	});
 
 	test('rows without a date (legacy) are refused', async () => {
@@ -58,7 +77,7 @@ const uri = process.env.MONGO_TEST_URI;
 	});
 
 	test('non-string ids cannot match operators', async () => {
-		await db.collection('verified_tx').insertOne({ tx_id: 'e', date: new Date() });
+		await db.collection('verified_tx').insertOne(row('e'));
 		expect(await claimVerifiedTx(db, { $ne: null }, 'buy-gadget')).toBe(false);
 	});
 

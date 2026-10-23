@@ -2457,9 +2457,10 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 			let amnt = parseFloat(trx_details.amount.split(' ')[0]);
 			//let json_data = JSON.parse(trx_details.json);
 			console.log(trx_details);
-			if (trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
+			if (trx_details.from == userA && trx_details.to == config.gadget_buy_account && trx_details.memo == tx_type + ':' + gadget_id
 				&& (amnt >= parseFloat(item_price) || amnt >= parseFloat(item_price_alt))){
 				console.log('match found');
+				if (!(await signedTx.claimVerifiedTx(db, tx_id, tx_type + '-hive'))) return false;
 				return {'success': true, 'amount_hive': amnt};
 			}
 			console.log('count not find trx A');
@@ -2508,7 +2509,7 @@ async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
 	
 }
 
-// `benefic`, when given (activation), must match the beneficiary in the signed json.
+// `benefic`, when given (activation), must be exactly the beneficiary in the signed json.
 async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db, benefic){
 	//let trx, th_id;
 	console.log('verifyGadgetTransaction');
@@ -2524,7 +2525,7 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain,
 			console.log(trx_details);
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 				&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
-				if (benefic !== undefined && signedTx.normalizeAccountName(json_data.benefic) !== signedTx.normalizeAccountName(benefic)){
+				if (benefic !== undefined && String(json_data.benefic == null ? '' : json_data.benefic) !== String(benefic)){
 					console.log('beneficiary does not match the signed transaction');
 					return false;
 				}
