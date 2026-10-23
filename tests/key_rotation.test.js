@@ -163,9 +163,9 @@ describe('createTracker', () => {
 
 	const setup = ({ flag = { user: 'u', since: SINCE }, check = async () => ({ allowed: false, reason: 'not_rotated' }), acct = account, now } = {}) => {
 		const col = {
-			findOne: jest.fn(async () => flag),
+			find: jest.fn(() => ({ toArray: async () => (flag ? [flag] : []) })),
 			deleteOne: jest.fn(async () => ({ deletedCount: 1 })),
-			updateOne: jest.fn(async () => ({ modifiedCount: 1 })),
+			updateMany: jest.fn(async () => ({ modifiedCount: 1 })),
 		};
 		const deps = {
 			getCollection: () => col,
@@ -208,16 +208,16 @@ describe('createTracker', () => {
 	test('rotated: status reports it without clearing; clear() marks the flag cleared', async () => {
 		const { col, deps, tracker } = setup({ check: async () => ({ allowed: true, reason: 'rotated' }) });
 		await expect(tracker.status('u', account, { fresh: true })).resolves.toEqual({ flagged: true, rotated: true });
-		expect(col.updateOne).not.toHaveBeenCalled();
+		expect(col.updateMany).not.toHaveBeenCalled();
 		expect(deps.checkRotation).toHaveBeenCalledWith('u', [NEW], SINCE);
 		await tracker.clear('u', 'tok');
-		const [filter, update] = col.updateOne.mock.calls[0];
+		const [filter, update] = col.updateMany.mock.calls[0];
 		expect(filter).toEqual({ user: 'u' });
 		expect(update.$set.cleared_at).toBeInstanceOf(Date);
 		expect(update.$set.cleared_session).toMatch(/^[0-9a-f]{64}$/);
 		expect(update.$set.cleared_session).not.toContain('tok');
 		await tracker.unclear('u');
-		expect(col.updateOne.mock.calls[1][1]).toEqual({ $unset: { cleared_at: '', cleared_session: '' } });
+		expect(col.updateMany.mock.calls[1][1]).toEqual({ $unset: { cleared_at: '', cleared_session: '' } });
 	});
 
 	test('fresh (login) skips a cached not-rotated answer', async () => {
@@ -284,7 +284,7 @@ describe('createTracker', () => {
 	});
 
 	test('a throwing dependency fails closed', async () => {
-		const col = { findOne: jest.fn(async () => { throw new Error('db down'); }) };
+		const col = { find: jest.fn(() => ({ toArray: async () => { throw new Error('db down'); } })) };
 		const tracker = createTracker({ getCollection: () => col, getAccount: async () => account, checkRotation: jest.fn(), endSessions: jest.fn() });
 		const { res, next } = await runGate(tracker.gate, sessionReq());
 		expect(next).not.toHaveBeenCalled();
@@ -337,6 +337,12 @@ describe('createTracker', () => {
 			expect(next).toHaveBeenCalled();
 		});
 
+		test('a session issued in the same second as the clear passes', async () => {
+			const { tracker } = setup({ flag: clearedFlag, now: at(1000) });
+			const { next } = await runGate(tracker.gate, req('same-second-token', CLEARED.getTime()));
+			expect(next).toHaveBeenCalled();
+		});
+
 		test('an older, different session is ended with 401 LOGIN_AGAIN', async () => {
 			const { deps, tracker } = setup({ flag: clearedFlag, now: at(1000) });
 			const { res, next } = await runGate(tracker.gate, req('old-token', CLEARED.getTime() - 2000));
@@ -351,14 +357,14 @@ describe('createTracker', () => {
 			expect(next).toHaveBeenCalled();
 		});
 
-		test('transaction-signed routes are held for 8 hours, then open', async () => {
+		test('transaction-signed routes are held for 10 hours, then open', async () => {
 			const byQuery = (t) => t.gateForUser((r) => r.query && r.query.user);
-			const early = setup({ flag: clearedFlag, now: at(7 * 60 * 60 * 1000) });
+			const early = setup({ flag: clearedFlag, now: at(9.5 * 60 * 60 * 1000) });
 			const held = await runGate(byQuery(early.tracker), { query: { user: 'u' } });
 			expect(held.next).not.toHaveBeenCalled();
 			expect(held.res.statusCode).toBe(403);
 			expect(held.res.body.code).toBe('KEY_ROTATION_HOLD');
-			const late = setup({ flag: clearedFlag, now: at(9 * 60 * 60 * 1000) });
+			const late = setup({ flag: clearedFlag, now: at(10.5 * 60 * 60 * 1000) });
 			expect((await runGate(byQuery(late.tracker), { query: { user: 'u' } })).next).toHaveBeenCalled();
 		});
 	});
@@ -382,11 +388,61 @@ describe('createTracker', () => {
 		});
 
 		test('lookup failure fails closed', async () => {
-			const col = { findOne: jest.fn(async () => { throw new Error('db down'); }) };
+			const col = { find: jest.fn(() => ({ toArray: async () => { throw new Error('db down'); } })) };
 			const tracker = createTracker({ getCollection: () => col, getAccount: jest.fn(), checkRotation: jest.fn(), endSessions: jest.fn() });
 			const { res, next } = await runGate(byQuery(tracker), { query: { user: 'u' } });
 			expect(next).not.toHaveBeenCalled();
 			expect(res.statusCode).toBe(503);
 		});
+	});
+});
+
+const MONGO_URI = process.env.MONGO_TEST_URI;
+(MONGO_URI ? describe : describe.skip)('re-flagging a cleared account (real MongoDB)', () => {
+	const { MongoClient } = require('mongodb');
+	const { createTracker } = require('../key_rotation');
+	let client, db, col, tracker;
+	const account = { posting: { key_auths: [[OLD, 1]] } };
+	beforeAll(async () => {
+		client = await MongoClient.connect(MONGO_URI);
+		db = client.db('key_rotation_test_' + Date.now());
+		col = db.collection('key_rotation_required');
+	});
+	afterAll(async () => { await db.dropDatabase(); await client.close(); });
+	beforeEach(async () => {
+		await col.deleteMany({});
+		tracker = createTracker({
+			getCollection: () => col,
+			getAccount: async () => account,
+			checkRotation: async () => ({ allowed: false, reason: 'not_rotated' }),
+			endSessions: async () => {},
+		});
+	});
+	const CLEARED_AT = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+
+	test('a new entry next to a cleared one is active', async () => {
+		await col.insertOne({ user: 'u', since: SINCE, cleared_at: CLEARED_AT, cleared_session: 'x' });
+		await col.insertOne({ user: 'u', since: new Date() });
+		await expect(tracker.status('u')).resolves.toMatchObject({ flagged: true, rotated: false });
+	});
+
+	test('updating `since` past the clear makes the entry active again', async () => {
+		await col.insertOne({ user: 'u', since: SINCE, cleared_at: CLEARED_AT, cleared_session: 'x' });
+		await col.updateOne({ user: 'u' }, { $set: { since: new Date() } });
+		await expect(tracker.status('u')).resolves.toMatchObject({ flagged: true, rotated: false });
+		const gated = tracker.gateForUser((r) => r.query.user);
+		let passed = false;
+		const res = { status() { return this; }, json() { return this; } };
+		await gated({ query: { user: 'u' } }, res, () => { passed = true; });
+		expect(passed).toBe(false);
+	});
+
+	test('clear() then unclear() apply to every entry of the user', async () => {
+		await col.insertMany([{ user: 'u', since: SINCE }, { user: 'u', since: new Date() }]);
+		await tracker.clear('u', 'tok');
+		expect(await col.countDocuments({ user: 'u', cleared_at: { $type: 'date' } })).toBe(2);
+		await expect(tracker.status('u')).resolves.toMatchObject({ flagged: false });
+		await tracker.unclear('u');
+		expect(await col.countDocuments({ user: 'u', cleared_at: { $exists: true } })).toBe(0);
 	});
 });

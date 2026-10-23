@@ -139,9 +139,9 @@ const CACHE_MS = 10 * 60 * 1000;
 const ERROR_CACHE_MS = 30 * 1000;
 // After a flag is cleared, sessions issued before the clearing login stay refused for
 // the session lifetime (24h JWT), and posting-signed transactions for long enough that
-// any signed with the old key have expired (Hive allows up to 1h) and aged out (6h).
+// any signed with the old key have expired (Hive allows up to 1h) and aged out, with margin.
 const SESSION_HOLD_MS = 25 * 60 * 60 * 1000;
-const SIGNED_TX_HOLD_MS = 8 * 60 * 60 * 1000;
+const SIGNED_TX_HOLD_MS = 10 * 60 * 60 * 1000;
 
 function tokenHash(token) {
 	return crypto.createHash('sha256').update(String(token)).digest('hex');
@@ -168,6 +168,17 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 	const cache = new Map(); // user -> { until, reason } while not rotated (or briefly after a chain error)
 	const inFlight = new Map(); // user|key -> pending chain check
 
+	// The entry that applies to a user: any active one wins over a cleared one. An entry
+	// whose `since` is later than its clear was re-flagged and is active again.
+	async function findFlag(username) {
+		const rows = await getCollection().find({ user: username }).toArray();
+		const isActive = (r) => !(r.cleared_at instanceof Date)
+			|| (r.since instanceof Date && r.since.getTime() > r.cleared_at.getTime());
+		const active = rows.find(isActive);
+		if (active) return Object.assign({}, active, { cleared_at: undefined, cleared_session: undefined });
+		return rows.sort((a, b) => b.cleared_at - a.cleared_at)[0] || null;
+	}
+
 	function chainCheck(username, keys, since) {
 		const key = username + '|' + keys.join(',') + '|' + since.getTime();
 		if (!inFlight.has(key)) {
@@ -181,7 +192,7 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 	// { flagged:false, cleared? } | { flagged:true, rotated:true } | { flagged:true, rotated:false, reason }
 	// `fresh` skips the cache (used at login, where a stale answer would keep the flag).
 	async function status(username, account, { fresh = false } = {}) {
-		const flag = await getCollection().findOne({ user: username });
+		const flag = await findFlag(username);
 		if (!flag) return { flagged: false };
 		if (flag.cleared_at instanceof Date) return { flagged: false, cleared: flag };
 		if (!(flag.since instanceof Date) || isNaN(flag.since.getTime())) {
@@ -225,7 +236,9 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 				// only the clearing session, or one issued after it, is trusted
 				const issuedAt = req.decoded && Number(req.decoded.iat) * 1000;
 				const token = req.query && req.query.token;
-				const ok = (token && tokenHash(token) === cleared.cleared_session) || (issuedAt > cleared.cleared_at.getTime());
+				// iat has whole-second precision: a session from the clear's own second counts
+				const clearedSecond = Math.floor(cleared.cleared_at.getTime() / 1000) * 1000;
+				const ok = (token && tokenHash(token) === cleared.cleared_session) || (issuedAt >= clearedSecond);
 				if (!ok) {
 					try { await endSessions(username); } catch (err) {
 						console.log('key rotation: ending sessions failed for ' + username + ' - ' + (err && err.message ? err.message : err));
@@ -254,7 +267,7 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 			if (!username) return next(); // the route rejects the request itself
 			let flag;
 			try {
-				flag = await getCollection().findOne({ user: String(username) });
+				flag = await findFlag(String(username));
 			} catch (err) {
 				console.log('key rotation flag lookup failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 				return deny(res, 503, 'TRY_AGAIN', TRY_AGAIN_MESSAGE);
@@ -271,13 +284,13 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 	// Called by /loginAuth once the session made with the new key is saved.
 	async function clear(username, token) {
 		cache.delete(username);
-		await getCollection().updateOne({ user: username },
+		await getCollection().updateMany({ user: username },
 			{ $set: { cleared_at: new Date(now()), cleared_session: tokenHash(token) } });
 	}
 
 	// Undo a clear whose session was overwritten before it could be confirmed.
 	async function unclear(username) {
-		await getCollection().updateOne({ user: username }, { $unset: { cleared_at: '', cleared_session: '' } });
+		await getCollection().updateMany({ user: username }, { $unset: { cleared_at: '', cleared_session: '' } });
 	}
 
 	return { status, gate, gateForUser, clear, unclear };

@@ -4851,7 +4851,7 @@ app.get('/mintProducts', async function(req,res){
 
 /* end point for checking all products bought */
 /* end point for user transactions display (per user or general actifit token transactions, limited by 1000) */
-app.get('/realProductsBought/', checkHdrs, async function (req, res) {
+app.get('/realProductsBought/', checkHdrs, keyRotationGate, async function (req, res) {
 	//if this is user querying different user, bail out
 	if (req.query && req.query.user && req.query.buyer){
 		if (req.query.user != req.query.buyer){
