@@ -1,41 +1,40 @@
 /**
- * A verified transaction (a row in `verified_tx`) authorises ONE action, shortly after it
- * was signed. Claiming is atomic, so the same transaction cannot be used twice. Age is
- * judged by the transaction's own expiration (set at signing, at most 1h ahead), so an
- * old transaction cannot be made fresh by recording it again later.
+ * A verified Hive transaction (a row in `verified_tx`) authorises ONE action, shortly after
+ * it was signed.
+ *
+ * - Only rows recorded from the Hive chain count.
+ * - Age is judged by the transaction's own expiration (set at signing, at most 1h ahead),
+ *   so an old transaction cannot be made fresh by recording it again later.
+ * - The claim is an insert into `consumed_tx` keyed by the transaction id. `_id` is unique,
+ *   so exactly one claim wins even if the transaction was recorded more than once.
  */
 
 const SIGNED_TX_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
-/**
- * @returns {Promise<boolean>} true only for the first claim of a recent, unclaimed row
- */
 // Chain timestamps are UTC ISO strings without a zone ("2026-10-23T10:00:00"), which
 // compare correctly as strings.
 function chainTimestamp(ms) {
 	return new Date(ms).toISOString().slice(0, 19);
 }
 
+/**
+ * @returns {Promise<boolean>} true only for the first claim of a recent Hive transaction
+ */
 async function claimVerifiedTx(db, tx_id, purpose, now = Date.now) {
+	const id = String(tx_id);
 	try {
-		const res = await db.collection('verified_tx').findOneAndUpdate(
-			{
-				tx_id: String(tx_id),
-				consumed_for: { $exists: false },
-				date: { $gte: new Date(now() - SIGNED_TX_MAX_AGE_MS) },
-				'tx.expiration': { $gte: chainTimestamp(now() - SIGNED_TX_MAX_AGE_MS) },
-			},
-			{ $set: { consumed_for: purpose, consumed_at: new Date(now()) } }
-		);
-		// driver 5 returns { value }; driver 6 returns the document itself
-		const doc = res && Object.prototype.hasOwnProperty.call(res, 'value') ? res.value : res;
-		if (!doc) return false;
-		// verified_tx can hold the same transaction more than once (concurrent recording);
-		// only the first claim across all of its rows may act.
-		const claimed = await db.collection('verified_tx').countDocuments({ tx_id: String(tx_id), consumed_for: { $exists: true } });
-		return claimed === 1;
+		const row = await db.collection('verified_tx').findOne({
+			tx_id: id,
+			chain: 'HIVE',
+			date: { $gte: new Date(now() - SIGNED_TX_MAX_AGE_MS) },
+			'tx.expiration': { $gte: chainTimestamp(now() - SIGNED_TX_MAX_AGE_MS) },
+		});
+		if (!row) return false;
+		await db.collection('consumed_tx').insertOne({ _id: id, purpose, at: new Date(now()) });
+		return true;
 	} catch (err) {
-		console.log('claimVerifiedTx failed for ' + tx_id + ' - ' + (err && err.message ? err.message : err));
+		if (err && err.code === 11000) return false; // already claimed
+		console.log('claimVerifiedTx failed for ' + id + ' - ' + (err && err.message ? err.message : err));
 		return false;
 	}
 }

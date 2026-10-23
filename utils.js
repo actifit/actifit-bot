@@ -487,6 +487,7 @@ function createLegacyCipher(algorithm, password){
 			tx_id: tx.id,
 			ref_block_num: tx.ref_block_num,
 			tx: tx,
+			chain: String(bchain || 'HIVE').toUpperCase(),
 			date: new Date(),
 		};
 		try{
@@ -888,7 +889,7 @@ function createLegacyCipher(algorithm, password){
 	}
 	
 
-	async function storeVerifiedTrx(tx, db){
+	async function storeVerifiedTrx(tx, db, bchain){
 		console.log('store transaction')
 		console.log(tx);
 		if (tx && tx.ref_block_num){
@@ -896,6 +897,7 @@ function createLegacyCipher(algorithm, password){
 				tx_id: tx.transaction_id,
 				ref_block_num: tx.ref_block_num,
 				tx: tx,
+				chain: String(bchain || 'HIVE').toUpperCase(),
 				date: new Date(),
 			};
 			try{
@@ -1006,7 +1008,7 @@ function createLegacyCipher(algorithm, password){
 								let stored = true;
 								if (!nostore){
 									//store transaction
-									stored = await storeVerifiedTrx(matchTrx, db);
+									stored = await storeVerifiedTrx(matchTrx, db, bchain);
 								}
 								if (stored){
 									matchFound = true;
@@ -2454,6 +2456,11 @@ async function verifyGadgetPayTransaction(userA, gadget_id, item_price, item_pri
 			//let json_data = JSON.parse(trx_details);
 			
 			console.log(trx_details);
+			// only a plain HIVE transfer pays for a gadget
+			if (trx.tx.operations[0][0] !== 'transfer' || typeof trx_details.amount !== 'string'
+				|| trx_details.amount.split(' ')[1] !== 'HIVE'){
+				return false;
+			}
 			let amnt = parseFloat(trx_details.amount.split(' ')[0]);
 			//let json_data = JSON.parse(trx_details.json);
 			console.log(trx_details);

@@ -27,10 +27,13 @@ const uri = process.env.MONGO_TEST_URI;
 		await db.dropDatabase();
 		await client.close();
 	});
-	beforeEach(async () => { await db.collection('verified_tx').deleteMany({}); });
+	beforeEach(async () => {
+		await db.collection('verified_tx').deleteMany({});
+		await db.collection('consumed_tx').deleteMany({});
+	});
 	// a row as findVerifyTrx stores it: recorded now, signed `signedAgoMs` ago
 	const row = (tx_id, signedAgoMs = 0, extra = {}) => Object.assign({
-		tx_id, date: new Date(),
+		tx_id, chain: 'HIVE', date: new Date(),
 		tx: { expiration: new Date(Date.now() - signedAgoMs + 30 * 60 * 1000).toISOString().slice(0, 19) },
 	}, extra);
 
@@ -38,8 +41,8 @@ const uri = process.env.MONGO_TEST_URI;
 		await db.collection('verified_tx').insertOne(row('a'));
 		expect(await claimVerifiedTx(db, 'a', 'buy-gadget')).toBe(true);
 		expect(await claimVerifiedTx(db, 'a', 'buy-gadget')).toBe(false);
-		const stored = await db.collection('verified_tx').findOne({ tx_id: 'a' });
-		expect(stored.consumed_for).toBe('buy-gadget');
+		const claim = await db.collection('consumed_tx').findOne({ _id: 'a' });
+		expect(claim.purpose).toBe('buy-gadget');
 	});
 
 	test('concurrent claims: exactly one wins', async () => {
@@ -64,7 +67,23 @@ const uri = process.env.MONGO_TEST_URI;
 		expect(sequential).toEqual([true, false]);
 		await db.collection('verified_tx').insertMany([row('dup2'), row('dup2'), row('dup2')]);
 		const concurrent = await Promise.all([1, 2, 3].map(() => claimVerifiedTx(db, 'dup2', 'x')));
-		expect(concurrent.filter(Boolean).length).toBeLessThanOrEqual(1);
+		expect(concurrent.filter(Boolean)).toHaveLength(1);
+	});
+
+	test('duplicate rows under concurrency: exactly one winner, every time', async () => {
+		for (let i = 0; i < 50; i++) {
+			const id = 'race' + i;
+			await db.collection('verified_tx').insertMany([row(id), row(id), row(id)]);
+			const results = await Promise.all([1, 2, 3, 4].map(() => claimVerifiedTx(db, id, 'x')));
+			expect(results.filter(Boolean)).toHaveLength(1);
+		}
+	});
+
+	test('rows recorded from another chain are refused', async () => {
+		await db.collection('verified_tx').insertOne(row('blurt', 0, { chain: 'BLURT' }));
+		await db.collection('verified_tx').insertOne(row('nochain', 0, { chain: undefined }));
+		expect(await claimVerifiedTx(db, 'blurt', 'buy-gadget')).toBe(false);
+		expect(await claimVerifiedTx(db, 'nochain', 'buy-gadget')).toBe(false);
 	});
 
 	test('rows without a date (legacy) are refused', async () => {
