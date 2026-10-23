@@ -846,7 +846,11 @@ const resolveArenaTier = (username) => arenaTier.resolveTier(username, {
 	isCommunity: async (u) => (await isModerator(u)) || (await arenaAfit.balanceOf(db, u)) >= arenaFundedMinAfit,
 });
 // Injected into the tailer's ingest so a funded create locks the creator's AFIT.
-const arenaFundChallenge = (params) => arenaFund.fundChallenge(db, Object.assign({
+// AFIT-funded challenges are paused: the create is rejected before any AFIT is debited.
+const ARENA_FUNDING_PAUSED = true;
+const arenaFundChallenge = (params) => ARENA_FUNDING_PAUSED
+	? Promise.resolve({ ok: false, reason: 'AFIT-funded challenges are temporarily paused' })
+	: arenaFund.fundChallenge(db, Object.assign({
 	cutPct: config.arena_fund_cut_pct,
 	minPool: config.arena_fund_min_pool,
 }, params));
@@ -7907,6 +7911,7 @@ app.get('/availableTipBalance', async function (req, res){
 })
 
 app.get('/processTipRequest', async function (req, res){
+	return securityDisabled(res, '/processTipRequest');
 	if (req.query.token !== config.admin_ops_token) { return res.send({}); }
 	if (!req.query.trxId || !req.query.blkNo){
 		res.send({status: "error", error: "missing data"});
@@ -8790,7 +8795,7 @@ async function performActivateMultiTrx(req){
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadgets, 'activate-gadget', req.params.trxID, req.params.bchain, db, req.params.benefic || '');
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
@@ -8885,7 +8890,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async
 	}
 	
 	console.log('activateGadget');
-	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db);
+	let ver_trx = await utils.verifyGadgetTransaction(user, gadget, 'activate-gadget', req.params.trxID, req.params.bchain, db, req.params.benefic || '');
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){

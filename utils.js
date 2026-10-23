@@ -20,6 +20,7 @@ fbadmin.initializeApp({
 var _ = require('lodash');
 const axios = require('axios');
 const dhive = require('@hiveio/dhive');
+const signedTx = require('./signed_tx');
 
 const dblurt = require('dblurt');
 
@@ -2491,7 +2492,7 @@ async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == user
 				&& json_data.transaction == tx_type){
 				console.log('match found');
-				return true
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('count not find trx');
 			return false;
@@ -2507,7 +2508,8 @@ async function verifyWorkoutTransaction(user, tx_type, tx_id, bchain, db){
 	
 }
 
-async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db){
+// `benefic`, when given (activation), must match the beneficiary in the signed json.
+async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain, db, benefic){
 	//let trx, th_id;
 	console.log('verifyGadgetTransaction');
 	console.log(tx_id);
@@ -2522,8 +2524,12 @@ async function verifyGadgetTransaction(userA, gadget_id, tx_type, tx_id, bchain,
 			console.log(trx_details);
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 				&& json_data.transaction == tx_type && json_data.gadget == gadget_id){
+				if (benefic !== undefined && signedTx.normalizeAccountName(json_data.benefic) !== signedTx.normalizeAccountName(benefic)){
+					console.log('beneficiary does not match the signed transaction');
+					return false;
+				}
 				console.log('match found');
-				return true
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('count not find trx A');
 			return false;
