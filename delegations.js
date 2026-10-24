@@ -29,11 +29,18 @@ let parsed= JSON.parse(fs.readFileSync(jsonFile));
 let tokenAbi = parsed;
 
 const web3 = new Web3(config.bscProvider);
-//append proper wallet
-web3.eth.accounts.wallet.add({
-    privateKey: config.bridgeWallet,
-    address: config.bridgeWalletAdd
-});
+
+// The bridge wallet key is loaded only when the bridge actually sends, so the
+// process can run (for delegator rewards) without that key in memory, or in config.
+let bridgeWalletLoaded = false;
+function loadBridgeWallet() {
+	if (bridgeWalletLoaded) return;
+	web3.eth.accounts.wallet.add({
+		privateKey: config.bridgeWallet,
+		address: config.bridgeWalletAdd
+	});
+	bridgeWalletLoaded = true;
+}
 
 // Get BEP20 Token contract instance
 let contract = new web3.eth.Contract(tokenAbi, config.afitAddress);
@@ -45,8 +52,6 @@ hive.api.setOptions({ url: config.active_hive_node });
 let db
 let collection
 let bulk_hive_delegation_entries
-
-const bulkOps = [];
 
 // Database Name
 const dbName = config.db_name
@@ -68,12 +73,23 @@ console.log(process.env.BOT_THREAD);
 
 let schedule = require('node-schedule')
 
-// TEMPORARY PAUSE of every scheduled payout (rewards, AFIT moves, prizes, BSC bridge).
-// Set to false and redeploy to resume. Skipped under the test runner so tests still run.
-const PAYOUTS_PAUSED = true;
+// Each scheduled job has its own switch. true = paused. Change one and redeploy.
+// The jobs that move value off Actifit (AFIT move to Hive-Engine, BSC bridge, gadget
+// prize transfers) stay paused until each one has its own fixes. redeemDelegations
+// stays paused for good: it would cancel users' HP delegations in bulk.
+// A job name that is not listed here counts as paused.
+// Skipped under the test runner so tests still exercise the functions.
+const JOB_PAUSED = {
+	delegatorRewards: false,
+	afitMove: true,
+	gadgetPrize: true,
+	bscBridge: true,
+	redeemDelegations: true,
+};
 function payoutsPaused(job) {
-	if (PAYOUTS_PAUSED && process.env.NODE_ENV !== 'test') {
-		console.log('--- ' + job + ' skipped: payouts paused ---');
+	if (process.env.NODE_ENV === 'test') return false;
+	if (JOB_PAUSED[job] !== false) {
+		console.log('--- ' + job + ' skipped: paused ---');
 		return true;
 	}
 	return false;
@@ -108,7 +124,9 @@ if (process.env.BOT_THREAD == 'MAIN'){
 // the entire bootstrap - no schedulers, no timers - so the event loop emptied, the
 // process exited, and pm2 crash-looped it (taking the box down with it).
 // Jest sets NODE_ENV=test automatically; production/pm2 does not.
-if (process.env.NODE_ENV !== 'test') {
+// DELEGATIONS_NO_BOOT=1 lets a one-off script (scripts/backfill_delegation_rewards.js)
+// require this module without starting the schedulers or a reward run.
+if (process.env.NODE_ENV !== 'test' && !process.env.DELEGATIONS_NO_BOOT) {
 if (process.env.BOT_THREAD == 'MAIN'){
 
 	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
@@ -133,7 +151,11 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	//schedule the delegation cancellation event at 11:00 every day
 	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 0}, function(){
 	  console.log('--- Cancel outdated delegations ---');
-	  utils.redeemDelegations();
+	  // utils.redeemDelegations is not exported, so this call used to throw and kill the
+	  // process every day at 11:00. Do not simply export it: it cancels HP delegations
+	  // on chain in bulk. Kept paused.
+	  if (payoutsPaused('redeemDelegations')) return;
+	  if (typeof utils.redeemDelegations === 'function') utils.redeemDelegations();
 	});
 	
 	//run the airdrop once
@@ -187,7 +209,7 @@ async function testFetchHistory(){
 }*/
 
 async function processBSCTransfers(){
-	if (payoutsPaused('BSC transfer')) return;
+	if (payoutsPaused('bscBridge')) return;
 	
 	
 	
@@ -296,6 +318,7 @@ async function processBSCTransfers(){
 //send corresponding amount on BSC, while updating user balances on actifit and taking off 1 HBD as trx fee (0r 1%, whichever is bigger)
 async function sendAfitBSC(amnt, tgtAddress){	
 	console.log('sendAfitBSC');
+	loadBridgeWallet();
 	let outc = await contract.methods.transfer(tgtAddress, web3.utils.toWei( amnt.toString() )).send({ 
 		from: config.bridgeWalletAdd,
 		gasPrice: 10000000000, // 10 gwei //0.000000005
@@ -453,7 +476,7 @@ const hsc = new SSC(config.hive_engine_rpc);
 
 
 async function processGadgetBuyPrize() {
-	if (payoutsPaused('Gadget buy prize')) return;
+	if (payoutsPaused('gadgetPrize')) return;
 	console.log('processGadgetBuyPrize');
 	
 	let mongo_conn = config.mongo_uri
@@ -674,7 +697,7 @@ async function updateUserCount(entry){
 }
 
 async function moveAFITToSE(testMode){
-	if (payoutsPaused('AFIT move')) return;
+	if (payoutsPaused('afitMove')) return;
 	console.log('*** process moving AFIT to SE ***');
 	
 	let mongo_conn = config.mongo_uri
@@ -1059,63 +1082,33 @@ async function airdropAFITX(){
 
 */
 
-function runRewards(steemOnlyReward, updateDelegations){
-	if (payoutsPaused('Delegator rewards')) return;
-	let mongo_conn = config.mongo_uri
-	if (config.testing){
-		mongo_conn = config.mongo_local
+// One Mongo connection for the reward runs, reused from day to day.
+let rewardsClient = null;
+async function connectRewardsDb() {
+	if (!rewardsClient) {
+		const mongo_conn = config.testing ? config.mongo_local : config.mongo_uri;
+		rewardsClient = await new MongoClient(mongo_conn).connect();
+		console.log('Connected successfully to server: ');
 	}
-	// Use connect method to connect to the server
-	const client = new MongoClient(mongo_conn);
-	
-	// Use connect method to connect to the server
-	client.connect()
-	.then(async client => {
-		console.log('Connected successfully to server: ')
+	db = rewardsClient.db(dbName);
+	return db;
+}
 
-		db = client.db(dbName)
-		// Get the documents collection
-		//collection = db.collection(delegationTrxCol)
-		
-		/**** copy a collection to another *****/
-		/*let documentsToMove = db.collection(delegationTrxCol).find({});
-		documentsToMove.forEach(function(doc) {
-			console.log('inserting');
-			db.collection(hiveDelegationTrxCol).insert(doc);
-		});
-		console.log('done');
-		
-		return;*/
-		
-		//bulk_delegation_entries = db.collection(delegationTrxCol).initializeUnorderedBulkOp();
-		//bulk_hive_delegation_entries = db.collection(hiveDelegationTrxCol).initializeUnorderedBulkOp();
-		
-		//updateUserTokens();
-		//return;
-		
+// Daily delegator AFIT rewards.
+// The loadSteemPrices ("Full AFIT Payout") and claimRewards timers are not started here:
+// both are broken and can crash the process. Fix them before starting them again.
+async function runRewards(steemOnlyReward, updateDelegations){
+	if (payoutsPaused('delegatorRewards')) return;
+	try {
+		await connectRewardsDb();
 		//run for one day
 		var delegation_days = 2;
-		startProcess(delegation_days, steemOnlyReward, updateDelegations);
-
-		//grab steem prices and proceed checking for beneficiary payouts to AFIT token reward account (full_pay_benef_account)
-		setInterval(loadSteemPrices,5 * 60 * 1000);
-		
-		//claim rewards once per hour
-		setInterval(claimRewards,60 * 60 * 1000);
-	  
-	    //loadSteemPrices();
-	  }).catch(err => {
-		utils.log(err, 'delegations')
-		mail.sendPlainMail('Database Error', err, config.report_emails)
-		  .then(function (res, err) {
-			if (!err) {
-			  console.log(res)
-			} else {
-			  utils.log(err, 'import')
-			}
-		  })
-		process.exit()
-	});
+		await startProcess(delegation_days, steemOnlyReward, updateDelegations);
+	} catch (err) {
+		console.error('>> Delegator rewards run failed, nothing more written this run: ' + (err && err.message));
+		utils.log(err, 'delegations');
+		mail.sendPlainMail('Delegator rewards run failed', String(err && err.message), config.report_emails).catch(() => {});
+	}
 }
 
 //function to grab latest payouts for beneficiaries and reward with AFIT tokens
@@ -1296,7 +1289,8 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 		
 		//update hive delegations
 		console.log('>>>>>>>>>>HIVE<<<<<<<<<<<<');
-		await processDelegations(hiveClient, hive_history_limit, bulkOps, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
+		// a fresh list per run: a shared one was never cleared and replayed old writes
+		await processDelegations(hiveClient, hive_history_limit, [], hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 		//await processDelegationsHive(hive, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, config.account, -1, end)
 	}
 	//TEMP BREAK
@@ -1320,7 +1314,7 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 		await processTokenRewards('HIVE', hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, start, txEnd, days)
 		//update our user token count post reward
 		if (!testRun){
-			updateUserTokens();
+			await updateUserTokens();
 		}
 	}
 	var d = new Date();
@@ -1336,78 +1330,128 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 	}
 }
 
-async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
+// Alt-beneficiary rows redirect a delegator's rewards to another account. Only rows
+// created before the 2026-10-21 incident are honoured; a newer row is ignored and the
+// delegator is paid directly, until the row is checked and this date is moved.
+const ALT_TRUSTED_BEFORE = new Date('2026-10-21T00:00:00Z');
+function trustedAltRows(rows) {
+	return rows.filter((r) => {
+		const ok = r && r._id && typeof r._id.getTimestamp === 'function' && r._id.getTimestamp() < ALT_TRUSTED_BEFORE;
+		if (!ok) console.log('>> Ignoring alt beneficiary row created after ' + ALT_TRUSTED_BEFORE.toISOString() + ': ' + (r && r.delegator) + ' -> ' + (r && r.alt_account));
+		return ok;
+	});
+}
+
+// Total a day may pay, as a multiple of the expected amount (days x cap). The capped
+// payout is about days x cap, so anything well above it means bad input data.
+const DAILY_TOTAL_TOLERANCE = 1.05;
+
+// What `delegator` currently delegates to `delegatee` on chain, in vests (0 if nothing).
+async function chainDelegatedVests(nodeLink, delegator, delegatee) {
+	const res = await nodeLink.database.call('get_vesting_delegations', [delegator, delegatee, 1]);
+	if (res && res[0] && res[0].delegatee === delegatee) return Number(String(res[0].vesting_shares).split(' ')[0]);
+	return 0;
+}
+
+async function mapLimit(items, limit, fn) {
+	const out = new Array(items.length);
+	let next = 0;
+	async function worker() {
+		while (next < items.length) { const k = next++; out[k] = await fn(items[k], k); }
+	}
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	return out;
+}
+
+/*
+ * Works out the delegator rewards for the window [start, end), without writing anything.
+ * The stored delegation rows decide each delegator's share, as before. Then each payee
+ * is checked against the chain, so a row that the chain does not back pays nothing:
+ * - a delegator who has no delegation to us on chain now is skipped;
+ * - a reward is capped at days x (SP delegated on chain now) x multiplier.
+ * Throws (nothing paid) if a chain lookup fails, or if the day's total is above
+ * DAILY_TOTAL_TOLERANCE x days x cap.
+ */
+async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelColLink, start, end, days) {
 	if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	if (!end) end = moment().utc().startOf('date').toDate()
 	let note = 'Delegation Reward On ' + chain + ' For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
 
-	let acumulatedSteemPower = await getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
-	
-	//console.log(acumulatedSteemPower.users);
-	
+	if (!totalVests || !totalSteem) await updateProperties();
+
+	let acumulatedSteemPower = await getAcumulatedSteemPower(nodeLink, null, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
+
 	//handles maintaining max CAP for payments
 	let multiplier = 1
-
 	let currentSteemPower = await getCurrentTotalSP(activeDelColLink, end);
 	console.log("currentSteemPower:"+currentSteemPower);
-	
 	let weekly_rewd_cap = await utils.rewardCap(chain);
 	console.log('main weeklyrewcap'+weekly_rewd_cap );
-	
-	//check if max CAP is reached, and apply multplier accordingly
 	if (currentSteemPower > weekly_rewd_cap) {
 		multiplier = weekly_rewd_cap / currentSteemPower;
-		console.log(">>>>went beyond rewards limit. Apply multiplier");
+		console.log(">>>>went beyond rewards limit. Apply multplier");
 	}
 	console.log(">>>>multiplier:"+multiplier);
-	
-	//load list of alt accounts to reward them instead of actual delegators
-	let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
-	//console.log(altAccounts);
-	
-	//go through all delegators, and send out AFIT rewards
-	for (let user of acumulatedSteemPower.users) {
-	
-		//skip opt out users from reward
-		var user_opted_out = false;
-		for (var n = 0; n < config.exclude_rewards.length; n++) {
-            if (user.user == config.exclude_rewards[n]){
-				console.log('User '+user.user+' opted out from rewards');
-				user_opted_out = true;
-				break;
-			}
-          } 
-		if (user_opted_out){
-			continue;
-		}
-		
+
+	let altAccounts = trustedAltRows(await db.collection('delegation_alt_beneficiaries').find().toArray());
+	const excluded = new Set(config.exclude_rewards || []);
+
+	const candidates = acumulatedSteemPower.users.filter((u) => {
+		if (excluded.has(u.user)) { console.log('User '+u.user+' opted out from rewards'); return false; }
+		return true;
+	});
+
+	// a lookup error throws here, and the whole day is left unpaid
+	const chainVests = await mapLimit(candidates, 8, (u) => chainDelegatedVests(nodeLink, u.user, config.account));
+
+	const rows = [];
+	const skipped = [];
+	const capped = [];
+	candidates.forEach((user, k) => {
+		const chainSP = vestsToSteemPower(chainVests[k] + ' VESTS');
+		let amount = user.totalSteem * multiplier;
+		if (!Number.isFinite(amount) || amount <= 0) { skipped.push([user.user, 'bad amount']); return; }
+		if (!(chainSP > 0)) { skipped.push([user.user, 'no delegation on chain']); return; }
+		const bound = days * chainSP * multiplier;
+		if (amount > bound * 1.001) { capped.push([user.user, +amount.toFixed(3), +bound.toFixed(3)]); amount = bound; }
+
 		let reward_user = user.user;
 		let reward_activity = 'Delegation';
-		
-		//check if this user has an alt account with delegated rewards enabled
 		let delegator_entry = _.find(altAccounts, {'delegator': user.user, 'reward_benefit': '1'});
-		
-		//if so reward the alt account instead
 		if (delegator_entry != null) {
 			reward_user = delegator_entry.alt_account;
-			reward_activity += ' On Behalf'; 
+			reward_activity += ' On Behalf';
 		}
-	
-		let reward = {
+		rows.push({
 			user: reward_user,
 			chain: chain,
-			token_count: parseFloat((user.totalSteem * multiplier).toFixed(3)),
+			token_count: parseFloat(amount.toFixed(3)),
 			reward_activity: reward_activity,
 			orig_account: user.user,
 			note: note,
 			date: end
-		}
-		//console.log(reward)
-		//only send out funds if not a test run
-		if (!testRun){
-			upsertRewardTransaction(reward)
-		}
+		});
+	});
+
+	const total = rows.reduce((a, r) => a + r.token_count, 0);
+	const maxTotal = DAILY_TOTAL_TOLERANCE * days * weekly_rewd_cap;
+	console.log('delegator rewards: ' + rows.length + ' payees, total ' + total.toFixed(3) + ' AFIT (limit ' + maxTotal.toFixed(3) + '), skipped ' + skipped.length + ', capped ' + capped.length);
+	if (skipped.length) console.log('skipped: ' + JSON.stringify(skipped));
+	if (capped.length) console.log('capped to the chain amount [user, computed, paid]: ' + JSON.stringify(capped));
+	if (!(total <= maxTotal)) {
+		throw new Error('delegator rewards total ' + total.toFixed(3) + ' is above the limit ' + maxTotal.toFixed(3) + '; nothing paid');
 	}
+	return { rows, total, maxTotal, multiplier, skipped, capped, end };
+}
+
+async function processTokenRewards (chain, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, days) {
+	const result = await computeDelegationRewards(chain, nodeLink, delTrxCol, activeDelColLink, start, end, days);
+	//only send out funds if not a test run
+	if (!testRun){
+		// wait for every write, so the balance rebuild that follows sees them all
+		await Promise.all(result.rows.map(upsertRewardTransaction));
+	}
+	return result;
 }
 
 async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start) {
@@ -1418,7 +1462,7 @@ async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink,
   const from = moment(to).subtract(7, 'days').toDate()
   
   //load list of alt accounts to reward them instead of actual delegators
-  let altAccounts = await db.collection('delegation_alt_beneficiaries').find().toArray();
+  let altAccounts = trustedAltRows(await db.collection('delegation_alt_beneficiaries').find().toArray());
   console.log('loading alt accounts');
   //console.log(altAccounts);
   
@@ -1637,6 +1681,7 @@ async function processDelegations (nodeLink, history_limit, bulkOps, delTrxCol, 
 		//await dbDelegLink.execute();
 	  }catch(bulkerr){
 		utils.log(bulkerr);
+		throw bulkerr;
 	  }
 	  //update relevant delegations collection
       await updateActiveDelegations(delTrxCol, activeDelColLink)
@@ -1657,6 +1702,9 @@ async function processDelegations (nodeLink, history_limit, bulkOps, delTrxCol, 
     if (err.type === 'request-timeout' || err.type === 'body-timeout'){ 
 		return processDelegations(nodeLink, history_limit, bulkOps, delTrxCol, activeDelColLink, account, start, end);
 	}
+	// Any other failure means the stored delegations may be stale. Stop the run
+	// instead of paying from them.
+	throw err;
   }
 }
 
@@ -1801,7 +1849,7 @@ async function getCurrentTotalSP(actDelgCol, toDate){
 	//function(err, results) {
 			//var output = 'tokens distributed:'+results[0].totalSP;
 	//console.log(results);
-	return results[0].totalSP;
+	return results.length ? results[0].totalSP : 0;
 		//});	
 }
 
@@ -1887,7 +1935,7 @@ async function updateActiveDelegations (delgTrxCol, targetCol) {
 	console.log(err);
   }
   console.log('activeDelegations dropped');
-  await db.collection(targetCol).insertMany(activeDelegations)
+  if (activeDelegations.length) await db.collection(targetCol).insertMany(activeDelegations)
   console.log('done updating delegations '+targetCol);
   return ;
 }
@@ -2032,6 +2080,23 @@ module.exports = {
 	cancelDailyAFITPowerDown,
 	updateUserCount,
 	rollBackTrans,
+	// delegator rewards (used by scripts/backfill_delegation_rewards.js and tests)
+	connectRewardsDb,
+	computeDelegationRewards,
+	processTokenRewards,
+	processDelegations,
+	updateProperties,
+	updateUserTokens,
+	upsertRewardTransaction,
+	trustedAltRows,
+	payoutsPaused,
+	JOB_PAUSED,
+	hiveClient,
+	hive_history_limit,
+	hiveDelegationTrxCol,
+	hiveActDelgCol,
 	// inject a (mock) db into the module-level `db` used by the functions above
 	__setTestDb: (mockDb) => { db = mockDb; },
+	// set the chain totals used to turn vests into HP (tests only)
+	__setChainTotals: (steem, vests) => { totalSteem = steem; totalVests = vests; },
 };
