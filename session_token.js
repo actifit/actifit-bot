@@ -3,8 +3,10 @@
  * The raw token is returned to the client once and never saved, so reading the
  * database does not yield usable sessions.
  *
- * Rows written before this change hold the raw token in `token`. They are still matched
- * until they expire (tokens are valid for 24 hours), or until migrated to `token_hash`.
+ * Rows written before this change hold the raw token in `token`. They are still matched,
+ * but a token is only accepted while its JWT is valid (24 hours). Rows kept by "keep me
+ * logged in" are not cleaned up on their own, so the existing rows are migrated to
+ * `token_hash` once after deploy.
  */
 
 const crypto = require('crypto');

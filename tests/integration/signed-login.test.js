@@ -146,6 +146,33 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 		expect(await db.collection('user_login_token').countDocuments({ user: 'legacyuser' })).toBe(0);
 	});
 
+	test('web rewards accept a valid session token but not an expired one, even if its row exists', async () => {
+		const jwt = require('jsonwebtoken');
+		const cfg = JSON.parse(jest.requireActual('fs').readFileSync(require('path').join(__dirname, '../test-config.json'), 'utf8'));
+		const expired = jwt.sign({ username: 'rewarduser', exp: Math.floor(Date.now() / 1000) - 60 }, cfg.secret);
+		await db.collection('user_login_token').insertOne({ user: 'rewarduser', token: expired, keeploggedin: true });
+		const utils = require('../../utils');
+		const exists = utils.hiveAccountExists;
+		utils.hiveAccountExists = jest.fn(async () => true);
+		const logs = [];
+		const spy = jest.spyOn(console, 'log').mockImplementation((...a) => { logs.push(a.join(' ')); });
+		try {
+			await request(app).get('/rewardActifitWebVote/rewarduser?url=x').set('x-acti-token', expired);
+			expect(logs).toContain('rewardActifitTokenWeb: invalid or expired session for user rewarduser');
+			// a valid session gets past the token check
+			chain.alice = acct([OLD]);
+			const login = await request(app).post('/loginAuth').send({ username: 'alice', ppkey: OLD.toString() });
+			logs.length = 0;
+			await request(app).get('/rewardActifitWebVote/alice?url=x').set('x-acti-token', login.body.token);
+			expect(logs.some((l) => l.startsWith('rewardActifitTokenWeb: invalid'))).toBe(false);
+			// it went on to the next check (vote count), proving the token was accepted
+			expect(logs.some((l) => l.startsWith('rewardActifitTokenWeb: insufficient actifit_vote ops for alice'))).toBe(true);
+		} finally {
+			spy.mockRestore();
+			utils.hiveAccountExists = exists;
+		}
+	});
+
 	test('the challenge message names actifit.io and the user', async () => {
 		const ch = await request(app).post('/loginChallenge').send({ username: 'alice' });
 		expect(ch.body.message).toBe('Log in to actifit.io\nuser: alice\nnonce: ' + ch.body.nonce);

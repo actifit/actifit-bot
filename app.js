@@ -10410,6 +10410,13 @@ const rewardActifitTokenWeb = async function (req, reward_activity) {
 			console.log('rewardActifitTokenWeb: missing auth token for ' + req.params.user);
 			return rewarded;
 		}
+		// the token must be a valid, unexpired session for this user, not just a stored value
+		let decoded = null;
+		try { decoded = jwt.verify(userToken, config.secret); } catch (e) { decoded = null; }
+		if (!decoded || decoded.username !== req.params.user) {
+			console.log('rewardActifitTokenWeb: invalid or expired session for user ' + req.params.user);
+			return rewarded;
+		}
 		const tokenEntry = await db.collection('user_login_token').findOne(sessionToken.sessionFilter(req.params.user, userToken));
 		if (!tokenEntry) {
 			console.log('rewardActifitTokenWeb: invalid token for user ' + req.params.user);
