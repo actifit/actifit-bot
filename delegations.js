@@ -126,7 +126,8 @@ if (process.env.BOT_THREAD == 'MAIN'){
 // Jest sets NODE_ENV=test automatically; production/pm2 does not.
 // DELEGATIONS_NO_BOOT=1 lets a one-off script (scripts/backfill_delegation_rewards.js)
 // require this module without starting the schedulers or a reward run.
-if (process.env.NODE_ENV !== 'test' && !process.env.DELEGATIONS_NO_BOOT) {
+if (process.env.DELEGATIONS_NO_BOOT === '1') console.log('--- DELEGATIONS_NO_BOOT=1: schedulers not started ---');
+if (process.env.NODE_ENV !== 'test' && process.env.DELEGATIONS_NO_BOOT !== '1') {
 if (process.env.BOT_THREAD == 'MAIN'){
 
 	console.log('>>>>>>>>>MAIN DELEGATION THREAD<<<<<<<<<<<')
@@ -1305,7 +1306,9 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 	console.log('start:'+start);
 	console.log('txEnd:'+txEnd);
 	
-	if (!steemOnlyReward){
+	// A failed AFIT day must not stop the Monday HIVE/HBD file below; it is re-thrown after.
+	let tokenRewardsError = null;
+	if (!steemOnlyReward) try {
 		console.log('processTokenRewards');
 		//steem based rewards
 		//await processTokenRewards('STEEM', client, bulk_delegation_entries, delegationTrxCol, actDelgCol, start, txEnd, days)
@@ -1316,6 +1319,8 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 		if (!testRun){
 			await updateUserTokens();
 		}
+	} catch (err) {
+		tokenRewardsError = err;
 	}
 	var d = new Date();
 	var dayId = d.getDay();
@@ -1328,29 +1333,55 @@ async function startProcess (days, steemOnlyReward, updateDelegations) {
 		let resHv = await processSteemRewards('HIVE', hive_history_limit, hiveClient, bulk_hive_delegation_entries, hiveDelegationTrxCol, hiveActDelgCol, txEnd)
 		//console.log('>>>>>HIVE REWARDS COMPLETE');
 	}
+	if (tokenRewardsError) throw tokenRewardsError;
 }
 
-// Alt-beneficiary rows redirect a delegator's rewards to another account. Only rows
-// created before the 2026-10-21 incident are honoured; a newer row is ignored and the
-// delegator is paid directly, until the row is checked and this date is moved.
-const ALT_TRUSTED_BEFORE = new Date('2026-10-21T00:00:00Z');
-function trustedAltRows(rows) {
-	return rows.filter((r) => {
-		const ok = r && r._id && typeof r._id.getTimestamp === 'function' && r._id.getTimestamp() < ALT_TRUSTED_BEFORE;
-		if (!ok) console.log('>> Ignoring alt beneficiary row created after ' + ALT_TRUSTED_BEFORE.toISOString() + ': ' + (r && r.delegator) + ' -> ' + (r && r.alt_account));
-		return ok;
-	});
-}
+// Alt beneficiaries: a delegator's rewards go to another account. This list is the
+// delegation_alt_beneficiaries collection as audited on 2026-10-24 (18 rows, all
+// created 2018-2019). The collection is no longer read: a row's id time can be chosen
+// by whoever writes it, and an old row can be edited. To add or change a redirect,
+// edit this list in a reviewed PR. Flags: reward_benefit = AFIT rewards,
+// steem_reward_benefit = the weekly HIVE/HBD file. First match wins, as before.
+const ALT_BENEFICIARIES = [
+	['rabihfarhat', 'arabpromovault', '0', '0'],
+	['alfamano', 'actifit.pay', '0', null],
+	['justtryme90', 'jtm.support', '0', '1'],
+	['gadrian-sp', 'ga10', '1', '1'],
+	['taskmaster4450', 'elfman2018', '1', '0'],
+	['gillianpearce', 'artysteps', '1', '1'],
+	['resiliencia', 'ticket4fun', '1', '1'],
+	['masterthematrix', 'cryptoheads', '1', '1'],
+	['trumpman', 'trumpman2', '0', '0'],
+	['erikah', 'erikahfit', '1', '1'],
+	['akomoajong', 'steemcameroon', '1', '1'],
+	['evildido', 'evildido-blog', '1', '1'],
+	['jongolson', 'jonolsonproject', '1', '1'],
+	['akomoajong', 'steemcameroon', '1', '0'],
+	['barton26', 'bartonfitness', '1', '1'],
+	['cryptoburner', 'onealfa', '1', '1'],
+	['parejan', 'pjansen', '1', '1'],
+	['binance2', 'onealfa', '1', '1'],
+].map(([delegator, alt_account, reward_benefit, steem_reward_benefit]) => ({ delegator, alt_account, reward_benefit, steem_reward_benefit }));
 
-// Total a day may pay, as a multiple of the expected amount (days x cap). The capped
-// payout is about days x cap, so anything well above it means bad input data.
-const DAILY_TOTAL_TOLERANCE = 1.05;
+// Hive account names: 3-16 chars, lowercase letters, digits, dots and dashes.
+const HIVE_NAME = /^[a-z][a-z0-9.-]{2,15}$/;
 
-// What `delegator` currently delegates to `delegatee` on chain, in vests (0 if nothing).
+// What `delegator` delegates to `delegatee` on chain now, in vests (0 if nothing).
+// Retried a few times; a lookup that keeps failing throws, so the day pays nothing.
 async function chainDelegatedVests(nodeLink, delegator, delegatee) {
-	const res = await nodeLink.database.call('get_vesting_delegations', [delegator, delegatee, 1]);
-	if (res && res[0] && res[0].delegatee === delegatee) return Number(String(res[0].vesting_shares).split(' ')[0]);
-	return 0;
+	let lastErr;
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			const res = await nodeLink.database.call('get_vesting_delegations', [delegator, delegatee, 1]);
+			const r = res && res[0];
+			if (r && r.delegator === delegator && r.delegatee === delegatee) return Number(String(r.vesting_shares).split(' ')[0]);
+			return 0;
+		} catch (err) {
+			lastErr = err;
+			if (process.env.NODE_ENV !== 'test') await new Promise((ok) => setTimeout(ok, 2000 * (attempt + 1)));
+		}
+	}
+	throw lastErr;
 }
 
 async function mapLimit(items, limit, fn) {
@@ -1364,13 +1395,48 @@ async function mapLimit(items, limit, fn) {
 }
 
 /*
+ * Checks accrued shares ({user, totalSteem}) against the chain. Stored delegation rows
+ * decide each share, but only up to what the chain backs:
+ * - a name that is not a valid Hive account, or with no delegation to us on chain now,
+ *   gets nothing;
+ * - a share is capped at days x (HP delegated on chain now).
+ * Someone who lowered or removed their delegation since the window is cut to the
+ * chain amount. That is the price of not trusting stored rows.
+ */
+async function chainBackedShares(nodeLink, users, days) {
+	const excluded = new Set(config.exclude_rewards || []);
+	const skipped = [];
+	const candidates = users.filter((u) => {
+		if (excluded.has(u.user)) { console.log('User '+u.user+' opted out from rewards'); return false; }
+		if (!HIVE_NAME.test(String(u.user))) { skipped.push([String(u.user).slice(0, 40), 'not a valid account name']); return false; }
+		return true;
+	});
+	const vests = await mapLimit(candidates, 8, (u) => chainDelegatedVests(nodeLink, u.user, config.account));
+	const backed = [];
+	const capped = [];
+	candidates.forEach((u, k) => {
+		const chainSP = vestsToSteemPower(vests[k] + ' VESTS');
+		let share = Number(u.totalSteem);
+		if (!Number.isFinite(share) || share <= 0) { skipped.push([u.user, 'bad amount']); return; }
+		if (!(chainSP > 0)) { skipped.push([u.user, 'no delegation on chain']); return; }
+		const bound = days * chainSP;
+		if (share > bound * 1.001) { capped.push([u.user, +share.toFixed(3), +bound.toFixed(3)]); share = bound; }
+		backed.push({ user: u.user, totalSteem: share, chainSP });
+	});
+	return { backed, skipped, capped };
+}
+
+// Total a day may pay, as a multiple of days x cap.
+const DAILY_TOTAL_TOLERANCE = 1.05;
+// A day whose payee count falls below this share of the previous day's stops instead.
+const MIN_PAYEE_RATIO = 0.7;
+
+/*
  * Works out the delegator rewards for the window [start, end), without writing anything.
- * The stored delegation rows decide each delegator's share, as before. Then each payee
- * is checked against the chain, so a row that the chain does not back pays nothing:
- * - a delegator who has no delegation to us on chain now is skipped;
- * - a reward is capped at days x (SP delegated on chain now) x multiplier.
- * Throws (nothing paid) if a chain lookup fails, or if the day's total is above
- * DAILY_TOTAL_TOLERANCE x days x cap.
+ * The multiplier keeps the day within the cap, and is worked out from the HP the chain
+ * backs, so stored rows cannot move it. Throws (nothing paid) if a chain lookup keeps
+ * failing, if nobody would be paid, if the payee count drops sharply from the previous
+ * day, or if the total is above DAILY_TOTAL_TOLERANCE x days x cap.
  */
 async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelColLink, start, end, days) {
 	if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
@@ -1379,65 +1445,45 @@ async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelCo
 
 	if (!totalVests || !totalSteem) await updateProperties();
 
-	let acumulatedSteemPower = await getAcumulatedSteemPower(nodeLink, null, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
+	const acumulated = await getAcumulatedSteemPower(nodeLink, null, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
+	const { backed, skipped, capped } = await chainBackedShares(nodeLink, acumulated.users, days);
 
-	//handles maintaining max CAP for payments
-	let multiplier = 1
-	let currentSteemPower = await getCurrentTotalSP(activeDelColLink, end);
-	console.log("currentSteemPower:"+currentSteemPower);
-	let weekly_rewd_cap = await utils.rewardCap(chain);
-	console.log('main weeklyrewcap'+weekly_rewd_cap );
-	if (currentSteemPower > weekly_rewd_cap) {
-		multiplier = weekly_rewd_cap / currentSteemPower;
-		console.log(">>>>went beyond rewards limit. Apply multplier");
-	}
-	console.log(">>>>multiplier:"+multiplier);
+	const weekly_rewd_cap = await utils.rewardCap(chain);
+	const chainTotalSP = backed.reduce((a, u) => a + u.chainSP, 0);
+	const multiplier = chainTotalSP > weekly_rewd_cap ? weekly_rewd_cap / chainTotalSP : 1;
+	console.log('chain-backed HP: ' + chainTotalSP.toFixed(3) + ', cap: ' + weekly_rewd_cap + ', multiplier: ' + multiplier);
 
-	let altAccounts = trustedAltRows(await db.collection('delegation_alt_beneficiaries').find().toArray());
-	const excluded = new Set(config.exclude_rewards || []);
-
-	const candidates = acumulatedSteemPower.users.filter((u) => {
-		if (excluded.has(u.user)) { console.log('User '+u.user+' opted out from rewards'); return false; }
-		return true;
-	});
-
-	// a lookup error throws here, and the whole day is left unpaid
-	const chainVests = await mapLimit(candidates, 8, (u) => chainDelegatedVests(nodeLink, u.user, config.account));
-
-	const rows = [];
-	const skipped = [];
-	const capped = [];
-	candidates.forEach((user, k) => {
-		const chainSP = vestsToSteemPower(chainVests[k] + ' VESTS');
-		let amount = user.totalSteem * multiplier;
-		if (!Number.isFinite(amount) || amount <= 0) { skipped.push([user.user, 'bad amount']); return; }
-		if (!(chainSP > 0)) { skipped.push([user.user, 'no delegation on chain']); return; }
-		const bound = days * chainSP * multiplier;
-		if (amount > bound * 1.001) { capped.push([user.user, +amount.toFixed(3), +bound.toFixed(3)]); amount = bound; }
-
-		let reward_user = user.user;
+	const rows = backed.map((u) => {
+		let reward_user = u.user;
 		let reward_activity = 'Delegation';
-		let delegator_entry = _.find(altAccounts, {'delegator': user.user, 'reward_benefit': '1'});
-		if (delegator_entry != null) {
-			reward_user = delegator_entry.alt_account;
+		const alt = _.find(ALT_BENEFICIARIES, { delegator: u.user, reward_benefit: '1' });
+		if (alt) {
+			reward_user = alt.alt_account;
 			reward_activity += ' On Behalf';
 		}
-		rows.push({
+		return {
 			user: reward_user,
 			chain: chain,
-			token_count: parseFloat(amount.toFixed(3)),
+			token_count: parseFloat((u.totalSteem * multiplier).toFixed(3)),
 			reward_activity: reward_activity,
-			orig_account: user.user,
+			orig_account: u.user,
 			note: note,
 			date: end
-		});
-	});
+		};
+	}).filter((r) => r.token_count > 0);
 
 	const total = rows.reduce((a, r) => a + r.token_count, 0);
 	const maxTotal = DAILY_TOTAL_TOLERANCE * days * weekly_rewd_cap;
 	console.log('delegator rewards: ' + rows.length + ' payees, total ' + total.toFixed(3) + ' AFIT (limit ' + maxTotal.toFixed(3) + '), skipped ' + skipped.length + ', capped ' + capped.length);
 	if (skipped.length) console.log('skipped: ' + JSON.stringify(skipped));
 	if (capped.length) console.log('capped to the chain amount [user, computed, paid]: ' + JSON.stringify(capped));
+
+	if (acumulated.users.length && !rows.length) throw new Error('no delegator would be paid; nothing paid');
+	const prevDay = moment.utc(end).subtract(1, 'days').toDate();
+	const prevCount = await db.collection('token_transactions').countDocuments({ reward_activity: /^Delegation/, date: prevDay });
+	if (prevCount >= 50 && rows.length < MIN_PAYEE_RATIO * prevCount) {
+		throw new Error('payees dropped from ' + prevCount + ' to ' + rows.length + '; nothing paid');
+	}
 	if (!(total <= maxTotal)) {
 		throw new Error('delegator rewards total ' + total.toFixed(3) + ' is above the limit ' + maxTotal.toFixed(3) + '; nothing paid');
 	}
@@ -1461,24 +1507,26 @@ async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink,
   const to = moment(start).subtract(7, 'days').toDate()
   const from = moment(to).subtract(7, 'days').toDate()
   
-  //load list of alt accounts to reward them instead of actual delegators
-  let altAccounts = trustedAltRows(await db.collection('delegation_alt_beneficiaries').find().toArray());
-  console.log('loading alt accounts');
-  //console.log(altAccounts);
-  
-  Promise.all(
+  if (!totalVests || !totalSteem) await updateProperties();
+  const weekDays = 7;
+
+  return Promise.all(
 		[
 			getAcumulatedSteemPower(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, config.exclude_enabled), //(nodeLink, dbDelegLink, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
 			getBenefactorRewards(nodeLink, history_limit, to, start, -1)
 		]
-	).then(values => {
-    const activeDelegations = values[0].users
+	).then(async values => {
+    // Only shares the chain backs get a part of the pool (see chainBackedShares).
+    const checked = await chainBackedShares(nodeLink, values[0].users, weekDays)
+    if (checked.skipped.length) console.log('weekly file skipped: ' + JSON.stringify(checked.skipped))
+    if (checked.capped.length) console.log('weekly file capped to the chain amount: ' + JSON.stringify(checked.capped))
+    const activeDelegations = checked.backed
 	//console.log('***');
 	//console.log(values[1]);
 	//console.log(activeDelegations);
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
-    const totalDelegatedSteem = values[0].totalSteem
+    const totalDelegatedSteem = activeDelegations.reduce((a, u) => a + u.totalSteem, 0)
     const rewardPerSteem = steemRewards / totalDelegatedSteem
 	const rewardPerSBD = sbdRewards / totalDelegatedSteem
     const rewards = _.map(activeDelegations, function (o) {
@@ -1496,7 +1544,7 @@ async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink,
 		let reward_user = o.user;
 		
 		//check if this user has an alt account with delegated rewards enabled
-		let delegator_entry = _.find(altAccounts, {'delegator': o.user, 'steem_reward_benefit': '1'});
+		let delegator_entry = _.find(ALT_BENEFICIARIES, {'delegator': o.user, 'steem_reward_benefit': '1'});
 		
 		//if so reward the alt account instead
 		if (delegator_entry != null) {
@@ -1632,7 +1680,8 @@ async function processDelegations (nodeLink, history_limit, bulkOps, delTrxCol, 
 	  //today
 	  let start = moment().utc().startOf('date').toDate()
 	  
-	  let to = moment(start).subtract(6, 'days').toDate()
+	  // 10 days (was 6): the first run after the 2026-10-22 pause must still reach ops from then
+	  let to = moment(start).subtract(10, 'days').toDate()
 	  let end = moment(to).format()
 	  
       if (txs[0] === end || tx_date < end) {
@@ -1818,39 +1867,6 @@ async function getActiveDelegations (delTrxCol, start, excludeOn) {
 		]
 	  ).toArray()
   }
-}
-
-/* 
- * function handles grabbing the total current SP value before a specific date 
- * params: toDate - date before which all current SP is calculated
- * returns: total value of current SP count up to passed date
- */
-async function getCurrentTotalSP(actDelgCol, toDate){
-	toDate = moment(toDate).toDate()
-	
-	//perform an aggregation based on max date, exluded delegators, and return back sum of SP and delegator count (we only need for now totalSP)
-	var results = await db.collection(actDelgCol).aggregate([
-		{
-			$match: 
-			{
-				'tx_date': {$lt: toDate},
-				'delegator': {$nin: config.exclude_rewards}
-			}
-		},
-		{
-		   $group:
-			{
-			   _id: null,
-			   totalSP: { $sum: "$steem_power" },
-			   totalDelegators: { $sum: 1 }
-			}
-		}
-		]).toArray();
-	//function(err, results) {
-			//var output = 'tokens distributed:'+results[0].totalSP;
-	//console.log(results);
-	return results.length ? results[0].totalSP : 0;
-		//});	
 }
 
 async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, excludeOn) {
@@ -2088,7 +2104,8 @@ module.exports = {
 	updateProperties,
 	updateUserTokens,
 	upsertRewardTransaction,
-	trustedAltRows,
+	chainBackedShares,
+	ALT_BENEFICIARIES,
 	payoutsPaused,
 	JOB_PAUSED,
 	hiveClient,

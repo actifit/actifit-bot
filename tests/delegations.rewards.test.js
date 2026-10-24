@@ -38,11 +38,13 @@ describeDb('delegations - delegator reward checks', () => {
 	// chain: delegator -> HP delegated to us now (1 vest = 1 HP, see __setChainTotals)
 	let chainHp;
 	let chainFails;
+	let otherDelegator; // name -> the delegator the fake node wrongly answers with
 	const fakeNode = {
 		database: {
 			call: async (method, [delegator, delegatee]) => {
 				expect(method).toBe('get_vesting_delegations');
 				if (chainFails) throw new Error('rpc down');
+				if (otherDelegator[delegator]) return [{ delegator: otherDelegator[delegator], delegatee, vesting_shares: '50000.000000 VESTS' }];
 				const hp = chainHp[delegator] || 0;
 				return hp > 0 ? [{ delegator, delegatee, vesting_shares: hp.toFixed(6) + ' VESTS' }] : [];
 			},
@@ -68,6 +70,7 @@ describeDb('delegations - delegator reward checks', () => {
 		await db.dropDatabase();
 		chainHp = {};
 		chainFails = false;
+		otherDelegator = {};
 		jest.spyOn(utils, 'rewardCap').mockReturnValue(1e9); // no multiplier unless a test sets one
 	});
 	afterEach(() => jest.restoreAllMocks());
@@ -101,29 +104,80 @@ describeDb('delegations - delegator reward checks', () => {
 		expect(r.capped.length).toBe(1);
 	});
 
-	test('alt beneficiary rows created after the incident are ignored; older ones are honoured', async () => {
-		await seed([['alice', 1000], ['bob', 500]]);
-		chainHp = { alice: 1000, bob: 500 };
+	test('alt redirects come only from the pinned list, never from the collection', async () => {
+		// erikah -> erikahfit is in the pinned list. The collection holds a forged-old-id row
+		// for bob and an "edited" erikah row; both must be ignored.
+		await seed([['erikah', 1000], ['bob', 500]]);
+		chainHp = { erikah: 1000, bob: 500 };
 		await db.collection('delegation_alt_beneficiaries').insertMany([
-			{ _id: ObjectId.createFromTime(Date.parse('2024-05-01T00:00:00Z') / 1000), delegator: 'alice', reward_benefit: '1', alt_account: 'alice-alt' },
-			{ _id: ObjectId.createFromTime(Date.parse('2026-10-22T00:00:00Z') / 1000), delegator: 'bob', reward_benefit: '1', alt_account: 'attacker' },
+			{ _id: ObjectId.createFromTime(Date.parse('2019-01-01T00:00:00Z') / 1000), delegator: 'bob', reward_benefit: '1', alt_account: 'attacker' },
+			{ _id: ObjectId.createFromTime(Date.parse('2019-02-18T00:00:00Z') / 1000), delegator: 'erikah', reward_benefit: '1', alt_account: 'attacker' },
 		]);
 		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
 		const u = byUser(r);
-		expect(u.alice.user).toBe('alice-alt');
-		expect(u.alice.reward_activity).toBe('Delegation On Behalf');
+		expect(u.erikah.user).toBe('erikahfit');
+		expect(u.erikah.reward_activity).toBe('Delegation On Behalf');
 		expect(u.bob.user).toBe('bob');
 		expect(u.bob.reward_activity).toBe('Delegation');
 	});
 
-	test('a day above the total limit pays nothing (shrunk cap denominator)', async () => {
-		// The cap uses the active collection's total. Shrinking that total removes the
-		// multiplier; the total limit still stops the day.
-		utils.rewardCap.mockReturnValue(100);
-		await db.collection(TRX).insertMany([{ delegator: 'whale', steem_power: 10000, tx_date: longAgo, vesting_shares: '10000 VESTS' }]);
-		await db.collection(ACT).insertOne({ _id: 'whale', delegator: 'whale', steem_power: 1, tx_date: longAgo });
-		chainHp = { whale: 10000 };
-		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/above the limit/);
+	test('a shrunk active-delegations collection does not move the multiplier', async () => {
+		utils.rewardCap.mockReturnValue(750); // chain HP 1500 -> multiplier 0.5
+		await db.collection(TRX).insertMany([
+			{ delegator: 'alice', steem_power: 1000, tx_date: longAgo, vesting_shares: '1000 VESTS' },
+			{ delegator: 'bob', steem_power: 500, tx_date: longAgo, vesting_shares: '500 VESTS' },
+		]);
+		await db.collection(ACT).insertOne({ _id: 'alice', delegator: 'alice', steem_power: 1, tx_date: longAgo });
+		chainHp = { alice: 1000, bob: 500 };
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		expect(r.multiplier).toBeCloseTo(0.5, 6);
+		expect(r.total).toBeCloseTo(1500, 2);
+	});
+
+	test('a whale who changed delegation after the window does not stop the day', async () => {
+		utils.rewardCap.mockReturnValue(1000);
+		const users = Array.from({ length: 10 }, (_, k) => ['user' + k, 1000]);
+		await seed(users);
+		const later = new Date(end.getTime() + 3 * 3600e3);
+		await db.collection(TRX).insertMany([
+			{ delegator: 'whale', steem_power: 1000, tx_date: longAgo, vesting_shares: '1000 VESTS' },
+			{ delegator: 'whale', steem_power: 1100, tx_date: later, vesting_shares: '1100 VESTS' },
+		]);
+		await db.collection(ACT).insertOne({ _id: 'whale', delegator: 'whale', steem_power: 1100, tx_date: later });
+		chainHp = Object.fromEntries(users.map(([n]) => [n, 1000]));
+		chainHp.whale = 1100;
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		expect(r.total).toBeLessThanOrEqual(2 * 1000 * 1.001);
+		expect(byUser(r).whale).toBeDefined();
+	});
+
+	test('an invalid account name is skipped, the rest are paid', async () => {
+		await seed([['alice', 1000], ['NOT-A-VALID-ACCOUNT-NAME', 1000]]);
+		chainHp = { alice: 1000, 'NOT-A-VALID-ACCOUNT-NAME': 1000 };
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		expect(Object.keys(byUser(r))).toEqual(['alice']);
+		expect(r.skipped[0][1]).toBe('not a valid account name');
+	});
+
+	test('a chain answer about a different delegator counts as no delegation', async () => {
+		await seed([['alice', 1000], ['whal', 50000]]);
+		chainHp = { alice: 1000 };
+		otherDelegator = { whal: 'whale' }; // the node answers with whale's delegation
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		expect(byUser(r).whal).toBeUndefined();
+	});
+
+	test('nobody to pay stops the day', async () => {
+		await seed([['mallory', 1000]]);
+		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/no delegator would be paid/);
+	});
+
+	test('a sharp drop in payees from the previous day stops the day', async () => {
+		const prev = new Date(end.getTime() - 24 * 3600e3);
+		await db.collection('token_transactions').insertMany(Array.from({ length: 100 }, (_, k) => ({ user: 'p' + k, reward_activity: 'Delegation', date: prev, token_count: 1 })));
+		await seed([['alice', 1000]]);
+		chainHp = { alice: 1000 };
+		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/payees dropped/);
 	});
 
 	test('a chain lookup failure pays nothing', async () => {
