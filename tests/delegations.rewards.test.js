@@ -172,6 +172,10 @@ describeDb('delegations - delegator reward checks', () => {
 		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/no delegator would be paid/);
 	});
 
+	test('an empty delegation history stops the day too', async () => {
+		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/no delegator would be paid/);
+	});
+
 	test('a sharp drop in payees from the previous day stops the day', async () => {
 		const prev = new Date(end.getTime() - 24 * 3600e3);
 		await db.collection('token_transactions').insertMany(Array.from({ length: 100 }, (_, k) => ({ user: 'p' + k, reward_activity: 'Delegation', date: prev, token_count: 1 })));

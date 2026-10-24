@@ -1478,7 +1478,7 @@ async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelCo
 	if (skipped.length) console.log('skipped: ' + JSON.stringify(skipped));
 	if (capped.length) console.log('capped to the chain amount [user, computed, paid]: ' + JSON.stringify(capped));
 
-	if (acumulated.users.length && !rows.length) throw new Error('no delegator would be paid; nothing paid');
+	if (!rows.length) throw new Error('no delegator would be paid; nothing paid');
 	const prevDay = moment.utc(end).subtract(1, 'days').toDate();
 	const prevCount = await db.collection('token_transactions').countDocuments({ reward_activity: /^Delegation/, date: prevDay });
 	if (prevCount >= 50 && rows.length < MIN_PAYEE_RATIO * prevCount) {
@@ -1527,6 +1527,7 @@ async function processSteemRewards (chain, history_limit, nodeLink, dbDelegLink,
     const steemRewards = values[1].split(' ')[0]
 	const sbdRewards = values[1].split(' ')[1]
     const totalDelegatedSteem = activeDelegations.reduce((a, u) => a + u.totalSteem, 0)
+    if (!(totalDelegatedSteem > 0)) throw new Error('weekly file: no chain-backed delegator; file not written')
     const rewardPerSteem = steemRewards / totalDelegatedSteem
 	const rewardPerSBD = sbdRewards / totalDelegatedSteem
     const rewards = _.map(activeDelegations, function (o) {

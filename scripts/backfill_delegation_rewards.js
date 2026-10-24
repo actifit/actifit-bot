@@ -63,6 +63,7 @@ async function main() {
 	}
 
 	let wrote = 0;
+	let touched = false;
 	try {
 	for (const m of runDays) {
 		const end = m.toDate();
@@ -70,13 +71,14 @@ async function main() {
 		const r = await d.computeDelegationRewards('HIVE', d.hiveClient, d.hiveDelegationTrxCol, d.hiveActDelgCol, start, end, days);
 		console.log(m.format('YYYY-MM-DD') + ': ' + r.rows.length + ' payees, ' + r.total.toFixed(3) + ' AFIT (limit ' + r.maxTotal.toFixed(3) + '), skipped ' + r.skipped.length + ', capped ' + r.capped.length + (apply ? '' : '  [dry run]'));
 		if (apply) {
+			touched = true; // set first: a partly failed write still needs the balance rebuild
 			await Promise.all(r.rows.map(d.upsertRewardTransaction));
 			wrote += r.rows.length;
 		}
 	}
 	} finally {
 		// rebuild balances for whatever was written, even if a later day stopped the run
-		if (apply && wrote) await d.updateUserTokens();
+		if (touched) await d.updateUserTokens();
 	}
 	console.log(apply ? 'Done: wrote ' + wrote + ' rows.' : 'Dry run done: nothing written. Add --apply to pay.');
 }
