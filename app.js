@@ -2671,7 +2671,7 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 // Session restore on page load. checkHdrs authenticates the session; the handler returns
 // the account from the chain. It no longer decrypts a stored posting key: none is stored
 // since the signed-challenge login, so that check logged every typed-key user out.
-app.get('/fetchUserData', checkHdrs, createFetchUserDataHandler({ getAccountData: utils.getAccountData }));
+app.get('/fetchUserData', checkHdrs, createFetchUserDataHandler({ getAccountData: (user, bchain) => utils.getAccountData(user, bchain) }));
 
 app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/resetFundsPass');
