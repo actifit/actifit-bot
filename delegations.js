@@ -1449,9 +1449,13 @@ async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelCo
 	const { backed, skipped, capped } = await chainBackedShares(nodeLink, acumulated.users, days);
 
 	const weekly_rewd_cap = await utils.rewardCap(chain);
-	const chainTotalSP = backed.reduce((a, u) => a + u.chainSP, 0);
-	const multiplier = chainTotalSP > weekly_rewd_cap ? weekly_rewd_cap / chainTotalSP : 1;
-	console.log('chain-backed HP: ' + chainTotalSP.toFixed(3) + ', cap: ' + weekly_rewd_cap + ', multiplier: ' + multiplier);
+	// Average daily HP over the window, from the same (chain-capped) shares that are paid.
+	// Stored HP is the HP at delegation time, which is lower than today's chain HP for the
+	// same vests, so the multiplier must use the shares, not chain HP, or the day underpays.
+	// A row the chain does not back is not in `backed`, so it cannot move this.
+	const dailySP = backed.reduce((a, u) => a + u.totalSteem, 0) / days;
+	const multiplier = dailySP > weekly_rewd_cap ? weekly_rewd_cap / dailySP : 1;
+	console.log('average daily HP: ' + dailySP.toFixed(3) + ', cap: ' + weekly_rewd_cap + ', multiplier: ' + multiplier);
 
 	const rows = backed.map((u) => {
 		let reward_user = u.user;

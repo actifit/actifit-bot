@@ -134,6 +134,17 @@ describeDb('delegations - delegator reward checks', () => {
 		expect(r.total).toBeCloseTo(1500, 2);
 	});
 
+	test('a capped day pays the full cap when chain HP per vest has grown since delegation', async () => {
+		// Stored HP is from delegation time; the chain now values the same vests 10% higher.
+		// The day must still pay days x cap, not 10% less.
+		utils.rewardCap.mockReturnValue(750);
+		await seed([['alice', 1000], ['bob', 500]]);
+		chainHp = { alice: 1100, bob: 550 };
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		expect(r.total).toBeCloseTo(2 * 750, 1);
+		expect(r.capped).toEqual([]);
+	});
+
 	test('a whale who changed delegation after the window does not stop the day', async () => {
 		utils.rewardCap.mockReturnValue(1000);
 		const users = Array.from({ length: 10 }, (_, k) => ['user' + k, 1000]);
