@@ -4,6 +4,7 @@ const MongoClient = require('mongodb').MongoClient;
 var utils = require('./utils');
 const keyRotation = require('./key_rotation');
 const loginChallenge = require('./login_challenge');
+const { createFetchUserDataHandler } = require('./fetch_user_data');
 const sessionToken = require('./session_token');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
@@ -2667,38 +2668,10 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 	}
 });
 
-app.get('/fetchUserData', checkHdrs, async function (req, res) {
-	//validate proper data used
-	let username;
-	if (req.query && req.query.user){
-		username = req.query.user;
-	}
-	let bchain = 'HIVE';
-	if (req.query && req.query.bchain){
-		bchain = req.query.bchain;
-	}
-	console.log('>>>>fetchuserdata');
-	console.log(bchain);
-	//console.log(username);
-	//console.log(req.ppkey);
-	const receivedPlaintext = decrypt(req.ppkey);
-	let isValidUser = await utils.validateAccountLogin(username, receivedPlaintext, bchain);
-	
-	console.log('isValidUser');
-	console.log(isValidUser);
-	//if (username === mockedUsername && ppkey === mockedPpkey) {
-	if (isValidUser.result){
-		res.json({
-		  success: true,
-		  userdata: isValidUser.account
-		});
-	} else {
-		res.status(403).send({
-		  success: false,
-		  message: 'Invalid user'
-		});
-	}
-});
+// Session restore on page load. checkHdrs authenticates the session; the handler returns
+// the account from the chain. It no longer decrypts a stored posting key: none is stored
+// since the signed-challenge login, so that check logged every typed-key user out.
+app.get('/fetchUserData', checkHdrs, createFetchUserDataHandler({ getAccountData: (user, bchain) => utils.getAccountData(user, bchain) }));
 
 app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/resetFundsPass');

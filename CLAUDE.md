@@ -6,9 +6,11 @@ Guidance for Claude Code when working in this repo.
 
 - Node/Express backend serving `api2.actifit.io`. Native MongoDB driver
   (`db.collection(...)`, dependency-injected `db`), dhive/hive-js. Node 22.
-- **No CI.** `master` auto-deploys to 2 servers via GitHub Actions **and** a
-  separate `git push heroku master`. Never merge to `master` without explicit
-  user confirmation.
+- **No CI.** `master` auto-deploys to 2 servers (api + api2) via GitHub Actions.
+  Heroku no longer runs this code: since 2026-10-22 the `actifitbot` Heroku app
+  runs only the pass-through proxy (repo `actifitbot-heroku-proxy`, no secrets, no
+  DB) that forwards old app builds to api/api2. Never merge to `master` without
+  explicit user confirmation.
 - Mongo connection is read from `config.json` (gitignored): `app.js` uses
   `config.testing ? config.mongo_local : config.mongo_uri`, db `config.db_name`.
   In production `testing: false` → `mongo_uri` is the live DB.
@@ -47,7 +49,7 @@ Only official, public challenges are named in the text (user titles would be a
 phishing vector, and the inbox is readable without login). On by default inside
 `arena_jobs_enabled`; to stop it set `arena_notify_enabled: false` in **api2's**
 config.json and `pm2 restart app` (never `pm2 delete` + start by hand — that drops
-`BOT_THREAD` and stops settlement). Heroku also auto-deploys from `master`.
+`BOT_THREAD` and stops settlement).
 
 ## Conventions
 
