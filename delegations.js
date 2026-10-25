@@ -1403,7 +1403,9 @@ async function mapLimit(items, limit, fn) {
  * Someone who lowered or removed their delegation since the window is cut to the
  * chain amount. That is the price of not trusting stored rows.
  */
-async function chainBackedShares(nodeLink, users, days) {
+// `chainCache` (optional Map) keeps lookups for the length of one run, so a multi-day
+// backfill asks the chain once per delegator instead of once per day.
+async function chainBackedShares(nodeLink, users, days, chainCache) {
 	const excluded = new Set(config.exclude_rewards || []);
 	const skipped = [];
 	const candidates = users.filter((u) => {
@@ -1411,7 +1413,16 @@ async function chainBackedShares(nodeLink, users, days) {
 		if (!HIVE_NAME.test(String(u.user))) { skipped.push([String(u.user).slice(0, 40), 'not a valid account name']); return false; }
 		return true;
 	});
-	const vests = await mapLimit(candidates, 8, (u) => chainDelegatedVests(nodeLink, u.user, config.account));
+	let done = 0;
+	const vests = await mapLimit(candidates, 8, async (u) => {
+		let v = chainCache && chainCache.get(u.user);
+		if (v === undefined) {
+			v = await chainDelegatedVests(nodeLink, u.user, config.account);
+			if (chainCache) chainCache.set(u.user, v);
+		}
+		if (++done % 100 === 0 || done === candidates.length) console.log('checked on chain: ' + done + '/' + candidates.length);
+		return v;
+	});
 	const backed = [];
 	const capped = [];
 	candidates.forEach((u, k) => {
@@ -1438,7 +1449,7 @@ const MIN_PAYEE_RATIO = 0.7;
  * failing, if nobody would be paid, if the payee count drops sharply from the previous
  * day, or if the total is above DAILY_TOTAL_TOLERANCE x days x cap.
  */
-async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelColLink, start, end, days) {
+async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelColLink, start, end, days, chainCache) {
 	if (!start) start = moment().utc().startOf('date').subtract(days, 'days').toDate()
 	if (!end) end = moment().utc().startOf('date').toDate()
 	let note = 'Delegation Reward On ' + chain + ' For ' + moment(end).subtract(1, 'days').format('MMMM Do YYYY')
@@ -1446,7 +1457,7 @@ async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelCo
 	if (!totalVests || !totalSteem) await updateProperties();
 
 	const acumulated = await getAcumulatedSteemPower(nodeLink, null, delTrxCol, activeDelColLink, start, end, config.exclude_enabled);
-	const { backed, skipped, capped } = await chainBackedShares(nodeLink, acumulated.users, days);
+	const { backed, skipped, capped } = await chainBackedShares(nodeLink, acumulated.users, days, chainCache);
 
 	const weekly_rewd_cap = await utils.rewardCap(chain);
 	// The multiplier uses chain HP, which stored rows cannot change. Shares are accrued in

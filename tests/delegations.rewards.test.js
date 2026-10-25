@@ -38,11 +38,13 @@ describeDb('delegations - delegator reward checks', () => {
 	// chain: delegator -> HP delegated to us now (1 vest = 1 HP, see __setChainTotals)
 	let chainHp;
 	let chainFails;
+	let chainCalls;
 	let otherDelegator; // name -> the delegator the fake node wrongly answers with
 	const fakeNode = {
 		database: {
 			call: async (method, [delegator, delegatee]) => {
 				expect(method).toBe('get_vesting_delegations');
+				chainCalls++;
 				if (chainFails) throw new Error('rpc down');
 				if (otherDelegator[delegator]) return [{ delegator: otherDelegator[delegator], delegatee, vesting_shares: '50000.000000 VESTS' }];
 				const hp = chainHp[delegator] || 0;
@@ -70,6 +72,7 @@ describeDb('delegations - delegator reward checks', () => {
 		await db.dropDatabase();
 		chainHp = {};
 		chainFails = false;
+		chainCalls = 0;
 		otherDelegator = {};
 		d.__setChainTotals(1, 1); // 1 vest = 1 HP unless a test changes it
 		jest.spyOn(utils, 'rewardCap').mockReturnValue(1e9); // no multiplier unless a test sets one
@@ -209,6 +212,17 @@ describeDb('delegations - delegator reward checks', () => {
 		await seed([['alice', 1000]]);
 		chainHp = { alice: 1000 };
 		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days)).rejects.toThrow(/payees dropped/);
+	});
+
+	test('a shared lookup cache asks the chain once per delegator across days', async () => {
+		await seed([['alice', 1000], ['bob', 500]]);
+		chainHp = { alice: 1000, bob: 500 };
+		const cache = new Map();
+		const day2 = new Date(end.getTime() + 24 * 3600e3);
+		const r1 = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days, cache);
+		const r2 = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, new Date(start.getTime() + 24 * 3600e3), day2, days, cache);
+		expect(chainCalls).toBe(2);
+		expect(r2.total).toBeCloseTo(r1.total, 6);
 	});
 
 	test('a chain lookup failure pays nothing', async () => {
