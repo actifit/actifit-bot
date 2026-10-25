@@ -1449,13 +1449,11 @@ async function computeDelegationRewards (chain, nodeLink, delTrxCol, activeDelCo
 	const { backed, skipped, capped } = await chainBackedShares(nodeLink, acumulated.users, days);
 
 	const weekly_rewd_cap = await utils.rewardCap(chain);
-	// Average daily HP over the window, from the same (chain-capped) shares that are paid.
-	// Stored HP is the HP at delegation time, which is lower than today's chain HP for the
-	// same vests, so the multiplier must use the shares, not chain HP, or the day underpays.
-	// A row the chain does not back is not in `backed`, so it cannot move this.
-	const dailySP = backed.reduce((a, u) => a + u.totalSteem, 0) / days;
-	const multiplier = dailySP > weekly_rewd_cap ? weekly_rewd_cap / dailySP : 1;
-	console.log('average daily HP: ' + dailySP.toFixed(3) + ', cap: ' + weekly_rewd_cap + ', multiplier: ' + multiplier);
+	// The multiplier uses chain HP, which stored rows cannot change. Shares are accrued in
+	// the same units (see rowHP), so a capped day pays days x cap.
+	const chainTotalSP = backed.reduce((a, u) => a + u.chainSP, 0);
+	const multiplier = chainTotalSP > weekly_rewd_cap ? weekly_rewd_cap / chainTotalSP : 1;
+	console.log('chain-backed HP: ' + chainTotalSP.toFixed(3) + ', cap: ' + weekly_rewd_cap + ', multiplier: ' + multiplier);
 
 	const rows = backed.map((u) => {
 		let reward_user = u.user;
@@ -1838,6 +1836,7 @@ async function getActiveDelegations (delTrxCol, start, excludeOn) {
 			  _id: '$_id',
 			  delegator: '$_id',
 			  steem_power: 1,
+			  vests: 1,
 			  tx_date: start
 			}
 		  },
@@ -1864,6 +1863,7 @@ async function getActiveDelegations (delTrxCol, start, excludeOn) {
 			  _id: '$_id',
 			  delegator: '$_id',
 			  steem_power: 1,
+			  vests: 1,
 			  tx_date: start
 			}
 		  },
@@ -1872,6 +1872,14 @@ async function getActiveDelegations (delTrxCol, start, excludeOn) {
 		]
 	  ).toArray()
   }
+}
+
+// A delegation row's HP in today's units: its vests at the current HP per vest. The
+// stored steem_power is the HP at delegation time, which is lower for the same vests,
+// and would not match the chain HP used for the cap and the multiplier.
+function rowHP (row) {
+  const v = parseFloat(String(row.vests || row.vesting_shares || ''));
+  return Number.isFinite(v) ? vestsToSteemPower(v + ' VESTS') : Number(row.steem_power);
 }
 
 async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, activeDelColLink, from, to, excludeOn) {
@@ -1914,7 +1922,7 @@ async function getAcumulatedSteemPower (nodeLink, dbDelegLink, delTrxCol, active
       if (i !== groupedTxs[index].length - 1) endTxs = new Date(groupedTxs[index][i + 1].tx_date)
       else endTxs = to
       var activeHours = Math.abs(txs.tx_date - endTxs) / 36e5
-      let newReward = activeHours * (txs.steem_power / 24)
+      let newReward = activeHours * (rowHP(txs) / 24)
       totalReward = totalReward + newReward
     }
     totalSteem = totalSteem + totalReward

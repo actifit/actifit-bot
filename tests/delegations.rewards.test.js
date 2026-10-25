@@ -71,6 +71,7 @@ describeDb('delegations - delegator reward checks', () => {
 		chainHp = {};
 		chainFails = false;
 		otherDelegator = {};
+		d.__setChainTotals(1, 1); // 1 vest = 1 HP unless a test changes it
 		jest.spyOn(utils, 'rewardCap').mockReturnValue(1e9); // no multiplier unless a test sets one
 	});
 	afterEach(() => jest.restoreAllMocks());
@@ -134,15 +135,30 @@ describeDb('delegations - delegator reward checks', () => {
 		expect(r.total).toBeCloseTo(1500, 2);
 	});
 
-	test('a capped day pays the full cap when chain HP per vest has grown since delegation', async () => {
-		// Stored HP is from delegation time; the chain now values the same vests 10% higher.
-		// The day must still pay days x cap, not 10% less.
+	test('a capped day pays the full cap when HP per vest has grown since delegation', async () => {
+		// Rows store HP at delegation time (1000 / 500). The same vests are worth 10% more
+		// HP today. The day must still pay days x cap, not 10% less.
+		d.__setChainTotals(1.1, 1);
 		utils.rewardCap.mockReturnValue(750);
-		await seed([['alice', 1000], ['bob', 500]]);
-		chainHp = { alice: 1100, bob: 550 };
+		await seed([['alice', 1000], ['bob', 500]]); // vesting_shares 1000 / 500 VESTS
+		chainHp = { alice: 1000, bob: 500 }; // vests on chain, unchanged
 		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
 		expect(r.total).toBeCloseTo(2 * 750, 1);
 		expect(r.capped).toEqual([]);
+	});
+
+	test('shrinking other delegators stored rows does not raise an attacker pay', async () => {
+		utils.rewardCap.mockReturnValue(1000);
+		const honest = Array.from({ length: 10 }, (_, k) => 'honest' + k);
+		// stored rows: honest users shrunk to almost nothing, attacker inflated
+		await db.collection(TRX).insertMany(honest.map((n) => ({ delegator: n, steem_power: 0.01, tx_date: longAgo, vesting_shares: '0.01 VESTS' })));
+		await db.collection(TRX).insertOne({ delegator: 'attacker', steem_power: 100000, tx_date: longAgo, vesting_shares: '100000 VESTS' });
+		chainHp = Object.fromEntries(honest.map((n) => [n, 1000]));
+		chainHp.attacker = 1000;
+		const r = await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days);
+		// fair share: 1000 of 11000 chain HP, of a 2 x 1000 day
+		const fair = 2 * 1000 * 1000 / 11000;
+		expect(byUser(r).attacker.token_count).toBeLessThanOrEqual(fair * 1.001);
 	});
 
 	test('a whale who changed delegation after the window does not stop the day', async () => {
