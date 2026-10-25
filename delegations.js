@@ -1414,13 +1414,15 @@ async function chainBackedShares(nodeLink, users, days, chainCache) {
 		return true;
 	});
 	let done = 0;
+	let reused = 0;
 	const vests = await mapLimit(candidates, 8, async (u) => {
 		let v = chainCache && chainCache.get(u.user);
-		if (v === undefined) {
+		if (v !== undefined) reused++;
+		else {
 			v = await chainDelegatedVests(nodeLink, u.user, config.account);
 			if (chainCache) chainCache.set(u.user, v);
 		}
-		if (++done % 100 === 0 || done === candidates.length) console.log('checked on chain: ' + done + '/' + candidates.length);
+		if (++done % 100 === 0 || done === candidates.length) console.log('checked on chain: ' + done + '/' + candidates.length + (reused ? ' (' + reused + ' from earlier days)' : ''));
 		return v;
 	});
 	const backed = [];

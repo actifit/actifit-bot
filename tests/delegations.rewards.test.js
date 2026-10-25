@@ -225,6 +225,19 @@ describeDb('delegations - delegator reward checks', () => {
 		expect(r2.total).toBeCloseTo(r1.total, 6);
 	});
 
+	test('the cache keeps a "not delegating" answer, and never keeps a failed lookup', async () => {
+		await seed([['alice', 1000], ['mallory', 1000]]);
+		chainHp = { alice: 1000 }; // mallory: 0 on chain
+		const cache = new Map();
+		await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days, cache);
+		await d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days, cache);
+		expect(chainCalls).toBe(2); // alice and mallory once each
+		const failCache = new Map();
+		chainFails = true;
+		await expect(d.computeDelegationRewards('HIVE', fakeNode, TRX, ACT, start, end, days, failCache)).rejects.toThrow('rpc down');
+		expect(failCache.size).toBe(0);
+	});
+
 	test('a chain lookup failure pays nothing', async () => {
 		await seed([['alice', 1000]]);
 		chainFails = true;

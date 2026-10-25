@@ -66,8 +66,8 @@ async function main() {
 	let touched = false;
 	const chainCache = new Map(); // one chain lookup per delegator for the whole run
 	try {
-	for (const m of runDays) {
-		console.log('--- ' + m.format('YYYY-MM-DD') + ' (' + (runDays.indexOf(m) + 1) + '/' + runDays.length + ') ---');
+	for (const [k, m] of runDays.entries()) {
+		console.log('--- ' + m.format('YYYY-MM-DD') + ' (' + (k + 1) + '/' + runDays.length + ') ---');
 		const end = m.toDate();
 		const start = m.clone().subtract(days, 'days').toDate();
 		const r = await d.computeDelegationRewards('HIVE', d.hiveClient, d.hiveDelegationTrxCol, d.hiveActDelgCol, start, end, days, chainCache);
