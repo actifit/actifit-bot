@@ -56,11 +56,13 @@ function ownPostingKeys(type, op, username) {
  * @param {string|string[]} currentKeys  the account's current posting key(s); none of
  *                                       them may be a key it held at `since`
  * @param {Date} since  keys in effect at this moment are treated as exposed
- * @returns {{allowed: boolean, reason: string}}
+ * @returns {{allowed: boolean, reason: string, rotatedBlock?: number|null}}  rotatedBlock:
+ *          the block of the latest own posting-authority change after `since`, when known
  */
 function decideRotation(history, username, currentKeys, since) {
 	let lastBefore = null; // latest posting authority set at or before `since`
 	let changedAfter = false;
+	let rotatedBlock = null; // block of the latest own posting change after `since`
 	for (const [, entry] of history || []) {
 		if (!entry || !Array.isArray(entry.op)) continue;
 		const [type, payload] = entry.op;
@@ -71,6 +73,8 @@ function decideRotation(history, username, currentKeys, since) {
 		if (isNaN(at.getTime())) continue;
 		if (at > since) {
 			changedAfter = true;
+			const block = Number(entry.block);
+			if (Number.isInteger(block) && (rotatedBlock === null || block > rotatedBlock)) rotatedBlock = block;
 		} else if (!lastBefore || at >= lastBefore.at) {
 			lastBefore = { at, keys };
 		}
@@ -81,7 +85,7 @@ function decideRotation(history, username, currentKeys, since) {
 	if (!lastBefore) return { allowed: false, reason: 'unknown_prior_keys' };
 	const keys = Array.isArray(currentKeys) ? currentKeys : [currentKeys];
 	if (!keys.length || keys.some((k) => lastBefore.keys.includes(k))) return { allowed: false, reason: 'old_key' };
-	return { allowed: true, reason: 'rotated' };
+	return rotatedBlock === null ? { allowed: true, reason: 'rotated' } : { allowed: true, reason: 'rotated', rotatedBlock };
 }
 
 /**
@@ -212,7 +216,7 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 		const result = await chainCheck(username, keys, flag.since);
 		if (result.allowed) {
 			cache.delete(username);
-			return { flagged: true, rotated: true };
+			return { flagged: true, rotated: true, rotatedBlock: result.rotatedBlock };
 		}
 		cache.set(username, { until: now() + (result.reason === 'chain_error' ? ERROR_CACHE_MS : CACHE_MS), reason: result.reason });
 		return { flagged: true, rotated: false, reason: result.reason };
@@ -261,9 +265,35 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 		return deny(res, 403, 'KEY_ROTATION_REQUIRED', KEY_ROTATION_MESSAGE);
 	}
 
+	// The block of a cleared account's key change. Older clears did not store it; it is
+	// then read from the chain once and saved. null when it cannot be established.
+	const blockMisses = new Map(); // user -> until, after a failed lookup (limits repeated chain walks)
+	async function rotatedBlockFor(username, flag) {
+		if (Number.isInteger(flag.rotated_block)) return flag.rotated_block;
+		const miss = blockMisses.get(username);
+		if (miss && now() < miss) return null;
+		const account = await getAccount(username);
+		let result = null;
+		if (account && account.posting && Array.isArray(account.posting.key_auths) && account.posting.key_auths.length) {
+			result = await chainCheck(username, account.posting.key_auths.map((ka) => ka[0]), flag.since);
+		}
+		if (!result || !result.allowed || !Number.isInteger(result.rotatedBlock)) {
+			blockMisses.set(username, now() + (result && result.reason === 'chain_error' ? ERROR_CACHE_MS : CACHE_MS));
+			return null;
+		}
+		blockMisses.delete(username);
+		await getCollection().updateMany({ user: username, cleared_at: flag.cleared_at }, { $set: { rotated_block: result.rotatedBlock } });
+		return result.rotatedBlock;
+	}
+
 	// For routes authorised by a posting-signed transaction instead of a session. A flagged
 	// account is refused outright: the transaction may have been signed with the old key.
-	function gateForUser(getUser) {
+	//
+	// After the flag is cleared, the old key may still have signed transactions shortly
+	// before the change. With `exactTx`, the route's transaction claim (claimVerifiedTx)
+	// only accepts transactions included after the key-change block, so the account can
+	// act at once. Without it, or when that block is unknown, a time hold applies instead.
+	function gateForUser(getUser, { exactTx = false } = {}) {
 		return async function (req, res, next) {
 			const username = getUser(req);
 			if (!username) return next(); // the route rejects the request itself
@@ -277,25 +307,37 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 			if (!flag) return next();
 			if (flag.cleared_at instanceof Date) {
 				if (now() - flag.cleared_at.getTime() >= SIGNED_TX_HOLD_MS) return next();
+				if (exactTx) {
+					let block = null;
+					try { block = await rotatedBlockFor(String(username), flag); } catch (err) {
+						console.log('key rotation: key-change block lookup failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+					}
+					if (Number.isInteger(block)) return next();
+				}
 				return deny(res, 403, 'KEY_ROTATION_HOLD', HOLD_MESSAGE);
 			}
 			return deny(res, 403, 'KEY_ROTATION_REQUIRED', KEY_ROTATION_MESSAGE);
 		};
 	}
 
-	// Called by /loginAuth once the session made with the new key is saved.
-	async function clear(username, token) {
+	// Called by /loginAuth once the session made with the new key is saved. `rotatedBlock`
+	// is the block of the key change (from status), kept so that signed transactions can
+	// be checked against it.
+	async function clear(username, token, rotatedBlock) {
 		cache.delete(username);
-		await getCollection().updateMany({ user: username },
-			{ $set: { cleared_at: new Date(now()), cleared_session: tokenHash(token) } });
+		const update = { $set: { cleared_at: new Date(now()), cleared_session: tokenHash(token) } };
+		// never keep a block from an earlier clear: it would predate this key change
+		if (Number.isInteger(rotatedBlock)) update.$set.rotated_block = rotatedBlock;
+		else update.$unset = { rotated_block: '' };
+		await getCollection().updateMany({ user: username }, update);
 	}
 
 	// Undo a clear whose session was overwritten before it could be confirmed.
 	async function unclear(username) {
-		await getCollection().updateMany({ user: username }, { $unset: { cleared_at: '', cleared_session: '' } });
+		await getCollection().updateMany({ user: username }, { $unset: { cleared_at: '', cleared_session: '', rotated_block: '' } });
 	}
 
 	return { status, gate, gateForUser, clear, unclear };
 }
 
-module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };
+module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS, SIGNED_TX_HOLD_MS };

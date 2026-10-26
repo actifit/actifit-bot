@@ -445,7 +445,9 @@ const keyRotationTracker = keyRotation.createTracker({
 const keyRotationStatus = keyRotationTracker.status;
 const keyRotationGate = keyRotationTracker.gate;
 const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query && req.query.user);
-const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user);
+// Gadget, workout and activation routes: their transaction is claimed via claimVerifiedTx,
+// which only accepts transactions included after a cleared account's key change.
+const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user, { exactTx: true });
 // For session routes that take the user from the URL: it must be the session's user.
 function sameUserParam(req, res, next) {
 	if (!req.params || req.params.user !== req.user._id) return res.send({ error: 'User mismatch' });
@@ -2947,12 +2949,14 @@ async function completeLogin(req, res, username, account, loginsrc) {
 	// Flagged accounts still log in, but are asked to change their posting key.
 	let securityNotice = null;
 	let rotatedFlag = false;
+	let rotatedBlock = null;
 	try {
 		let rotation = await keyRotationStatus(username, account, { fresh: true });
 		if (rotation.flagged && !rotation.rotated) {
 			securityNotice = { code: 'KEY_ROTATION_RECOMMENDED', message: KEY_ROTATION_MESSAGE };
 		}
 		rotatedFlag = rotation.flagged && rotation.rotated;
+		if (rotatedFlag) rotatedBlock = rotation.rotatedBlock;
 	} catch (err) {
 		console.log('login: key rotation status failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 	}
@@ -2997,7 +3001,7 @@ async function completeLogin(req, res, username, account, loginsrc) {
 		if (rotatedFlag) {
 			try {
 				await db_col.deleteMany({ user: username, token_hash: { $ne: user_tkn.token_hash } });
-				await keyRotationTracker.clear(username, token);
+				await keyRotationTracker.clear(username, token, rotatedBlock);
 				// a concurrent login may have replaced this session meanwhile
 				if (!(await db_col.findOne({ user: username, token_hash: user_tkn.token_hash }))) {
 					await keyRotationTracker.unclear(username);
