@@ -50,6 +50,9 @@ hive.config.set('alternative_api_endpoints', config.alt_hive_nodes);
 hive.api.setOptions({ url: config.active_hive_node });
 
 let db
+// One Mongo connection for the reward runs, reused from day to day. Declared up here:
+// a non-MAIN run calls runRewards() while this file is still loading.
+let rewardsClient = null;
 let collection
 let bulk_hive_delegation_entries
 
@@ -1083,8 +1086,6 @@ async function airdropAFITX(){
 
 */
 
-// One Mongo connection for the reward runs, reused from day to day.
-let rewardsClient = null;
 async function connectRewardsDb() {
 	if (!rewardsClient) {
 		const mongo_conn = config.testing ? config.mongo_local : config.mongo_uri;
