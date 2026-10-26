@@ -217,7 +217,7 @@ describe('createTracker', () => {
 		expect(update.$set.cleared_session).toMatch(/^[0-9a-f]{64}$/);
 		expect(update.$set.cleared_session).not.toContain('tok');
 		await tracker.unclear('u');
-		expect(col.updateMany.mock.calls[1][1]).toEqual({ $unset: { cleared_at: '', cleared_session: '' } });
+		expect(col.updateMany.mock.calls[1][1]).toEqual({ $unset: { cleared_at: '', cleared_session: '', rotated_block: '' } });
 	});
 
 	test('fresh (login) skips a cached not-rotated answer', async () => {
