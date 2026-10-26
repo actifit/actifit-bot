@@ -10138,11 +10138,12 @@ async function performAfitUpvoteExchange(req, res, user, paid_tokens) {
 	// false), letting an account with a corrupted balance exchange without limit; and
 	// a negative `tokens` passed it too, then got recorded as token_count: -(-n) = +n,
 	// i.e. it minted AFIT.
-	// The amount only has to be positive: min_afit_for_steem_upvote is the minimum
-	// BALANCE to hold (checked below), not a minimum amount - the wallet sends 50-200.
+	// The amount must be one of the exchange tiers (utils.UPVOTE_EXCHANGE_TIERS - see there:
+	// any other amount breaks the voting round or buys a boost at a legacy price).
+	// min_afit_for_steem_upvote is a separate minimum BALANCE to hold, checked below.
 	const requestedTokens = utils.finiteAmount(paid_tokens);
-	if (requestedTokens === null || requestedTokens <= 0){
-		res.send({'error': 'Invalid AFIT amount'});
+	if (requestedTokens === null || !utils.UPVOTE_EXCHANGE_TIERS.includes(requestedTokens)){
+		res.send({'error': 'Invalid AFIT amount. Choose one of: ' + utils.UPVOTE_EXCHANGE_TIERS.join(', ')});
 		return;
 	}
 	paid_tokens = requestedTokens;

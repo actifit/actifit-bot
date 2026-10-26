@@ -286,6 +286,18 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			expect(await ledger()).toHaveLength(0);
 		});
 
+		test('only the exchange tiers are accepted: legacy-priced and voter-crashing amounts are refused', async () => {
+			// 5 = a legacy tier (same boost as 50 at a tenth of the price); 75 / 0.000000001 match no
+			// tier and would make the voter throw mid-round; 500 = legacy; 50.5 rounds by parseInt
+			for (const tokens of ['5', '20', '75', '0.000000001', '500', '2000', '50.5', '250']) {
+				ip++; // one request per client IP: the route allows 5 per 15 min per IP
+				const r = await exchange({ user: 'alice', tokens });
+				expect(r.body.error).toMatch(/Choose one of: 50, 100, 150, 200/);
+			}
+			expect(await ledger()).toHaveLength(0);
+			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(0);
+		});
+
 		test('invalid amounts are refused', async () => {
 			for (const tokens of ['-50', 'abc', '0']) {
 				const r = await exchange({ user: 'alice', tokens });
