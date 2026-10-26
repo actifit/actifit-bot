@@ -3330,7 +3330,24 @@ function checkKeyRotation(username, currentKeys, since){
 	return keyRotation.checkRotation(hiveClient, username, currentKeys, since);
 }
 
+// Query filter for a token_count that is a real number. Used before every SUM of
+// token_count: a NaN (or a string) in one row would otherwise make the user's whole
+// balance NaN. Range-matching numbers excludes NaN, non-numeric types and missing values
+// (verified against a real MongoDB in tests/afit_amounts.test.js).
+const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
+
+// An AFIT amount from a request or a stored balance, as a real number - or null when it
+// is missing, empty, NaN, Infinity or not numeric. The ONE rule for "is this an amount",
+// so a NaN can never pass a balance check (NaN < x is false) or be written to the ledger.
+function finiteAmount(value) {
+	if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
+	const n = Number(value);
+	return Number.isFinite(n) ? n : null;
+}
+
  module.exports = {
+	FINITE_AMOUNT: FINITE_AMOUNT,
+	finiteAmount: finiteAmount,
    checkKeyRotation: checkKeyRotation,
    updateSteemVariables: updateSteemVariables,
    getVotingPower: getVotingPower,
