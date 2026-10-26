@@ -10216,7 +10216,8 @@ async function performAfitUpvoteExchange(req, res, user, paid_tokens) {
 		console.log(err);
 		// undo the ledger row too: otherwise the daily rebuild would still charge the user
 		await db.collection('token_transactions').deleteOne({ _id: ledgerRow.insertedId })
-			.catch((e) => console.log('performAfitSteemExchange: could not remove ledger row for ' + user + ' - ' + e.message));
+			// loud: this orphan row would charge the user at the next daily rebuild with no exchange
+			.catch((e) => console.log('performAfitSteemExchange: LEDGER ROW NOT REMOVED (manual fix needed) for ' + user + ' token_transactions _id ' + ledgerRow.insertedId + ' - ' + e.message));
 		await giveBack();
 		res.send({'error': 'Error storing the exchange transaction to queue'});
 		return;
