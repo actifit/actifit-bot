@@ -67,7 +67,8 @@ async function fetchDeposits(sinceTs) {
 		const mismatches = [];
 		for (const user of depositors) {
 			const agg = await db.collection('token_transactions').aggregate([
-				{ $match: { user } },
+				// only real numbers: one NaN row would make the whole sum NaN
+				{ $match: { user, token_count: { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE } } },
 				{ $group: { _id: null, token_balance: { $sum: '$token_count' } } }
 			]).toArray();
 			let ledgerSum = agg.length ? parseFloat(agg[0].token_balance) : 0;

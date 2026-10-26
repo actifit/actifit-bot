@@ -104,7 +104,7 @@ async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 		date: { $gte: start, $lt: end },
 	};
 	const rows = await db.collection(COL.LEDGER).aggregate([
-		{ $match: match },
+		{ $match: Object.assign({}, match, { token_count: FINITE_AMOUNT }) },
 		{ $group: { _id: null, total: { $sum: '$token_count' } } },
 	]).toArray();
 	let total = (rows[0] && Number(rows[0].total)) || 0;
@@ -121,6 +121,7 @@ async function arenaEmittedWeek(db, at, excludeUser, excludeChallengeId) {
 				user: excludeUser,
 				reward_activity: activityFor(excludeChallengeId),
 				date: { $gte: start, $lt: end },
+				token_count: FINITE_AMOUNT,
 			} },
 			{ $group: { _id: null, total: { $sum: '$token_count' } } },
 		]).toArray();
@@ -160,6 +161,7 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 			user,
 			reward_activity: { $gte: ARENA_ACTIVITY_PREFIX, $lt: ARENA_ACTIVITY_HI },
 			date: { $gte: start, $lt: end },
+			token_count: FINITE_AMOUNT,
 		} },
 		{ $group: { _id: null, total: { $sum: '$token_count' } } },
 	]).toArray();
@@ -172,6 +174,7 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 				user,
 				reward_activity: activityFor(excludeChallengeId),
 				date: { $gte: start, $lt: end },
+				token_count: FINITE_AMOUNT,
 			} },
 			{ $group: { _id: null, total: { $sum: '$token_count' } } },
 		]).toArray();
@@ -197,9 +200,14 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
  *  (which $out's straight over user_tokens) and app.js /recalculateUserTokens, both
  *  of which already use $sum. Previously this function was the odd one out and
  *  could inflate a balance that the next sweep silently clawed back. */
+// token_count must be a real number to be summed (same filter as utils.FINITE_AMOUNT;
+// written inline because this module is kept load-time-safe and does not require utils).
+// One NaN row would otherwise make a whole sum NaN, and Number(NaN) || 0 turns it into 0.
+const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
+
 async function reconcileBalance(db, user) {
 	const agg = await db.collection(COL.LEDGER).aggregate([
-		{ $match: { user } },
+		{ $match: { user, token_count: FINITE_AMOUNT } },
 		{ $group: { _id: null, total: { $sum: '$token_count' } } },
 	]).toArray();
 	const tokens = (agg[0] && Number(agg[0].total)) || 0;

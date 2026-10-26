@@ -401,12 +401,15 @@ async function processAfitAirdropHive(){
 					//fixing token amount display for 3 digits
 					if (typeof user!= "undefined" && user!=null){
 						if (typeof user.tokens!= "undefined"){
-							user.tokens = user.tokens.toFixed(3)
+							// not a real number (NaN, a string) reads as 0, so the checks below fail closed
+							const tokens = utils.finiteAmount(user.tokens);
+							user.tokens = (tokens === null ? 0 : tokens).toFixed(3)
 						}
 					}else{
 						user = new Object();
-						user._id=username;
-						user.name=username;
+						// was `username`, which is not defined here: it threw for any user without a balance doc
+						user._id=entry.user;
+						user.name=entry.user;
 						user.tokens=0;
 					}
 					

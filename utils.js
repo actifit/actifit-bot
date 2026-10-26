@@ -3340,7 +3340,8 @@ const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
 // is missing, empty, NaN, Infinity or not numeric. The ONE rule for "is this an amount",
 // so a NaN can never pass a balance check (NaN < x is false) or be written to the ledger.
 function finiteAmount(value) {
-	if (value === null || value === undefined || (typeof value === 'string' && value.trim() === '')) return null;
+	if (typeof value !== 'number' && typeof value !== 'string') return null;   // not true, [5], {}
+	if (typeof value === 'string' && value.trim() === '') return null;
 	const n = Number(value);
 	return Number.isFinite(n) ? n : null;
 }
