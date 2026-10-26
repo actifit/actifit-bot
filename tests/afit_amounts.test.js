@@ -13,6 +13,7 @@
 const { MongoClient } = require('mongodb');
 const utils = require('../utils');
 const d = require('../delegations');
+const arenaAfit = require('../arena_afit');
 
 describe('utils.finiteAmount - the one rule for "is this an AFIT amount"', () => {
 	test.each([
@@ -22,7 +23,9 @@ describe('utils.finiteAmount - the one rule for "is this an AFIT amount"', () =>
 	});
 
 	test.each([
-		[undefined], [null], [''], ['  '], ['NaN'], [NaN], ['abc'], ['100abc'], [Infinity], ['Infinity'], [{}]
+		[undefined], [null], [''], ['  '], ['NaN'], [NaN], ['abc'], ['100abc'], [Infinity], ['Infinity'], [{}],
+		// numbers and strings only: qs can turn a query param into an array
+		[true], [[5]]
 	])('%p is not an amount', (input) => {
 		expect(utils.finiteAmount(input)).toBeNull();
 	});
@@ -98,6 +101,13 @@ describeDb('daily balance rebuild (delegations.updateUserTokens) on a real Mongo
 		// no document at all: the API then reports 0 for them (grabUserTokensFunc)
 		expect(b.onlybad).toBeUndefined();
 		expect(Object.values(b).some((v) => Number.isNaN(v))).toBe(false);
+	});
+
+	test('arena reconcileBalance sums the real rows instead of zeroing on a NaN row', async () => {
+		// before: $sum -> NaN, then Number(NaN) || 0 -> the balance was set to 0
+		await arenaAfit.reconcileBalance(db, 'poisoned');
+		const doc = await db.collection('user_tokens').findOne({ _id: 'poisoned' });
+		expect(doc.tokens).toBeCloseTo(124.21, 6);
 	});
 
 	test('utils.FINITE_AMOUNT matches exactly the numeric rows', async () => {

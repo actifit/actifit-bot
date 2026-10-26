@@ -1848,7 +1848,11 @@ const grabUserTokensFunc = async function (username, fullBal){
 	//fixing token amount display for 3 digits
 	if (typeof user!= "undefined" && user!=null){
 		if (typeof user.tokens!= "undefined"){
-			user.tokens = user.tokens.toFixed(3)
+			// A balance that is not a real number (NaN, a string) reads as 0. Every "enough
+			// AFIT" check compares parseFloat(this) < x, which a NaN balance PASSES - so this
+			// one place makes all of them fail closed. (A string also crashed .toFixed.)
+			const tokens = utils.finiteAmount(user.tokens);
+			user.tokens = (tokens === null ? 0 : tokens).toFixed(3)
 		}
 	}else{
 		user = new Object();
@@ -2650,9 +2654,8 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 				user_info = { user: user, tokens: 0 };
 			}
 
-			if (results.length > 0) {
-				user_info.tokens = parseFloat(results[0].token_balance);
-			}
+			// no numeric rows -> 0 (not the "x.xxx" display string grabUserTokensFunc returns)
+			user_info.tokens = results.length > 0 ? parseFloat(results[0].token_balance) : 0;
 
 			if (user_info.tokens < 0) {
 				user_info.tokens = 0;
@@ -7820,11 +7823,12 @@ const storeSignupTransaction = async function (req){
 	}
 	
 	//also store this properly into user balance
-	// The amount must be a real number. A signup that arrived without afit_reward stored
+	// The amount must be a real number. Before the signup routes capped afit_reward
+	// (promoSignupAfitReward / capSignupAfitReward, Aug 2026), a signup without it stored
 	// token_count: NaN - and every balance is a SUM of token_count, so that one row turned
-	// the user's whole AFIT balance into NaN (13 signups, May-July 2026). A NaN balance
-	// also slipped past "not enough AFIT" checks (NaN < x is false). Not recorded is
-	// recoverable (it is logged for a manual payout); a NaN row poisons the balance.
+	// the user's whole AFIT balance into NaN (13 signups, May-July 2026). This guard keeps
+	// any future caller from doing that again. Not recorded is recoverable (logged for a
+	// manual payout); a NaN row poisons the balance.
 	const signupAfitReward = utils.finiteAmount(req.query.afit_reward);
 	const signupRewardValid = signupAfitReward !== null && signupAfitReward >= 0;
 	if (!signupRewardValid){
@@ -10110,9 +10114,11 @@ app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, re
 		// false), letting an account with a corrupted balance exchange without limit; and
 		// a negative `tokens` passed it too, then got recorded as token_count: -(-n) = +n,
 		// i.e. it minted AFIT.
+		// The amount only has to be positive: min_afit_for_steem_upvote is the minimum
+		// BALANCE to hold (checked below), not a minimum amount - the wallet sends 50-200.
 		const requestedTokens = utils.finiteAmount(paid_tokens);
-		if (requestedTokens === null || requestedTokens < config.min_afit_for_steem_upvote){
-			res.send({'error': 'Invalid AFIT amount. Minimum required is '+config.min_afit_for_steem_upvote});
+		if (requestedTokens === null || requestedTokens <= 0){
+			res.send({'error': 'Invalid AFIT amount'});
 			return;
 		}
 		paid_tokens = requestedTokens;
