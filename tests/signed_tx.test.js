@@ -77,9 +77,17 @@ const uri = process.env.MONGO_TEST_URI;
 			expect(await claim(cj('u3', undefined))).toBe(false);
 		});
 
-		test('cleared without a key-change block: left to the gate hold', async () => {
+		test('cleared without a key-change block: refused during the hold window', async () => {
 			await flag('u4', { cleared_at: CLEARED });
-			expect(await claim(cj('u4', 1))).toBe(true);
+			expect(await claim(cj('u4', 9999))).toBe(false);
+		});
+
+		test('after the hold window the block rule no longer applies', async () => {
+			const LONG_AGO = new Date(Date.now() - 11 * 60 * 60 * 1000);
+			await flag('u7', { cleared_at: LONG_AGO, rotated_block: 5000 });
+			await flag('u8', { cleared_at: LONG_AGO });
+			expect(await claim(cj('u7', 10))).toBe(true);
+			expect(await claim(cj('u8', undefined))).toBe(true);
 		});
 
 		test('re-flagged after a clear: refused', async () => {

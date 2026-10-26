@@ -52,7 +52,7 @@ const acct = (keys, threshold = 1, account_auths = []) => ({
 	name: 'alice', posting: { weight_threshold: threshold, account_auths, key_auths: keys.map((k) => [pub(k), 1]) },
 });
 const FLAG_SINCE = new Date('2026-10-20T00:00:00Z');
-const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account: 'alice', posting: { key_auths: keys.map((k) => [pub(k), 1]) } }] }];
+const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['account_update', { account: 'alice', posting: { key_auths: keys.map((k) => [pub(k), 1]) } }] }, block ? { block } : {})];
 
 (MONGO_URI ? describe : describe.skip)('signed-challenge login (real app, real MongoDB)', () => {
 	const request = require('supertest');
@@ -201,12 +201,14 @@ const upd = (ts, keys) => [0, { timestamp: ts, op: ['account_update', { account:
 	test('flagged, keys changed: old key refused; new key clears the flag and ends other sessions', async () => {
 		await db.collection('user_login_token').insertOne({ user: 'alice', token: 'stale-other-row' });
 		chain.alice = acct([NEW]);
-		history = [upd('2026-01-01T00:00:00', [OLD]), upd('2026-10-21T00:00:00', [NEW])];
+		history = [upd('2026-01-01T00:00:00', [OLD], 100), upd('2026-10-21T00:00:00', [NEW], 111109186)];
 		expect((await signedLogin(OLD)).status).toBe(403);
 		const r = await signedLogin(NEW);
 		expect(r.status).toBe(200);
 		expect(r.body.security_notice).toBeUndefined();
-		expect((await db.collection('key_rotation_required').findOne({ user: 'alice' })).cleared_at).toBeInstanceOf(Date);
+		const flagRow = await db.collection('key_rotation_required').findOne({ user: 'alice' });
+		expect(flagRow.cleared_at).toBeInstanceOf(Date);
+		expect(flagRow.rotated_block).toBe(111109186); // the key-change block is stored at login
 		const rows = await db.collection('user_login_token').find({ user: 'alice' }).toArray();
 		expect(rows.map((x) => x.token_hash)).toEqual([sha256(r.body.token)]);
 	});

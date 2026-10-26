@@ -80,6 +80,18 @@ describe('gateForUser with exactTx', () => {
 		}
 	});
 
+	test('a failed lookup is not repeated for a while', async () => {
+		const { deps, tracker } = setup({ flag: { user: 'u', since: SINCE, cleared_at: CLEARED }, check: async () => ({ allowed: false, reason: 'unknown_prior_keys' }) });
+		await run(byParam(tracker, { exactTx: true }));
+		await run(byParam(tracker, { exactTx: true }));
+		expect(deps.checkRotation).toHaveBeenCalledTimes(1);
+	});
+
+	test('status reports the key-change block when rotated (login passes it to clear)', async () => {
+		const { tracker } = setup({ flag: { user: 'u', since: SINCE } });
+		await expect(tracker.status('u', account, { fresh: true })).resolves.toEqual({ flagged: true, rotated: true, rotatedBlock: 5000 });
+	});
+
 	test('without exactTx the time hold still applies', async () => {
 		const { tracker } = setup({ flag: { user: 'u', since: SINCE, cleared_at: CLEARED, rotated_block: 5000 } });
 		const { res, next } = await run(byParam(tracker));
@@ -99,6 +111,7 @@ describe('gateForUser with exactTx', () => {
 		expect(col.updateMany.mock.calls[0][1].$set.rotated_block).toBe(5000);
 		await tracker.clear('u', 'tok');
 		expect(col.updateMany.mock.calls[1][1].$set).not.toHaveProperty('rotated_block');
+		expect(col.updateMany.mock.calls[1][1].$unset).toEqual({ rotated_block: '' });
 		await tracker.unclear('u');
 		expect(col.updateMany.mock.calls[2][1].$unset).toHaveProperty('rotated_block');
 	});

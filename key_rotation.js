@@ -267,12 +267,21 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 
 	// The block of a cleared account's key change. Older clears did not store it; it is
 	// then read from the chain once and saved. null when it cannot be established.
+	const blockMisses = new Map(); // user -> until, after a failed lookup (limits repeated chain walks)
 	async function rotatedBlockFor(username, flag) {
 		if (Number.isInteger(flag.rotated_block)) return flag.rotated_block;
+		const miss = blockMisses.get(username);
+		if (miss && now() < miss) return null;
 		const account = await getAccount(username);
-		if (!account || !account.posting || !Array.isArray(account.posting.key_auths) || !account.posting.key_auths.length) return null;
-		const result = await check(username, account.posting.key_auths.map((ka) => ka[0]), flag.since);
-		if (!result.allowed || !Number.isInteger(result.rotatedBlock)) return null;
+		let result = null;
+		if (account && account.posting && Array.isArray(account.posting.key_auths) && account.posting.key_auths.length) {
+			result = await chainCheck(username, account.posting.key_auths.map((ka) => ka[0]), flag.since);
+		}
+		if (!result || !result.allowed || !Number.isInteger(result.rotatedBlock)) {
+			blockMisses.set(username, now() + (result && result.reason === 'chain_error' ? ERROR_CACHE_MS : CACHE_MS));
+			return null;
+		}
+		blockMisses.delete(username);
 		await getCollection().updateMany({ user: username, cleared_at: flag.cleared_at }, { $set: { rotated_block: result.rotatedBlock } });
 		return result.rotatedBlock;
 	}
@@ -316,9 +325,11 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 	// be checked against it.
 	async function clear(username, token, rotatedBlock) {
 		cache.delete(username);
-		const set = { cleared_at: new Date(now()), cleared_session: tokenHash(token) };
-		if (Number.isInteger(rotatedBlock)) set.rotated_block = rotatedBlock;
-		await getCollection().updateMany({ user: username }, { $set: set });
+		const update = { $set: { cleared_at: new Date(now()), cleared_session: tokenHash(token) } };
+		// never keep a block from an earlier clear: it would predate this key change
+		if (Number.isInteger(rotatedBlock)) update.$set.rotated_block = rotatedBlock;
+		else update.$unset = { rotated_block: '' };
+		await getCollection().updateMany({ user: username }, update);
 	}
 
 	// Undo a clear whose session was overwritten before it could be confirmed.
@@ -329,4 +340,4 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 	return { status, gate, gateForUser, clear, unclear };
 }
 
-module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS };
+module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS, SIGNED_TX_HOLD_MS };

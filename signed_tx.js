@@ -13,6 +13,7 @@
  */
 
 const SIGNED_TX_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+const { SIGNED_TX_HOLD_MS } = require('./key_rotation');
 
 // Chain timestamps are UTC ISO strings without a zone ("2026-10-23T10:00:00"), which
 // compare correctly as strings.
@@ -33,7 +34,7 @@ async function claimVerifiedTx(db, tx_id, purpose, now = Date.now) {
 			'tx.expiration': { $gte: chainTimestamp(now() - SIGNED_TX_MAX_AGE_MS) },
 		});
 		if (!row) return false;
-		if (!(await signedAfterKeyChange(db, row.tx))) {
+		if (!(await signedAfterKeyChange(db, row.tx, now))) {
 			console.log('claimVerifiedTx: ' + id + ' is from before a signer key change; refused');
 			return false;
 		}
@@ -64,7 +65,10 @@ function txSigners(tx) {
 }
 
 // false when a flagged signer's key change is newer than the transaction's block.
-async function signedAfterKeyChange(db, tx) {
+// Once SIGNED_TX_HOLD_MS has passed since the clear, any transaction signed with the old
+// key has expired out of the claim window (expiration <= key change + 1h, and claims need
+// expiration within SIGNED_TX_MAX_AGE_MS), so the block rule no longer applies.
+async function signedAfterKeyChange(db, tx, now = Date.now) {
 	const signers = txSigners(tx);
 	if (!signers.length) return true;
 	const flags = await db.collection('key_rotation_required').find({ user: { $in: signers } }).toArray();
@@ -74,8 +78,8 @@ async function signedAfterKeyChange(db, tx) {
 		const active = !(f.cleared_at instanceof Date)
 			|| (f.since instanceof Date && f.since.getTime() > f.cleared_at.getTime());
 		if (active) return false;
-		// A clear without the block is still covered by the gate's time hold.
-		if (!Number.isInteger(f.rotated_block)) continue;
+		if (now() - f.cleared_at.getTime() >= SIGNED_TX_HOLD_MS) continue;
+		if (!Number.isInteger(f.rotated_block)) return false; // key-change block unknown: refuse until the hold has passed
 		if (!(Number.isInteger(block) && block > f.rotated_block)) return false;
 	}
 	return true;
