@@ -2640,7 +2640,8 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 		let user = req.query.user;
 		try {
 			let results = await db.collection('token_transactions').aggregate([
-				{ $match: {user: user} },
+				// only real numbers: one NaN row would make the whole sum NaN
+				{ $match: {user: user, token_count: utils.FINITE_AMOUNT} },
 				{ $group: { _id: null, token_balance: { $sum: "$token_count" } } }
 			]).toArray();
 
@@ -7819,12 +7820,22 @@ const storeSignupTransaction = async function (req){
 	}
 	
 	//also store this properly into user balance
-	if (!req.query.promo_proceed || (req.query.promo_proceed && req.query.signup_reward)){
+	// The amount must be a real number. A signup that arrived without afit_reward stored
+	// token_count: NaN - and every balance is a SUM of token_count, so that one row turned
+	// the user's whole AFIT balance into NaN (13 signups, May-July 2026). A NaN balance
+	// also slipped past "not enough AFIT" checks (NaN < x is false). Not recorded is
+	// recoverable (it is logged for a manual payout); a NaN row poisons the balance.
+	const signupAfitReward = utils.finiteAmount(req.query.afit_reward);
+	const signupRewardValid = signupAfitReward !== null && signupAfitReward >= 0;
+	if (!signupRewardValid){
+		console.log('signup reward NOT recorded for ' + req.query.new_account + ': afit_reward is not a valid amount (' + req.query.afit_reward + ')');
+	}
+	if (signupRewardValid && (!req.query.promo_proceed || (req.query.promo_proceed && req.query.signup_reward))){
 	
 		new_transaction = {
 			user: req.query.new_account,
 			reward_activity: 'Signup Reward',
-			token_count: parseFloat(req.query.afit_reward),
+			token_count: signupAfitReward,
 			date: new Date(),
 			steem_invest: parseFloat(req.query.steem_invest),
 			usd_invest: parseFloat(req.query.usd_invest),
@@ -7843,7 +7854,7 @@ const storeSignupTransaction = async function (req){
 		  result = true;
 		  
 		  //also notify user of AFIT payment
-		  utils.sendNotification(db, req.query.new_account, 'actifit', 'receive_afit', 'payment', 'You received "' + req.query.afit_reward + ' AFIT" for signing up with Actifit', 'https://actifit.io/'+req.query.new_account+'/wallet');
+		  utils.sendNotification(db, req.query.new_account, 'actifit', 'receive_afit', 'payment', 'You received "' + signupAfitReward + ' AFIT" for signing up with Actifit', 'https://actifit.io/'+req.query.new_account+'/wallet');
 		  
 		}catch(e){
 		  console.log(e);
@@ -10095,10 +10106,20 @@ app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, re
 		}
 
 		//confirm proper AFIT token count. Test against our own minimum, and the request's minimum
+		// Both numbers must be REAL numbers. A NaN balance passed this check (NaN < x is
+		// false), letting an account with a corrupted balance exchange without limit; and
+		// a negative `tokens` passed it too, then got recorded as token_count: -(-n) = +n,
+		// i.e. it minted AFIT.
+		const requestedTokens = utils.finiteAmount(paid_tokens);
+		if (requestedTokens === null || requestedTokens < config.min_afit_for_steem_upvote){
+			res.send({'error': 'Invalid AFIT amount. Minimum required is '+config.min_afit_for_steem_upvote});
+			return;
+		}
+		paid_tokens = requestedTokens;
 		let user_info = await grabUserTokensFunc (user);
 		console.log(user_info);
-		let cur_user_token_count = parseFloat(user_info.tokens);
-		if (cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
+		let cur_user_token_count = utils.finiteAmount(user_info.tokens);
+		if (cur_user_token_count === null || cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
 			res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+config.min_afit_for_steem_upvote});
 			return;
 		}

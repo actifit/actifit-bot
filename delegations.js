@@ -2022,6 +2022,8 @@ async function updateUserTokens() {
   try {
     // This entire pipeline runs on the server and replaces the collection atomically
     await db.collection('token_transactions').aggregate([
+      // only real numbers: one NaN row would make that user's whole balance NaN
+      { $match: { token_count: utils.FINITE_AMOUNT } },
       { 
         $group: { 
           _id: "$user", 
