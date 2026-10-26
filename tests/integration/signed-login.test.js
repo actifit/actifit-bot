@@ -233,7 +233,7 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			await db.collection('exchange_afit_steem').deleteMany({});
 			await db.collection('token_transactions').deleteMany({ user: 'alice' });
 			await db.collection('request_locks').deleteMany({});
-			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: 1000 }, { upsert: true });
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: 20000 }, { upsert: true }); // above the 10000 minimum (tests/test-config.json)
 			chain.alice = acct([OLD]);
 			history = [];
 			token = (await signedLogin(OLD)).body.token;
@@ -262,7 +262,7 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			const rows = await ledger();
 			expect(rows.map((x) => x.token_count)).toEqual([-50]);
 			expect(await db.collection('exchange_afit_steem').find({ user: 'alice', upvote_processed: false }).toArray()).toHaveLength(1);
-			expect((await db.collection('user_tokens').findOne({ _id: 'alice' })).tokens).toBe(950);
+			expect((await db.collection('user_tokens').findOne({ _id: 'alice' })).tokens).toBe(19950);
 			expect(await db.collection('request_locks').countDocuments({})).toBe(0); // lock released
 			// a second request while one is pending is refused
 			const again = await exchange({ user: 'alice', tokens: '50' });
@@ -296,6 +296,25 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			}
 			expect(await ledger()).toHaveLength(0);
 			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(0);
+		});
+
+		test('the AFIT is taken atomically: a balance that no longer covers it at debit time is refused, nothing recorded', async () => {
+			// The read check sees 20000 (a numeric string reads fine), but the debit is ONE conditional
+			// update on the stored number ({tokens: {$gte: ...}}) - exactly what stops a concurrent
+			// spender (e.g. a gadget buy) from spending the same balance twice.
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: '20000' });
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.body.error).toMatch(/not have enough AFIT/);
+			expect(await ledger()).toHaveLength(0);
+			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(0);
+		});
+
+		test('below the minimum balance is refused', async () => {
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: 9999 });
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.body.error).toMatch(/Minimum required is 10000/);
+			expect(await ledger()).toHaveLength(0);
+			expect((await db.collection('user_tokens').findOne({ _id: 'alice' })).tokens).toBe(9999);
 		});
 
 		test('invalid amounts are refused', async () => {
