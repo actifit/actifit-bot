@@ -3336,6 +3336,16 @@ function checkKeyRotation(username, currentKeys, since){
 // (verified against a real MongoDB in tests/afit_amounts.test.js).
 const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
 
+// The ONLY AFIT amounts the AFIT -> vote boost exchange accepts. They must be current
+// tiers of extra_reward_arr in actifit-voter (curation-bot.js), which looks the amount
+// up and reads .upvote from the match:
+//  - an amount that is in NO tier makes that lookup undefined and throws; the voter
+//    catches it, but every exchange boost after that row is skipped for the round;
+//  - the table still has legacy tiers (5/10/15/20 and 500-2000 AFIT) that buy the same
+//    boost as 50-200, so accepting them would sell a boost at a tenth of the price.
+// The web wallet offers exactly these four.
+const UPVOTE_EXCHANGE_TIERS = [50, 100, 150, 200];
+
 // An AFIT amount from a request or a stored balance, as a real number - or null when it
 // is missing, empty, NaN, Infinity or not numeric. The ONE rule for "is this an amount",
 // so a NaN can never pass a balance check (NaN < x is false) or be written to the ledger.
@@ -3348,6 +3358,7 @@ function finiteAmount(value) {
 
  module.exports = {
 	FINITE_AMOUNT: FINITE_AMOUNT,
+	UPVOTE_EXCHANGE_TIERS: UPVOTE_EXCHANGE_TIERS,
 	finiteAmount: finiteAmount,
    checkKeyRotation: checkKeyRotation,
    updateSteemVariables: updateSteemVariables,

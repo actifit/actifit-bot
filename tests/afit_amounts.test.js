@@ -15,6 +15,12 @@ const utils = require('../utils');
 const d = require('../delegations');
 const arenaAfit = require('../arena_afit');
 
+describe('utils.UPVOTE_EXCHANGE_TIERS', () => {
+	test('is exactly the four tiers the wallet offers and the voter prices at 10-25%', () => {
+		expect(utils.UPVOTE_EXCHANGE_TIERS).toEqual([50, 100, 150, 200]);
+	});
+});
+
 describe('utils.finiteAmount - the one rule for "is this an AFIT amount"', () => {
 	test.each([
 		[100, 100], ['100', 100], ['0.013', 0.013], [-30, -30], ['-1000', -1000], [0, 0]

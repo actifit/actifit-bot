@@ -224,4 +224,105 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			expect((await request(app).post('/loginChallenge').send(body)).status).toBe(400);
 		}
 	});
+
+	describe('AFIT to upvote exchange (/performAfitSteemExchange)', () => {
+		let token, ip = 0;
+		beforeEach(async () => {
+			ip++; // each test gets its own client IP, so the 5-per-15-min rate limit doesn't carry over
+			await db.collection('key_rotation_required').deleteMany({});
+			await db.collection('exchange_afit_steem').deleteMany({});
+			await db.collection('token_transactions').deleteMany({ user: 'alice' });
+			await db.collection('request_locks').deleteMany({});
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: 20000 }, { upsert: true }); // above the 10000 minimum (tests/test-config.json)
+			chain.alice = acct([OLD]);
+			history = [];
+			token = (await signedLogin(OLD)).body.token;
+		});
+		const exchange = (body, tok = token) => {
+			const r = request(app).post('/performAfitSteemExchange').set('X-Forwarded-For', '203.0.113.' + ip).send(body);
+			return tok ? r.set('x-acti-token', tok) : r;
+		};
+		const ledger = () => db.collection('token_transactions').find({ user: 'alice', reward_activity: 'Exchange AFIT To Upvote' }).toArray();
+
+		test('without a session nothing is exchanged (the funds password alone is not enough)', async () => {
+			const r = await exchange({ user: 'alice', pass: 'whatever', tokens: '50' }, null);
+			expect(r.body.success).toBe(false);
+			expect(await ledger()).toHaveLength(0);
+		});
+
+		test('a session for another account cannot exchange for alice', async () => {
+			const r = await exchange({ user: 'bob', tokens: '50' });
+			expect(r.body).toEqual({ error: 'User mismatch' });
+			expect(await db.collection('token_transactions').find({ user: 'bob' }).toArray()).toHaveLength(0);
+		});
+
+		test('with a session: pays once, records the pending upvote, lowers the balance', async () => {
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.body).toEqual({ status: 'Success' });
+			const rows = await ledger();
+			expect(rows.map((x) => x.token_count)).toEqual([-50]);
+			expect(await db.collection('exchange_afit_steem').find({ user: 'alice', upvote_processed: false }).toArray()).toHaveLength(1);
+			expect((await db.collection('user_tokens').findOne({ _id: 'alice' })).tokens).toBe(19950);
+			expect(await db.collection('request_locks').countDocuments({})).toBe(0); // lock released
+			// a second request while one is pending is refused
+			const again = await exchange({ user: 'alice', tokens: '50' });
+			expect(again.body.error).toMatch(/pending/);
+			expect(await ledger()).toHaveLength(1);
+		});
+
+		test('concurrent double submit: exactly one exchange is recorded', async () => {
+			const results = await Promise.all([1, 2, 3, 4].map(() => exchange({ user: 'alice', tokens: '50' })));
+			expect(results.filter((r) => r.body.status === 'Success')).toHaveLength(1);
+			expect(await ledger()).toHaveLength(1);
+			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(1);
+		});
+
+		test('a flagged account that has not changed keys is refused', async () => {
+			await db.collection('key_rotation_required').insertOne({ user: 'alice', since: FLAG_SINCE });
+			history = [upd('2026-01-01T00:00:00', [OLD], 100)];
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.status).toBe(403);
+			expect(r.body.code).toBe('KEY_ROTATION_REQUIRED');
+			expect(await ledger()).toHaveLength(0);
+		});
+
+		test('only the exchange tiers are accepted: legacy-priced and voter-crashing amounts are refused', async () => {
+			// 5 = a legacy tier (same boost as 50 at a tenth of the price); 75 / 0.000000001 match no
+			// tier and would make the voter throw mid-round; 500 = legacy; 50.5 rounds by parseInt
+			for (const tokens of ['5', '20', '75', '0.000000001', '500', '2000', '50.5', '250']) {
+				ip++; // one request per client IP: the route allows 5 per 15 min per IP
+				const r = await exchange({ user: 'alice', tokens });
+				expect(r.body.error).toMatch(/Choose one of: 50, 100, 150, 200/);
+			}
+			expect(await ledger()).toHaveLength(0);
+			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(0);
+		});
+
+		test('the AFIT is taken atomically: a balance that no longer covers it at debit time is refused, nothing recorded', async () => {
+			// The read check sees 20000 (a numeric string reads fine), but the debit is ONE conditional
+			// update on the stored number ({tokens: {$gte: ...}}) - exactly what stops a concurrent
+			// spender (e.g. a gadget buy) from spending the same balance twice.
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: '20000' });
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.body.error).toMatch(/not have enough AFIT/);
+			expect(await ledger()).toHaveLength(0);
+			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(0);
+		});
+
+		test('below the minimum balance is refused', async () => {
+			await db.collection('user_tokens').replaceOne({ _id: 'alice' }, { _id: 'alice', user: 'alice', tokens: 9999 });
+			const r = await exchange({ user: 'alice', tokens: '50' });
+			expect(r.body.error).toMatch(/Minimum required is 10000/);
+			expect(await ledger()).toHaveLength(0);
+			expect((await db.collection('user_tokens').findOne({ _id: 'alice' })).tokens).toBe(9999);
+		});
+
+		test('invalid amounts are refused', async () => {
+			for (const tokens of ['-50', 'abc', '0']) {
+				const r = await exchange({ user: 'alice', tokens });
+				expect(r.body.error).toBeTruthy();
+			}
+			expect(await ledger()).toHaveLength(0);
+		});
+	});
 });

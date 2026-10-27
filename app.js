@@ -10084,125 +10084,149 @@ app.get('/getFullFundsAccountList/', async function(req, res){
 	res.send({fullAccountList: fullAccountList, count: fullAccountList.length});
 });
 
-/* end point handling storing transaction for AFIT/STEEM upvote exchange */
-app.post('/performAfitSteemExchange', modActionRateLimit, async function(req, res){
-	return securityDisabled(res, '/performAfitSteemExchange');
-	if ((typeof req.body.user == 'undefined') || req.body.user == '' ||
-		(typeof req.body.pass == 'undefined') || req.body.pass == '' ||
-		(typeof req.body.tokens == 'undefined') || req.body.tokens == '') {
-		//make sure all params are sent
+/* end point handling storing transaction for AFIT/STEEM upvote exchange.
+ * Authorised by the user's login session (checkHdrs) for that same account, plus the
+ * key-rotation gate. It used to accept the account's funds password instead; every funds
+ * password is treated as known to the attacker since the 2026-10-21 incident, so it is
+ * no longer used here. A per-account lock stops a double submit from paying twice. */
+app.post('/performAfitSteemExchange', modActionRateLimit, checkHdrs, keyRotationGate, async function(req, res){
+	const user = req.user._id;
+	if (req.body && req.body.user && req.body.user !== user) {
+		res.send({'error': 'User mismatch'});
+		return;
+	}
+	if (!req.body || typeof req.body.tokens == 'undefined' || req.body.tokens === '') {
 		res.send({'error':'generic error'});
-	}else{
-		let user = req.body.user;
-		let paid_tokens = req.body.tokens;
-		//confirm matching funds password
-		let query = {user: user};
-		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
+		return;
+	}
+	let lock = null;
+	try {
+		lock = await acquireUserLock('afit-upvote-exchange', user);
+		if (!lock) {
+			res.send({'error': 'An exchange for this account is already being processed. Please try again in a moment.'});
+			return;
+		}
+		await performAfitUpvoteExchange(req, res, user, req.body.tokens);
+	} catch (err) {
+		console.log('performAfitSteemExchange failed for ' + user + ' - ' + (err && err.message ? err.message : err));
+		if (!res.headersSent) res.send({'error': 'Error converting AFIT to upvotes'});
+	} finally {
+		if (lock) await lock.release();
+	}
+});
 
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-		  if (!verifyFundsPass(req.body.pass, entryFound.pass)){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
-		}
+// One request at a time per user and action: insertOne on a fixed _id is atomic, so a
+// second concurrent caller gets a duplicate-key error. A lock older than LOCK_STALE_MS is
+// from a crashed request and is replaced.
+const LOCK_STALE_MS = 2 * 60 * 1000;
+async function acquireUserLock(action, user) {
+	const col = db.collection('request_locks');
+	const _id = action + ':' + user;
+	await col.deleteOne({ _id, at: { $lt: new Date(Date.now() - LOCK_STALE_MS) } });
+	// owner: a request that outlived LOCK_STALE_MS (its lock taken over by a newer one) must
+	// not delete the newer request's lock when it finally finishes
+	const owner = crypto.randomBytes(12).toString('hex');
+	try {
+		await col.insertOne({ _id, owner, at: new Date() });
+	} catch (err) {
+		if (err && err.code === 11000) return null;
+		throw err;
+	}
+	return { release: () => col.deleteOne({ _id, owner }).catch((err) => console.log('lock release failed for ' + _id + ' - ' + err.message)) };
+}
 
-		//confirm proper AFIT token count. Test against our own minimum, and the request's minimum
-		// Both numbers must be REAL numbers. A NaN balance passed this check (NaN < x is
-		// false), letting an account with a corrupted balance exchange without limit; and
-		// a negative `tokens` passed it too, then got recorded as token_count: -(-n) = +n,
-		// i.e. it minted AFIT.
-		// The amount only has to be positive: min_afit_for_steem_upvote is the minimum
-		// BALANCE to hold (checked below), not a minimum amount - the wallet sends 50-200.
-		const requestedTokens = utils.finiteAmount(paid_tokens);
-		if (requestedTokens === null || requestedTokens <= 0){
-			res.send({'error': 'Invalid AFIT amount'});
-			return;
-		}
-		paid_tokens = requestedTokens;
-		let user_info = await grabUserTokensFunc (user);
-		console.log(user_info);
-		let cur_user_token_count = utils.finiteAmount(user_info.tokens);
-		if (cur_user_token_count === null || cur_user_token_count < config.min_afit_for_steem_upvote || cur_user_token_count < paid_tokens){
-			res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+config.min_afit_for_steem_upvote});
-			return;
-		}
-		
-		//check if user already has an unprocessed entry
-		let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: user,upvote_processed: {$in: [null, false, 'false']}});
-		if (user_pending_swap){
-			res.send({'error': 'You already have a pending AFIT/STEEM upvote exchange. You can only request one per each reward cycle'});
-			return;
-		}
-		
-		//decrease count
-		let tokenExchangeTrans = {
+async function performAfitUpvoteExchange(req, res, user, paid_tokens) {
+	//confirm proper AFIT token count. Test against our own minimum, and the request's minimum
+	// Both numbers must be REAL numbers. A NaN balance passed this check (NaN < x is
+	// false), letting an account with a corrupted balance exchange without limit; and
+	// a negative `tokens` passed it too, then got recorded as token_count: -(-n) = +n,
+	// i.e. it minted AFIT.
+	// The amount must be one of the exchange tiers (utils.UPVOTE_EXCHANGE_TIERS - see there:
+	// any other amount breaks the voting round or buys a boost at a legacy price).
+	// min_afit_for_steem_upvote is a separate minimum BALANCE to hold, checked below.
+	const requestedTokens = utils.finiteAmount(paid_tokens);
+	if (requestedTokens === null || !utils.UPVOTE_EXCHANGE_TIERS.includes(requestedTokens)){
+		res.send({'error': 'Invalid AFIT amount. Choose one of: ' + utils.UPVOTE_EXCHANGE_TIERS.join(', ')});
+		return;
+	}
+	paid_tokens = requestedTokens;
+	// The minimum balance comes from config and must be a real number: missing, the check
+	// used to compare against undefined and silently pass.
+	const minBalance = Number(config.min_afit_for_steem_upvote);
+	if (!Number.isFinite(minBalance)){
+		console.log('performAfitSteemExchange: min_afit_for_steem_upvote is not configured');
+		res.send({'error': 'AFIT exchange is temporarily unavailable'});
+		return;
+	}
+	let user_info = await grabUserTokensFunc (user);
+	let cur_user_token_count = utils.finiteAmount(user_info.tokens);
+	if (cur_user_token_count === null || cur_user_token_count < minBalance || cur_user_token_count < paid_tokens){
+		res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+minBalance});
+		return;
+	}
+	
+	//check if user already has an unprocessed entry
+	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: user,upvote_processed: {$in: [null, false, 'false']}});
+	if (user_pending_swap){
+		res.send({'error': 'You already have a pending AFIT/STEEM upvote exchange. You can only request one per each reward cycle'});
+		return;
+	}
+	
+	// Take the AFIT FIRST, in one conditional update: only if the stored balance still covers
+	// both the minimum and the amount at this instant. The old read-check-replaceOne let two
+	// spenders (this route and a gadget buy, say) both pass against the same balance and both
+	// write it back - spending it twice. The per-request lock only serialises THIS route.
+	const balances = db.collection('user_tokens');
+	const taken = await balances.updateOne(
+		{ _id: user, tokens: { $gte: Math.max(minBalance, paid_tokens) } },
+		{ $inc: { tokens: -paid_tokens } }
+	);
+	if (taken.matchedCount !== 1){
+		res.send({'error': 'Account does not have enough AFIT funds in wallet. Minimum required is '+minBalance});
+		return;
+	}
+	// any failure from here on gives the AFIT back, so a half-done exchange never costs the user
+	const giveBack = () => balances.updateOne({ _id: user }, { $inc: { tokens: paid_tokens } })
+		.catch((err) => console.log('performAfitSteemExchange: REFUND FAILED for ' + user + ' ' + paid_tokens + ' - ' + err.message));
+	
+	let ledgerRow;
+	try{
+		ledgerRow = await db.collection('token_transactions').insertOne({
 			user: user,
 			reward_activity: 'Exchange AFIT To Upvote',
 			token_count: -paid_tokens,
 			date: new Date(),
-		}
-		try{
-			console.log(tokenExchangeTrans);
-			let transaction = await db.collection('token_transactions').insertOne(tokenExchangeTrans);
-			console.log('success inserting post data');
-			
-			//also notify user of AFIT payment
-			utils.sendNotification(db, user, 'actifit', 'pay_afit', 'payment', 'You have successfully paid '+paid_tokens+' AFIT for "AFIT to upvote exchange"', 'https://actifit.io/'+user+'/wallet');
-			
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error converting AFIT to STEEM upvotes'});
-			return;
-		}
-		
-		//store in pending AFIT/Upvote list
-		let exchange_trans = {
+		});
+	}catch(err){
+		console.log(err);
+		await giveBack();
+		res.send({'error': 'Error converting AFIT to STEEM upvotes'});
+		return;
+	}
+	
+	//store in pending AFIT/Upvote list
+	try{
+		await db.collection('exchange_afit_steem').insertOne({
 			user: user,
 			paid_afit: paid_tokens,
 			upvote_processed: false,
 			date: new Date(),
-		}
-		try{
-			let transaction = await db.collection('exchange_afit_steem').insertOne(exchange_trans);
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error storing the exchange transaction to queue'});
-			return;
-		}
-		// 1. Calculate the new balance
-		// parseFloat(...) || 0 ensures we don't end up with NaN
-		let paid = parseFloat(paid_tokens) || 0;
-		let new_token_count = cur_user_token_count - paid;
-
-		// Update the object in memory
-		user_info.tokens = new_token_count;
-		console.log('new_token_count: ' + new_token_count);
-
-		try {
-			// 2. Replace .save() with .replaceOne()
-			// We filter by _id (which is inside user_info) to ensure we 
-			// update the correct record. { upsert: true } mimics the old save behavior.
-			await db.collection('user_tokens').replaceOne(
-				{ _id: user_info._id }, 
-				user_info, 
-				{ upsert: true }
-			);
-			console.log('success updating user token count');
-		} catch (err) {
-			console.error('Error updating tokens:', err);
-		}
-		
-		res.send({'status': 'Success'});
+		});
+	}catch(err){
+		console.log(err);
+		// undo the ledger row too: otherwise the daily rebuild would still charge the user
+		await db.collection('token_transactions').deleteOne({ _id: ledgerRow.insertedId })
+			// loud: this orphan row would charge the user at the next daily rebuild with no exchange
+			.catch((e) => console.log('performAfitSteemExchange: LEDGER ROW NOT REMOVED (manual fix needed) for ' + user + ' token_transactions _id ' + ledgerRow.insertedId + ' - ' + e.message));
+		await giveBack();
+		res.send({'error': 'Error storing the exchange transaction to queue'});
+		return;
 	}
-})
+	
+	//notify the user only once the exchange is fully recorded
+	utils.sendNotification(db, user, 'actifit', 'pay_afit', 'payment', 'You have successfully paid '+paid_tokens+' AFIT for "AFIT to upvote exchange"', 'https://actifit.io/'+user+'/wallet');
+	res.send({'status': 'Success'});
+}
 
 /* end point handling cancelling outdated exchange transactions for AFIT/STEEM upvote exchange */
 app.get('/cancelOutdatedAfitSteemExchange', async function(req, res){

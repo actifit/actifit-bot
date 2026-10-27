@@ -1,6 +1,7 @@
 {
   "disabled_mode": false,
   "testing": true,
+  "min_afit_for_steem_upvote": 10000,
   "detailed_logging": false,
   "account": "actifit",
   "main_tag": "actifit",

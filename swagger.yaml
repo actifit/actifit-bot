@@ -5940,34 +5940,31 @@ paths:
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /performAfitSteemExchange:
-    get:
-      summary: Perform AFIT to STEEM upvote exchange
-      description: Initiates an exchange of AFIT tokens for a STEEM upvote. Requires funds password and sufficient AFIT balance.
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username performing the exchange.
-        - in: query
-          name: pass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The user's funds password.
-        - in: query
-          name: tokens
-          schema: { type: 'number', format: 'float', example: 50.0 }
-          required: true
-          description: The amount of AFIT tokens to exchange.
+    post:
+      summary: Exchange AFIT for a vote reward boost
+      description: Spends AFIT for an extra upvote on the user's next report. Authorised by the login session (x-acti-token or Authorization Bearer); the funds password is no longer used. One pending exchange per reward cycle; the amount must be a tier.
+      security: [{ actiToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tokens]
+              properties:
+                user: { type: string, example: 'actifit-user', description: 'Optional; must match the session user.' }
+                tokens: { type: number, enum: [50, 100, 150, 200], example: 50 }
       responses:
         '200':
-          description: Exchange initiated successfully.
+          description: "{status: 'Success'} or {error} (not enough AFIT, pending exchange, invalid amount, already being processed, user mismatch, invalid or expired session)"
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/PerformAfitSteemExchangeSuccess'
-        '400': { description: 'Missing data, invalid funds password, pending exchange, or insufficient AFIT funds.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or DB storing issue.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '401': { description: 'LOGIN_AGAIN - the posting key changed since this session was issued.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: 'KEY_ROTATION_REQUIRED - the account must rotate its keys first.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '429': { description: 'Rate limited (5 per 15 minutes per IP).' }
+        '503': { description: 'TRY_AGAIN - the chain could not be read to check the account.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /cancelOutdatedAfitSteemExchange:
     get:
