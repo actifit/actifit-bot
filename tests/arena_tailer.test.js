@@ -73,6 +73,81 @@ describe('arena_tailer.processArenaBlock', () => {
   });
 });
 
+describe('arena_tailer: posting-key rotation (same rule as the HTTP routes)', () => {
+  const keyRotation = require('../key_rotation');
+  // a real tracker over the mock DB: flags live in key_rotation_required
+  const setup = (flags) => {
+    const db = createMockDb({ key_rotation_required: flags });
+    const tracker = keyRotation.createTracker({
+      getCollection: () => db.collection('key_rotation_required'),
+      getAccount: async () => null,
+      checkRotation: async () => ({ allowed: false, reason: 'not_rotated' }),
+      endSessions: async () => {},
+    });
+    return { db, opts: { keyRotationCheck: tracker.checkChainOp } };
+  };
+
+  test('an op from a flagged account is held, not indexed, and recorded once', async () => {
+    const { db, opts } = setup([{ user: 'alice', since: new Date('2026-08-01T00:00:00Z') }]);
+    const b = block([arenaOp(createBody('ch_held'))], ['trxH']);
+    const res = await tailer.processArenaBlock(db, b, 100, opts);
+    expect(res[0]).toEqual({ trx_id: 'trxH', ok: false, held: true, reason: 'KEY_ROTATION_REQUIRED' });
+    expect(await db.collection('challenges').findOne({ id: 'ch_held' })).toBeNull();
+    // re-tailing the block does not record it twice
+    await tailer.processArenaBlock(db, b, 100, opts);
+    const held = await db.collection(tailer.HELD_OPS).find({}).toArray();
+    expect(held).toHaveLength(1);
+    expect(held[0]).toMatchObject({ trx_id: 'trxH', block_num: 100, account: 'alice', reason: 'KEY_ROTATION_REQUIRED' });
+  });
+
+  test('other accounts are unaffected', async () => {
+    const { db, opts } = setup([{ user: 'alice', since: new Date('2026-08-01T00:00:00Z') }]);
+    const res = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_bob'), 'bob')], ['trxB']), 100, opts);
+    expect(res[0]).toMatchObject({ ok: true, action: 'challenge_created' });
+  });
+
+  test('a co-signer under a flag holds the op too (active auths count)', async () => {
+    const { db, opts } = setup([{ user: 'carol', since: new Date('2026-08-01T00:00:00Z') }]);
+    const op = ['custom_json', { id: arena.ARENA_JSON_ID, json: JSON.stringify(createBody('ch_co')), required_posting_auths: ['bob'], required_auths: ['carol'] }];
+    const res = await tailer.processArenaBlock(db, block([op], ['trxC']), 100, opts);
+    expect(res[0]).toMatchObject({ ok: false, held: true });
+  });
+
+  test('cleared flag: ops after the key-change block are indexed, ops at or before it are held', async () => {
+    const flag = { user: 'alice', since: new Date('2026-08-01T00:00:00Z'), cleared_at: new Date('2026-08-24T00:00:00Z'), rotated_block: 150 };
+    const { db, opts } = setup([flag]);
+    const before = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_old'))], ['trxO'], '2026-08-25T00:00:00'), 150, opts);
+    expect(before[0]).toMatchObject({ ok: false, held: true, reason: 'KEY_ROTATION_HOLD' });
+    const after = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_new'))], ['trxN'], '2026-08-25T00:00:03'), 151, opts);
+    expect(after[0]).toMatchObject({ ok: true, action: 'challenge_created' });
+  });
+
+  test('cleared flag without a recorded block: the op time against the clear decides', async () => {
+    const flag = { user: 'alice', since: new Date('2026-08-01T00:00:00Z'), cleared_at: new Date('2026-08-25T00:00:00Z') };
+    const { db, opts } = setup([flag]);
+    const early = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_e'))], ['trxE'], '2026-08-24T23:59:57'), 10, opts);
+    expect(early[0]).toMatchObject({ ok: false, held: true, reason: 'KEY_ROTATION_HOLD' });
+    const late = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_l'))], ['trxL'], '2026-08-25T00:00:00'), 11, opts);
+    expect(late[0]).toMatchObject({ ok: true });
+  });
+
+  test('a failing flag lookup throws, so catchUpOnce does not advance past the block', async () => {
+    const db = createMockDb();
+    await tailer.saveCursor(db, 0);
+    const blocks = { 1: block([arenaOp(createBody('ch_x'))], ['trxX']) };
+    const opts = { keyRotationCheck: async () => { throw new Error('db down'); } };
+    await expect(tailer.catchUpOnce(db, fakeHive(1, blocks), opts)).rejects.toThrow('db down');
+    expect(await tailer.loadCursor(db)).toBe(0);
+    expect(await db.collection('challenges').findOne({ id: 'ch_x' })).toBeNull();
+  });
+
+  test('without keyRotationCheck the tailer behaves as before', async () => {
+    const db = createMockDb({ key_rotation_required: [{ user: 'alice', since: new Date() }] });
+    const res = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_plain'))], ['trxP']), 100);
+    expect(res[0]).toMatchObject({ ok: true });
+  });
+});
+
 describe('arena_tailer.catchUpOnce', () => {
   test('processes cursor→head, persists the cursor, and is idempotent on re-run', async () => {
     const db = createMockDb();

@@ -446,3 +446,28 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		expect(await col.countDocuments({ user: 'u', cleared_at: { $exists: true } })).toBe(0);
 	});
 });
+
+describe('decideChainOp (ops read from the chain)', () => {
+	const { decideChainOp } = require('../key_rotation');
+	const since = new Date('2026-08-01T00:00:00Z');
+	const clearedAt = new Date('2026-08-10T12:00:00Z');
+	test('no flag: allowed; an active flag: refused whatever the op', () => {
+		expect(decideChainOp(null, { block_num: 1 })).toEqual({ allowed: true });
+		expect(decideChainOp({ since }, { block_num: 1, timestamp: '2030-01-01T00:00:00' })).toEqual({ allowed: false, code: 'KEY_ROTATION_REQUIRED' });
+		// re-flagged after a clear (findFlag hands back an active entry with cleared_at undefined)
+		expect(decideChainOp({ since, cleared_at: undefined }, { block_num: 1 })).toMatchObject({ allowed: false, code: 'KEY_ROTATION_REQUIRED' });
+	});
+	test('cleared with the key-change block known: only later blocks are allowed', () => {
+		const flag = { since, cleared_at: clearedAt, rotated_block: 500 };
+		expect(decideChainOp(flag, { block_num: 499, timestamp: '2030-01-01T00:00:00' })).toEqual({ allowed: false, code: 'KEY_ROTATION_HOLD' });
+		expect(decideChainOp(flag, { block_num: 500 })).toEqual({ allowed: false, code: 'KEY_ROTATION_HOLD' });
+		expect(decideChainOp(flag, { block_num: 501 })).toEqual({ allowed: true });
+	});
+	test('cleared without the block: allowed from the clear on, never by elapsed time alone', () => {
+		const flag = { since, cleared_at: clearedAt };
+		expect(decideChainOp(flag, { block_num: 9, timestamp: '2026-08-10T11:59:59' })).toEqual({ allowed: false, code: 'KEY_ROTATION_HOLD' });
+		expect(decideChainOp(flag, { block_num: 9, timestamp: '2026-08-10T12:00:00' })).toEqual({ allowed: true });
+		expect(decideChainOp(flag, { block_num: 9 })).toEqual({ allowed: false, code: 'KEY_ROTATION_HOLD' });
+		expect(decideChainOp(flag, { block_num: 9, timestamp: 'garbage' })).toEqual({ allowed: false, code: 'KEY_ROTATION_HOLD' });
+	});
+});

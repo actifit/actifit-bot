@@ -8,6 +8,53 @@
 
 const afit = require('../afit_balance');
 
+describe('deposit rules (no database)', () => {
+	const ok = { operation: 'tokens_transfer', from: 'alice', to: 'recv', symbol: 'AFIT', quantity: '12.5', transactionId: 'abc' };
+	const opts = { user: 'alice', receivingAccount: 'recv' };
+	test('a plain AFIT transfer from the user to the receiving account is a deposit', () => {
+		expect(afit.depositError(ok, opts)).toBeNull();
+		expect(afit.depositError(ok, { receivingAccount: 'recv' })).toBeNull(); // any sender, for the bulk job
+		expect(afit.depositError(Object.assign({}, ok, { quantity: 3 }), opts)).toBeNull();
+	});
+	test.each([
+		[{ operation: 'tokens_stake' }, 'not_a_transfer'],
+		[{ operation: undefined }, 'not_a_transfer'],
+		[{ symbol: 'afit' }, 'not_afit'],
+		[{ symbol: undefined }, 'not_afit'],
+		[{ to: 'other' }, 'wrong_recipient'],
+		[{ to: undefined }, 'wrong_recipient'],
+		[{ from: 'bob' }, 'sender_mismatch'],
+		[{ from: 'recv', to: 'recv' }, 'invalid_sender'],
+		[{ from: '' }, 'invalid_sender'],
+		[{ transactionId: '' }, 'invalid_deposit'],
+		[{ transactionId: null }, 'invalid_deposit'],
+		[{ quantity: '1e3' }, 'invalid_amount'],
+		[{ quantity: '0x10' }, 'invalid_amount'],
+		[{ quantity: ' 1' }, 'invalid_amount'],
+		[{ quantity: '1.' }, 'invalid_amount'],
+		[{ quantity: '.5' }, 'invalid_amount'],
+		[{ quantity: '0' }, 'invalid_amount'],
+		[{ quantity: '0.000000001' }, 'invalid_amount'],
+		[{ quantity: -1 }, 'invalid_amount'],
+		[{ quantity: NaN }, 'invalid_amount'],
+		[{ quantity: ['5'] }, 'invalid_amount'],
+	])('%o is refused (%s)', (change, reason) => {
+		expect(afit.depositError(Object.assign({}, ok, change), opts)).toBe(reason);
+	});
+	test('fails closed without a configured receiving account', () => {
+		for (const receivingAccount of [undefined, null, '', 5]) {
+			expect(afit.depositError(ok, { user: 'alice', receivingAccount })).toBe('no_receiving_account');
+		}
+		expect(afit.depositError(null, opts)).toBe('invalid_deposit');
+	});
+	test('depositQuantity', () => {
+		expect(afit.depositQuantity('260025.06')).toBe(260025.06);
+		expect(afit.depositQuantity('2125.62860538')).toBe(2125.62860538);
+		expect(afit.depositQuantity('140500')).toBe(140500);
+		expect(afit.depositQuantity('1e5')).toBeNull();
+	});
+});
+
 describe('amount rules (no database)', () => {
 	test('finiteAmount / positiveAmount', () => {
 		expect(afit.finiteAmount('12.5')).toBe(12.5);
@@ -46,9 +93,10 @@ describe('amount rules (no database)', () => {
 			indexes: () => Promise.resolve([{ name: '_id_' }]),
 		}) };
 		const out = await afit.ensureLedgerIndexes(db, (m) => logs.push(m));
-		expect(out).toEqual([{ name: 'afit_deposit_unique', present: false }, { name: 'afit_web_reward_unique', present: false }]);
+		expect(out).toEqual([{ name: 'afit_deposit_unique', present: false }, { name: 'afit_web_reward_unique', present: false }, { name: 'verified_tx_unique', present: false }]);
 		expect(logs.join('\n')).toMatch(/afit_deposit_unique is MISSING/);
 		expect(logs.join('\n')).toMatch(/afit_web_reward_unique is MISSING/);
+		expect(logs.join('\n')).toMatch(/verified_tx unique index on tx_id is MISSING/);
 		// only the small request_locks TTL index is built
 		expect(created).toEqual(['request_locks:request_locks_ttl']);
 		const failing = { collection: () => ({ createIndex: () => Promise.reject(new Error('x')), indexes: () => Promise.reject(new Error('y')) }) };
@@ -204,6 +252,7 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 			const logs = [];
 			expect(await afit.ensureLedgerIndexes(other, (m) => logs.push(m))).toEqual([
 				{ name: 'afit_deposit_unique', present: false }, { name: 'afit_web_reward_unique', present: false },
+				{ name: 'verified_tx_unique', present: false }, // the collection does not even exist yet
 			]);
 			expect(logs.join('\n')).toMatch(/!!! token_transactions index afit_deposit_unique is MISSING/);
 			expect((await other.collection('token_transactions').indexes()).map((i) => i.name)).toEqual(['_id_']);
@@ -211,6 +260,7 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 			expect(ttl).toMatchObject({ key: { at: 1 }, expireAfterSeconds: 3600 });
 			// once built by hand, the check is quiet
 			await afit.createLedgerIndexes(other);
+			await afit.createVerifiedTxIndex(other);
 			logs.length = 0;
 			expect((await afit.ensureLedgerIndexes(other, (m) => logs.push(m))).every((x) => x.present)).toBe(true);
 			expect(logs).toEqual([]);
@@ -221,6 +271,27 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 			await third.dropDatabase();
 		} finally {
 			await other.dropDatabase();
+		}
+	});
+
+	test('verified_tx unique index: rows without a string tx_id stay out, a repeated tx_id is refused', async () => {
+		const v = client.db('afit_balance_vtx_' + Date.now());
+		try {
+			// a plain (non-unique) index on tx_id does not count as the guard
+			await v.collection('verified_tx').createIndex({ tx_id: 1 }, { name: 'tx_id_1' });
+			expect((await afit.ensureLedgerIndexes(v, () => {})).find((x) => x.name === 'verified_tx_unique')).toEqual({ name: 'verified_tx_unique', present: false });
+			await v.collection('verified_tx').insertMany([{ tx_id: 'a' }, { tx_id: null }, { tx_id: null }, { other: 1 }, { other: 2 }]);
+			await afit.createVerifiedTxIndex(v);
+			expect((await afit.ensureLedgerIndexes(v, () => {})).find((x) => x.name === 'verified_tx_unique').present).toBe(true);
+			const dup = await v.collection('verified_tx').insertOne({ tx_id: 'a' }).catch((e) => e);
+			expect(afit.isDuplicateKeyError(dup)).toBe(true);
+			// a duplicate blocks the manual build
+			const w = client.db('afit_balance_vtx2_' + Date.now());
+			await w.collection('verified_tx').insertMany([{ tx_id: 'b' }, { tx_id: 'b' }]);
+			await expect(afit.createVerifiedTxIndex(w)).rejects.toMatchObject({ code: 11000 });
+			await w.dropDatabase();
+		} finally {
+			await v.dropDatabase();
 		}
 	});
 
@@ -243,5 +314,103 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		// busy without waiting -> null
 		await db.collection('request_locks').insertOne({ _id: 'afit:kim', owner: 'other', at: new Date() });
 		await expect(afit.acquireAfitLock(db, 'kim')).resolves.toBeNull();
+	});
+	describe('rebuildCachedBalances (the daily rebuild)', () => {
+		const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+		const fast = { lockWaitMs: 50, retryWaitMs: 50 };
+
+		test('sets each cache to the ledger sum, only touching the users that differ', async () => {
+			await db.collection('token_transactions').insertMany([
+				{ user: 'same', token_count: 10 }, { user: 'same', token_count: 5 },
+				{ user: 'drift', token_count: 100 }, { user: 'drift', token_count: -30 },
+				{ user: 'fresh', token_count: 7 },
+				{ user: 'nan', token_count: 4 }, { user: 'nan', token_count: NaN },
+				{ user: 'neg', token_count: -12 },
+				{ user: 'str', token_count: 15 },
+				{ token_count: 999 }, // no user: never becomes a balance row
+			]);
+			await db.collection('user_tokens').insertMany([
+				{ _id: 'same', user: 'same', tokens: 15, extra: 'kept' },
+				{ _id: 'drift', user: 'drift', tokens: 90, extra: 'kept' },
+				{ _id: 'nan', user: 'nan', tokens: NaN },
+				{ _id: 'gone', user: 'gone', tokens: 3 }, // no ledger rows at all
+				{ _id: 'zero', user: 'zero', tokens: 0 },
+				{ _id: 'str', user: 'str', tokens: '15' }, // a string balance can never be spent
+			]);
+			const r = await afit.rebuildCachedBalances(db, fast);
+			expect(r).toMatchObject({ users: 6, cached: 6, candidates: 6, updated: 6, busy: [], failed: 0 });
+			const docs = Object.fromEntries((await db.collection('user_tokens').find({}).toArray()).map((d) => [d._id, d]));
+			expect(docs.same).toEqual({ _id: 'same', user: 'same', tokens: 15, extra: 'kept' });
+			expect(docs.drift).toEqual({ _id: 'drift', user: 'drift', tokens: 70, extra: 'kept' });
+			expect(docs.fresh.tokens).toBe(7);
+			expect(docs.nan.tokens).toBe(4);
+			expect(docs.neg.tokens).toBe(-12);
+			expect(docs.gone.tokens).toBe(0);
+			expect(docs.zero.tokens).toBe(0);
+			expect(docs.str.tokens).toBe(15);
+			expect(Object.keys(docs).sort()).toEqual(['drift', 'fresh', 'gone', 'nan', 'neg', 'same', 'str', 'zero']);
+			// floating-point noise between $inc and $sum is not a difference
+			await db.collection('user_tokens').updateOne({ _id: 'same' }, { $set: { tokens: 15 + 1e-12 } });
+			expect((await afit.rebuildCachedBalances(db, fast)).candidates).toBe(0);
+			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
+		});
+
+		test('a spend half-done when the rebuild starts is not undone: the rebuild waits for its lock', async () => {
+			await db.collection('token_transactions').insertOne({ user: 'alice', token_count: 100 });
+			await db.collection('user_tokens').insertOne({ _id: 'alice', user: 'alice', tokens: 100 });
+			// a debit in progress: lock held, AFIT taken from the cache, ledger row not yet written
+			const lock = await afit.acquireAfitLock(db, 'alice');
+			await db.collection('user_tokens').updateOne({ _id: 'alice' }, { $inc: { tokens: -40 } });
+			const rebuild = afit.rebuildCachedBalances(db, { lockWaitMs: 50, retryWaitMs: 5000 });
+			await sleep(400);
+			// the old $out rebuild had already written the stale sum (100) by now
+			await db.collection('token_transactions').insertOne({ user: 'alice', token_count: -40 });
+			await lock.release();
+			const r = await rebuild;
+			expect(r.busy).toEqual([]);
+			expect(await balance('alice')).toBe(60);
+		});
+
+		test('a user whose lock stays busy is left alone and reported, the others are rebuilt', async () => {
+			await db.collection('token_transactions').insertMany([{ user: 'held', token_count: 5 }, { user: 'free', token_count: 8 }]);
+			await db.collection('user_tokens').insertMany([{ _id: 'held', user: 'held', tokens: 1 }, { _id: 'free', user: 'free', tokens: 1 }]);
+			await db.collection('request_locks').insertOne({ _id: 'afit:held', owner: 'someone', at: new Date() });
+			const logs = [];
+			const r = await afit.rebuildCachedBalances(db, Object.assign({ log: (m) => logs.push(m) }, fast));
+			expect(r).toMatchObject({ candidates: 2, updated: 1, busy: ['held'], failed: 0 });
+			expect(await balance('held')).toBe(1);
+			expect(await balance('free')).toBe(8);
+			expect(logs.join(' ')).toMatch(/lock stayed busy for 1 user/);
+		});
+
+		test('debits and credits running during rebuilds: every cache ends equal to its ledger', async () => {
+			const users = ['u0', 'u1', 'u2', 'u3', 'u4', 'u5'];
+			for (const u of users) {
+				await db.collection('token_transactions').insertOne({ user: u, token_count: 500 });
+				await db.collection('user_tokens').insertOne({ _id: u, user: u, tokens: 500 });
+			}
+			const ops = [];
+			for (let i = 0; i < 120; i++) {
+				const u = users[i % users.length];
+				ops.push((async () => {
+					await sleep(Math.floor(Math.random() * 300));
+					const lock = await afit.acquireAfitLock(db, u, { waitMs: 20000, pollMs: 10 });
+					try {
+						if (i % 3 === 0) await afit.creditAfit(db, u, 3, { reward_activity: 'test credit' });
+						else await afit.debitAfit(db, u, 2, { ledgerRow: { reward_activity: 'test debit' } });
+					} finally { await lock.release(); }
+				})());
+			}
+			// and some reward rows written straight to the ledger, as the daily jobs do
+			for (const u of users) ops.push(sleep(100).then(() => db.collection('token_transactions').insertOne({ user: u, token_count: 1.5 })));
+			const rebuilds = [0, 100, 200].map((d) => sleep(d).then(() => afit.rebuildCachedBalances(db, { lockWaitMs: 20000, concurrency: 2 })));
+			await Promise.all(ops.concat(rebuilds));
+			await afit.rebuildCachedBalances(db, fast); // picks up the direct ledger rows
+			for (const u of users) {
+				const sum = (await rows({ user: u })).reduce((s, x) => s + x.token_count, 0);
+				expect(await balance(u)).toBeCloseTo(sum, 9);
+			}
+			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
+		}, 60000);
 	});
 });

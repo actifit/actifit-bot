@@ -237,7 +237,8 @@ client.connect()
 	    // Unique partial ledger indexes (one credit per deposit trx, one web reward per
 	    // activity per day) are built by hand off-peak (scripts/build_ledger_indexes.md),
 	    // never here: this only warns loudly if they are missing, and adds the TTL index on
-	    // the small request_locks collection. Never rejects; the .catch() is belt and braces.
+	    // the small request_locks collection. It checks the verified_tx unique index on
+	    // tx_id the same way. Never rejects; the .catch() is belt and braces.
 	    afitBalance.ensureLedgerIndexes(db, (m) => { console.log(m); try { utils.log(m, 'api'); } catch (_) { /* logging must not throw */ } })
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
@@ -283,6 +284,9 @@ client.connect()
 	        // prize pool at ingest (debit + 5% burn + pool). Rejects the create if
 	        // the creator can't cover it, so no unfunded prize is ever indexed.
 	        fundChallenge: arenaFundChallenge,
+	        // Same posting-key rotation rule as the HTTP routes: ops signed by a flagged
+	        // account (or before a cleared account's key change) are held, not indexed.
+	        keyRotationCheck: keyRotationTracker.checkChainOp,
 	        log: (m) => utils.log(m, 'arena'),
 	      });
 	      console.log('Arena tailer started');
@@ -1190,7 +1194,8 @@ app.get('/updateProposalNotified', async function (req, res){
 		res.send({})
 		return;
 	}
-	if (req.query.secr != config.prop_key){
+	// constant-time, fail-closed (see adminSecretOk)
+	if (!adminSecretOk(req.query.secr, config.prop_key)){
 		res.send({})
 		return;
 	}
@@ -4156,7 +4161,7 @@ app.get('/refundPurchase', async function(req, res){
 
 
 app.get('/updateProdStatus', async function(req, res){
-	if (!req.query.specPass || req.query.specPass != config.specPass || !req.query.user || !req.query.status || !req.query.trx_id){
+	if (!adminSecretOk(req.query.specPass, config.specPass) || !req.query.user || !req.query.status || !req.query.trx_id){
 		res.send({error:'error'});
 		return;
 	}
@@ -4541,7 +4546,8 @@ app.post('/registerUserNotification', async function(req,res){
 
 
 app.get('/mintProducts', async function(req,res){
-	if (req.query.secret != config.prodMintSecret){
+	// constant-time, fail-closed (see adminSecretOk)
+	if (!adminSecretOk(req.query.secret, config.prodMintSecret)){
 		res.send({error: 'error'});
 	}else{
 		let minAmount = 0;
@@ -5194,7 +5200,49 @@ async function runAfitPurchase(user, label, fn) {
 
 // Write one gadget's ledger row and user_gadgets row (its AFIT is already taken). Returns
 // true when delivered; on failure nothing of it is left behind and the caller refunds it.
+// Never throws. The user_gadgets row is the commit point: once it is written the gadget is
+// delivered, and anything after it (the stock count) is bookkeeping - a failure there is
+// logged and the item still counts as delivered, so it is never refunded or reported as an
+// error (a client retry would then buy it again).
 async function deliverGadget(user, item) {
+	let ledgerRow, userGadgetTrans;
+	try {
+		({ ledgerRow, userGadgetTrans } = gadgetDeliveryDocs(user, item));
+	} catch (err) {
+		console.log('gadget buy: could not prepare delivery for ' + user + ' - ' + (err && err.message));
+		return false;
+	}
+	let ledgerId;
+	try {
+		ledgerId = (await db.collection('token_transactions').insertOne(ledgerRow)).insertedId;
+	} catch (err) {
+		console.log('gadget buy: ledger write failed for ' + user + ' - ' + (err && err.message));
+		return false;
+	}
+	try {
+		await db.collection('user_gadgets').insertOne(userGadgetTrans);
+	} catch (err) {
+		console.log('gadget buy: user_gadgets write failed for ' + user + ' - ' + (err && err.message));
+		try {
+			await db.collection('token_transactions').deleteOne({ _id: ledgerId });
+		} catch (e) {
+			// this orphan row would charge the user at the next daily rebuild
+			console.log('gadget buy: LEDGER ROW NOT REMOVED (manual fix needed) for ' + user + ' token_transactions _id ' + ledgerId + ' - ' + (e && e.message));
+		}
+		return false;
+	}
+	// delivered. Post-delivery bookkeeping must not turn it into a failure.
+	try {
+		await decrementProductCount(item.product._id, 1);
+	} catch (err) {
+		console.log('gadget buy: delivered to ' + user + ' but the stock count of ' + item.product_id + ' was not updated - ' + (err && err.message));
+	}
+	return true;
+}
+
+// The ledger row and user_gadgets row for one gadget. Built before anything is written, so a
+// bad field cannot throw between the two writes. Throws on a product it cannot describe.
+function gadgetDeliveryDocs(user, item) {
 	const product = item.product;
 	const ledgerRow = {
 		user: user,
@@ -5210,13 +5258,6 @@ async function deliverGadget(user, item) {
 		note: 'Bought Product '+product.name+ ' Level '+product.level,
 		date: new Date(),
 	};
-	let ledgerId;
-	try {
-		ledgerId = (await db.collection('token_transactions').insertOne(ledgerRow)).insertedId;
-	} catch (err) {
-		console.log('gadget buy: ledger write failed for ' + user + ' - ' + (err && err.message));
-		return false;
-	}
 	const userGadgetTrans = {
 		user: user,
 		gadget: new ObjectId(item.product_id),
@@ -5232,20 +5273,7 @@ async function deliverGadget(user, item) {
 		last_updated: new Date(),
 		note: 'Bought Product '+product.name+ ' Level '+product.level,
 	};
-	try {
-		await db.collection('user_gadgets').insertOne(userGadgetTrans);
-	} catch (err) {
-		console.log('gadget buy: user_gadgets write failed for ' + user + ' - ' + (err && err.message));
-		try {
-			await db.collection('token_transactions').deleteOne({ _id: ledgerId });
-		} catch (e) {
-			// this orphan row would charge the user at the next daily rebuild
-			console.log('gadget buy: LEDGER ROW NOT REMOVED (manual fix needed) for ' + user + ' token_transactions _id ' + ledgerId + ' - ' + (e && e.message));
-		}
-		return false;
-	}
-	await decrementProductCount(product._id, 1);
-	return true;
+	return { ledgerRow, userGadgetTrans };
 }
 
 // Validate and price every product and check the balance (non-binding) BEFORE the user's
@@ -5274,15 +5302,29 @@ async function buyGadgets(user, product_id_list, verifyTx, verifyFailed) {
 	const debit = await afitBalance.debitAfit(db, user, total, { context: 'gadget-buy' });
 	if (!debit.ok) return ({'error': 'Account does not have enough AFIT funds'});
 
-	for (let i = 0; i < items.length; i++) {
-		if (!(await deliverGadget(user, items[i]))) {
-			// item i failed and nothing of it was left behind: refund it and everything after it
-			const undelivered = items.slice(i).reduce((sum, it) => sum + it.item_price, 0);
-			const delivered = items.slice(0, i).map((it) => String(it.product_id));
-			await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy');
-			console.log('!!! gadget buy PARTIALLY DELIVERED for ' + user + ': delivered [' + delivered.join(', ') + '], refunded ' + undelivered + ' AFIT for ' + (items.length - i) + ' undelivered item(s)');
-			return ({'error': 'Error performing buy action. DB storing issue', 'delivered': delivered});
+	// From here on, every error answer carries `delivered` (the ids already delivered, possibly
+	// empty): the client drops those from its cart, so a retry does not buy them again.
+	const delivered = [];
+	try {
+		for (let i = 0; i < items.length; i++) {
+			if (!(await deliverGadget(user, items[i]))) {
+				// item i failed and nothing of it was left behind: refund it and everything after it
+				const undelivered = items.slice(i).reduce((sum, it) => sum + it.item_price, 0);
+				await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy');
+				console.log('!!! gadget buy PARTIALLY DELIVERED for ' + user + ': delivered [' + delivered.join(', ') + '], refunded ' + undelivered + ' AFIT for ' + (items.length - i) + ' undelivered item(s)');
+				return ({'error': 'Error performing buy action. DB storing issue', 'delivered': delivered});
+			}
+			delivered.push(String(items[i].product_id));
 		}
+	} catch (err) {
+		// not expected (deliverGadget and restoreAfit do not throw), but if anything does, the
+		// answer still says what was delivered, and what was not is given back
+		const undelivered = items.slice(delivered.length).reduce((sum, it) => sum + it.item_price, 0);
+		console.log('!!! gadget buy FAILED after delivering [' + delivered.join(', ') + '] for ' + user + ' - ' + (err && err.message ? err.message : err) + '; giving back ' + undelivered + ' AFIT');
+		try { await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy'); } catch (e) {
+			console.log('!!! gadget buy REFUND FAILED (manual fix needed) for ' + user + ' ' + undelivered + ' AFIT - ' + (e && e.message));
+		}
+		return ({'error': 'Error performing buy action', 'delivered': delivered});
 	}
 	// the post-debit balance, as a number (what the client shows)
 	return ({'status': 'Success', 'user_tokens': debit.balance});
@@ -7365,6 +7407,11 @@ const storeReferralReward = async function (req){
 	return refRewarded;
 };
 
+// The account a deposit must be sent to, per engine (config key names only; never logged).
+function afitDepositAccount(exchangeType) {
+	return exchangeType === 'SE' ? config.steem_engine_actifit_se : config.hive_engine_actifit_he;
+}
+
 // Credit one Hive-Engine AFIT deposit (a transfer to the Actifit account) into the user's
 // Actifit wallet, exactly ONCE per chain transaction, whichever of /confirmAFITSEBulk and
 // /confirmAFITSEReceipt gets there first and however many requests race. The ledger row is
@@ -7377,12 +7424,12 @@ const storeReferralReward = async function (req){
 // skips busy users; the next run retries them).
 async function creditAfitDeposit(user, trx, exchangeType, waitMs = 30000) {
 	if (typeof user !== 'string' || !user || !trx) return { ok: false, reason: 'invalid_deposit' };
+	// a plain AFIT tokens_transfer from this user to the Actifit receiving account, with a
+	// well-formed quantity - see afit_balance.depositError
+	const invalid = afitBalance.depositError(trx, { user: user, receivingAccount: afitDepositAccount(exchangeType) });
+	if (invalid) return { ok: false, reason: invalid };
 	const ref = trx.transactionId;
-	if (!((typeof ref === 'string' && ref.length > 0) || Number.isFinite(ref))) return { ok: false, reason: 'invalid_deposit' };
-	// only AFIT is credited as AFIT (an entry that names another token is skipped)
-	if (trx.symbol !== undefined && trx.symbol !== 'AFIT') return { ok: false, reason: 'not_afit' };
-	const amount = afitBalance.positiveAmount(trx.quantity);
-	if (amount === null) return { ok: false, reason: 'invalid_amount' };
+	const amount = afitBalance.depositQuantity(trx.quantity);
 	let date = new Date(trx.timestamp * 1000); //timestamp linux convert to seconds first
 	if (isNaN(date.getTime())) date = new Date();
 	const row = {
@@ -7427,8 +7474,16 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 		// for the credits (the response went out while they were still running) and any
 		// rejection inside escaped as an unhandled rejection.
 		let credited = 0;
+		let notDeposits = 0;
+		const receivingAccount = afitDepositAccount(exchangeType);
 		for (const entry of trx_entries){
 			let user = entry && entry.from;
+			// only plain AFIT transfers into the receiving account are deposits; everything
+			// else in its history (outgoing transfers, stakes, other tokens) is skipped
+			if (afitBalance.depositError(entry, { receivingAccount: receivingAccount })){
+				notDeposits += 1;
+				continue;
+			}
 			if (user != config.steem_engine_actifit_se && user != config.hive_engine_actifit_he){
 				try{
 					// short lock wait: the caller has a 60s timeout, and a busy user is simply
@@ -7446,7 +7501,7 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 				}
 			}
 		}
-		console.log('confirmAFITSEBulk: ' + credited + ' new deposit(s) credited');
+		console.log('confirmAFITSEBulk: ' + credited + ' new deposit(s) credited, ' + notDeposits + ' history entr(ies) that are not deposits skipped');
 
 		res.write(JSON.stringify({'status': 'done updating AFIT SE moves'}));
 		res.end();
@@ -7500,12 +7555,14 @@ app.get('/confirmAFITSEReceipt', checkHdrs, async function(req,res){
 			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
 			//attempt to find matching transaction
 			let targetUser = req.query.user;
-			let match_trx = await utils.confirmSEAFITReceived(targetUser, bchain);
-			console.log(match_trx);
 			let exchangeType = 'HE';
 			if (bchain == 'STEEM'){
 				exchangeType = 'SE';
 			}
+			// a valid deposit by this user in the receiving account's history (see
+			// utils.confirmSEAFITReceived); creditAfitDeposit checks it again
+			let match_trx = await utils.confirmSEAFITReceived(targetUser, bchain);
+			console.log(match_trx);
 			//we found a match
 			if (match_trx){
 				found_entry = true;
@@ -8660,7 +8717,8 @@ app.get('/sendNotification', async function(req,res){
 		console.log('sendnotification');
 		//console.log(passed_var);
 		//make sure needed security var is passed, and with proper value
-		if ((typeof passed_var == 'undefined') || passed_var != config.verifyNotifToken){
+		// constant-time, fail-closed (see adminSecretOk)
+		if (!adminSecretOk(passed_var, config.verifyNotifToken)){
 			console.log('missing');
 			res.send('{}');
 			return;
@@ -8802,7 +8860,8 @@ app.get('/appendVerifiedPost', async function(req,res){
 	var passed_var = req.query[config.verifyParam];
 	//console.log(passed_var);
 	//make sure needed security var is passed, and with proper value
-	if ((typeof passed_var == 'undefined') || passed_var != config.verifyPostToken){
+	// constant-time, fail-closed (see adminSecretOk)
+	if (!adminSecretOk(passed_var, config.verifyPostToken)){
 		res.send('{}');
 	}else{
 		let json_metadata;

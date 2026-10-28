@@ -232,4 +232,57 @@ describe('findVerifyTrx — a bad RPC or DB answer must not kill the polling pro
     expect(insertOne).toHaveBeenCalled();
     await expect(pending).resolves.toEqual(tx);
   });
+
+  it('answers "trx already exists" at once when a concurrent request stored the same transaction first', async () => {
+    // the unique index verified_tx_unique refuses the second insert with E11000
+    jest.useFakeTimers();
+    const insertOne = jest.fn(async () => { const e = new Error('E11000 duplicate key error collection: verified_tx'); e.code = 11000; throw e; });
+    const db = { collection: () => ({ findOne: async () => null, insertOne }) };
+    const tx = {
+      transaction_id: 'deadbeef',
+      ref_block_num: 42,
+      operations: OPS,
+      expiration: new Date(Date.now() + 60000).toISOString(),
+    };
+    const rpc = jest.spyOn(hive.api, 'getTransactionAsync').mockResolvedValue(tx);
+
+    const pending = utils.findVerifyTrx(makeReq(JSON.stringify(OPS)), db);
+    await jest.advanceTimersByTimeAsync(20000);
+
+    await expect(pending).resolves.toEqual({ error: 'trx already exists' });
+    expect(insertOne).toHaveBeenCalledTimes(1);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('confirmSEAFITReceived - only a real deposit by the user is returned', () => {
+  let realFetch;
+  beforeEach(() => { realFetch = global.fetch; });
+  afterEach(() => { global.fetch = realFetch; jest.useRealTimers(); jest.restoreAllMocks(); });
+
+  it('skips a stake, another token and a transfer elsewhere, and returns the transfer by the user', async () => {
+    jest.useFakeTimers();
+    const wallet = config.hive_engine_actifit_he;
+    const base = { operation: 'tokens_transfer', from: 'alice', to: wallet, symbol: 'AFIT', quantity: '5', timestamp: 1 };
+    const history = [
+      Object.assign({}, base, { operation: 'tokens_stake', transactionId: 't1', quantity: '9999' }),
+      Object.assign({}, base, { symbol: 'OTHER', transactionId: 't2' }),
+      Object.assign({}, base, { to: 'somebody', transactionId: 't3' }),
+      Object.assign({}, base, { from: 'bob', transactionId: 't4' }),
+      Object.assign({}, base, { transactionId: 't5' }),
+    ];
+    global.fetch = jest.fn(async () => ({ json: async () => history }));
+    const pending = utils.confirmSEAFITReceived('alice', 'HIVE');
+    await jest.advanceTimersByTimeAsync(6000);
+    await expect(pending).resolves.toMatchObject({ transactionId: 't5' });
+  });
+
+  it('returns null when the history holds no valid deposit by the user', async () => {
+    jest.useFakeTimers();
+    const wallet = config.hive_engine_actifit_he;
+    global.fetch = jest.fn(async () => ({ json: async () => [{ operation: 'tokens_stake', from: 'alice', to: wallet, symbol: 'AFIT', quantity: '5', transactionId: 'x' }] }));
+    const pending = utils.confirmSEAFITReceived('alice', 'HIVE');
+    await jest.advanceTimersByTimeAsync(80000);
+    await expect(pending).resolves.toBeNull();
+  });
 });

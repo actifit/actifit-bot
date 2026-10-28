@@ -78,3 +78,71 @@ no longer logs the MISSING warning.
 db.token_transactions.dropIndex('afit_deposit_unique')
 db.token_transactions.dropIndex('afit_web_reward_unique')
 ```
+
+## `verified_tx` unique index on `tx_id`
+
+`verified_tx` is the replay guard for signed on-chain payments: `utils.findVerifyTrx` refuses a
+transaction id that already has a row, then stores the row once the chain confirms it. Two
+requests racing with the same transaction can both pass that lookup before either stores its
+row. A unique index on `tx_id` makes the second insert fail; the API treats that duplicate-key
+error as "trx already exists" and refuses the second request.
+
+| Index | Key | Partial filter | Guards |
+|---|---|---|---|
+| `verified_tx_unique` | `{ tx_id: 1 }` | `{ tx_id: { $type: 'string' } }` | one stored row (one use) per chain transaction |
+
+The filter keeps out rows without a string `tx_id` (some older broadcast results), which would
+otherwise all collide on `null`. As with the ledger indexes, the API does not build it: at
+startup it logs `!!! verified_tx unique index on tx_id is MISSING` until one exists (any unique
+index on exactly `{ tx_id: 1 }` counts, whatever its name).
+
+### 1. Check for duplicates first
+
+```js
+db.verified_tx.aggregate([
+  { $match: { tx_id: { $type: 'string' } } },
+  { $group: { _id: '$tx_id', n: { $sum: 1 }, ids: { $push: '$_id' }, dates: { $push: '$date' } } },
+  { $match: { n: { $gt: 1 } } },
+], { allowDiskUse: true })
+```
+
+Each result is one transaction stored more than once. The rows are only a record of what was
+verified, so keep the oldest row of each group and remove the others (check first whether the
+duplicate also produced a second credit or delivery, and fix that separately):
+
+```js
+db.verified_tx.aggregate([
+  { $match: { tx_id: { $type: 'string' } } },
+  { $sort: { _id: 1 } },
+  { $group: { _id: '$tx_id', n: { $sum: 1 }, ids: { $push: '$_id' } } },
+  { $match: { n: { $gt: 1 } } },
+], { allowDiskUse: true }).forEach((g) => db.verified_tx.deleteMany({ _id: { $in: g.ids.slice(1) } }))
+```
+
+Re-run the check until it returns nothing.
+
+### 2. Build
+
+```js
+db.verified_tx.createIndex(
+  { tx_id: 1 },
+  { name: 'verified_tx_unique', unique: true, partialFilterExpression: { tx_id: { $type: 'string' } } }
+)
+```
+
+If the collection already has a plain (non-unique) `{ tx_id: 1 }` index and the server refuses
+a second index on the same key, drop the plain one first (`db.verified_tx.dropIndex('tx_id_1')`,
+using the name `getIndexes()` shows) and build the unique one right after; lookups by `tx_id`
+use either.
+
+### 3. Verify
+
+```js
+db.verified_tx.getIndexes().filter(i => i.name === 'verified_tx_unique')
+```
+
+### Rollback
+
+```js
+db.verified_tx.dropIndex('verified_tx_unique')
+```

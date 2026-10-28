@@ -113,7 +113,7 @@ const pub = (k) => k.createPublic().toString();
 		expect((await db.collection('request_locks').indexes()).find((i) => i.name === 'request_locks_ttl')).toMatchObject({ expireAfterSeconds: 3600 });
 		// the per-user lock + keyed upsert are the guard until the indexes are built by hand
 		await setBal('alice', 0);
-		utils.confirmSEAFITReceived = jest.fn(async () => ({ from: 'alice', symbol: 'AFIT', quantity: '4', transactionId: 'dep-noidx', timestamp: 1790000000 }));
+		utils.confirmSEAFITReceived = jest.fn(async () => ({ operation: 'tokens_transfer', from: 'alice', to: WALLET, symbol: 'AFIT', quantity: '4', transactionId: 'dep-noidx', timestamp: 1790000000 }));
 		const rec = () => request(app).get('/confirmAFITSEReceipt?user=alice').set('X-Forwarded-For', ip()).set('x-acti-token', token);
 		await Promise.all([rec(), rec(), rec(), rec()]);
 		expect(await bal('alice')).toBe(4);
@@ -208,6 +208,59 @@ const pub = (k) => k.createPublic().toString();
 			}
 		});
 
+		test('multi-gadget: a stock-count update that throws mid-cart does not undo or hide the delivery', async () => {
+			const { Collection } = jest.requireActual('mongodb');
+			const p1 = gadget({ price: [{ price: 10, currency: 'AFIT' }], count: 5 });
+			const p2 = gadget({ price: [{ price: 20, currency: 'AFIT' }], count: 5 });
+			const p3 = gadget({ price: [{ price: 40, currency: 'AFIT' }], count: 5 });
+			await db.collection('products').insertMany([p1, p2, p3]);
+			await setBal('alice', 100);
+			const realUpdateOne = Collection.prototype.updateOne;
+			// the stock update of item 2 (and only item 2) throws, as a DB blip would
+			const spy = jest.spyOn(Collection.prototype, 'updateOne').mockImplementation(function (filter, ...rest) {
+				if (this.collectionName === 'products' && filter && String(filter._id) === String(p2._id)) {
+					return Promise.reject(new Error('stock update exploded'));
+				}
+				return realUpdateOne.call(this, filter, ...rest);
+			});
+			try {
+				const r = await request(app).get('/buyMultiGadget/alice/' + p1._id + '-' + p2._id + '-' + p3._id + '/1/trxStock/HIVE').set('X-Forwarded-For', ip());
+				// every item was delivered, so this is a success: no error, nothing refunded
+				expect(r.body).toEqual({ status: 'Success', user_tokens: 30 });
+			} finally {
+				spy.mockRestore();
+			}
+			expect(await bal('alice')).toBe(30);
+			expect((await ledger({ user: 'alice' })).map((x) => x.token_count).sort((a, b) => a - b)).toEqual([-40, -20, -10]);
+			const owned = await db.collection('user_gadgets').find({ user: 'alice' }).toArray();
+			expect(owned.map((g) => String(g.gadget)).sort()).toEqual([p1, p2, p3].map((x) => String(x._id)).sort());
+			const counts = Object.fromEntries((await db.collection('products').find({}).toArray()).map((x) => [String(x._id), x.count]));
+			expect(counts).toEqual({ [String(p1._id)]: 4, [String(p2._id)]: 5, [String(p3._id)]: 4 });
+			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
+		});
+
+		test('multi-gadget: an unexpected error after a delivery still reports what was delivered', async () => {
+			const afitBalance = require('../../afit_balance');
+			const p1 = gadget({ price: [{ price: 10, currency: 'AFIT' }] });
+			const p2 = gadget({ price: [{ price: 20, currency: 'AFIT' }] });
+			await db.collection('products').insertMany([p1, p2]);
+			await setBal('alice', 100);
+			// item 2 cannot be stored, and the refund path then throws too
+			await db.collection('user_gadgets').createIndex({ gadget: 1 }, { unique: true, name: 'test_fail_item2b' });
+			await db.collection('user_gadgets').insertOne({ user: 'someone-else', gadget: p2._id });
+			const restore = jest.spyOn(afitBalance, 'restoreAfit').mockImplementation(async () => { throw new Error('refund exploded'); });
+			try {
+				const r = await request(app).get('/buyMultiGadget/alice/' + p1._id + '-' + p2._id + '/1/trxBoom/HIVE').set('X-Forwarded-For', ip());
+				expect(r.body).toEqual({ error: 'Error performing buy action', delivered: [String(p1._id)] });
+				expect(logSpy.mock.calls.some((c) => /gadget buy FAILED after delivering/.test(String(c[0])))).toBe(true);
+				expect(logSpy.mock.calls.some((c) => /REFUND FAILED \(manual fix needed\)/.test(String(c[0])))).toBe(true);
+			} finally {
+				restore.mockRestore();
+				await db.collection('user_gadgets').dropIndex('test_fail_item2b');
+			}
+			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
+		});
+
 		test('a refused buy does not consume the signed transaction (checks run before verification)', async () => {
 			const bad = gadget({ benefits: { time_span: 'x' } });
 			const p = gadget();
@@ -275,7 +328,7 @@ const pub = (k) => k.createPublic().toString();
 	});
 
 	describe('deposits', () => {
-		const deposit = { from: 'alice', to: WALLET, symbol: 'AFIT', quantity: '25', transactionId: 'dep-1', timestamp: 1790000000 };
+		const deposit = { operation: 'tokens_transfer', from: 'alice', to: WALLET, symbol: 'AFIT', quantity: '25', transactionId: 'dep-1', timestamp: 1790000000 };
 		const receipt = () => request(app).get('/confirmAFITSEReceipt?user=alice').set('X-Forwarded-For', ip()).set('x-acti-token', token);
 
 		test('a receipt called twice (concurrently and again later) credits once', async () => {
@@ -294,10 +347,10 @@ const pub = (k) => k.createPublic().toString();
 			const realFetch = global.fetch;
 			global.fetch = jest.fn(async () => ({ json: async () => [
 				Object.assign({}, deposit, { transactionId: 'dep-2' }),
-				{ from: 'bob', to: WALLET, symbol: 'AFIT', quantity: '7', transactionId: 'dep-3', timestamp: 1790000000 },
-				{ from: WALLET, to: 'carol', symbol: 'AFIT', quantity: '9', transactionId: 'dep-4', timestamp: 1790000000 }, // outgoing: skipped
-				{ from: 'dan', to: WALLET, symbol: 'OTHER', quantity: '1000', transactionId: 'dep-5', timestamp: 1790000000 }, // not AFIT: skipped
-				{ from: 'erin', to: WALLET, symbol: 'AFIT', quantity: 'NaN', transactionId: 'dep-6', timestamp: 1790000000 }, // bad amount: skipped
+				{ operation: 'tokens_transfer', from: 'bob', to: WALLET, symbol: 'AFIT', quantity: '7', transactionId: 'dep-3', timestamp: 1790000000 },
+				{ operation: 'tokens_transfer', from: WALLET, to: 'carol', symbol: 'AFIT', quantity: '9', transactionId: 'dep-4', timestamp: 1790000000 }, // outgoing: skipped
+				{ operation: 'tokens_transfer', from: 'dan', to: WALLET, symbol: 'OTHER', quantity: '1000', transactionId: 'dep-5', timestamp: 1790000000 }, // not AFIT: skipped
+				{ operation: 'tokens_transfer', from: 'erin', to: WALLET, symbol: 'AFIT', quantity: 'NaN', transactionId: 'dep-6', timestamp: 1790000000 }, // bad amount: skipped
 			] }));
 			utils.confirmSEAFITReceived = jest.fn(async () => Object.assign({}, deposit, { transactionId: 'dep-2' }));
 			try {
@@ -318,6 +371,52 @@ const pub = (k) => k.createPublic().toString();
 			} finally {
 				global.fetch = realFetch;
 			}
+		});
+	});
+
+	describe('deposit validation', () => {
+		const receipt = () => request(app).get('/confirmAFITSEReceipt?user=alice').set('X-Forwarded-For', ip()).set('x-acti-token', token);
+		const good = { operation: 'tokens_transfer', from: 'alice', to: WALLET, symbol: 'AFIT', quantity: '5', transactionId: 'ok-1', timestamp: 1790000000 };
+		const bad = [
+			['a stake to the receiving account', { operation: 'tokens_stake' }],
+			['a delegation', { operation: 'tokens_delegate' }],
+			['an entry with no operation', { operation: undefined }],
+			['another token', { symbol: 'AFITX' }],
+			['a transfer to another account', { to: 'someone.else' }],
+			['a transfer by another user', { from: 'mallory' }],
+			['an exponent quantity', { quantity: '1e6' }],
+			['a hex quantity', { quantity: '0x10' }],
+			['a padded quantity', { quantity: ' 5' }],
+			['a negative quantity', { quantity: '-5' }],
+			['a zero quantity', { quantity: '0' }],
+			['too many decimals', { quantity: '1.123456789' }],
+			['no transaction id', { transactionId: '' }],
+		];
+
+		test.each(bad)('the receipt route does not credit %s', async (_label, change) => {
+			await setBal('alice', 1);
+			utils.confirmSEAFITReceived = jest.fn(async () => Object.assign({}, good, change, { transactionId: change.transactionId === '' ? '' : 'bad-' + _label }));
+			const r = await receipt();
+			expect(r.text).toMatch(/Error adding AFIT tokens to user balance/);
+			expect(await bal('alice')).toBe(1);
+			expect(await ledger({ user: 'alice' })).toHaveLength(0);
+		});
+
+		test('the bulk job credits only the valid transfers in a mixed history', async () => {
+			const realFetch = global.fetch;
+			// (a transfer by another user is a valid deposit for THAT user, so it is left out here)
+			const entries = bad.filter(([label]) => !/another user/.test(label)).map(([label, change], i) => Object.assign({}, good, { from: 'u' + i, transactionId: 'bulk-' + i }, change));
+			entries.push(Object.assign({}, good, { from: 'valid', transactionId: 'bulk-valid', quantity: '12.12345678' }));
+			global.fetch = jest.fn(async () => ({ json: async () => entries }));
+			try {
+				const r = await request(app).get('/confirmAFITSEBulk').set('X-Forwarded-For', ip()).set('x-admin-token', ADMIN_TOKEN);
+				expect(JSON.parse(r.text)).toEqual({ status: 'done updating AFIT SE moves' });
+			} finally {
+				global.fetch = realFetch;
+			}
+			expect(await bal('valid')).toBe(12.12345678);
+			const rows = await db.collection('token_transactions').find({}).toArray();
+			expect(rows.map((x) => x.user)).toEqual(['valid']);
 		});
 	});
 

@@ -76,7 +76,7 @@ describe('utils.confirmSEAFITReceived stops polling when it gives up', () => {
 	test('a match resolves it and clears the timer', async () => {
 		jest.useFakeTimers();
 		const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-		global.fetch = jest.fn(() => Promise.resolve({ json: () => Promise.resolve([{ from: 'alice', transactionId: 't1', quantity: '5' }]) }));
+		global.fetch = jest.fn(() => Promise.resolve({ json: () => Promise.resolve([{ operation: 'tokens_transfer', from: 'alice', to: 'wallet.test', symbol: 'AFIT', transactionId: 't1', quantity: '5' }]) }));
 		const p = utils.confirmSEAFITReceived('alice', 'HIVE');
 		await jest.advanceTimersByTimeAsync(5000);
 		await expect(p).resolves.toMatchObject({ transactionId: 't1' });
