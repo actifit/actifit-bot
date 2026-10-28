@@ -10,7 +10,11 @@ brief exclusive lock when the build commits. On startup the API only logs
 | Index | Key | Partial filter | Guards |
 |---|---|---|---|
 | `afit_deposit_unique` | `{ user: 1, se_trx_ref: 1 }` | `{ se_trx_ref: { $type: 'string' } }` | one credit per Hive-Engine deposit transaction |
-| `afit_web_reward_unique` | `{ user: 1, reward_activity: 1, reward_date: 1 }` | `{ reward_date: { $type: 'date' } }` | one web vote/edit/comment reward per user per day |
+| `afit_web_reward_unique` | `{ user: 1, reward_activity: 1, reward_date: 1 }` | `{ reward_date: { $gte: ISODate('2026-10-29') } }` | one web vote/edit/comment reward per user per day, from 2026-10-29 on |
+
+The web-reward index only covers rows from 2026-10-29 on: the ledger holds historical
+duplicate web rewards (2019-2020, from before the per-user lock). They were spent long ago
+and are kept as they are, so they are left outside the index rather than deleted.
 
 `$type` (not `$exists`) on purpose: `$exists` also matches an explicit `null`, which would
 pull ordinary rows into a unique index.
@@ -36,7 +40,7 @@ db.token_transactions.aggregate([
 
 // web rewards recorded more than once for the same day
 db.token_transactions.aggregate([
-  { $match: { reward_date: { $type: 'date' } } },
+  { $match: { reward_date: { $gte: ISODate('2026-10-29') } } },
   { $group: { _id: { user: '$user', activity: '$reward_activity', day: '$reward_date' }, n: { $sum: 1 }, ids: { $push: '$_id' } } },
   { $match: { n: { $gt: 1 } } },
 ], { allowDiskUse: true })
@@ -55,7 +59,7 @@ db.token_transactions.createIndex(
 )
 db.token_transactions.createIndex(
   { user: 1, reward_activity: 1, reward_date: 1 },
-  { name: 'afit_web_reward_unique', unique: true, partialFilterExpression: { reward_date: { $type: 'date' } } }
+  { name: 'afit_web_reward_unique', unique: true, partialFilterExpression: { reward_date: { $gte: ISODate('2026-10-29') } } }
 )
 ```
 

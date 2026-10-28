@@ -270,8 +270,11 @@ function acquireAfitLock(db, user, opts) {
  *   afit_deposit_unique     {user, se_trx_ref}                  rows with a string se_trx_ref
  *                           (Hive-Engine deposits into the Actifit wallet: one credit per
  *                           chain transaction, however many requests race for it)
- *   afit_web_reward_unique  {user, reward_activity, reward_date} rows with a date reward_date
- *                           (web vote/edit/comment rewards: one per activity per day)
+ *   afit_web_reward_unique  {user, reward_activity, reward_date} rows with reward_date on or
+ *                           after WEB_REWARD_UNIQUE_FROM (web vote/edit/comment rewards: one
+ *                           per activity per day). Older rows are left out on purpose: the
+ *                           ledger has historical duplicates from before the per-user lock,
+ *                           long since spent, which are kept as they are.
  *
  * The filters use $type rather than $exists so a stray `field: null` in some other
  * writer cannot drag ordinary rows into a unique index (see arena_afit.ensureAfitIndexes).
@@ -287,6 +290,9 @@ function acquireAfitLock(db, user, opts) {
  * {user, reward_activity, reward_date}, so concurrent requests for one user are
  * serialised and the second finds the row. The indexes are the database-level backstop.
  */
+// $gte on a Date only matches dates, so it also keeps null / non-date values out.
+const WEB_REWARD_UNIQUE_FROM = new Date('2026-10-29T00:00:00Z');
+
 const LEDGER_INDEXES = [
 	{
 		key: { user: 1, se_trx_ref: 1 },
@@ -294,7 +300,7 @@ const LEDGER_INDEXES = [
 	},
 	{
 		key: { user: 1, reward_activity: 1, reward_date: 1 },
-		options: { name: 'afit_web_reward_unique', unique: true, partialFilterExpression: { reward_date: { $type: 'date' } } },
+		options: { name: 'afit_web_reward_unique', unique: true, partialFilterExpression: { reward_date: { $gte: WEB_REWARD_UNIQUE_FROM } } },
 	},
 ];
 
@@ -343,6 +349,7 @@ async function createLedgerIndexes(db) {
 
 module.exports = {
 	LEDGER_INDEXES,
+	WEB_REWARD_UNIQUE_FROM,
 	REQUEST_LOCKS_TTL,
 	ensureLedgerIndexes,
 	createLedgerIndexes,

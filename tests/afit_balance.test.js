@@ -184,11 +184,15 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 
 	test('the web reward index allows one row per user, activity and day', async () => {
 		const col = db.collection('token_transactions');
-		const day = new Date('2026-10-01T00:00:00Z');
+		const day = new Date('2026-11-01T00:00:00Z');
 		await col.insertOne({ user: 'ivy', reward_activity: 'Web Vote', reward_date: day, token_count: 1 });
 		await expect(col.insertOne({ user: 'ivy', reward_activity: 'Web Vote', reward_date: day, token_count: 1 })).rejects.toMatchObject({ code: 11000 });
 		await col.insertOne({ user: 'ivy', reward_activity: 'Web Edit', reward_date: day, token_count: 1 });
 		await col.insertOne({ user: 'ivy', reward_activity: 'Web Vote', reward_date: new Date('2026-10-02T00:00:00Z'), token_count: 1 });
+		// historical rows (before the index cut-off) may repeat: they are kept as they are
+		const old = new Date('2020-03-12T00:00:00Z');
+		await col.insertOne({ user: 'ivy', reward_activity: 'Web Vote', reward_date: old, token_count: 1 });
+		await col.insertOne({ user: 'ivy', reward_activity: 'Web Vote', reward_date: old, token_count: 1 });
 		// ordinary rows without reward_date are untouched
 		await col.insertMany([{ user: 'ivy', reward_activity: 'Web Vote' }, { user: 'ivy', reward_activity: 'Web Vote' }]);
 	});
