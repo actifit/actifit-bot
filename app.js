@@ -31,13 +31,25 @@ var appPort = process.env.PORT || 3120;
 // unhandled rejection by default, and many calls in this file are fire-and-forget: one
 // failing DB write or notification must not end every in-flight request with it. This is
 // a last line of defence, not error handling - each path should still catch its own
-// errors. Registered once per process (the test suites require app.js more than once).
+// errors. A burst (more than REJECTION_BURST_MAX within REJECTION_BURST_MS) means the
+// process is wedged (e.g. lost its DB connection), so it exits and pm2 restarts it.
+// Registered once per process (the test suites require app.js more than once).
+const REJECTION_BURST_MAX = 20;
+const REJECTION_BURST_MS = 60 * 1000;
 if (!process.__actifitRejectionLogger) {
 	process.__actifitRejectionLogger = true;
+	const recentRejections = [];
 	process.on('unhandledRejection', (reason) => {
 		try {
 			console.error('unhandledRejection (process kept running): ' + (reason && reason.stack ? reason.stack : reason));
 		} catch (_) { /* logging must never throw */ }
+		const now = Date.now();
+		recentRejections.push(now);
+		while (recentRejections.length && recentRejections[0] < now - REJECTION_BURST_MS) recentRejections.shift();
+		if (recentRejections.length > REJECTION_BURST_MAX && process.env.NODE_ENV !== 'test') {
+			try { console.error('unhandledRejection: ' + recentRejections.length + ' in ' + (REJECTION_BURST_MS / 1000) + 's, exiting so the process manager restarts it'); } catch (_) { /* ignore */ }
+			process.exit(1);
+		}
 	});
 }
 
@@ -222,9 +234,10 @@ client.connect()
 	          utils.log('arena_credit_unique index build failed; the DB-level double-credit guard is NOT in place (the code-level guard still applies): ' + (e && e.message), 'api');
 	        } catch (_) { /* a logging failure must never resurrect the rejection */ }
 	      });
-	    // Unique partial ledger indexes: one credit per deposit trx, one web reward per
-	    // activity per day. ensureLedgerIndexes never rejects (a failed build is logged
-	    // loudly and startup carries on); the .catch() is belt and braces.
+	    // Unique partial ledger indexes (one credit per deposit trx, one web reward per
+	    // activity per day) are built by hand off-peak (scripts/build_ledger_indexes.md),
+	    // never here: this only warns loudly if they are missing, and adds the TTL index on
+	    // the small request_locks collection. Never rejects; the .catch() is belt and braces.
 	    afitBalance.ensureLedgerIndexes(db, (m) => { console.log(m); try { utils.log(m, 'api'); } catch (_) { /* logging must not throw */ } })
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
@@ -1994,7 +2007,8 @@ function decrypt(text) {
  // Returns null rather than throwing. Every one of the 8 call sites is
  // `const receivedPlaintext = decrypt(req.ppkey);` inside an ASYNC route handler with
  // no try/catch, and there is no Express error handler, so a throw here is
- // an unhandled rejection - i.e. the API process exits.
+ // an unhandled rejection - which used to end the API process (the process-level logger
+ // at the top of this file now catches it, but the request still gets no answer).
  //
  // It is reachable without anything being wrong: checkHdrs assigns
  // `req.ppkey = user_tkn[0].ppkey` with no existence check, and the Keychain login path
@@ -2640,6 +2654,12 @@ app.get('/afitMarkets', async function (req, res){
 app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 	if (req.query && req.query.user){
 		let user = req.query.user;
+		// only the session's own balance (checkHdrs already refuses a different ?user=; this
+		// keeps it true if the middleware ever changes)
+		if (user !== req.user._id){
+			res.send({error: 'User mismatch'});
+			return;
+		}
 		try {
 			// Rebuild this user's cached balance from the ledger - under the shared per-user
 			// AFIT lock. Spends take the AFIT from the cache first and write the ledger row
@@ -4184,7 +4204,18 @@ app.get('/markAllRead/', checkHdrs, async function (req, res) {
 /* end point for tracking AFIT buy orders */
 app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async function (req, res) {
 	return securityDisabled(res, '/buyAFITHive');
-	
+	// the whole check-verify-credit runs under the buyer's AFIT lock, so two requests for one
+	// transaction cannot both pass the "already verified" check
+	try {
+		const locked = await withAfitLock(req.params.user, () => buyAfitHive(req, res));
+		if (locked.busy) res.send({'error': AFIT_BUSY_ERROR});
+	} catch (err) {
+		console.log('buyAFITHive failed - ' + (err && err.message ? err.message : err));
+		if (!res.headersSent) res.send({'error': 'Error performing buy action'});
+	}
+});
+
+async function buyAfitHive(req, res) {
 	let user = req.params.user;
 	//HIVE amount paid
 	let amnt = req.params.amnt;
@@ -4218,7 +4249,33 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 		return;
 	}
 	
-	//perform transaction
+	// Credit FIRST, once per chain transaction: the ledger row is keyed on the buy trx
+	// (creditAfit dedupe), so even a repeat that got past the check above credits nothing.
+	let recordTrans = {
+		reward_activity: 'Buy AFIT',
+		buyer: user,
+		seller: 'actifit',
+		hive_paid: ver_trx.amount_hive,
+		afit_requested: afitAmnt,
+		currency: req.params.bchain,
+		buy_trx_ref: req.params.trxID,
+		bchain: req.params.bchain,
+		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
+		date: new Date(),
+	}
+	const credit = await afitBalance.creditAfit(db, user, matchingAfit, recordTrans, {
+		dedupe: { user: user, reward_activity: 'Buy AFIT', buy_trx_ref: req.params.trxID, bchain: req.params.bchain },
+		context: 'buy-afit-hive',
+	});
+	if (!credit.ok){
+		console.log('buyAFITHive: credit not recorded for ' + user + ' - ' + credit.reason);
+		res.send({'error': credit.duplicate ? 'Transaction already verified' : 'Error performing buy action. DB storing issue'});
+		return;
+	}
+	let new_token_count = credit.balance;
+	console.log('new_token_count:' + new_token_count);
+
+	//record the verified buy (the credit above is already keyed on the trx)
 	let productBuyTrans = {
 		user: user,
 		buyer: user,
@@ -4238,42 +4295,16 @@ app.get('/buyAFITHive/:user/:amnt/:afitAmnt/:blockNo/:trxID/:bchain', async func
 		let transaction = await db.collection('afit_buy_transactions_hive').insertOne(productBuyTrans);
 		console.log('success inserting post data');
 	}catch(err){
-		console.log(err);
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
+		// the AFIT is credited (once); only this record is missing
+		console.log('buyAFITHive: buy record NOT stored for ' + user + ' trx ' + req.params.trxID + ' - ' + (err && err.message));
 	}
-	
-	//store as transaction to update user token count
-	
-	//perform transaction
-	let recordTrans = {
-		user: user,
-		reward_activity: 'Buy AFIT',
-		buyer: user,
-		seller: 'actifit',
-		hive_paid: ver_trx.amount_hive,
-		afit_requested: afitAmnt,
-		currency: req.params.bchain,
-		token_count: matchingAfit,
-		note: 'Bought '+matchingAfit+ ' For '+ver_trx.amount_hive+' '+req.params.bchain,
-		date: new Date(),
-	}
-	// ledger row first, then an atomic $inc of the cached balance (afit_balance.creditAfit)
-	const credit = await withAfitLock(user, () => afitBalance.creditAfit(db, user, matchingAfit, recordTrans, { context: 'buy-afit-hive' }));
-	if (credit.busy || !credit.value.ok){
-		console.log('buyAFITHive: credit not recorded for ' + user + ' - ' + (credit.busy ? 'busy' : credit.value.reason));
-		res.send({'error': 'Error performing buy action. DB storing issue'});
-		return;
-	}
-	let new_token_count = credit.value.balance;
-	console.log('new_token_count:' + new_token_count);
 		
 	//send notification to user
 	utils.sendNotification(db, user, 'actifit', 'buy_afit', 'market', 'You successfully bought "' + matchingAfit + ' AFIT" for '+'"'+ver_trx.amount_hive+'" '+req.params.bchain, 'https://actifit.io/'+user+'/wallet');
 	
 	res.send({status: 'success', boughtAmnt: matchingAfit, tokens: new_token_count});
-	
-});
+
+}
 
 
 app.get('/cancelAFITBuy', async function(req, res){
@@ -4297,8 +4328,18 @@ app.get('/cancelAFITBuy', async function(req, res){
 		date: new Date(),
 	}
 	// Take the AFIT back atomically, only while the balance still covers it (it used to go
-	// negative), then write the ledger row (afit_balance.debitAfit).
-	const debit = await withAfitLock(user, () => afitBalance.debitAfit(db, user, afit_amnt_refund, { ledgerRow: recordTrans, context: 'cancel-afit-buy' }));
+	// negative), then write the ledger row (afit_balance.debitAfit). force=1 is the explicit
+	// ops claw-back: it takes the amount even if the balance goes negative.
+	const force = req.query.force === '1';
+	if (force) recordTrans.forced = true;
+	let debit;
+	try {
+		debit = await withAfitLock(user, () => afitBalance.debitAfit(db, user, afit_amnt_refund, { ledgerRow: recordTrans, allowNegative: force, context: 'cancel-afit-buy' }));
+	} catch (err) {
+		console.log('cancelAFITBuy failed for ' + user + ' - ' + (err && err.message));
+		res.send({'error': 'Error performing buy action. DB storing issue'});
+		return;
+	}
 	if (debit.busy || !debit.value.ok){
 		const reason = debit.busy ? 'busy' : debit.value.reason;
 		console.log('cancelAFITBuy: not applied for ' + user + ' - ' + reason);
@@ -4343,7 +4384,12 @@ app.get('/refundPurchase', async function(req, res){
 		date: new Date(),
 	}
 	// ledger row first, then an atomic $inc of the cached balance (afit_balance.creditAfit)
-	const credit = await withAfitLock(user, () => afitBalance.creditAfit(db, user, afit_amnt_refund, recordTrans, { context: 'refund-purchase' }));
+	let credit;
+	try {
+		credit = await withAfitLock(user, () => afitBalance.creditAfit(db, user, afit_amnt_refund, recordTrans, { context: 'refund-purchase' }));
+	} catch (err) {
+		credit = { value: { ok: false, reason: err && err.message } };
+	}
 	if (credit.busy || !credit.value.ok){
 		console.log('refundPurchase: not applied for ' + user + ' - ' + (credit.busy ? 'busy' : credit.value.reason));
 		res.send({'error': 'Error performing buy action. DB storing issue'});
@@ -5353,9 +5399,14 @@ function gadgetAfitPrice(product) {
 
 // Why this product cannot be delivered as an in-game gadget, or null when it can. Checked
 // BEFORE any AFIT is taken.
+// Product types in use (swagger Product.type enum, market/restock code): 'ingame' (gadgets),
+// 'ebook' and 'real'. Only the two known non-gadget types are refused; any other unexpected
+// type is logged but allowed, so a live gadget with an unusual type never becomes unbuyable.
+const NON_GADGET_PRODUCT_TYPES = ['ebook', 'real'];
 function gadgetDeliveryError(product) {
 	if (!product) return 'Product not found';
-	if (product.type !== 'ingame') return 'Product is not an in-game gadget';
+	if (NON_GADGET_PRODUCT_TYPES.includes(product.type)) return 'Product is not an in-game gadget';
+	if (product.type !== 'ingame') console.log('gadget buy: product ' + product._id + ' has unexpected type ' + JSON.stringify(product.type) + ' (allowed)');
 	if (!product.benefits || typeof product.benefits !== 'object' || !Number.isFinite(parseInt(product.benefits.time_span))) {
 		return 'Product cannot be bought: it has no valid benefits';
 	}
@@ -5447,9 +5498,12 @@ async function deliverGadget(user, item) {
 	return true;
 }
 
-// Validate and price every product, take the total once, deliver each item, and give back
-// whatever was not delivered. Returns the route's response object.
-async function buyGadgets(user, product_id_list) {
+// Validate and price every product and check the balance (non-binding) BEFORE the user's
+// signed transaction is verified - verifying claims it, so a refused buy must not burn it -
+// then verify, take the total once, deliver each item, and give back whatever was not
+// delivered. verifyTx() resolves truthy when the transaction is valid; verifyFailed is the
+// response when it is not. Returns the route's response object.
+async function buyGadgets(user, product_id_list, verifyTx, verifyFailed) {
 	const items = [];
 	for (const product_id of product_id_list) {
 		const product = await grabProductInfo(product_id);
@@ -5462,14 +5516,22 @@ async function buyGadgets(user, product_id_list) {
 	if (items.length < 1) return ({'error': 'Product not found'});
 	const total = items.reduce((sum, it) => sum + it.item_price, 0);
 
+	// non-binding: the debit below is the real check
+	if ((await afitBalance.readBalance(db, user)) < total) return ({'error': 'Account does not have enough AFIT funds'});
+
+	if (!(await verifyTx())) return verifyFailed;
+
 	const debit = await afitBalance.debitAfit(db, user, total, { context: 'gadget-buy' });
 	if (!debit.ok) return ({'error': 'Account does not have enough AFIT funds'});
 
 	for (let i = 0; i < items.length; i++) {
 		if (!(await deliverGadget(user, items[i]))) {
+			// item i failed and nothing of it was left behind: refund it and everything after it
 			const undelivered = items.slice(i).reduce((sum, it) => sum + it.item_price, 0);
+			const delivered = items.slice(0, i).map((it) => String(it.product_id));
 			await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy');
-			return ({'error': 'Error performing buy action. DB storing issue'});
+			console.log('!!! gadget buy PARTIALLY DELIVERED for ' + user + ': delivered [' + delivered.join(', ') + '], refunded ' + undelivered + ' AFIT for ' + (items.length - i) + ' undelivered item(s)');
+			return ({'error': 'Error performing buy action. DB storing issue', 'delivered': delivered});
 		}
 	}
 	// the post-debit balance, as a number (what the client shows)
@@ -5478,13 +5540,11 @@ async function buyGadgets(user, product_id_list) {
 
 async function performMultiBuyTrx(req){
 	return runAfitPurchase(req.params.user, 'performMultiBuyTrx', async () => {
-		//ensure proper transaction
-		let ver_trx = await utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.trxID, req.params.bchain, db);
-		if (!ver_trx){
-			return ({status: 'error'});
-		}
-		//confirmed, deduct AFIT tokens and deliver the gadgets
-		return buyGadgets(req.params.user, String(req.params.gadgets).split('-'));
+		//ensure proper transaction (after the products and balance are checked), then deduct
+		//AFIT tokens and deliver the gadgets
+		return buyGadgets(req.params.user, String(req.params.gadgets).split('-'),
+			() => utils.verifyGadgetTransaction(req.params.user, req.params.gadgets, 'buy-gadget', req.params.trxID, req.params.bchain, db),
+			{status: 'error'});
 	});
 }
 
@@ -5546,13 +5606,11 @@ async function performBuyWorkout(infoParam){
 
 async function performBuyTrx(infoParam){
 	return runAfitPurchase(infoParam.user, 'performBuyTrx', async () => {
-		//ensure proper transaction
-		let ver_trx = await utils.verifyGadgetTransaction(infoParam.user, infoParam.gadget, 'buy-gadget', infoParam.trxID, infoParam.bchain, db);
-		if (!ver_trx){
-			return ({'error': 'error verifying trx'});
-		}
-		//confirmed, deduct AFIT tokens and deliver the gadget
-		return buyGadgets(infoParam.user, [infoParam.gadget]);
+		//ensure proper transaction (after the product and balance are checked), then deduct
+		//AFIT tokens and deliver the gadget
+		return buyGadgets(infoParam.user, [infoParam.gadget],
+			() => utils.verifyGadgetTransaction(infoParam.user, infoParam.gadget, 'buy-gadget', infoParam.trxID, infoParam.bchain, db),
+			{'error': 'error verifying trx'});
 	});
 }
 
@@ -6362,17 +6420,9 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async fu
 			return;
 		}
 
-		//check how much the user has tipped today
-		let totalTipAmount = await tippedToday({ query: { user }, params: {} }, res);
-		if (parseFloat(totalTipAmount) >= parseFloat(config.max_allowed_tips_per_day)){
-			res.send({'error': 'User cannot tip more today. Max tips per day is set at '+config.max_allowed_tips_per_day + ' AFIT'});
-			return;
-		}
-
-		if (parseFloat(totalTipAmount) + amount > parseFloat(config.max_allowed_tips_per_day)){
-			res.send({'error': 'Tip amount exceeds daily limit (' + config.max_allowed_tips_per_day + ') by '+ ((parseFloat(totalTipAmount) + amount) - parseFloat(config.max_allowed_tips_per_day) ) + ' AFIT. Try a smaller amount.'});
-			return;
-		}
+		// the daily tip cap is checked inside the sender's lock below, so concurrent tips
+		// cannot all pass it against the same day's total
+		const maxPerDay = parseFloat(config.max_allowed_tips_per_day);
 
 		//perform transaction, decrease sender amount
 		let noteVal = user + ' tipped ' + targetUser + ' ' + amount + ' AFIT';
@@ -6403,6 +6453,14 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async fu
 		// be read-check-replaceOne, which let concurrent tips spend one balance twice and
 		// overwrite any credit that landed in between.
 		const tip = await withAfitLock(user, async () => {
+			//check how much the user has tipped today
+			let totalTipAmount = parseFloat(await tippedToday({ query: { user }, params: {} }, res));
+			if (!(totalTipAmount < maxPerDay)){
+				return { capError: 'User cannot tip more today. Max tips per day is set at '+config.max_allowed_tips_per_day + ' AFIT' };
+			}
+			if (totalTipAmount + amount > maxPerDay){
+				return { capError: 'Tip amount exceeds daily limit (' + config.max_allowed_tips_per_day + ') by '+ ((totalTipAmount + amount) - maxPerDay) + ' AFIT. Try a smaller amount.' };
+			}
 			const debit = await afitBalance.debitAfit(db, user, amount, { ledgerRow: tipTrans, context: 'tip-sender' });
 			if (!debit.ok) return { debit };
 			const doCredit = () => afitBalance.creditAfit(db, targetUser, amount, tipReceiptTrans, { context: 'tip-recipient' });
@@ -6417,6 +6475,10 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async fu
 			res.send({'error': AFIT_BUSY_ERROR});
 			return;
 		}
+		if (tip.value.capError){
+			res.send({'error': tip.value.capError});
+			return;
+		}
 		if (!tip.value.debit.ok){
 			res.send({'error': tip.value.debit.reason === 'insufficient_funds' ? 'Account does not have enough AFIT funds' : 'Error performing tip action. DB storing issue'});
 			return;
@@ -6425,8 +6487,11 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async fu
 			res.send({'error': 'Error performing tip action. DB storing issue'});
 			return;
 		}
+		// always numbers: fall back to reading the balance if the helper could not return it
 		let new_token_count = tip.value.debit.balance;
+		if (typeof new_token_count !== 'number') new_token_count = await afitBalance.readBalance(db, user).catch(() => 0);
 		let upd_token_count = tip.value.credit.balance;
+		if (typeof upd_token_count !== 'number') upd_token_count = await afitBalance.readBalance(db, targetUser).catch(() => 0);
 		console.log('new_sender_token_count: ' + new_token_count + ' upd_target_token_count: ' + upd_token_count);
 
 		//also notify user of AFIT payment
@@ -7541,7 +7606,9 @@ const storeReferralReward = async function (req){
 // balance, with an atomic $inc. Both paths used to read-check-replaceOne the balance, and the
 // bulk job credited before writing its de-duplication row, so the two could both credit.
 // Returns afitBalance.creditAfit's result ({ok, duplicate, reason, balance}).
-async function creditAfitDeposit(user, trx, exchangeType) {
+// waitMs: how long to wait for the user's AFIT lock (the bulk job passes a short wait and
+// skips busy users; the next run retries them).
+async function creditAfitDeposit(user, trx, exchangeType, waitMs = 30000) {
 	if (typeof user !== 'string' || !user || !trx) return { ok: false, reason: 'invalid_deposit' };
 	const ref = trx.transactionId;
 	if (!((typeof ref === 'string' && ref.length > 0) || Number.isFinite(ref))) return { ok: false, reason: 'invalid_deposit' };
@@ -7560,7 +7627,7 @@ async function creditAfitDeposit(user, trx, exchangeType) {
 	const locked = await withAfitLock(user, () => afitBalance.creditAfit(db, user, amount, row, {
 		dedupe: { user: user, se_trx_ref: ref },
 		context: 'afit-deposit',
-	}), 30000);
+	}), waitMs);
 	if (locked.busy) return { ok: false, reason: 'busy' };
 	return locked.value;
 }
@@ -7597,7 +7664,9 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 			let user = entry && entry.from;
 			if (user != config.steem_engine_actifit_se && user != config.hive_engine_actifit_he){
 				try{
-					const result = await creditAfitDeposit(user, entry, exchangeType);
+					// short lock wait: the caller has a 60s timeout, and a busy user is simply
+					// retried by the next run (nothing was recorded)
+					const result = await creditAfitDeposit(user, entry, exchangeType, 2000);
 					if (result.ok){
 						credited += 1;
 						console.log('success adding ' + result.amount + ' AFIT deposit to ' + user + ' balance');
@@ -9487,7 +9556,7 @@ app.post('/performAfitSteemExchange', modActionRateLimit, checkHdrs, keyRotation
 		// balance rebuild (/recalculateUserTokens), which must never run mid-spend
 		lock = await acquireUserLock(afitBalance.AFIT_LOCK, user, AFIT_LOCK_WAIT_MS);
 		if (!lock) {
-			res.send({'error': 'An exchange for this account is already being processed. Please try again in a moment.'});
+			res.send({'error': AFIT_BUSY_ERROR});
 			return;
 		}
 		await performAfitUpvoteExchange(req, res, user, req.body.tokens);
@@ -9859,27 +9928,31 @@ const rewardActifitTokenWeb = async function (req, reward_activity) {
 			reward_date: reward_date,
 		};
 		
-		//check if we have a match already to skip rewarding and/or notifying the user
-		let user_pre_rewarded = await db.collection('token_transactions').findOne(query);
-		if (typeof user_pre_rewarded == undefined || user_pre_rewarded == 'undefined' || user_pre_rewarded == null){
+		// One reward per (user, activity, day): the check and the insert-if-absent run under
+		// the per-user AFIT lock, so concurrent requests for one user are serialised and the
+		// second finds the row; the unique index afit_web_reward_unique (when built) is the
+		// database-level backstop - a duplicate-key error means the other request won.
+		// Awaited: un-awaited, a failed write was an unhandled rejection and the user was
+		// notified of a reward that was never recorded.
+		const locked = await withAfitLock(req.params.user, async () => {
+		  //check if we have a match already to skip rewarding and/or notifying the user
+		  let user_pre_rewarded = await db.collection('token_transactions').findOne(query);
+		  if (user_pre_rewarded) return false;
 		  console.log('first reward today');
 		  try{
-		    // Insert only if no row for (user, activity, day) exists - atomically, so two
-		    // concurrent requests cannot both pass the findOne above and both reward. The
-		    // unique index afit_web_reward_unique backs this up (a duplicate-key error means
-		    // the other request won). Awaited: un-awaited, a failed write was an unhandled
-		    // rejection and the user was notified of a reward that was never recorded.
 		    let transaction = await db.collection('token_transactions')
 				.updateOne(query, { $setOnInsert: new_transaction }, { upsert: true });
-		    rewarded = !!(transaction && transaction.upsertedCount === 1);
-
-			//also notify user of AFIT payment
-			if (rewarded){
-				utils.sendNotification(db, req.params.user, 'actifit', 'receive_afit', 'payment', 'You received an AFIT reward of '+config.actifitWebEditRewardAmount+' AFIT for editing your post via Actifit.io', 'https://actifit.io/'+req.params.user+'/wallet');
-			}
+		    return !!(transaction && transaction.upsertedCount === 1);
 		  }catch(e){
 		    if (!afitBalance.isDuplicateKeyError(e)) console.log(e);
+		    return false;
 		  }
+		});
+		rewarded = !locked.busy && locked.value === true;
+
+		//also notify user of AFIT payment
+		if (rewarded){
+			utils.sendNotification(db, req.params.user, 'actifit', 'receive_afit', 'payment', 'You received an AFIT reward of '+config.actifitWebEditRewardAmount+' AFIT for editing your post via Actifit.io', 'https://actifit.io/'+req.params.user+'/wallet');
 		}
 		console.log(rewarded);
 		

@@ -914,9 +914,9 @@ async function broadcastBlurtWithFailover(ops, key, label){
 		// Parse the caller-supplied operation ONCE, before polling starts. It is
 		// deterministic input: if it is malformed, every one of the 30 ticks below would
 		// throw the identical SyntaxError, and inside an async setInterval callback that
-		// is an UNHANDLED REJECTION - nothing in this codebase installs an
-		// unhandledRejection handler and Node terminates on one by default, so it ends the
-		// API process. Doing it here turns a process kill into a returned error.
+		// is an UNHANDLED REJECTION. Node terminates on one by default; app.js now installs
+		// a process-level logger (which exits only on a burst), but each tick would still
+		// fail. Doing it here turns that into a returned error.
 		let expectedOps;
 		try{
 			expectedOps = JSON.parse(req.query.operation);
@@ -2781,8 +2781,8 @@ async function claimRewards(target_account, p_key, target_chain) {
 		// 'account not found' branch was unreachable.
 		//
 		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
-		// which is async with no try/catch - and with no process-level
-		// unhandledRejection handler anywhere, that ENDS THE API PROCESS. The BLURT
+		// which is async with no try/catch - and before app.js had a process-level
+		// unhandledRejection logger, that ENDED THE API PROCESS. The BLURT
 		// leg below runs on every call and most Hive users have no Blurt account, so []
 		// was the common case rather than the rare one.
 		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');

@@ -111,6 +111,9 @@ async function restoreAfit(db, user, amount, context) {
  *                                      and `token_count` (= -amount) are set here.
  *                                      Without it only the cache is debited (the caller
  *                                      writes its own rows, e.g. one per item).
+ * @param {boolean} [opts.allowNegative] admin claw-back only: take the amount even if the
+ *                                      balance goes negative (the user's balance row must
+ *                                      exist; minBalance is ignored)
  * @param {string} [opts.context]       label for log lines
  * @returns {Promise<{ok:true, amount, balance, ledgerId}|{ok:false, reason, error?}>}
  *          reason: 'invalid_amount' | 'insufficient_funds' | 'ledger_failed'
@@ -123,10 +126,8 @@ async function debitAfit(db, user, amount, opts = {}) {
 
 	// Matches only while the stored balance is a number >= the floor, so a NaN or
 	// string balance never matches (MongoDB type bracketing) and fails closed.
-	const taken = await db.collection(BALANCES).updateOne(
-		{ _id: user, tokens: { $gte: Math.max(minBalance, amt) } },
-		{ $inc: { tokens: -amt } }
-	);
+	const filter = opts.allowNegative ? { _id: user } : { _id: user, tokens: { $gte: Math.max(minBalance, amt) } };
+	const taken = await db.collection(BALANCES).updateOne(filter, { $inc: { tokens: -amt } });
 	if (!taken || taken.matchedCount !== 1) return { ok: false, reason: 'insufficient_funds' };
 
 	let ledgerId = null;
@@ -275,16 +276,16 @@ function acquireAfitLock(db, user, opts) {
  * The filters use $type rather than $exists so a stray `field: null` in some other
  * writer cannot drag ordinary rows into a unique index (see arena_afit.ensureAfitIndexes).
  *
- * NEVER rejects. If a build fails - most likely because duplicates already exist, which
- * is exactly what these indexes would have prevented - it logs a loud message naming the
- * index and carries on: the code-level de-duplication still applies, the DB-level guard is
- * just missing until the duplicates are cleaned up and the index is created.
+ * These are NOT built at startup: even a partial index has to examine every ledger
+ * document, which is real IO on the primary. They are created by hand, off-peak, after a
+ * duplicate check - see scripts/build_ledger_indexes.md (createLedgerIndexes below runs
+ * the same definitions, for that procedure and the tests).
  *
- * OPERATIONAL NOTE: a partial index still has to examine every ledger document to
- * build. Create both by hand off-peak before deploying (same definitions as below);
- * this call then finds them and is a no-op.
- *
- * @returns {Promise<{name: string, ok: boolean, error?: string}[]>}
+ * Without them the code-level de-duplication still holds for the paths that use it: the
+ * deposit credit runs under the per-user AFIT lock with an upsert keyed on
+ * {user, se_trx_ref}, and the web reward under the same lock with an upsert keyed on
+ * {user, reward_activity, reward_date}, so concurrent requests for one user are
+ * serialised and the second finds the row. The indexes are the database-level backstop.
  */
 const LEDGER_INDEXES = [
 	{
@@ -297,29 +298,54 @@ const LEDGER_INDEXES = [
 	},
 ];
 
+// Stale request locks are already replaced after LOCK_STALE_MS; this only sweeps leftovers
+// from crashed requests. request_locks is tiny, so building it at startup is cheap.
+const REQUEST_LOCKS_TTL = { key: { at: 1 }, options: { name: 'request_locks_ttl', expireAfterSeconds: 3600 } };
+
+/**
+ * Startup check. NEVER builds the ledger indexes and NEVER rejects: it lists the ledger's
+ * indexes and logs a loud warning for each one that is missing. It does create the TTL
+ * index on the small request_locks collection.
+ * @returns {Promise<{name: string, present: boolean}[]>}  the ledger indexes' status
+ */
 async function ensureLedgerIndexes(db, log) {
 	const out = [];
 	const say = (m) => { try { (log || console.log)(m); } catch (_) { /* logging must not throw */ } };
-	let ledger;
-	try { ledger = db.collection(LEDGER); } catch (e) { return out; }
-	if (!ledger || typeof ledger.createIndex !== 'function') return out;
+	try {
+		const locks = db.collection(LOCKS);
+		if (locks && typeof locks.createIndex === 'function') await locks.createIndex(REQUEST_LOCKS_TTL.key, REQUEST_LOCKS_TTL.options);
+	} catch (err) {
+		say('request_locks TTL index not created: ' + ((err && err.message) || err));
+	}
+	let names;
+	try {
+		const ledger = db.collection(LEDGER);
+		if (!ledger || typeof ledger.indexes !== 'function') return out;
+		names = (await ledger.indexes()).map((i) => i.name);
+	} catch (err) {
+		say('could not list token_transactions indexes: ' + ((err && err.message) || err));
+		return out;
+	}
 	for (const idx of LEDGER_INDEXES) {
-		try {
-			await ledger.createIndex(idx.key, idx.options);
-			out.push({ name: idx.options.name, ok: true });
-		} catch (err) {
-			const msg = (err && err.message) || String(err);
-			const dup = isDuplicateKeyError(err) ? ' Existing duplicate rows block it: find and resolve them, then restart (or create the index by hand).' : '';
-			say('!!! token_transactions index ' + idx.options.name + ' was NOT created; the database-level double-credit guard for these rows is MISSING (the code-level check still applies).' + dup + ' Error: ' + msg);
-			out.push({ name: idx.options.name, ok: false, error: msg });
+		const present = names.includes(idx.options.name);
+		if (!present) {
+			say('!!! token_transactions index ' + idx.options.name + ' is MISSING: the database-level double-credit guard for these rows is not in place (the code-level check still applies). Build it off-peak - see scripts/build_ledger_indexes.md.');
 		}
+		out.push({ name: idx.options.name, present });
 	}
 	return out;
 }
 
+/** Build the ledger indexes (ops procedure / tests - NOT called at startup). Rejects on failure. */
+async function createLedgerIndexes(db) {
+	for (const idx of LEDGER_INDEXES) await db.collection(LEDGER).createIndex(idx.key, idx.options);
+}
+
 module.exports = {
 	LEDGER_INDEXES,
+	REQUEST_LOCKS_TTL,
 	ensureLedgerIndexes,
+	createLedgerIndexes,
 	LEDGER,
 	BALANCES,
 	AFIT_LOCK,

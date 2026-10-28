@@ -687,6 +687,19 @@ async function rollBackTrans(moveTrans){
 	}
 }
 
+// Run fn under the user's shared AFIT lock (afit_balance; the API's balance writers and its
+// balance rebuild take the same one). This job is not interactive, so it waits up to 30s and
+// then reports the debit as busy ({ok:false, reason:'busy'}) rather than run without it.
+async function withAfitLock(user, fn){
+	const lock = await afitBalance.acquireAfitLock(db, user, { waitMs: 30000 });
+	if (!lock) return { ok: false, reason: 'busy' };
+	try {
+		return await fn();
+	} finally {
+		await lock.release();
+	}
+}
+
 // Lower a user's cached AFIT balance by an amount that has ALREADY left (the transfer is
 // on chain), so it is unconditional - but atomic ($inc), never a read-modify-replaceOne that
 // overwrites a concurrent change, and it never throws (it used to crash on a user with no
@@ -885,7 +898,7 @@ async function moveAFITToSE(testMode){
 							//ledger row. Done BEFORE the broadcast; undone if the broadcast fails.
 							let debit = null;
 							if (!testMode){
-								debit = await afitBalance.debitAfit(db, entry.user, dedc_amount, { ledgerRow: moveTrans, context: 'afit-move-he' });
+								debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, dedc_amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
 								if (!debit.ok){
 									console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
 									if (debit.reason === 'insufficient_funds'){
@@ -925,7 +938,7 @@ async function moveAFITToSE(testMode){
 										console.error(error)
 										//roll back: remove the ledger row and give the AFIT back, as there
 										//was an issue sending to blockchain
-										afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he').catch((e) => console.log(e));
+										withAfitLock(entry.user, () => afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he')).catch((e) => console.log(e));
 										deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
 										}
 								)

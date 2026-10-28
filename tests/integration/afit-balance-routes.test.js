@@ -81,10 +81,10 @@ const pub = (k) => k.createPublic().toString();
 			if (r.status === 200) break;
 			await new Promise((res) => origSetTimeout(res, 500));
 		}
-		// the startup index build is fire-and-forget: wait for it
+		// the startup index check is fire-and-forget: wait for the TTL index it adds
 		for (let i = 0; i < 40; i++) {
-			const idx = await db.collection('token_transactions').indexes().catch(() => []);
-			if (idx.some((x) => x.name === 'afit_deposit_unique') && idx.some((x) => x.name === 'afit_web_reward_unique')) break;
+			const idx = await db.collection('request_locks').indexes().catch(() => []);
+			if (idx.some((x) => x.name === 'request_locks_ttl')) break;
 			await new Promise((res) => origSetTimeout(res, 250));
 		}
 		const login = await request(app).post('/loginAuth').set('X-Forwarded-For', ip()).send({ username: 'alice', ppkey: KEY.toString() });
@@ -105,11 +105,21 @@ const pub = (k) => k.createPublic().toString();
 	});
 	afterEach(() => logSpy.mockRestore());
 
-	test('startup created both unique ledger indexes', async () => {
-		const idx = await db.collection('token_transactions').indexes();
-		expect(idx.find((i) => i.name === 'afit_deposit_unique')).toMatchObject({ unique: true, partialFilterExpression: { se_trx_ref: { $type: 'string' } } });
-		expect(idx.find((i) => i.name === 'afit_web_reward_unique')).toMatchObject({ unique: true, partialFilterExpression: { reward_date: { $type: 'date' } } });
+	test('startup does NOT build the ledger indexes; without them a deposit still credits once', async () => {
 		expect(token).toBeTruthy();
+		const names = (await db.collection('token_transactions').indexes()).map((i) => i.name);
+		expect(names).not.toContain('afit_deposit_unique');
+		expect(names).not.toContain('afit_web_reward_unique');
+		expect((await db.collection('request_locks').indexes()).find((i) => i.name === 'request_locks_ttl')).toMatchObject({ expireAfterSeconds: 3600 });
+		// the per-user lock + keyed upsert are the guard until the indexes are built by hand
+		await setBal('alice', 0);
+		utils.confirmSEAFITReceived = jest.fn(async () => ({ from: 'alice', symbol: 'AFIT', quantity: '4', transactionId: 'dep-noidx', timestamp: 1790000000 }));
+		const rec = () => request(app).get('/confirmAFITSEReceipt?user=alice').set('X-Forwarded-For', ip()).set('x-acti-token', token);
+		await Promise.all([rec(), rec(), rec(), rec()]);
+		expect(await bal('alice')).toBe(4);
+		expect(await ledger({ user: 'alice', se_trx_ref: 'dep-noidx' })).toHaveLength(1);
+		// build them as the ops procedure would, for the rest of this file
+		await require('../../afit_balance').createLedgerIndexes(db);
 	});
 
 	describe('gadget buys', () => {
@@ -172,6 +182,46 @@ const pub = (k) => k.createPublic().toString();
 			expect((await multi('trxM2')).body).toEqual({ status: 'Success', user_tokens: 30 });
 			expect((await ledger({ user: 'alice' })).map((x) => x.token_count).sort()).toEqual([-40, -60]);
 			expect(await db.collection('user_gadgets').countDocuments({ user: 'alice' })).toBe(2);
+		});
+
+		test('multi-gadget partial delivery: the undelivered items are refunded and reported', async () => {
+			const p1 = gadget({ price: [{ price: 10, currency: 'AFIT' }] });
+			const p2 = gadget({ price: [{ price: 20, currency: 'AFIT' }] });
+			const p3 = gadget({ price: [{ price: 40, currency: 'AFIT' }] });
+			await db.collection('products').insertMany([p1, p2, p3]);
+			await setBal('alice', 100);
+			// make the user_gadgets insert fail for item 2 (and only item 2)
+			await db.collection('user_gadgets').createIndex({ gadget: 1 }, { unique: true, name: 'test_fail_item2' });
+			await db.collection('user_gadgets').insertOne({ user: 'someone-else', gadget: p2._id });
+			try {
+				const r = await request(app).get('/buyMultiGadget/alice/' + p1._id + '-' + p2._id + '-' + p3._id + '/1/trxP/HIVE').set('X-Forwarded-For', ip());
+				expect(r.body).toEqual({ error: 'Error performing buy action. DB storing issue', delivered: [String(p1._id)] });
+				expect(await bal('alice')).toBe(90); // only item 1 charged
+				const rows = await ledger({ user: 'alice' });
+				expect(rows.map((x) => x.product_id)).toEqual([String(p1._id)]);
+				expect(rows.map((x) => x.token_count)).toEqual([-10]);
+				const owned = await db.collection('user_gadgets').find({ user: 'alice' }).toArray();
+				expect(owned.map((g) => String(g.gadget))).toEqual([String(p1._id)]);
+				expect(logSpy.mock.calls.some((c) => /PARTIALLY DELIVERED/.test(String(c[0])))).toBe(true);
+			} finally {
+				await db.collection('user_gadgets').dropIndex('test_fail_item2');
+			}
+		});
+
+		test('a refused buy does not consume the signed transaction (checks run before verification)', async () => {
+			const bad = gadget({ benefits: { time_span: 'x' } });
+			const p = gadget();
+			await db.collection('products').insertMany([bad, p]);
+			await setBal('alice', 50); // price 100
+			expect((await buy('alice', bad._id, 'trxQ')).body.error).toMatch(/no valid benefits/);
+			expect((await buy('alice', p._id, 'trxR')).body).toEqual({ error: 'Account does not have enough AFIT funds' });
+			expect(utils.verifyGadgetTransaction).not.toHaveBeenCalled();
+			// an unexpected (non ebook/real) type is logged, not refused
+			const odd = gadget({ type: 'boost' });
+			await db.collection('products').insertOne(odd);
+			await setBal('alice', 500);
+			expect((await buy('alice', odd._id, 'trxS')).body).toEqual({ status: 'Success', user_tokens: 400 });
+			expect(utils.verifyGadgetTransaction).toHaveBeenCalledTimes(1);
 		});
 
 		test('an unverified transaction charges nothing', async () => {
@@ -284,6 +334,14 @@ const pub = (k) => k.createPublic().toString();
 			expect(await db.collection('user_tokens').findOne({ _id: 'alice' })).toEqual({ _id: 'alice', user: 'alice', tokens: -30, extra: 'kept' });
 		});
 
+		test('another user\'s balance cannot be recalculated', async () => {
+			await setBal('bob', 77);
+			await db.collection('token_transactions').insertOne({ user: 'bob', token_count: 1 });
+			const r = await request(app).get('/recalculateUserTokens?user=bob').set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(r.body).toEqual({ error: 'User mismatch' });
+			expect(await bal('bob')).toBe(77);
+		});
+
 		test('waits for the per-user AFIT lock, and reports busy rather than rebuilding mid-spend', async () => {
 			await setBal('alice', 1);
 			await db.collection('request_locks').insertOne({ _id: 'afit:alice', owner: 'someone-else', at: new Date() });
@@ -339,6 +397,10 @@ const pub = (k) => k.createPublic().toString();
 			expect((await q('/cancelAFITBuy', '&afit=20')).body).toEqual({ status: 'success' });
 			expect(await bal('alice')).toBe(5);
 			expect((await ledger({ user: 'alice' })).map((x) => x.token_count).sort((a, b) => a - b)).toEqual([-20, 15]);
+			// force=1: explicit ops claw-back may take the balance negative
+			expect((await q('/cancelAFITBuy', '&afit=30&force=1')).body).toEqual({ status: 'success' });
+			expect(await bal('alice')).toBe(-25);
+			expect((await ledger({ user: 'alice', forced: true })).map((x) => x.token_count)).toEqual([-30]);
 			expect((await request(app).get('/cancelAFITBuy?specPass=nope&user=alice&afit=1').set('X-Forwarded-For', ip())).body).toEqual({ error: 'error' });
 		});
 

@@ -38,15 +38,34 @@ describe('amount rules (no database)', () => {
 		expect(db.collection).not.toHaveBeenCalled();
 	});
 
-	test('ensureLedgerIndexes never rejects, even when the collection throws', async () => {
+	test('ensureLedgerIndexes never builds the ledger indexes and never rejects', async () => {
 		const logs = [];
-		const db = { collection: () => ({ createIndex: () => Promise.reject(Object.assign(new Error('E11000 duplicate key error'), { code: 11000 })) }) };
+		const created = [];
+		const db = { collection: (name) => ({
+			createIndex: (key, opts) => { created.push(name + ':' + opts.name); return Promise.resolve(opts.name); },
+			indexes: () => Promise.resolve([{ name: '_id_' }]),
+		}) };
 		const out = await afit.ensureLedgerIndexes(db, (m) => logs.push(m));
-		expect(out.map((o) => o.ok)).toEqual([false, false]);
-		expect(logs.join('\n')).toMatch(/afit_deposit_unique was NOT created/);
-		expect(logs.join('\n')).toMatch(/duplicate rows/);
-		await expect(afit.ensureLedgerIndexes({ collection: () => { throw new Error('x'); } })).resolves.toEqual([]);
+		expect(out).toEqual([{ name: 'afit_deposit_unique', present: false }, { name: 'afit_web_reward_unique', present: false }]);
+		expect(logs.join('\n')).toMatch(/afit_deposit_unique is MISSING/);
+		expect(logs.join('\n')).toMatch(/afit_web_reward_unique is MISSING/);
+		// only the small request_locks TTL index is built
+		expect(created).toEqual(['request_locks:request_locks_ttl']);
+		const failing = { collection: () => ({ createIndex: () => Promise.reject(new Error('x')), indexes: () => Promise.reject(new Error('y')) }) };
+		await expect(afit.ensureLedgerIndexes(failing, () => {})).resolves.toEqual([]);
+		await expect(afit.ensureLedgerIndexes({ collection: () => { throw new Error('x'); } }, () => {})).resolves.toEqual([]);
 		await expect(afit.ensureLedgerIndexes({ collection: () => ({}) })).resolves.toEqual([]);
+	});
+
+	test('debitAfit allowNegative (admin claw-back) skips the balance floor', async () => {
+		const calls = [];
+		const db = { collection: () => ({
+			updateOne: (f, u) => { calls.push(f); return Promise.resolve({ matchedCount: 1 }); },
+			findOne: () => Promise.resolve({ tokens: -5 }),
+		}) };
+		await expect(afit.debitAfit(db, 'alice', 10, { allowNegative: true })).resolves.toMatchObject({ ok: true, balance: -5 });
+		await afit.debitAfit(db, 'alice', 10);
+		expect(calls).toEqual([{ _id: 'alice' }, { _id: 'alice', tokens: { $gte: 10 } }]);
 	});
 });
 
@@ -60,7 +79,7 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 	beforeAll(async () => {
 		client = await MongoClient.connect(MONGO_URI);
 		db = client.db('afit_balance_test_' + Date.now());
-		await afit.ensureLedgerIndexes(db, () => {});
+		await afit.createLedgerIndexes(db);
 	});
 	afterAll(async () => { await db.dropDatabase(); await client.close(); });
 	beforeEach(async () => {
@@ -174,18 +193,28 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		await col.insertMany([{ user: 'ivy', reward_activity: 'Web Vote' }, { user: 'ivy', reward_activity: 'Web Vote' }]);
 	});
 
-	test('a failed index build (existing duplicates) is logged loudly and does not reject', async () => {
-		const other = client.db('afit_balance_dups_' + Date.now());
+	test('startup check: reports the ledger indexes, builds only the request_locks TTL', async () => {
+		const other = client.db('afit_balance_chk_' + Date.now());
 		try {
-			await other.collection('token_transactions').insertMany([
-				{ user: 'jo', se_trx_ref: 'dup', token_count: 1 },
-				{ user: 'jo', se_trx_ref: 'dup', token_count: 1 },
-			]);
+			await other.collection('token_transactions').insertOne({ user: 'jo', token_count: 1 });
 			const logs = [];
-			const out = await afit.ensureLedgerIndexes(other, (m) => logs.push(m));
-			expect(out.find((o) => o.name === 'afit_deposit_unique').ok).toBe(false);
-			expect(out.find((o) => o.name === 'afit_web_reward_unique').ok).toBe(true);
-			expect(logs.join('\n')).toMatch(/!!! token_transactions index afit_deposit_unique was NOT created/);
+			expect(await afit.ensureLedgerIndexes(other, (m) => logs.push(m))).toEqual([
+				{ name: 'afit_deposit_unique', present: false }, { name: 'afit_web_reward_unique', present: false },
+			]);
+			expect(logs.join('\n')).toMatch(/!!! token_transactions index afit_deposit_unique is MISSING/);
+			expect((await other.collection('token_transactions').indexes()).map((i) => i.name)).toEqual(['_id_']);
+			const ttl = (await other.collection('request_locks').indexes()).find((i) => i.name === 'request_locks_ttl');
+			expect(ttl).toMatchObject({ key: { at: 1 }, expireAfterSeconds: 3600 });
+			// once built by hand, the check is quiet
+			await afit.createLedgerIndexes(other);
+			logs.length = 0;
+			expect((await afit.ensureLedgerIndexes(other, (m) => logs.push(m))).every((x) => x.present)).toBe(true);
+			expect(logs).toEqual([]);
+			// a duplicate blocks the manual build (that is why the procedure checks first)
+			const third = client.db('afit_balance_dups_' + Date.now());
+			await third.collection('token_transactions').insertMany([{ user: 'jo', se_trx_ref: 'd' }, { user: 'jo', se_trx_ref: 'd' }]);
+			await expect(afit.createLedgerIndexes(third)).rejects.toMatchObject({ code: 11000 });
+			await third.dropDatabase();
 		} finally {
 			await other.dropDatabase();
 		}
