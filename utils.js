@@ -336,23 +336,6 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	}
  }
  
-  async function encodeMemo(memo, userPubKey, bchain){
-	let chainLnk = await setProperNode(bchain);
-	console.log('utils decodememo')
-	memo = '#'+memo;
-	let encoded_msg = await chainLnk.memo.encode(config.full_pay_ac_key, userPubKey, memo); 
-	console.log(encoded_msg);
-	return encoded_msg;
- }
- 
- async function decodeMemo(memo, userKey, bchain){
-	let chainLnk = await setProperNode(bchain);
-	console.log('utils decodememo')
-	let decrypted = await chainLnk.memo.decode(userKey, memo); 
-	console.log(decrypted);
-	return decrypted;
- }
- 
 // Broadcast a Blurt transaction, rotating endpoints on failure.
 //
 // WHY THIS EXISTS: processSteemTrx is every Blurt WRITE this service performs - reward
@@ -601,89 +584,6 @@ async function broadcastBlurtWithFailover(ops, key, label){
 			return res;
 			
 		//});
-	}
-	
-	//function handles confirming if AFIT from SE were received
-	async function confirmAFITXTransition (targetUser, txid, amount, bchain, standardAfit) {
-		getConfig();
-		//track attempts for timeout
-		let attempts = 1;
-		let max_attempts = 15;
-		return new Promise((resolve, reject) => {
-			let th_id = setInterval(async function(){
-				if (attempts < max_attempts){
-					attempts += 1;
-					console.log('Check Move');
-					//let's call the service by S-E
-					let url = new URL(config.hive_engine_afitx_trx);
-					if (standardAfit == 1){
-						url = new URL(config.hive_engine_afit_trx);
-					}
-
-					//connect with our service to confirm AFIT received to proper wallet
-					try{
-						let se_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
-						let trx_entries = await se_connector.json();
-						console.log(trx_entries);
-						let match_trx;
-						
-						//check if we have a proper entry matching user transfer
-						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && parseFloat(trx.quantity) == parseFloat(amount) && trx.transactionId == txid))) {
-							//found match, let's make sure transaction is recent enough
-							console.log('found match');
-							let paymentFound = true;
-							if (paymentFound){
-								//need to look again
-								console.log('found');
-								clearInterval(th_id);
-								resolve(match_trx);
-							}
-						}
-					}catch(err){
-						console.log(err);
-					}
-				}else{
-					//out of attempts: stop polling (the timer used to keep firing forever)
-					clearInterval(th_id);
-					resolve(null);
-				}
-			}, 5000);
-		});
-	}
-	
-	async function proceedAfitxMove (targetAcct, amount, chain, standardAfit){
-
-		let transId = 'ssc-mainnet-hive';
-		//let targetBchain = 'STEEM';
-		//other option is moving tokens from H-E to S-E
-
-		let tokenSymbol = 'AFITX';
-		if (standardAfit == 1){
-			tokenSymbol = 'AFIT';
-		}
-		
-		let json_data = {
-			contractName: 'tokens',
-			contractAction: 'transfer',
-			contractPayload: {
-				symbol: tokenSymbol,
-				to: targetAcct,
-				quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
-				memo: ''
-			}
-		}
-		
-		//send out transaction to blockchain
-		let chainLnk = await setProperNode(chain);
-		let tx = await chainLnk.broadcast.customJsonAsync(
-				config.active_key, 
-				[ config.account ] , 
-				[], 
-				transId, 
-				JSON.stringify(json_data)
-			).catch(err => {
-				console.log(err.message);
-		});
 	}
 	
 	
@@ -1151,53 +1051,6 @@ async function broadcastBlurtWithFailover(ops, key, label){
 					resolve(tx_id);
 				}
 				//});
-			}, 5000);
-		});
-	}
-	
-	//function handles confirming if payment was received
-	async function confirmPaymentReceivedBuy (req, bchain) {
-		getConfig();
-		console.log('confirmPaymentReceivedBuy');
-		return new Promise((resolve, reject) => {
-			let th_id = setInterval(async function(){
-				console.log('check buy funds');
-				//let chainLnk = await setProperNode(bchain);
-				
-				let transactions;
-				transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
-				console.log("newestTxId:"+transactions[0][0]);
-
-					let tx_id = '';
-					let paymentFound = false;
-					for (let txs of transactions) {
-						let op = txs[1].op
-						//check if we received a transfer to our target account
-						//if we found a transfer operation sent to our target account, with the correct sender and the proper amount, proceed
-						if (op[0] === 'transfer'){
-							let sentAmount = op[1].amount.split(' ')[0];
-							if (op[1].to === config.buy_account && op[1].from === req.query.from && sentAmount === req.query.steem_amount){  
-								console.log(op[1]);
-								
-								let now = moment(new Date()); //todays date
-								let end = moment(txs[1].timestamp); // last update date
-								let duration = moment.duration(now.diff(end));
-								let hrs = duration.asHours();
-								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 5){
-									tx_id = txs[1].trx_id;
-									paymentFound = true;
-									break;
-								}
-							}
-						}
-					}
-					if (paymentFound){
-						//need to look again
-						console.log('found');
-						clearInterval(th_id);
-						resolve(tx_id);
-					}
 			}, 5000);
 		});
 	}
@@ -2849,156 +2702,6 @@ async function claimRewards(target_account, p_key, target_chain) {
 }
 
 
-async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
-
-	let transId = 'ssc-mainnet-hive';
-	
-	
-	let json_data = {
-		contractName: 'tokens',
-		contractAction: 'transfer',
-		contractPayload: {
-			symbol: tokenSymbol,
-			to: targetAcct,
-			quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
-			memo: tipper//'tipped '+amount+ ' ' + tokenSymbol + ' by @'+tipper
-		}
-	}
-	
-	//send out transaction to blockchain
-	//let chainLnk = await setProperNode(chain);
-	let tx = await hive.broadcast.customJsonAsync(
-	//let tx = await chainLnk.broadcast.customJsonAsync(
-			srcAcctActKey, 
-			[ srcAcct ] , 
-			[], 
-			transId, 
-			JSON.stringify(json_data)
-		).catch(err => {
-			console.log(err.message);
-	});
-	return tx;
-}
-
-async function fetchChainTrx(trxId, blkNo, chain){
-	let chainLnk = await setProperNode(chain);
-		
-	//track attempts for timeout
-	let attempts = 1;
-	let max_attempts = 30; //30 attempts x 8 seconds = 160 seconds (more than enough time for blockchain to confirm)
-	
-	return new Promise((resolve, reject) => {
-		let fetch_th_id = setInterval(async function(){
-			
-			try{
-				if (attempts < max_attempts){
-					console.log('finding trx ' + attempts);
-					attempts += 1;
-					let trx;
-					trx = await chainLnk.api.getTransactionAsync(trxId);
-					if (trx && trx.operations){
-						let ops = trx.operations;
-						for (const i in ops) {
-							const op = ops[i];
-							
-							if (op[0] === "comment") {
-								
-								let action = op[1];
-								let targetUser = action.parent_author;
-								let author = action.author;
-								let permlnk = action.parent_permlink;
-								let authPermlnk = action.permlink;
-								
-								//only comments & matching !AFIT keyword with or without amount
-								let matchingArr = action.body.match(/\!AFIT( *(\d+))?/i);
-								
-								if (targetUser != "" && matchingArr.length > 0) { //has a parent post and targets sending AFIT
-									let amnt = config.default_tip_amnt;
-									try{
-										if (matchingArr.length>2){
-											let tempAmnt = parseInt(matchingArr[2]);
-											if (tempAmnt < config.max_tip_amnt){
-												//set as new amount
-												amnt = tempAmnt;
-											}
-										}
-									}catch(parseErr){
-										console.log(parseErr);
-									}
-									
-									let result = {
-										reqUser: author,
-										reqPermlnk: authPermlnk,
-										tgtUser: targetUser,
-										cmtPermlnk: permlnk,
-										amnt: amnt,
-										chain: chain,
-										symbol: 'AFIT'
-									}
-									console.log('stop spinning. Get back');
-									//return result;
-									clearInterval(fetch_th_id);
-									resolve(result);
-								}
-								
-							}
-						}
-					}
-				}else{
-					//out of attempts: stop polling (the timer used to keep firing forever)
-					clearInterval(fetch_th_id);
-					resolve(null);
-				}
-			}catch(err){
-				console.log(err);
-				resolve(null);
-			}
-		}, 8000);
-	});
-	//return {};
-}
-
-async function commentToChain(reslt){
-	console.log('commenting to chain ' + reslt.chain);
-	let chainLnk = await setProperNode(reslt.chain);
-	let permalink = 're-' + reslt.tgtUser.replace(/\./g, '') + '-' + reslt.cmtPermlnk + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
-	let jsonMetadata = {};
-	let tgtUser = reslt.tgtUser;
-	let tgtPermlnk = reslt.cmtPermlnk;
-	if (!reslt.eligible){
-		tgtUser = reslt.reqUser;
-		tgtPermlnk = reslt.reqPermlnk;
-	}
-	const operations = [ 
-		   ['comment', 
-			 { 
-			   "parent_author": tgtUser, 
-			   "parent_permlink": tgtPermlnk, 
-			   "author": config.tip_account,
-			   "permlink": permalink, 
-			   "title": reslt.symbol + ' tip ', 
-			   "body": reslt.content, 
-			   "json_metadata" : JSON.stringify(jsonMetadata)
-			 } 
-		   ]
-	];
-	
-	console.log(operations);
-	
-	let res = await chainLnk.broadcast.sendAsync( 
-		   { 
-			   operations: operations, 
-			   extensions: [] 
-			}, 
-		   { posting: config.tip_account_posting_key }
-	   ).catch(e => console.log(e))
-	console.log(res);
-	if (res && res.ref_block_num) {
-		console.log('Posted comment: ' + permalink);
-		//resolve(res);
-	}	
-}
-
 
 async function getGadgetBuyTickets(db){
 	let drawData = await grabLastDrawData(db);
@@ -3056,56 +2759,6 @@ function rewardCap(chain){
 	return weekly_rewd_cap;
 }
 
-
-//redeemDelegations();
-
-async function redeemDelegations(){
-	await delegationRedeemer('HIVE');
-	await delegationRedeemer('STEEM');
-}
-
-async function delegationRedeemer(bchain, threshold){
-	//go through delegations by funds account, and cancel outdated ones (3 months and beyond)
-	const max_limit = 1000;
-	let i = 0;
-	let today = new Date();
-	try{
-		let chainLnk = await setProperNode(bchain);
-		let delg = await chainLnk.api.getVestingDelegationsAsync(config.full_pay_benef_account, '', max_limit);
-		for (i=0;i<delg.length;i++){
-			//skip this user
-			if (config.perpetDelgList.includes(delg[i].delegatee)){
-				console.log('skipping '+delg[i].delegatee);
-				continue;
-			}
-			console.log('checking '+delg[i].delegatee)
-			let del_date = new Date(delg[i].min_delegation_time);
-			let dates_diff = today.getTime() - del_date.getTime();
-			let diff_in_days = Math.ceil(dates_diff / (1000 * 3600 * 24));
-
-			console.log(delg[i].min_delegation_time); 
-			console.log(diff_in_days);
-			let minDays = 3*30;
-			if (threshold){
-				minDays = threshold;
-			}
-			if (diff_in_days > minDays){
-				console.log('cancel out delegation to'+delg[i].delegatee);
-				//cancel out delegation
-				if (bchain == 'HIVE'){
-					//cancel HP delegation
-					await delegateToAccount(delg[i].delegatee, 0, bchain, 1);
-				}else{
-					await delegateToAccount(delg[i].delegatee, 0, bchain);
-				}
-			}
-		}
-		//console.log(delg);
-	}catch(err){
-		console.log(err);
-	}
-	
-}
 
 //launch();
 
@@ -3309,7 +2962,6 @@ const finiteAmount = afitBalance.finiteAmount;
    signupUsdPrices: signupUsdPrices,
    _resetSignupPriceCache: _resetSignupPriceCache,
    confirmSEAFITReceived: confirmSEAFITReceived,
-   confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
    // exported for tests/blurt-failover.test.js - the rotation is the thing that
@@ -3327,11 +2979,7 @@ const finiteAmount = afitBalance.finiteAmount;
    removeArrMatchLodash: removeArrMatchLodash,
    validateAccountLogin: validateAccountLogin,
    processSteemTrx: processSteemTrx,
-   decodeMemo: decodeMemo,
-   encodeMemo: encodeMemo,
    sendNotification: sendNotification,
-   confirmAFITXTransition: confirmAFITXTransition,
-   proceedAfitxMove: proceedAfitxMove,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    verifyAFITBuyTransaction: verifyAFITBuyTransaction,
    verifyWorkoutTransaction: verifyWorkoutTransaction,
@@ -3342,9 +2990,6 @@ const finiteAmount = afitBalance.finiteAmount;
    calcScoreExtended: calcScoreExtended,
    verifyTipTransactions: verifyTipTransactions,
    updateTipBalances: updateTipBalances,
-   fetchChainTrx: fetchChainTrx,
-   commentToChain: commentToChain,
-   proceedSendToken: proceedSendToken,
    fetchPendingRewards: fetchPendingRewards,
    claimRewards: claimRewards,
    findVerifyTrx: findVerifyTrx,

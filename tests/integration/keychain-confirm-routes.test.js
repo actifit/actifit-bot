@@ -1,0 +1,253 @@
+/**
+ * Routes removed with server-side signing, and the on-chain-verified ("Keychain")
+ * confirmation routes that replace them, through the real app.js against a real MongoDB
+ * (set MONGO_TEST_URI).
+ *
+ * utils.findVerifyTrx (the on-chain lookup) is stubbed: the stub records the transaction
+ * in verified_tx the way the real one does after a chain match, so the rest of the path
+ * (verifyGadgetTransaction / verifyWorkoutTransaction and claimVerifiedTx) runs for real.
+ */
+
+const path = require('path');
+
+const MONGO_URI = process.env.MONGO_TEST_URI;
+const DB_NAME = 'keychain_confirm_test_' + Date.now();
+
+for (const m of ['node:fs', 'fs']) {
+	jest.doMock(m, () => {
+		const actual = jest.requireActual('fs');
+		return {
+			...actual,
+			readFileSync: jest.fn((p, o) => {
+				if (path.basename(p) !== 'config.json') return actual.readFileSync(p, o);
+				const cfg = JSON.parse(actual.readFileSync(path.join(__dirname, '../test-config.json'), 'utf8'));
+				Object.assign(cfg, { mongo_uri: MONGO_URI, mongo_local: MONGO_URI, db_name: DB_NAME, workoutGenerationFeesAFIT: 5 });
+				return JSON.stringify(cfg);
+			}),
+		};
+	});
+}
+const appClients = [];
+jest.doMock('mongodb', () => {
+	const actual = jest.requireActual('mongodb');
+	class TrackedClient extends actual.MongoClient {
+		constructor(...args) { super(...args); appClients.push(this); }
+	}
+	return { ...actual, MongoClient: TrackedClient };
+});
+jest.doMock('firebase-admin', () => ({ initializeApp: jest.fn(), credential: { cert: jest.fn() }, messaging: jest.fn(() => ({})) }));
+jest.doMock('@hiveio/dhive', () => {
+	const actual = jest.requireActual('@hiveio/dhive');
+	return { ...actual, Client: jest.fn(() => ({ database: { call: jest.fn(async (m) => (m === 'get_account_history' ? [] : null)) } })) };
+});
+jest.doMock('web3', () => { const W = jest.fn(() => ({ eth: { Contract: jest.fn(() => ({ methods: {} })), accounts: { wallet: { add: jest.fn(), create: jest.fn() } } }, utils: {} })); W.Web3 = W; return W; });
+jest.doMock('sscjs', () => jest.fn(() => ({ find: jest.fn(() => Promise.resolve([])), findOne: jest.fn(() => Promise.resolve(null)) })));
+
+const dhive = jest.requireActual('@hiveio/dhive');
+const KEY = dhive.PrivateKey.fromSeed('keychain-confirm-key');
+const pub = (k) => k.createPublic().toString();
+
+// a custom_json the user signed on the device, as the chain returns it
+const signedOp = (user, json) => [['custom_json', { required_auths: [], required_posting_auths: [user], id: 'actifit', json: JSON.stringify(json) }]];
+const chainTx = (trxID, operations) => ({
+	transaction_id: trxID,
+	ref_block_num: 1234,
+	block_num: 99000000,
+	expiration: new Date(Date.now() + 10 * 60 * 1000).toISOString().slice(0, 19),
+	operations,
+});
+
+(MONGO_URI ? describe : describe.skip)('removed signing routes and Keychain confirmations (real app, real MongoDB)', () => {
+	const request = require('supertest');
+	const { MongoClient, ObjectId } = jest.requireActual('mongodb');
+	let app, mc, db, utils, token, ipN = 0;
+	const ip = () => '198.51.100.' + ((ipN++ % 250) + 1);
+	const bal = async (u) => { const d = await db.collection('user_tokens').findOne({ _id: u }); return d ? d.tokens : undefined; };
+	const setBal = (u, tokens) => db.collection('user_tokens').replaceOne({ _id: u }, { _id: u, user: u, tokens }, { upsert: true });
+	// findVerifyTrx stand-in: "finds" the given transaction on chain and records it in
+	// verified_tx exactly like storeVerifiedTrx does
+	const chainHas = (tx) => {
+		utils.findVerifyTrx = jest.fn(async (req) => {
+			if (req.params.trxID !== tx.transaction_id) return false;
+			await db.collection('verified_tx').insertOne({ tx_id: tx.transaction_id, ref_block_num: tx.ref_block_num, tx, chain: 'HIVE', date: new Date() });
+			return tx;
+		});
+	};
+	let logSpy;
+
+	beforeAll(async () => {
+		const origSetTimeout = global.setTimeout;
+		jest.spyOn(global, 'setTimeout').mockImplementation((fn, d) => ((typeof d === 'number' && d > 20000) ? null : origSetTimeout(fn, d)));
+		jest.spyOn(global, 'setInterval').mockImplementation(() => null);
+		const express = require('express');
+		const listen = express.application.listen;
+		express.application.listen = jest.fn(() => ({ setTimeout: jest.fn(), close: jest.fn() }));
+		app = require('../../app');
+		express.application.listen = listen;
+		utils = require('../../utils');
+		utils.getAccountData = jest.fn(async () => ({ HIVE: { name: 'alice', posting: { weight_threshold: 1, account_auths: [], key_auths: [[pub(KEY), 1]] } } }));
+		utils.validateAccountLogin = jest.fn(async (u, k) => ({ result: u === 'alice' && k === KEY.toString(), account: { name: 'alice' } }));
+		utils.sendNotification = jest.fn(async () => true);
+		mc = await MongoClient.connect(MONGO_URI);
+		db = mc.db(DB_NAME);
+		for (let i = 0; i < 60; i++) {
+			const r = await request(app).get('/userSettings/nobody');
+			if (r.status === 200) break;
+			await new Promise((res) => origSetTimeout(res, 500));
+		}
+		const login = await request(app).post('/loginAuth').set('X-Forwarded-For', ip()).send({ username: 'alice', ppkey: KEY.toString() });
+		token = login.body.token;
+	}, 120000);
+	afterAll(async () => {
+		if (db) await db.dropDatabase();
+		if (mc) await mc.close();
+		await Promise.all(appClients.map((c) => c.close().catch(() => {})));
+	});
+	beforeEach(async () => {
+		logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		for (const c of ['user_tokens', 'token_transactions', 'user_gadgets', 'verified_tx', 'consumed_tx', 'request_locks']) {
+			await db.collection(c).deleteMany({});
+		}
+		utils.findVerifyTrx = jest.fn(async () => false);
+	});
+	afterEach(() => logSpy.mockRestore());
+
+	describe('removed routes answer 404', () => {
+		const removed = [
+			['get', '/performTrx?user=alice'],
+			['post', '/performTrxPost?user=alice'],
+			['get', '/delegateRC?user=alice&delegatees=bob&max_rc=1'],
+			['post', '/memoDecode?user=alice'],
+			['get', '/claimRewards?user=alice'],
+			['post', '/loginKeychain/'],
+			['post', '/loginKeychainVerify'],
+			['get', '/confirmBuyAction?from=alice'],
+			['get', '/proceedAfitTransition?user=alice&amount=1&txid=x'],
+			['get', '/proceedAfitxTransition?user=alice&amount=1&txid=x'],
+			['get', '/processBuyOrderHive?user=alice&product_id=x'],
+			['get', '/processTipRequest?trxId=x&blkNo=1'],
+			['post', '/linkXAccount?user=alice'],
+			['get', '/claimXEngagementReward?user=alice&tweetId=1'],
+		];
+		test.each(removed)('%s %s', async (method, url) => {
+			const r = await request(app)[method](url).set('X-Forwarded-For', ip()).set('x-acti-token', token).send({ username: 'alice', operation: '[]' });
+			expect(r.status).toBe(404);
+		});
+
+		test('the read-only latest X post route is kept', async () => {
+			const r = await request(app).get('/latestXPost').set('X-Forwarded-For', ip());
+			expect(r.status).toBe(200);
+		});
+	});
+
+	describe('GET /activateGadgetKeychain', () => {
+		const gadget = new ObjectId();
+		const url = (trx, benefic) => '/activateGadgetKeychain/alice/' + gadget + '/' + trx + '/HIVE' + (benefic ? '/' + benefic : '')
+			+ '?operation=' + encodeURIComponent(JSON.stringify(signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget) })));
+		const status = async () => (await db.collection('user_gadgets').findOne({ user: 'alice', gadget })).status;
+		beforeEach(() => db.collection('user_gadgets').insertOne({ user: 'alice', gadget, status: 'bought' }));
+
+		test('activates the gadget once the signed transaction is confirmed on chain', async () => {
+			chainHas(chainTx('act1', signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget) })));
+			const r = await request(app).get(url('act1')).set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'success' });
+			expect(utils.findVerifyTrx).toHaveBeenCalledTimes(1);
+			expect(utils.findVerifyTrx.mock.calls[0][0].params).toMatchObject({ user: 'alice', gadget: String(gadget), trxID: 'act1' });
+			expect(await status()).toBe('active');
+			// the transaction is consumed: replaying it activates nothing more
+			expect(await db.collection('consumed_tx').findOne({ _id: 'act1' })).toMatchObject({ purpose: 'activate-gadget' });
+		});
+
+		test('a transaction not found on chain activates nothing', async () => {
+			const r = await request(app).get(url('missing')).set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'error' });
+			expect(await status()).toBe('bought');
+		});
+
+		test('a findVerifyTrx error (e.g. already processed) activates nothing', async () => {
+			utils.findVerifyTrx = jest.fn(async () => ({ error: 'trx already exists' }));
+			const r = await request(app).get(url('dup')).set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'error' });
+			expect(await status()).toBe('bought');
+		});
+
+		test('a transaction signed by someone else, or for another action, activates nothing', async () => {
+			chainHas(chainTx('act2', signedOp('mallory', { transaction: 'activate-gadget', gadget: String(gadget) })));
+			expect((await request(app).get(url('act2')).set('X-Forwarded-For', ip())).body).toEqual({ status: 'error' });
+			chainHas(chainTx('act3', signedOp('alice', { transaction: 'buy-gadget', gadget: String(gadget) })));
+			expect((await request(app).get(url('act3')).set('X-Forwarded-For', ip())).body).toEqual({ status: 'error' });
+			expect(await status()).toBe('bought');
+		});
+
+		test('the beneficiary must match the signed transaction, and cannot be the user', async () => {
+			chainHas(chainTx('act4', signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget), benefic: 'bob' })));
+			expect((await request(app).get(url('act4', 'carol')).set('X-Forwarded-For', ip())).body).toEqual({ status: 'error' });
+			expect(await status()).toBe('bought');
+
+			chainHas(chainTx('act5', signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget), benefic: 'alice' })));
+			expect((await request(app).get(url('act5', 'alice')).set('X-Forwarded-For', ip())).body).toEqual({ error: 'User & friend cannot be the same account' });
+
+			chainHas(chainTx('act6', signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget), benefic: 'bob' })));
+			expect((await request(app).get(url('act6', 'bob')).set('X-Forwarded-For', ip())).body).toEqual({ status: 'success' });
+			const row = await db.collection('user_gadgets').findOne({ user: 'alice', gadget });
+			expect(row).toMatchObject({ status: 'active', benefic: 'bob' });
+		});
+
+		test('an exception during verification answers {error} instead of crashing', async () => {
+			utils.findVerifyTrx = jest.fn(async () => { throw new Error('rpc exploded'); });
+			const r = await request(app).get(url('boom')).set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ error: 'Error activating gadget' });
+		});
+	});
+
+	describe('GET /generateWorkoutKeychain', () => {
+		const op = signedOp('alice', { transaction: 'generate-workout-wizard' });
+		const url = (user, trx) => '/generateWorkoutKeychain/' + user + '/' + trx + '/HIVE?operation=' + encodeURIComponent(JSON.stringify(op));
+
+		test('charges the fee once the signed transaction is confirmed on chain', async () => {
+			await setBal('alice', 12);
+			chainHas(chainTx('wk1', op));
+			const r = await request(app).get(url('alice', 'wk1')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(r.body.status).toBe('Success');
+			expect(utils.findVerifyTrx).toHaveBeenCalledTimes(1);
+			expect(await bal('alice')).toBe(7);
+			expect(await db.collection('token_transactions').find({ user: 'alice', reward_activity: 'Buy Workout' }).toArray()).toHaveLength(1);
+		});
+
+		test('one signed transaction pays for one workout only', async () => {
+			await setBal('alice', 12);
+			chainHas(chainTx('wkR', op));
+			const first = await request(app).get(url('alice', 'wkR')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(first.body.status).toBe('Success');
+			const again = await request(app).get(url('alice', 'wkR')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(again.body.status).not.toBe('Success');
+			expect(await bal('alice')).toBe(7);
+		});
+
+		test('a transaction not found on chain charges nothing', async () => {
+			await setBal('alice', 12);
+			const r = await request(app).get(url('alice', 'nope')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(r.body).toEqual({ status: 'error' });
+			expect(await bal('alice')).toBe(12);
+		});
+
+		test('a transaction for another action charges nothing', async () => {
+			await setBal('alice', 12);
+			chainHas(chainTx('wk2', signedOp('alice', { transaction: 'buy-gadget' })));
+			const r = await request(app).get(url('alice', 'wk2')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(r.body).toEqual({ error: 'error verifying trx' });
+			expect(await bal('alice')).toBe(12);
+		});
+
+		test('needs a session, for the same user as the URL', async () => {
+			await setBal('alice', 12);
+			chainHas(chainTx('wk3', op));
+			const noToken = await request(app).get(url('alice', 'wk3')).set('X-Forwarded-For', ip());
+			expect(noToken.body.status).not.toBe('Success');
+			const other = await request(app).get(url('bob', 'wk3')).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(other.body).toEqual({ error: 'User mismatch' });
+			expect(utils.findVerifyTrx).not.toHaveBeenCalled();
+			expect(await bal('alice')).toBe(12);
+		});
+	});
+});
