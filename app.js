@@ -5305,26 +5305,41 @@ async function buyGadgets(user, product_id_list, verifyTx, verifyFailed) {
 	// From here on, every error answer carries `delivered` (the ids already delivered, possibly
 	// empty): the client drops those from its cart, so a retry does not buy them again.
 	const delivered = [];
+	// Give back the AFIT of every item not delivered - at most once, whichever path gets
+	// here. Returns whether the refund went through.
+	let refund = null;
+	const refundUndelivered = async () => {
+		if (refund) return refund.ok;
+		const amount = items.slice(delivered.length).reduce((sum, it) => sum + it.item_price, 0);
+		let ok = amount <= 0;
+		if (!ok) {
+			try { ok = (await afitBalance.restoreAfit(db, user, amount, 'gadget-buy')) === true; } catch (e) {
+				console.log('gadget buy: refund threw for ' + user + ' - ' + (e && e.message));
+			}
+		}
+		refund = { amount, ok };
+		if (!ok) console.log('!!! gadget buy REFUND FAILED (manual fix needed) for ' + user + ': ' + amount + ' AFIT for ' + (items.length - delivered.length) + ' undelivered item(s); delivered [' + delivered.join(', ') + ']');
+		return ok;
+	};
+	// the refund failed: do not tell the user it was given back
+	const REFUND_PENDING = ' The AFIT for the items not delivered could not be returned yet; please contact support.';
 	try {
 		for (let i = 0; i < items.length; i++) {
 			if (!(await deliverGadget(user, items[i]))) {
 				// item i failed and nothing of it was left behind: refund it and everything after it
-				const undelivered = items.slice(i).reduce((sum, it) => sum + it.item_price, 0);
-				await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy');
-				console.log('!!! gadget buy PARTIALLY DELIVERED for ' + user + ': delivered [' + delivered.join(', ') + '], refunded ' + undelivered + ' AFIT for ' + (items.length - i) + ' undelivered item(s)');
-				return ({'error': 'Error performing buy action. DB storing issue', 'delivered': delivered});
+				const refunded = await refundUndelivered();
+				console.log('!!! gadget buy PARTIALLY DELIVERED for ' + user + ': delivered [' + delivered.join(', ') + '], ' + (refunded ? 'refunded ' : 'NOT refunded ') + refund.amount + ' AFIT for ' + (items.length - i) + ' undelivered item(s)');
+				const error = 'Error performing buy action. DB storing issue';
+				return refunded ? ({'error': error, 'delivered': delivered}) : ({'error': error + '.' + REFUND_PENDING, 'delivered': delivered, 'refund_pending': true});
 			}
 			delivered.push(String(items[i].product_id));
 		}
 	} catch (err) {
-		// not expected (deliverGadget and restoreAfit do not throw), but if anything does, the
-		// answer still says what was delivered, and what was not is given back
-		const undelivered = items.slice(delivered.length).reduce((sum, it) => sum + it.item_price, 0);
-		console.log('!!! gadget buy FAILED after delivering [' + delivered.join(', ') + '] for ' + user + ' - ' + (err && err.message ? err.message : err) + '; giving back ' + undelivered + ' AFIT');
-		try { await afitBalance.restoreAfit(db, user, undelivered, 'gadget-buy'); } catch (e) {
-			console.log('!!! gadget buy REFUND FAILED (manual fix needed) for ' + user + ' ' + undelivered + ' AFIT - ' + (e && e.message));
-		}
-		return ({'error': 'Error performing buy action', 'delivered': delivered});
+		// not expected (deliverGadget does not throw), but if anything does, the answer still
+		// says what was delivered, and what was not is given back (once)
+		console.log('!!! gadget buy FAILED after delivering [' + delivered.join(', ') + '] for ' + user + ' - ' + (err && err.message ? err.message : err));
+		const refunded = await refundUndelivered();
+		return refunded ? ({'error': 'Error performing buy action', 'delivered': delivered}) : ({'error': 'Error performing buy action.' + REFUND_PENDING, 'delivered': delivered, 'refund_pending': true});
 	}
 	// the post-debit balance, as a number (what the client shows)
 	return ({'status': 'Success', 'user_tokens': debit.balance});

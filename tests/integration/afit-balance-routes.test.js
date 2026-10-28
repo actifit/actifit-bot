@@ -239,25 +239,36 @@ const pub = (k) => k.createPublic().toString();
 			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
 		});
 
-		test('multi-gadget: an unexpected error after a delivery still reports what was delivered', async () => {
+		test.each([
+			['returns false', async () => false],
+			['throws', async () => { throw new Error('refund exploded'); }],
+		])('multi-gadget: when the refund %s, the answer says it is pending (not refunded), keeps delivered, and refunds once', async (_label, impl) => {
 			const afitBalance = require('../../afit_balance');
 			const p1 = gadget({ price: [{ price: 10, currency: 'AFIT' }] });
 			const p2 = gadget({ price: [{ price: 20, currency: 'AFIT' }] });
-			await db.collection('products').insertMany([p1, p2]);
+			const p3 = gadget({ price: [{ price: 30, currency: 'AFIT' }] });
+			await db.collection('products').insertMany([p1, p2, p3]);
 			await setBal('alice', 100);
-			// item 2 cannot be stored, and the refund path then throws too
+			// item 2 cannot be stored, and the refund of items 2-3 then fails
 			await db.collection('user_gadgets').createIndex({ gadget: 1 }, { unique: true, name: 'test_fail_item2b' });
 			await db.collection('user_gadgets').insertOne({ user: 'someone-else', gadget: p2._id });
-			const restore = jest.spyOn(afitBalance, 'restoreAfit').mockImplementation(async () => { throw new Error('refund exploded'); });
+			const restore = jest.spyOn(afitBalance, 'restoreAfit').mockImplementation(impl);
 			try {
-				const r = await request(app).get('/buyMultiGadget/alice/' + p1._id + '-' + p2._id + '/1/trxBoom/HIVE').set('X-Forwarded-For', ip());
-				expect(r.body).toEqual({ error: 'Error performing buy action', delivered: [String(p1._id)] });
-				expect(logSpy.mock.calls.some((c) => /gadget buy FAILED after delivering/.test(String(c[0])))).toBe(true);
-				expect(logSpy.mock.calls.some((c) => /REFUND FAILED \(manual fix needed\)/.test(String(c[0])))).toBe(true);
+				const r = await request(app).get('/buyMultiGadget/alice/' + p1._id + '-' + p2._id + '-' + p3._id + '/1/trxBoom/HIVE').set('X-Forwarded-For', ip());
+				expect(r.body).toEqual({
+					error: expect.stringMatching(/^Error performing buy action\. DB storing issue\. .*could not be returned yet; please contact support\.$/),
+					delivered: [String(p1._id)],
+					refund_pending: true,
+				});
+				expect(restore).toHaveBeenCalledTimes(1);
+				expect(restore.mock.calls[0].slice(1, 3)).toEqual(['alice', 50]);
+				expect(logSpy.mock.calls.some((c) => /REFUND FAILED \(manual fix needed\) for alice: 50 AFIT/.test(String(c[0])))).toBe(true);
+				expect(logSpy.mock.calls.some((c) => /NOT refunded 50 AFIT/.test(String(c[0])))).toBe(true);
 			} finally {
 				restore.mockRestore();
 				await db.collection('user_gadgets').dropIndex('test_fail_item2b');
 			}
+			expect(await bal('alice')).toBe(40); // 100 - 60; the 50 is owed, logged for repair
 			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
 		});
 

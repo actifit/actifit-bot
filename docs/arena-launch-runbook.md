@@ -191,6 +191,41 @@ so re-enabling resumes cleanly.
 
 ---
 
+### Ops held for a posting-key rotation (`arena_held_ops`)
+
+The tailer applies the same posting-key rotation rule as the HTTP routes
+(`key_rotation.decideChainOp`). It does **not** index an op whose signer (posting or active
+auth) is in `key_rotation_required` with an active flag (`KEY_ROTATION_REQUIRED`), or an op
+included at or before a cleared account's key-change block (`KEY_ROTATION_HOLD`). Such an op
+is recorded once in `arena_held_ops` (the chain op plus `account`, `reason`, `held_at`), and
+the log shows `arena blk <n> <trx>: HELD <reason>`. If the flag lookup itself fails, the tick
+fails and the block is retried, so no op is passed over unchecked.
+
+A held op is never applied automatically. An op the user signed with the **new** key before
+logging in again (the login is what clears the flag) is held too, and becomes allowed once
+the clear has recorded the key-change block (`rotated_block`). To pick those up:
+
+```bash
+cd /path/to/actifit-bot
+node scripts/replay_arena_held_ops.js           # dry run: still_held / would_replay per op
+node scripts/replay_arena_held_ops.js --apply   # index the ops the current flag state allows
+```
+
+The script re-checks every held op that has not been replayed yet against the **current**
+flags, oldest block first, and indexes the allowed ones through the tailer's `indexArenaOp`
+(idempotent). Each replayed row gets `replayed_at` and `replay_result` and is never replayed
+again. Ops that are still not allowed stay held. Replays run with the tier floor and without
+challenge funding, so a create that needs a higher tier or a funded prize is recorded as
+`rejected`; the user can broadcast it again. A cleared flag without a recorded
+`rotated_block` (older clears) is decided by time, `cleared_at`: ops from before the clear
+stay held.
+
+To review what is held:
+
+```js
+db.arena_held_ops.find({ replayed_at: { $exists: false } }).sort({ block_num: 1 })
+```
+
 ## 5. Scheduled jobs (BUILT — enable with `arena_jobs_enabled`)
 
 All three are built, unit-tested and multi-agent reviewed (#74 aggregation,

@@ -141,6 +141,35 @@ describe('arena_tailer: posting-key rotation (same rule as the HTTP routes)', ()
     expect(await db.collection('challenges').findOne({ id: 'ch_x' })).toBeNull();
   });
 
+  test('replayHeldOps: once the flag is cleared past the op, a dry run lists it, --apply indexes it once', async () => {
+    const { db, opts } = setup([{ user: 'alice', since: new Date('2026-08-01T00:00:00Z') }]);
+    // two ops held while the flag is active: one before the key change, one signed after it
+    await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_before'))], ['trxBefore']), 140, opts);
+    await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_after'))], ['trxAfter']), 160, opts);
+    expect(await tailer.replayHeldOps(db, opts)).toEqual([
+      { trx_id: 'trxBefore', block_num: 140, status: 'still_held', reason: 'KEY_ROTATION_REQUIRED' },
+      { trx_id: 'trxAfter', block_num: 160, status: 'still_held', reason: 'KEY_ROTATION_REQUIRED' },
+    ]);
+    // the user logs in with the new key: the flag is cleared and records the key-change block
+    await db.collection('key_rotation_required').updateMany({ user: 'alice' }, { $set: { cleared_at: new Date('2026-08-26T00:00:00Z'), rotated_block: 150 } });
+    const dry = await tailer.replayHeldOps(db, opts);
+    expect(dry.map((r) => [r.trx_id, r.status])).toEqual([['trxBefore', 'still_held'], ['trxAfter', 'would_replay']]);
+    expect(await db.collection('challenges').findOne({ id: 'ch_after' })).toBeNull();
+    const applied = await tailer.replayHeldOps(db, Object.assign({ apply: true }, opts));
+    expect(applied.map((r) => [r.trx_id, r.status])).toEqual([['trxBefore', 'still_held'], ['trxAfter', 'replayed']]);
+    expect(await db.collection('challenges').findOne({ id: 'ch_after' })).not.toBeNull();
+    expect(await db.collection('challenges').findOne({ id: 'ch_before' })).toBeNull();
+    const row = await db.collection(tailer.HELD_OPS).findOne({ trx_id: 'trxAfter' });
+    expect(row.replay_result).toMatchObject({ ok: true, action: 'challenge_created' });
+    expect(row.replayed_at).toBeInstanceOf(Date);
+    // never replayed twice
+    expect((await tailer.replayHeldOps(db, Object.assign({ apply: true }, opts))).map((r) => r.trx_id)).toEqual(['trxBefore']);
+  });
+
+  test('replayHeldOps refuses to run without the rotation check', async () => {
+    await expect(tailer.replayHeldOps(createMockDb(), { apply: true })).rejects.toThrow(/keyRotationCheck/);
+  });
+
   test('without keyRotationCheck the tailer behaves as before', async () => {
     const db = createMockDb({ key_rotation_required: [{ user: 'alice', since: new Date() }] });
     const res = await tailer.processArenaBlock(db, block([arenaOp(createBody('ch_plain'))], ['trxP']), 100);

@@ -8,6 +8,27 @@
 
 const afit = require('../afit_balance');
 
+describe('rebuildCachedBalances with an unreadable ledger sum (no database)', () => {
+	test('counts it as failed, logs it, and writes nothing', async () => {
+		const writes = [];
+		const iter = (rows) => ({ [Symbol.asyncIterator]: async function* () { yield* rows; }, toArray: async () => rows });
+		const db = { collection: (name) => ({
+			aggregate: (pipeline) => (pipeline[0].$match.user
+				? iter([{ _id: null, total: 'not a number' }]) // the per-user re-sum
+				: iter([{ _id: 'odd', tokens: { weird: true } }, { _id: 'fine', tokens: 3 }])),
+			find: () => iter(name === 'user_tokens' ? [{ _id: 'odd', tokens: 105 }, { _id: 'fine', tokens: 3 }] : []),
+			updateOne: async (...a) => { writes.push([name, ...a]); return { matchedCount: 1 }; },
+			insertOne: async () => ({}),
+			deleteOne: async () => ({}),
+		}) };
+		const logs = [];
+		const r = await afit.rebuildCachedBalances(db, { lockWaitMs: 0, retryWaitMs: 0, log: (m) => logs.push(m) });
+		expect(r).toMatchObject({ candidates: 1, updated: 0, failed: 1 });
+		expect(writes.filter((w) => w[0] === 'user_tokens')).toEqual([]);
+		expect(logs.join(' ')).toMatch(/could not rebuild odd - ledger sum is not a finite number/);
+	});
+});
+
 describe('deposit rules (no database)', () => {
 	const ok = { operation: 'tokens_transfer', from: 'alice', to: 'recv', symbol: 'AFIT', quantity: '12.5', transactionId: 'abc' };
 	const opts = { user: 'alice', receivingAccount: 'recv' };
@@ -353,6 +374,22 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 			await db.collection('user_tokens').updateOne({ _id: 'same' }, { $set: { tokens: 15 + 1e-12 } });
 			expect((await afit.rebuildCachedBalances(db, fast)).candidates).toBe(0);
 			expect(await db.collection('request_locks').countDocuments({})).toBe(0);
+		});
+
+		test('a Decimal128 ledger row is summed as a number, never as 0', async () => {
+			const { Decimal128 } = require('mongodb');
+			await db.collection('token_transactions').insertMany([
+				{ user: 'dec', token_count: 100 }, { user: 'dec', token_count: Decimal128.fromString('5') },
+				{ user: 'dec2', token_count: 10 }, { user: 'dec2', token_count: Decimal128.fromString('2.5') },
+			]);
+			await db.collection('user_tokens').insertMany([
+				{ _id: 'dec', user: 'dec', tokens: 105 }, // already right: left alone
+				{ _id: 'dec2', user: 'dec2', tokens: 1 }, // wrong: rebuilt to the converted sum
+			]);
+			const r = await afit.rebuildCachedBalances(db, fast);
+			expect(r).toMatchObject({ candidates: 1, updated: 1, failed: 0 });
+			expect(await balance('dec')).toBe(105);
+			expect(await balance('dec2')).toBe(12.5);
 		});
 
 		test('a spend half-done when the rebuild starts is not undone: the rebuild waits for its lock', async () => {

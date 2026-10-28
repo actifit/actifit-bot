@@ -303,14 +303,31 @@ function depositError(entry, expect = {}) {
 	return null;
 }
 
-/** The ledger sum of one user's real-number rows (0 when there are none). */
+// A $sum result as a finite number, or null when it cannot be read as one. FINITE_AMOUNT
+// also matches Decimal128 rows (numeric type bracketing), and one such row turns the whole
+// $sum into a Decimal128; that is converted. Anything else is unreadable.
+function sumValue(total) {
+	if (typeof total === 'number') return Number.isFinite(total) ? total : null;
+	if (total && total._bsontype === 'Decimal128') {
+		const n = Number(total.toString());
+		return Number.isFinite(n) ? n : null;
+	}
+	return null;
+}
+
+/**
+ * The ledger sum of one user's real-number rows (0 when there are none). Rejects when the
+ * sum cannot be read as a finite number, so a caller never writes 0 for it.
+ */
 async function ledgerSum(db, user) {
 	const agg = await db.collection(LEDGER).aggregate([
 		{ $match: { user, token_count: FINITE_AMOUNT } },
 		{ $group: { _id: null, total: { $sum: '$token_count' } } },
 	]).toArray();
-	const n = agg[0] ? finiteAmount(agg[0].total) : null;
-	return n === null ? 0 : n;
+	if (!agg[0]) return 0;
+	const n = sumValue(agg[0].total);
+	if (n === null) throw new Error('ledger sum is not a finite number (' + String(agg[0].total) + ')');
+	return n;
 }
 
 // Two balances are "the same" when they differ only by floating-point noise (the cache is
@@ -370,7 +387,7 @@ async function rebuildCachedBalances(db, opts = {}) {
 		{ $group: { _id: '$user', tokens: { $sum: '$token_count' } } },
 	], { allowDiskUse: true });
 	for await (const row of agg) {
-		if (validUser(row._id)) sums.set(row._id, row.tokens);
+		if (validUser(row._id)) sums.set(row._id, sumValue(row.tokens));
 	}
 
 	// 2. compare with the cache
@@ -381,13 +398,13 @@ async function rebuildCachedBalances(db, opts = {}) {
 		if (!validUser(doc._id)) continue;
 		cached += 1;
 		seen.add(doc._id);
-		const expected = sums.has(doc._id) ? sums.get(doc._id) : 0;
+		const expected = sums.has(doc._id) ? sums.get(doc._id) : 0; // null: unreadable sum
 		// only a stored NUMBER counts as matching: a numeric string is rewritten as a number
 		// (debitAfit's conditional update never matches a string balance)
 		if (typeof doc.tokens !== 'number' || !sameAmount(doc.tokens, expected)) candidates.push(doc._id);
 	}
 	for (const [user, tokens] of sums) {
-		if (!seen.has(user) && !sameAmount(tokens, 0)) candidates.push(user);
+		if (!seen.has(user) && (tokens === null || !sameAmount(tokens, 0))) candidates.push(user);
 	}
 
 	// 3. fix each differing user under their lock, from a fresh read

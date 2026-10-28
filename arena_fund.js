@@ -72,13 +72,19 @@ async function fundChallenge(db, params) {
 	if (existingPool) return { ok: true, noop: true, poolId, prize: existingPool.budget, fee };
 
 	// The debit and its ledger row run under the creator's AFIT lock (afit_balance), like
-	// every other balance writer, so a balance rebuild cannot land between them. If the
-	// lock is still busy after FUND_LOCK_WAIT_MS (only a stuck request holds it that long)
-	// it goes ahead anyway rather than reject the challenge for good: the reconcile below
-	// re-derives the balance from the ledger right after.
-	let lock = null;
-	try { lock = await afitBalance.acquireAfitLock(db, creator, { waitMs: FUND_LOCK_WAIT_MS }); } catch (e) { lock = null; }
-	if (!lock) console.log('arena fundChallenge: AFIT lock busy for ' + creator + ', funding without it');
+	// every other balance writer, so a balance rebuild cannot land between them. Nothing is
+	// ever debited without it. If the lock is still busy after FUND_LOCK_WAIT_MS this THROWS
+	// (code AFIT_LOCK_BUSY) instead of returning {ok:false}: a {ok:false} would reject the
+	// on-chain create for good, whereas a throw fails the tailer tick, so the cursor stays
+	// put and the block - this create included - is retried on the next tick. Nothing has
+	// been charged or funded at that point. A lock left by a crashed request goes stale
+	// after afit_balance.LOCK_STALE_MS, so the retry gets through.
+	const lock = await afitBalance.acquireAfitLock(db, creator, { waitMs: FUND_LOCK_WAIT_MS });
+	if (!lock) {
+		const busy = new Error('AFIT lock busy for ' + creator + '; funding retried with the block');
+		busy.code = 'AFIT_LOCK_BUSY';
+		throw busy;
+	}
 	try {
 		// Debit the creator ONCE. Guarded by the keyed row so a crash-retry (pool not
 		// yet created) doesn't re-check-and-re-debit against the already-reduced balance.
@@ -112,7 +118,7 @@ async function fundChallenge(db, params) {
 			}
 		}
 	} finally {
-		if (lock) await lock.release();
+		await lock.release();
 	}
 	// Reconcile unconditionally (idempotent) — so a crash-retry that skipped the
 	// debit block still refreshes the materialized balance to reflect the debit,
