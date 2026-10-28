@@ -117,8 +117,7 @@ const CHAIN_OP_FIELDS = ['id', 'json', 'required_posting_auths', 'required_auths
  */
 async function replayHeldOps(db, opts = {}) {
 	if (typeof opts.keyRotationCheck !== 'function') throw new Error('replayHeldOps needs keyRotationCheck');
-	const held = await db.collection(HELD_OPS).find({ replayed_at: { $exists: false } }).toArray();
-	held.sort((a, b) => (a.block_num - b.block_num) || 0);
+	const held = await db.collection(HELD_OPS).find({ replayed_at: { $exists: false } }).sort({ block_num: 1, _id: 1 }).toArray();
 	const out = [];
 	for (const row of held) {
 		const chainOp = {};

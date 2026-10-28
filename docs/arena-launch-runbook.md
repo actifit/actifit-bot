@@ -216,7 +216,10 @@ flags, oldest block first, and indexes the allowed ones through the tailer's `in
 (idempotent). Each replayed row gets `replayed_at` and `replay_result` and is never replayed
 again. Ops that are still not allowed stay held. Replays run with the tier floor and without
 challenge funding, so a create that needs a higher tier or a funded prize is recorded as
-`rejected`; the user can broadcast it again. A cleared flag without a recorded
+`rejected`; the user can broadcast it again. The same applies to any other rejection (for example a join or leave
+whose challenge has since closed, or an update to a challenge that no longer accepts it): the
+row is marked replayed for good and the user broadcasts a fresh op if still wanted. Ops from
+one block are replayed in the order the tailer held them (chain order). A cleared flag without a recorded
 `rotated_block` (older clears) is decided by time, `cleared_at`: ops from before the clear
 stay held.
 
