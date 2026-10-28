@@ -262,8 +262,8 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	//     endpoint over the winner's healthy one. Reproduced with two concurrent
 	//     requests - and GET /getAccountData needs no auth and has no rate limit.
 	//   - for the length of a walk, every OTHER Blurt caller on the singleton
-	//     (getChainInfo, getTransactionAsync payment verification, every broadcast via
-	//     processSteemTrx) was pointed at whatever node the walk had reached.
+	//     (getChainInfo, getTransactionAsync payment verification, broadcasts) was pointed
+	//     at whatever node the walk had reached.
 	//   - a broadcast straddling a rotation could take its TaPoS reference block from
 	//     one node and broadcast to another.
 	// Those callers now keep config.blurt_node exactly as they did before this change.
@@ -336,115 +336,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	}
  }
  
-// Broadcast a Blurt transaction, rotating endpoints on failure.
-//
-// WHY THIS EXISTS: processSteemTrx is every Blurt WRITE this service performs - reward
-// claims, votes, transfers, comments and web posts all funnel through /performTrx and
-// /performTrxPost. It used blurtjs's broadcast, which is bound to a module-level
-// singleton pinned to config.blurt_node at load: one node, one attempt, no retry. A
-// public node throttling writes (observed: HTTP 429 on claim_reward_balance) failed the
-// user's action outright. Reads got endpoint rotation and account creation got dblurt
-// failover; writes were the remaining gap.
-//
-// WHY NOT ROTATE THE blurtjs SINGLETON: blurtjs's broadcast module hard-requires the
-// DEFAULT api instance, so it cannot be pointed at a per-attempt client. Rotating the
-// shared one mid-broadcast is worse than the bug - a broadcast is three sequential
-// calls, and a concurrent rotation between them takes the TaPoS reference block from
-// one node and broadcasts to another, producing a transaction the chain rejects.
-//
-// Doing the prepare/sign/send steps here rather than calling dblurt's sendOperations is
-// deliberate twofold: all three run against the SAME per-attempt client, so TaPoS can
-// never split across nodes; and sendOperations returns only the confirmation, while
-// both callers treat ref_block_num as the success signal - so we must return it.
-async function broadcastBlurtWithFailover(ops, key, label){
-	let privKey;
-	try{
-		privKey = dblurt.PrivateKey.fromString(key);
-	}catch(err){
-		return {error: 'invalid Blurt key: ' + (err && err.message ? err.message : err)};
-	}
-	try{
-		return await blurtCallWithFailover(async (c) => {
-			// TaPoS and the broadcast MUST come from this one client.
-			const props = await c.database.getDynamicGlobalProperties();
-			const ref_block_num = props.head_block_number & 0xffff;
-			const ref_block_prefix = Buffer.from(props.head_block_id, 'hex').readUInt32LE(4);
-			const expiration = new Date(new Date(props.time + 'Z').getTime() + 60000)
-				.toISOString().slice(0, -5);
-			const unsigned = { expiration, extensions: [], operations: ops, ref_block_num, ref_block_prefix };
-			const confirmation = await c.broadcast.send(c.broadcast.sign(unsigned, privKey));
-			if (confirmation && confirmation.expired === true){
-				throw new Error('transaction expired');
-			}
-			// Carry ref_block_num back out: /performTrx and /performTrxPost both read it
-			// to decide success, and verified_tx stores it.
-			return Object.assign({}, confirmation, { ref_block_num, ref_block_prefix, expiration });
-		}, label);
-	}catch(err){
-		return {error: err && err.message ? err.message : String(err)};
-	}
-}
 
-
- async function processSteemTrx(ops, userKey, bchain, db, active){
-	console.log('utils processSteemTrx');
-	//console.log(operation);
-	//const ops = [ operation ];
-	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
-	console.log(ops);
-	
-	let chainLnk = await setProperNode(bchain);
-	let tx;
-	//console.log('using active:'+active);
-	//console.log(userKey);
-	if (bchain == 'BLURT'){
-		// Blurt goes through the rotating dblurt path; Hive keeps its existing client,
-		// which already has alternative_api_endpoints configured at module load.
-		tx = await broadcastBlurtWithFailover(ops, active || userKey,
-			'broadcast ' + (Array.isArray(ops) && ops[0] ? ops[0][0] : 'ops'));
-	}else if (active){
-		console.log('active key')
-		tx = await chainLnk.broadcast.sendAsync( 
-		   { operations: ops, extensions: [] },
-		   { active: active }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	}else{
-		console.log('posting')
-		tx = await chainLnk.broadcast.sendAsync( 
-		   { operations: ops, extensions: [] },
-		   { posting: userKey }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	}
-	//store the trx also to actifit as verified
-	
-	//console.log(tx);
-	
-	if (tx && tx.ref_block_num){
-		let tx_entry = {
-			tx_id: tx.id,
-			ref_block_num: tx.ref_block_num,
-			tx: tx,
-			chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
-			date: new Date(),
-		};
-		try{
-			let transaction = await db.collection('verified_tx').insertOne(tx_entry);
-			console.log('success inserting transaction details');
-		}catch(err){
-			console.log(err);
-		}
-	}
-	
-	console.log(tx);
-	return {tx: tx};
- }
- 
  async function purchaseRealProd(req){
 	console.log('performing purchase on blockchain');
 	
@@ -2611,96 +2503,6 @@ async function fetchPendingRewards(user, bchain){
 	
 }
 
-//claimRewards('actifit', config.posting_key, 'HIVE');
-
-async function claimRewards(target_account, p_key, target_chain) {
-	console.log('>>>>> claiming rewards');
-	
-	let targetAccount = null;
-	
-	let claim_currency
-	let claim_currency_stable
-	let chainLnk
-	if (target_chain == 'HIVE'){
-		chainLnk = hive;
-		// fetchOneAccount collapses the three ways this can fail - node error, node
-		// timeout, and an account that simply does not exist - into a single null.
-		//
-		// It replaces `.catch(err => {return err;})`, which caught the error INTO THE
-		// VALUE: targetAccount then held an Error, the guard below passed because an
-		// Error is truthy, targetAccount[0] was undefined, and the next property read
-		// threw. The guard also tested the ARRAY rather than the element, so a genuine
-		// [] from a nonexistent account took exactly the same path and the
-		// 'account not found' branch was unreachable.
-		//
-		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
-		// which is async with no try/catch - and before app.js had a process-level
-		// unhandledRejection logger, that ENDED THE API PROCESS. The BLURT
-		// leg below runs on every call and most Hive users have no Blurt account, so []
-		// was the common case rather than the rare one.
-		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');
-		if (!targetAccount){
-			return {error: 'account not found'};
-		}
-		//console.log(targetAccount);
-		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
-		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
-		console.log('pending HBD'+claim_currency_stable);
-	}else if (target_chain == 'BLURT'){
-		chainLnk = blurt;
-		// Same fix as the HIVE branch above, and this is the leg that actually fired:
-		// /claimRewards always calls BLURT, and an account that exists on Hive but not
-		// on Blurt answers [] - which is most users.
-		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards BLURT');
-		if (!targetAccount){
-			return {error: 'account not found'};
-		}
-		//console.log(targetAccount);
-		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
-		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
-		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-			// Log the real failure instead of resolving the Error as the value: reading
-			// .ref_block_num off an Error silently reported 'n/a' and threw the cause away.
-			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance)
-				.catch(err => { console.log('claimRewards BLURT: broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
-			//return outc;
-			//console.log(outc);
-			if (outc && outc.ref_block_num){
-				console.log('success');
-				return {success: true};
-			}else{
-				console.log('error')
-				return {error: 'n/a'}
-			}
-		}else{
-			console.log('nothing to claim')
-			return {error: 'nothing to claim'};
-		}
-	}
-	
-	// Make api call only if you have actual reward
-	if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-		
-		console.log('>>CLAIMING<<')
-		
-		// As above - surface the cause rather than reporting a bare 'n/a'.
-		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance)
-			.catch(err => { console.log('claimRewards ' + target_chain + ': broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
-		//console.log(outc);
-		if (outc && outc.ref_block_num){
-			console.log('success');
-			return {success: true};
-		}else{
-			console.log('error')
-			return {error: 'n/a'}
-		}
-			
-	}else{
-		console.log('nothing to claim.');
-		return {error: 'nothing to claim'};
-	}
-}
-
 
 
 async function getGadgetBuyTickets(db){
@@ -2971,14 +2773,12 @@ const finiteAmount = afitBalance.finiteAmount;
    // exported for tests/createaccount-blurt-failover.test.js - rotation for the
    // dblurt client createAccount uses (not covered by #120's blurtjs rotation)
    blurtCallWithFailover: blurtCallWithFailover,
-   broadcastBlurtWithFailover: broadcastBlurtWithFailover,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
    removeArrMatchLodash: removeArrMatchLodash,
    validateAccountLogin: validateAccountLogin,
-   processSteemTrx: processSteemTrx,
    sendNotification: sendNotification,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    verifyAFITBuyTransaction: verifyAFITBuyTransaction,
@@ -2991,7 +2791,6 @@ const finiteAmount = afitBalance.finiteAmount;
    verifyTipTransactions: verifyTipTransactions,
    updateTipBalances: updateTipBalances,
    fetchPendingRewards: fetchPendingRewards,
-   claimRewards: claimRewards,
    findVerifyTrx: findVerifyTrx,
    rewardCap: rewardCap,
    delegateRC: delegateRC,

@@ -6414,7 +6414,7 @@ paths:
           name: gadget
           schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
           required: true
-          description: The MongoDB _id of the gadget to activate.
+          description: The gadget's product id (user_gadgets.gadget), as in the signed transaction.
         - in: path
           name: trxID
           schema: { type: 'string', example: 'tx_hash_abc123' }
@@ -6457,7 +6457,7 @@ paths:
           name: gadget
           schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
           required: true
-          description: The MongoDB _id of the gadget to activate.
+          description: The gadget's product id (user_gadgets.gadget), as in the signed transaction.
         - in: path
           name: blockNo
           schema: { type: 'integer', example: 123456789 }

@@ -1996,7 +1996,7 @@ function redactForLog(obj){
 }
 
 function decrypt(text) {
- // Returns null rather than throwing. Every one of the 8 call sites is
+ // Returns null rather than throwing. Every call site is
  // `const receivedPlaintext = decrypt(req.ppkey);` inside an ASYNC route handler with
  // no try/catch, and there is no Express error handler, so a throw here is
  // an unhandled rejection - which used to end the API process (the process-level logger
@@ -2005,8 +2005,8 @@ function decrypt(text) {
  // It is reachable without anything being wrong: checkHdrs assigns
  // `req.ppkey = user_tkn[0].ppkey` with no existence check, and the Keychain login path
  // only PRESERVES a previously stored ppkey - a Keychain-only user has none. So
- // `Buffer.from(undefined, 'hex')` threw for any such user hitting
- // /fetchUserData and five other routes. decipher.final() throws 'bad decrypt' the same
+ // `Buffer.from(undefined, 'hex')` threw for any such user on a route that calls
+ // this. decipher.final() throws 'bad decrypt' the same
  // way if user_ppkey_db/_iv ever differ between hosts sharing one Mongo.
  if (typeof text !== 'string' || text === '') {
   return null;

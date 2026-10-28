@@ -74,17 +74,23 @@ const chainTx = (trxID, operations) => ({
 		});
 	};
 	let logSpy;
+	// findVerifyTrx polls the chain every 5s; the real-verification tests below let that
+	// one interval run, fast, and keep every other background timer off
+	let fastPoll = false;
+	let realFindVerifyTrx;
 
 	beforeAll(async () => {
 		const origSetTimeout = global.setTimeout;
 		jest.spyOn(global, 'setTimeout').mockImplementation((fn, d) => ((typeof d === 'number' && d > 20000) ? null : origSetTimeout(fn, d)));
-		jest.spyOn(global, 'setInterval').mockImplementation(() => null);
+		const origSetInterval = global.setInterval;
+		jest.spyOn(global, 'setInterval').mockImplementation((fn, d) => ((fastPoll && d === 5000) ? origSetInterval(fn, 10) : null));
 		const express = require('express');
 		const listen = express.application.listen;
 		express.application.listen = jest.fn(() => ({ setTimeout: jest.fn(), close: jest.fn() }));
 		app = require('../../app');
 		express.application.listen = listen;
 		utils = require('../../utils');
+		realFindVerifyTrx = utils.findVerifyTrx;
 		utils.getAccountData = jest.fn(async () => ({ HIVE: { name: 'alice', posting: { weight_threshold: 1, account_auths: [], key_auths: [[pub(KEY), 1]] } } }));
 		utils.validateAccountLogin = jest.fn(async (u, k) => ({ result: u === 'alice' && k === KEY.toString(), account: { name: 'alice' } }));
 		utils.sendNotification = jest.fn(async () => true);
@@ -249,5 +255,64 @@ const chainTx = (trxID, operations) => ({
 			expect(utils.findVerifyTrx).not.toHaveBeenCalled();
 			expect(await bal('alice')).toBe(12);
 		});
+	});
+
+	describe('real findVerifyTrx (only the chain lookup is stubbed)', () => {
+		const hive = require('@hiveio/hive-js');
+		const gadget = new ObjectId();
+		const actOp = signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget) });
+		const wkOp = signedOp('alice', { transaction: 'generate-workout-wizard' });
+		const q = (ops) => '?operation=' + encodeURIComponent(JSON.stringify(ops));
+		const status = async () => (await db.collection('user_gadgets').findOne({ user: 'alice', gadget })).status;
+		let txSpy;
+		beforeEach(async () => {
+			utils.findVerifyTrx = realFindVerifyTrx;
+			fastPoll = true;
+			await db.collection('user_gadgets').insertOne({ user: 'alice', gadget, status: 'bought' });
+			// the chain knows exactly these transactions
+			const onChain = {
+				actR: chainTx('actR', actOp),
+				wkR: chainTx('wkR', wkOp),
+			};
+			txSpy = jest.spyOn(hive.api, 'getTransactionAsync').mockImplementation(async (id) => onChain[id] || null);
+		});
+		afterEach(() => { fastPoll = false; txSpy.mockRestore(); });
+
+		test('a missing ?operation is refused before any chain lookup', async () => {
+			const r = await request(app).get('/activateGadgetKeychain/alice/' + gadget + '/actR/HIVE').set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'error' });
+			expect(txSpy).not.toHaveBeenCalled();
+			expect(await status()).toBe('bought');
+			expect(await db.collection('verified_tx').countDocuments({})).toBe(0);
+		});
+
+		test('an ?operation that does not match the chain transaction is refused', async () => {
+			const forged = signedOp('alice', { transaction: 'activate-gadget', gadget: String(new ObjectId()) });
+			const r = await request(app).get('/activateGadgetKeychain/alice/' + gadget + '/actR/HIVE' + q(forged)).set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'error' });
+			expect(txSpy).toHaveBeenCalled();
+			expect(await status()).toBe('bought');
+			expect(await db.collection('verified_tx').countDocuments({})).toBe(0);
+		}, 20000);
+
+		test('a gadget tx confirmed via /activateGadgetKeychain cannot be replayed on /activateGadget or the Keychain route', async () => {
+			const ok = await request(app).get('/activateGadgetKeychain/alice/' + gadget + '/actR/HIVE' + q(actOp)).set('X-Forwarded-For', ip());
+			expect(ok.body).toEqual({ status: 'success' });
+			await db.collection('user_gadgets').updateOne({ user: 'alice', gadget }, { $set: { status: 'bought' } });
+			const legacy = await request(app).get('/activateGadget/alice/' + gadget + '/1/actR/HIVE').set('X-Forwarded-For', ip());
+			expect(legacy.body).toEqual({ status: 'error' });
+			const again = await request(app).get('/activateGadgetKeychain/alice/' + gadget + '/actR/HIVE' + q(actOp)).set('X-Forwarded-For', ip());
+			expect(again.body).toEqual({ status: 'error' });
+			expect(await status()).toBe('bought');
+		}, 20000);
+
+		test('a workout tx confirmed via /generateWorkoutKeychain cannot be replayed on /generateWorkout', async () => {
+			await setBal('alice', 20);
+			const ok = await request(app).get('/generateWorkoutKeychain/alice/wkR/HIVE' + q(wkOp)).set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(ok.body.status).toBe('Success');
+			const legacy = await request(app).get('/generateWorkout/alice/1/wkR/HIVE').set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(legacy.body).toEqual({ error: 'error verifying trx' });
+			expect(await bal('alice')).toBe(15);
+		}, 20000);
 	});
 });

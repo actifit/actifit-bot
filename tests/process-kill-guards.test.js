@@ -3,8 +3,8 @@
  *
  * TWO DIFFERENT RISK CLASSES — do not conflate them:
  *
- *  - `claimRewards` (via /claimRewards, app.js) and `findVerifyTrx` (via 13 routes) are
- *    genuine PROCESS KILLS. Those handlers are async with no try/catch, there is no
+ *  - `fetchOneAccount` (behind getAccountData / validateAccountLogin, i.e. login) and
+ *    `findVerifyTrx` (via the *Keychain confirmation routes) are genuine PROCESS KILLS. Those handlers are async with no try/catch, there is no
  *    Express error handler, and Node defaults to --unhandled-rejections=throw.
  *  - `getEstimatedReward` is NOT. That handler already has its own try/catch; its bug
  *    was a degraded response (`{error:'failed to calculate estimate'}` for every
@@ -54,7 +54,7 @@ const config = utils.getConfig();
 
 const ACCT = { name: 'alice', reward_hive_balance: '0.000 HIVE', reward_hbd_balance: '0.000 HBD', reward_vesting_balance: '0.000000 VESTS' };
 
-describe('claimRewards — a missing account must not kill the process', () => {
+describe('fetchOneAccount — a missing account must not kill the process', () => {
   let origNode, origAlts;
 
   beforeEach(() => {
@@ -74,58 +74,52 @@ describe('claimRewards — a missing account must not kill the process', () => {
     jest.restoreAllMocks();
   });
 
-  it('returns an error for a Hive account that does not exist, rather than throwing', async () => {
-    // get_accounts answers [] for an unknown account. The old guard tested the ARRAY
-    // (truthy) rather than the element, so it fell through to targetAccount[0] ->
-    // undefined -> undefined.reward_hive_balance -> TypeError.
+  it('returns null for a Hive account that does not exist, rather than throwing', async () => {
+    // get_accounts answers [] for an unknown account. A guard on the ARRAY (truthy)
+    // rather than the element would hand callers undefined and a TypeError later.
     const spy = jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue([]);
 
-    await expect(utils.claimRewards('ghost', '5Kfake', 'HIVE')).resolves.toEqual({ error: 'account not found' });
+    await expect(utils.fetchOneAccount(hive, 'ghost', 'test')).resolves.toBeNull();
     expect(spy).toHaveBeenCalledWith(['ghost']);
   });
 
-  it('returns an error when the Hive node rejects, rather than throwing', async () => {
-    // The old code did `.catch(err => {return err;})` — resolving the Error AS the
-    // value, so the truthy guard passed and the next property read threw.
+  it('returns null when the Hive node rejects, rather than throwing', async () => {
+    // An Error resolved AS the value would pass a truthy guard and make the next
+    // property read throw.
     const spy = jest.spyOn(hive.api, 'getAccountsAsync').mockRejectedValue(new Error('HTTP 503'));
 
-    await expect(utils.claimRewards('alice', '5Kfake', 'HIVE')).resolves.toEqual({ error: 'account not found' });
+    await expect(utils.fetchOneAccount(hive, 'alice', 'test')).resolves.toBeNull();
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
-  it('claims successfully when the account exists', async () => {
+  it('returns the account element when the account exists', async () => {
     // Pins the array-vs-element contract: fetchOneAccount must hand back the ELEMENT.
     // Without this, returning the raw array goes unnoticed by the failure-path tests.
-    jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue([
-      { ...ACCT, reward_hive_balance: '1.000 HIVE' },
-    ]);
-    const bc = jest.spyOn(hive.broadcast, 'claimRewardBalanceAsync').mockResolvedValue({ ref_block_num: 123 });
+    jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue([ACCT]);
 
-    await expect(utils.claimRewards('alice', '5Kfake', 'HIVE')).resolves.toEqual({ success: true });
-    expect(bc).toHaveBeenCalled();
+    await expect(utils.fetchOneAccount(hive, 'alice', 'test')).resolves.toEqual(ACCT);
   });
 
-  it('returns an error for a user with no BLURT account, having tried every endpoint', async () => {
-    // THIS is the case that fired in production: /claimRewards calls the BLURT leg on
-    // every request and most Hive users have no Blurt account.
+  it('returns null for a user with no BLURT account, having tried every endpoint', async () => {
+    // Most Hive users have no Blurt account, so this is the common case.
     const tried = [];
     jest.spyOn(BlurtApi.prototype, 'send').mockImplementation(function (api, data, cb) {
       tried.push(this.options.uri);
       cb(null, []);
     });
 
-    await expect(utils.claimRewards('hive-only', '5Kfake', 'BLURT')).resolves.toEqual({ error: 'account not found' });
+    await expect(utils.fetchOneAccount(blurt, 'hive-only', 'test')).resolves.toBeNull();
     expect(tried).toEqual(['https://b1.test', 'https://b2.test']);
   });
 
-  it('returns an error when every Blurt endpoint is down', async () => {
+  it('returns null when every Blurt endpoint is down', async () => {
     const tried = [];
     jest.spyOn(BlurtApi.prototype, 'send').mockImplementation(function (api, data, cb) {
       tried.push(this.options.uri);
       cb(new Error('HTTP 503'));
     });
 
-    await expect(utils.claimRewards('alice', '5Kfake', 'BLURT')).resolves.toEqual({ error: 'account not found' });
+    await expect(utils.fetchOneAccount(blurt, 'alice', 'test')).resolves.toBeNull();
     expect(tried).toEqual(['https://b1.test', 'https://b2.test']);
   });
 });

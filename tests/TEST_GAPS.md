@@ -61,12 +61,10 @@ The current test suite consists of:
 ### Exercised Endpoints (middleware/auth only)
 - `GET /markRead/:notif_id` — tested via `checkHdrs` middleware
 - `GET /markUnread/:notif_id` — tested via `checkHdrs` middleware
-- `GET /performTrx` — tested via JSON.parse error handling
 
 ### Critical Untested Endpoints (by category)
 
 #### Authentication & User Management (8 endpoints)
-- `POST /loginKeychain/`
 - `POST /loginAuth`
 - `GET /deleteAccount/`
 - `GET /deleteAccountKeychain/:trxID`
@@ -94,7 +92,6 @@ The current test suite consists of:
 - `GET /tipAccount`
 - `GET /totalTipped`
 - `GET /tippedToday/:user`
-- `GET /processTipRequest`
 
 **Risk:** Financial transaction endpoints mostly untested.
 
@@ -161,9 +158,7 @@ The current test suite consists of:
 - `GET /getChainInfo`
 - `GET /getAccountData`
 - `GET /pendingRewards`
-- `GET /claimRewards`
 - `GET /availableHiveNodes`
-- `GET /delegateRC`
 - `GET /getRC`
 - `GET /getRank/:user`
 
@@ -210,14 +205,12 @@ The current test suite consists of:
 - `checkBeneficiary` — beneficiary validation (bug found & fixed: partial matches no longer pass)
 - `calculateVotes` — vote power per post calculation
 
-**Note:** These are mostly pure/helper functions. Critical functions like `validateAccountLogin`, `processSteemTrx`, `sendNotification`, `claimRewards`, and blockchain operations remain untested.
+**Note:** These are mostly pure/helper functions. Critical functions like `validateAccountLogin`, `sendNotification`, and blockchain operations remain untested.
 
 ### Critical Untested Functions
 
 #### Authentication & Security (5 functions)
 - `validateAccountLogin` — core login validation
-- `encodeMemo` / `decodeMemo` — encryption/decryption
-- `processSteemTrx` — transaction signing and submission
 
 **Risk:** Authentication and transaction security untested.
 
@@ -232,11 +225,7 @@ The current test suite consists of:
 
 #### Blockchain Operations (15 functions)
 - `getChainInfo` / `getAccountData` — chain data retrieval
-- `processSteemTrx` — transaction processing
-- `claimRewards` — reward claiming
-- `commentToChain` — posting comments
 - `fetchChainRewards` / `fetchPendingRewards` — reward fetching
-- `proceedSendToken` — token transfers
 - `delegateRC` / `fetchRCDelegations` — RC delegation
 - `createAccount` / `claimDiscountedAccount` — account creation
 - `delegateToAccount` — HP delegation
@@ -360,7 +349,6 @@ Key untested functionality:
 | `checkHdrs` middleware | All authenticated endpoints | Low | `app.js` | ✅ Tested |
 | `validateAccountLogin` | User authentication | Low | `utils.js` | ❌ Untested |
 | `sendNotification` | User notifications | Low | `utils.js` | ✅ Endpoint tested |
-| `processSteemTrx` | Transaction security | Medium | `utils.js` | ❌ Untested |
 | `confirmPaymentReceived*` | Payment verification | Medium | `utils.js` | ❌ Untested |
 
 ### High (Test Next)
@@ -370,14 +358,13 @@ Key untested functionality:
 | `getVoteValue` / `getVoteValueUSD` | Financial math | Low | `utils.js` | ❌ Untested |
 | `findVerifyTrx` | Transaction integrity | Medium | `utils.js` | ❌ Untested |
 | `sendPlainMail` / `sendWithTemplate` | Email delivery | Low | `mail.js` | ✅ Tested |
-| Login endpoints (`/loginAuth`, `/loginKeychain`) | Authentication flow | Medium | `app.js` | ❌ Untested |
+| Login endpoints (`/loginAuth`, `/loginChallenge`, `/loginVerify`) | Authentication flow | Medium | `app.js` | ❌ Untested |
 | Wallet endpoints (`/transactions`, `/userFullBal`) | Financial data | Medium | `app.js` | ✅ Tested |
 
 ### Medium (Test Eventually)
 | Area | Impact | Effort | Files | Status |
 |------|--------|--------|-------|--------|
 | `getChainInfo` / `getAccountData` | Blockchain read | Medium | `utils.js` | ❌ Untested |
-| `claimRewards` | Reward claiming | Medium | `utils.js` | ❌ Untested |
 | `delegateRC` / `fetchRCDelegations` | RC management | Medium | `utils.js` | ❌ Untested |
 | Content endpoints (`/news`, `/surveys`, `/voteSurvey`) | Content | Medium | `app.js` | ✅ Tested |
 | Social endpoints (`/addFriend`, `/userFriends`) | Social features | Medium | `app.js` | ❌ Untested |
@@ -403,8 +390,7 @@ Key untested functionality:
 - ✅ Test `ObjectId` validation error handling
 - ✅ Test `JSON.parse` error handling
 - ❌ Test `validateAccountLogin` with valid/invalid credentials
-- ❌ Test login endpoints (`/loginAuth`, `/loginKeychain`)
-- ❌ Test `processSteemTrx` with mocked blockchain
+- ❌ Test login endpoints (`/loginAuth`, `/loginChallenge`, `/loginVerify`)
 
 ### Phase 2: Financial Core (2-3 days) ✅ Partially Complete
 - ✅ Test `calcScore` / `calcScoreExtended` with sample posts
