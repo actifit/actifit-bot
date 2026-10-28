@@ -1053,29 +1053,6 @@ components:
         json_metadata: { type: 'object', example: { "tags": ["actifit"], "weight": 70 } }
         date: { type: 'string', format: 'date-time' }
       required: [author, permlink, date]
-    UserHasFundsPassSetResponse:
-      type: object
-      properties:
-        hasFundsPass: { type: 'boolean', example: true }
-        passVerified: { type: 'boolean', example: true, nullable: true }
-        date: { type: 'string', format: 'date-time', nullable: true }
-      required: [hasFundsPass]
-    SetUserFundsPassSuccess:
-      type: object
-      properties:
-        status: { type: 'string', example: 'Success' }
-      required: [status]
-    SetUserFundsPassError:
-      type: object
-      properties:
-        error: { type: 'string', example: 'You cannot change your verified funds password.' }
-      required: [error]
-    ConfirmPaymentPasswordVerifyResponse:
-      type: object
-      properties:
-        paymentReceivedTx: { type: 'string', example: 'tx_id_for_verification' }
-        statusUpdated: { type: 'boolean', example: true }
-      required: [paymentReceivedTx, statusUpdated]
     ConfirmBuyActionResponse:
       type: object
       properties:
@@ -1141,31 +1118,6 @@ components:
           items:
             $ref: '#/components/schemas/UserTokenSwapHistoryItem'
       required: [count, afit_tokens_exchanged, pendingTransactions]
-    UnverifiedFundsAccountItem:
-      type: object
-      properties:
-        user: { type: 'string', example: 'unverified-user' }
-        passVerified: { type: 'boolean', example: false }
-        date: { type: 'string', format: 'date-time' }
-      required: [user, passVerified, date]
-    GetUnverifiedFundsAccountListResponse:
-      type: object
-      properties:
-        pendingAccounts:
-          type: array
-          items:
-            $ref: '#/components/schemas/UnverifiedFundsAccountItem'
-        count: { type: 'integer', example: 3 }
-      required: [pendingAccounts, count]
-    GetFullFundsAccountListResponse:
-      type: object
-      properties:
-        fullAccountList:
-          type: array
-          items:
-            $ref: '#/components/schemas/UnverifiedFundsAccountItem' # Same structure, but could include verified
-        count: { type: 'integer', example: 10 }
-      required: [fullAccountList, count]
     PerformAfitSteemExchangeSuccess:
       type: object
       properties:
@@ -1322,6 +1274,12 @@ components:
         success: { type: 'string', example: 'success' }
         access_token: { type: 'string', example: 'new_access_token_xyz' }
       required: [success, access_token]
+    FundsPassRetired:
+      type: object
+      properties:
+        error: { type: 'string', example: 'Funds passwords have been retired. Your login session is used instead.' }
+        code: { type: 'string', example: 'FUNDS_PASS_RETIRED' }
+      required: [error, code]
     ProductPriceInfo:
       type: object
       properties:
@@ -2142,26 +2100,16 @@ paths:
 
   /resetFundsPass:
     get:
-      summary: Reset user's funds password
-      description: Removes a user's recorded funds password, effectively resetting it. Requires authentication.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username to reset the funds password for.
+      summary: Reset user's funds password (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: Funds password reset successfully.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResetActionSuccess'
-        '400': { description: 'No user found in query.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
   /resetLogin:
     get:
@@ -2790,23 +2738,15 @@ paths:
   /modAction:
     get:
       summary: Perform moderator action
-      description: Allows authorized moderators to perform various actions like ban/unban, reset password, reward posts, verify newbies, or generate free signup links.
+      description: Allows authorized moderators to perform various actions like ban/unban, reward posts, verify newbies, or generate free signup links. The moderator is the logged-in account (login session); currently disabled (503).
+      security:
+        - bearerAuth: []
       parameters:
-        - in: query
-          name: moderator
-          schema: { type: 'string', example: 'actifit-mod' }
-          required: true
-          description: The moderator's username.
-        - in: query
-          name: fundsPass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The moderator's funds password for verification.
         - in: query
           name: targetAction
           schema:
             type: string
-            enum: ['ban', 'unban', 'resetpass', 'reward', 'verifynewbie', 'freesignup']
+            enum: ['ban', 'unban', 'reward', 'verifynewbie', 'freesignup']
             example: 'ban'
           required: true
           description: The action to be performed.
@@ -2830,11 +2770,6 @@ paths:
           schema: { type: 'string', example: 'unbanned-user' }
           required: false # Required for 'unban' action
           description: Username to unban.
-        - in: query
-          name: resetuser
-          schema: { type: 'string', example: 'user-to-reset' }
-          required: false # Required for 'resetpass' action
-          description: Username to reset funds password for.
         - in: query
           name: fullurl
           schema: { type: 'string', example: 'https://hive.blog/actifit/@actifit-user/permlink' }
@@ -2878,7 +2813,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ModActionSuccessResponse'
         '400': { description: 'Missing data or invalid action parameters.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ModActionErrorResponse' } } } }
-        '401': { description: 'Unauthorized moderator or incorrect funds password.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ModActionErrorResponse' } } } }
+        '401': { description: 'Not a moderator account.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ModActionErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /userBridgeEligible:
@@ -4899,34 +4834,34 @@ paths:
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /cancelAFITMoveSE:
-    get:
+    post:
       summary: Cancel AFIT move to Hive-Engine (Power Down)
-      description: Allows a user to cancel an ongoing AFIT power down to Hive-Engine. Requires funds password.
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username initiating the cancellation.
-        - in: query
-          name: fundsPass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The user's funds password.
+      description: Cancels the logged-in user's pending AFIT move to Hive-Engine. Authorised by the login session (x-acti-token or Authorization Bearer) only; the funds password is no longer used.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                user: { type: string, example: 'actifit-user', description: 'Optional; must match the session user.' }
       responses:
         '200':
-          description: AFIT power down cancelled successfully.
+          description: "{status: 'Success'} or {error} ('User mismatch', 'generic error', or an invalid/expired session)"
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CancelRefundSuccess' # Reusing generic success schema
-        '400': { description: 'Missing data or invalid funds password.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/CancelRefundSuccess'
+        '401': { description: 'LOGIN_AGAIN - the posting key changed since this session was issued.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: 'KEY_ROTATION_REQUIRED - the account must rotate its keys first.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '429': { description: 'Rate limited (5 per 15 minutes per IP).' }
 
   /initiateAFITMoveSE:
     get:
       summary: Initiate AFIT move to Hive-Engine (Power Down)
-      description: Initiates the process of moving AFIT tokens to Hive-Engine (power down). Requires funds password.
+      description: Initiates the process of moving AFIT tokens to Hive-Engine (power down). Authorised by the login session; currently disabled (503).
       parameters:
         - in: query
           name: user
@@ -4938,11 +4873,6 @@ paths:
           schema: { type: 'number', format: 'float', example: 500.0 }
           required: true
           description: The amount of AFIT to move.
-        - in: query
-          name: fundsPass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The user's funds password.
       responses:
         '200':
           description: AFIT move to Hive-Engine initiated successfully.
@@ -4956,7 +4886,7 @@ paths:
   /tipAccount:
     get:
       summary: Tip AFIT to another account
-      description: Allows a user to send AFIT tokens as a tip to another user. Requires funds password.
+      description: Allows a user to send AFIT tokens as a tip to another user. Authorised by the login session; currently disabled (503).
       parameters:
         - in: query
           name: user
@@ -4973,11 +4903,6 @@ paths:
           schema: { type: 'number', format: 'float', example: 10.0 }
           required: true
           description: The amount of AFIT to tip.
-        - in: query
-          name: fundsPass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The sender's funds password.
         - in: query
           name: note
           schema: { type: 'string', example: 'Thanks for the great post!', nullable: true }
@@ -5719,76 +5644,42 @@ paths:
 
   /userHasFundsPassSet/{user}:
     get:
-      summary: Check if user has funds password set
-      description: Checks if a user has a funds password recorded and if it's verified.
-      parameters:
-        - in: path
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username to check.
+      summary: Check if user has funds password set (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: User funds password status.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/UserHasFundsPassSetResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
-  /setUserFundsPass/{user}/{pass}:
-    get:
-      summary: Set a user's funds password
-      description: Sets or updates a user's funds password. There are restrictions on when it can be changed.
-      parameters:
-        - in: path
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username setting the password.
-        - in: path
-          name: pass
-          schema: { type: 'string', example: 'YourNewFundsPassword' }
-          required: true
-          description: The new funds password.
+  /setUserFundsPass:
+    post:
+      summary: Set a user's funds password (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: Funds password set successfully.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SetUserFundsPassSuccess'
-        '400': { description: 'Error setting password or restrictions apply.', content: { 'application/json': { schema: { $ref: '#/components/schemas/SetUserFundsPassError' } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
   /confirmPaymentPasswordVerify:
     get:
-      summary: Confirm funds password verification payment
-      description: Confirms a payment for funds password verification and updates the password status.
-      parameters:
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'], default: 'HIVE' }
-          required: false
-          description: The blockchain of the payment.
-        - in: query
-          name: from
-          schema: { type: 'string', example: 'paying-user' }
-          required: true
-          description: The user who sent the verification payment.
-        - in: query
-          name: trxID
-          schema: { type: 'string', example: 'payment_tx_id_xyz' }
-          required: true
-          description: The transaction ID of the payment.
+      summary: Confirm funds password verification payment (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: Payment confirmed and password status updated.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ConfirmPaymentPasswordVerifyResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
   /confirmBuyAction:
     get:
@@ -5915,29 +5806,29 @@ paths:
 
   /getUnverifiedFundsAccountList/:
     get:
-      summary: Get list of unverified funds accounts
-      description: Retrieves a list of accounts that have set a funds password but not yet verified it.
+      summary: Get list of unverified funds accounts (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: Successfully fetched unverified funds accounts.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetUnverifiedFundsAccountListResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
   /getFullFundsAccountList/:
     get:
-      summary: Get full funds account list
-      description: Retrieves a list of all accounts that have a funds password set (verified or not).
+      summary: Get full funds account list (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED.
       responses:
-        '200':
-          description: Successfully fetched full funds account list.
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/GetFullFundsAccountListResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+                $ref: '#/components/schemas/FundsPassRetired'
 
   /performAfitSteemExchange:
     post:
@@ -7035,33 +6926,42 @@ paths:
 
   /validatePassForDownload:
     get:
-      summary: Validate funds password for ebook download
-      description: Validates a user's funds password to re-enable an ebook download link.
+      summary: Validate funds password for ebook download (retired)
+      deprecated: true
+      description: Funds passwords have been retired. This route only answers 410 FUNDS_PASS_RETIRED. Use GET /reissueDownloadToken with the login session instead.
+      responses:
+        '410':
+          description: FUNDS_PASS_RETIRED - funds passwords are retired; the login session is used instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FundsPassRetired'
+  /reissueDownloadToken:
+    get:
+      summary: Re-enable the download token for a bought ebook
+      description: >-
+        Re-enables the logged-in user's download access token for a product they bought and
+        returns it (same response as the retired /validatePassForDownload). The account is
+        taken from the login session (x-acti-token or Authorization Bearer) only.
+      security:
+        - bearerAuth: []
       parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username.
         - in: query
           name: product_id
           schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
           required: true
           description: The product ID of the ebook.
-        - in: query
-          name: pass
-          schema: { type: 'string', example: 'YourFundsPassword' }
-          required: true
-          description: The user's funds password.
       responses:
         '200':
-          description: Password validated and download re-enabled.
+          description: "{success: 'success', access_token} or {error} ('generic error' for a missing product_id, 'Access token record not found' when the session user did not buy it, or an invalid/expired session)"
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ValidatePassForDownloadSuccess'
-        '400': { description: 'Account does not have a funds password, not verified, or incorrect password.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '401': { description: 'LOGIN_AGAIN - the posting key changed since this session was issued.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '403': { description: 'KEY_ROTATION_REQUIRED - the account must rotate its keys first.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+        '429': { description: 'Rate limited (5 per 15 minutes per IP).' }
+        '500': { description: "{error: 'Database update failed'}", content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /downEbook:
     get:
       summary: Download an ebook

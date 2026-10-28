@@ -71,7 +71,6 @@ The current test suite consists of:
 - `GET /deleteAccount/`
 - `GET /deleteAccountKeychain/:trxID`
 - `GET /resetLogin`
-- `GET /resetFundsPass`
 - `GET /updateSettings/`
 - `GET /updateSettingsKeychain/:trxID`
 
