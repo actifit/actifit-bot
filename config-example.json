@@ -1,4 +1,6 @@
 {
+  "admin_ops_token": "",
+  "specPass": "",
   "disabled_mode": false,
   "testing": true,
   "min_afit_for_steem_upvote": 10000,

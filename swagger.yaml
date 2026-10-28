@@ -6850,7 +6850,7 @@ paths:
   /activateGadget/{user}/{gadget}/{blockNo}/{trxID}/{bchain}/{benefic?}:
     get:
       summary: Activate a gadget (Deprecated)
-      description: (DEPRECATED: Use /activateMultiGadget instead) Activates a single in-game gadget for a user, with optional beneficiary.
+      description: '(DEPRECATED: Use /activateMultiGadget instead) Activates a single in-game gadget for a user, with optional beneficiary.'
       parameters:
         - in: path
           name: user

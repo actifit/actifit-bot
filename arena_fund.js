@@ -29,6 +29,7 @@
 
 const arenaAfit = require('./arena_afit');
 const arenaPools = require('./arena_pools');
+const afitBalance = require('./afit_balance');
 
 // token_transactions reward_activity keys (one row per challenge).
 const FUND_ACTIVITY = 'arena_fund:';   // creator debit (negative): prize + fee
@@ -72,23 +73,32 @@ async function fundChallenge(db, params) {
 	// yet created) doesn't re-check-and-re-debit against the already-reduced balance.
 	const fundRow = await db.collection('token_transactions').findOne({ user: creator, reward_activity: FUND_ACTIVITY + challengeId });
 	if (!fundRow) {
-		const bal = await arenaAfit.balanceOf(db, creator);
-		if (bal < total) return { ok: false, reason: 'insufficient AFIT to fund the prize + fee' };
-		await db.collection('token_transactions').replaceOne(
-			{ user: creator, reward_activity: FUND_ACTIVITY + challengeId },
-			{
-				user: creator,
-				reward_activity: FUND_ACTIVITY + challengeId,
-				token_count: -total,           // prize funds winners; fee is burned
-				chain: 'HIVE',
-				orig_account: 'actifit',
-				challenge_id: challengeId,
-				prize: Number(prize),
-				fee,
-				date: new Date(at),
-			},
-			{ upsert: true }
-		);
+		// Take prize + fee from the cached balance FIRST, in one conditional update that only
+		// matches while the balance still covers it. A read-check-then-write let a concurrent
+		// spend (a gadget buy, say) pass against the same balance, and the creator's ledger
+		// could go negative. Given back if the ledger row cannot be written.
+		const taken = await afitBalance.debitAfit(db, creator, total, { context: 'arena-fund' });
+		if (!taken.ok) return { ok: false, reason: 'insufficient AFIT to fund the prize + fee' };
+		try {
+			await db.collection('token_transactions').replaceOne(
+				{ user: creator, reward_activity: FUND_ACTIVITY + challengeId },
+				{
+					user: creator,
+					reward_activity: FUND_ACTIVITY + challengeId,
+					token_count: -total,           // prize funds winners; fee is burned
+					chain: 'HIVE',
+					orig_account: 'actifit',
+					challenge_id: challengeId,
+					prize: Number(prize),
+					fee,
+					date: new Date(at),
+				},
+				{ upsert: true }
+			);
+		} catch (e) {
+			await afitBalance.restoreAfit(db, creator, total, 'arena-fund');
+			throw e;
+		}
 	}
 	// Reconcile unconditionally (idempotent) — so a crash-retry that skipped the
 	// debit block still refreshes the materialized balance to reflect the debit,

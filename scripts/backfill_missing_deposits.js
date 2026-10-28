@@ -13,6 +13,12 @@
  *
  * Idempotent: skips any deposit that already has a ledger row (se_trx_ref).
  *
+ * CONCURRENCY: run this only while the API is quiet (no live AFIT spends, deposits or
+ * balance rebuilds for the affected users). It reads and then writes user_tokens without
+ * the per-user AFIT lock the API takes (afit_balance.js), so a request that changes the
+ * same balance in between can be overwritten. The API's own deposit credit
+ * (creditAfitDeposit in app.js) is the race-safe path.
+ *
  * USAGE:
  *   node scripts/backfill_missing_deposits.js            # DRY RUN (no writes)
  *   node scripts/backfill_missing_deposits.js --commit   # apply credits

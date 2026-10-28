@@ -37,8 +37,10 @@ function createMockCollection(initialData = []) {
       if (idx !== -1) {
         if (update.$set) Object.assign(data[idx], update.$set);
         if (update.$inc) applyInc(data[idx]);
-        if (!update.$set && !update.$inc) Object.assign(data[idx], update);
-        return Promise.resolve({ modifiedCount: 1, upsertedCount: 0 });
+        // $setOnInsert alone is a no-op on a match (as in MongoDB)
+        if (!update.$set && !update.$inc && !update.$setOnInsert) Object.assign(data[idx], update);
+        const changed = !!(update.$set || update.$inc || !update.$setOnInsert);
+        return Promise.resolve({ matchedCount: 1, modifiedCount: changed ? 1 : 0, upsertedCount: 0 });
       }
       if (opts.upsert) {
         const doc = {};
@@ -47,9 +49,9 @@ function createMockCollection(initialData = []) {
         if (update.$set) Object.assign(doc, update.$set);
         if (update.$inc) applyInc(doc);
         data.push(doc);
-        return Promise.resolve({ modifiedCount: 0, upsertedCount: 1 });
+        return Promise.resolve({ matchedCount: 0, modifiedCount: 0, upsertedCount: 1, upsertedId: doc._id });
       }
-      return Promise.resolve({ modifiedCount: 0, upsertedCount: 0 });
+      return Promise.resolve({ matchedCount: 0, modifiedCount: 0, upsertedCount: 0 });
     }),
     updateMany: jest.fn((query, update) => {
       let count = 0;
