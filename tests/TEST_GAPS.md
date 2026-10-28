@@ -71,7 +71,6 @@ The current test suite consists of:
 - `GET /deleteAccount/`
 - `GET /deleteAccountKeychain/:trxID`
 - `GET /resetLogin`
-- `GET /resetFundsPass`
 - `GET /updateSettings/`
 - `GET /updateSettingsKeychain/:trxID`
 
@@ -263,7 +262,6 @@ The current test suite consists of:
 - `findVerifyTrx` — transaction verification
 - `storeVerifiedTrx` — verified transaction storage
 - `confirmPaymentReceived` — payment confirmation
-- `confirmPaymentReceivedPassword` — password-protected payment confirmation
 - `confirmPaymentReceivedBuy` — purchase payment confirmation
 - `verifyGadgetPayTransaction` — gadget payment verification
 - `verifyAFITBuyTransaction` — AFIT purchase verification

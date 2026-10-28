@@ -2017,61 +2017,6 @@ function decrypt(text) {
  }
 }
 
-function _fundsKey() {
-	// Derive a key of exactly the length the configured cipher requires.
-	// SHA-256 gives 32 bytes; we slice to match keyLength (16/24/32 for aes-128/192/256).
-	const keyLen = (crypto.getCipherInfo(config.funds_encr_mode) || {}).keyLength || 32;
-	return crypto.createHash('sha256').update(config.funds_encr_key).digest().slice(0, keyLen);
-}
-
-function encryptFundsPass(plaintext) {
-	const iv = crypto.randomBytes(16);
-	const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
-	let enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
-	return iv.toString('hex') + ':' + enc;
-}
-
-// Returns a boolean and NEVER throws. All six call sites are bare calls inside async
-// Express handlers with no try/catch, there is no Express error handler, and there is no
-// process-level unhandledRejection handler - so any throw in here ends the API process
-// instead of failing one request. That is the same failure mode the Node 22 createCipher
-// removal produced, and it is reachable without the config being wrong at all:
-//
-//   - plaintext is taken straight from req.query/req.body at every call site. A missing
-//     or non-string value (?pass omitted, repeated ?pass= giving an array, a JSON body
-//     with "pass": {}) makes cipher.update() throw TypeError. /validatePassForDownload
-//     has no auth and no rate limiter, so that is one unauthenticated request away.
-//   - a stored value with a malformed iv: prefix throws "Invalid initialization vector".
-//   - createLegacyCipher throws by design for an unmapped funds_encr_mode.
-//
-// A non-string password can never be the correct password, so rejecting it is also the
-// right answer on the merits - this fails closed, it does not paper over a real fault.
-// An unexpected error is logged rather than swallowed silently.
-function verifyFundsPass(plaintext, stored) {
-	if (typeof plaintext !== 'string' || plaintext === '' || typeof stored !== 'string' || stored === '') {
-		return false;
-	}
-	try {
-		if (stored.includes(':')) {
-			const [ivHex, ciphertext] = stored.split(':');
-			const iv = Buffer.from(ivHex, 'hex');
-			const cipher = crypto.createCipheriv(config.funds_encr_mode, _fundsKey(), iv);
-			const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
-			return enc === ciphertext;
-		}
-		// legacy: stored value has no IV prefix (old createCipher format). createCipher was
-		// removed in Node 22; createLegacyCipher reproduces its derivation byte-for-byte.
-		const cipher = utils.createLegacyCipher(config.funds_encr_mode, config.funds_encr_key);
-		const enc = cipher.update(plaintext, 'utf8', 'hex') + cipher.final('hex');
-		return enc === stored;
-	} catch (err) {
-		// Not an incorrect password - an internal fault. Logged so it is diagnosable
-		// rather than indistinguishable from a wrong password in the caller's response.
-		console.log('verifyFundsPass error: ' + err.message);
-		return false;
-	}
-}
-
 const getTotalSupplyAFIT = async function (){
 	let url = new URL('https://api.bscscan.com/api?module=stats&action=tokensupply&contractaddress=0x4516bb582f59befcbc945d8c2dac63ef21fba9f6&apikey='+config.bscscan_api);
 	
@@ -2469,6 +2414,14 @@ function adminOpsTokenOk(req) {
 	return adminSecretOk(provided, config.admin_ops_token);
 }
 
+// Funds passwords are retired: account actions are authorised by the login session
+// (checkHdrs) only. The old funds-password routes stay registered so older clients get a
+// clear JSON answer instead of a 404 page.
+const FUNDS_PASS_RETIRED = { error: 'Funds passwords have been retired. Your login session is used instead.', code: 'FUNDS_PASS_RETIRED' };
+function fundsPassRetired(req, res) {
+	return res.status(410).send(FUNDS_PASS_RETIRED);
+}
+
 app.post('/performTrxPost', checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/performTrxPost');
 	console.log('>>performTrx');
@@ -2727,23 +2680,7 @@ app.get('/recalculateUserTokens', checkHdrs, async function (req, res){
 // since the signed-challenge login, so that check logged every typed-key user out.
 app.get('/fetchUserData', checkHdrs, createFetchUserDataHandler({ getAccountData: (user, bchain) => utils.getAccountData(user, bchain) }));
 
-app.get('/resetFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/resetFundsPass');
-	let collection = db.collection('account_funds_pass')
-
-	let user = req.query.user.trim().toLowerCase();
-	let result = 'no change';
-	if (user!=''){
-		result = await collection.deleteMany({
-			"user": user,
-		});
-		console.log(user+" password reset ");
-		res.send({status:'success'});
-		return;
-	}
-	res.send({error:'no user found'});
-	
-})
+app.get('/resetFundsPass', fundsPassRetired);
 
 app.get('/resetLogin', checkHdrs, async function (req, res) {
 	let db_col = db.collection('user_login_token');
@@ -2931,7 +2868,7 @@ app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
    /loginKeychain hands the client an encrypted-memo challenge; the client decrypts it via
    Hive Keychain (proving it holds the private posting key) and posts the result back here.
    Keychain logins store no posting key, so this issues a longer-lived token used purely for
-   authenticating checkHdrs API calls (e.g. setUserFundsPass). */
+   authenticating checkHdrs API calls. */
 app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
 	return securityDisabled(res, '/loginKeychainVerify');
 	try {
@@ -3526,42 +3463,24 @@ app.get('/claimableFreeAccounts/:user', async function (req, res){
 
 
 /* end point for user total token count display */
-app.post('/modAction', modActionRateLimit, async function (req, res) {
+app.post('/modAction', modActionRateLimit, checkHdrs, keyRotationGate, async function (req, res) {
 	return securityDisabled(res, '/modAction');
-	if (!req.body.moderator || !req.body.fundsPass || !req.body.targetAction){
+	if (!req.body.targetAction){
 		res.send({'error':'Missing Data'});
 	}else{
-		let moderator = req.body.moderator;
-		let fundsPass = req.body.fundsPass;
-		
-		//confirm matching funds password
-		let query = {user: moderator};
-		
+		// the moderator is the logged-in account
+		let moderator = req.user._id;
+
 		if (!(await isModerator(moderator))){
 			res.send({'error': 'Account does not have proper privileges'});
 			return;
-		}
-		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-			if (!verifyFundsPass(fundsPass, entryFound.pass)){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
 		}
 
 		let result = '';
 
 		//store every moderator transaction as log
 		let modTrans = {
-			"moderator": req.body.moderator,
+			"moderator": moderator,
 			"action": req.body.targetAction,
 			"date": new Date(),
 		};
@@ -3610,28 +3529,6 @@ app.post('/modAction', modActionRateLimit, async function (req, res) {
 						result.status='success';
 						break;
 
-			case 'resetpass':
-						modTrans.user = req.body.resetuser.trim().toLowerCase();
-
-						collection = db.collection('account_funds_pass')
-
-						if (modTrans.user == ''){
-							res.send({'error': 'Cannot resetpass empty user'});
-							return;
-						}
-
-						let user = req.body.resetuser.trim().toLowerCase();
-						result = 'no change';
-						if (user!=''){
-							result = await collection.deleteMany({
-								"user": user,
-							});
-							console.log(user+" password reset ");
-						}
-						console.log(user+" pass reset! ");
-						result.status='success';
-						break;
-						
 			case 'reward':
 						modTrans.fullurl = req.body.fullurl.trim().toLowerCase();
 						modTrans.vp = req.body.power;
@@ -6275,52 +6172,32 @@ app.get('/poweringDownList/', async function (req, res) {
 	res.send(poweringDown);
 });
 
-app.post('/cancelAFITMoveSE', modActionRateLimit, async function(req, res){
-	if (!req.body.user || !req.body.fundsPass){
-		res.send({'error':'generic error'});
-	}else{
-		let user = req.body.user;
-		let fundsPass = req.body.fundsPass;
-		
-		//confirm matching funds password
-		let query = {user: user};
-		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-			if (!verifyFundsPass(fundsPass, entryFound.pass)){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
-		}
-
-		//reached here, we're fine
-
-		try{
-			let result = await db.collection('powering_down_he').deleteMany({user: user});
-			res.send({'status': 'Success'});
-		}catch(err){
-			console.log(err);
-		}
+/* cancels the logged-in user's pending AFIT move to S-E. The account comes from the
+ * login session only. */
+app.post('/cancelAFITMoveSE', modActionRateLimit, checkHdrs, keyRotationGate, async function(req, res){
+	const user = req.user._id;
+	if (req.body && req.body.user && req.body.user !== user) {
+		res.send({'error': 'User mismatch'});
+		return;
+	}
+	try{
+		await db.collection('powering_down_he').deleteMany({user: user});
+		res.send({'status': 'Success'});
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'generic error'});
 	}
 });
 
 /* function handles the processing of AFIT power down and moving tokens to S-E */
 app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/initiateAFITMoveSE');
-	if (!req.body.amount || !req.body.fundsPass) {
+	if (!req.body.amount) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
 		let user = req.user._id;
 		let amount = parseFloat(req.body.amount);
-		let fundsPass = req.body.fundsPass;
 		
 		
 		//check first if user is banned, as he wont be able to move funds
@@ -6341,26 +6218,6 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, 
 			return;
 		}
 		
-		//confirm matching funds password
-		let query = {user: user};
-		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-			if (!verifyFundsPass(fundsPass, entryFound.pass)){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
-		}
-
-		//reached here, we're fine
-
 		//confirm proper AFIT token balance. Test against target amount to be sent
 		let user_info = await grabUserTokensFunc (user);
 		console.log(user_info);
@@ -6465,14 +6322,13 @@ app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, 
 /* function handles the processing of a buy order */
 app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
 	return securityDisabled(res, '/tipAccount');
-	if (!req.body.targetUser || !req.body.amount || !req.body.fundsPass) {
+	if (!req.body.targetUser || !req.body.amount) {
 		//make sure all params are sent
 		res.send({'error':'generic error'});
 	}else{
 		let user = req.user._id;
 		let targetUser = req.body.targetUser.replace('@','');
 		let amount = parseFloat(req.body.amount);
-		let fundsPass = req.body.fundsPass;
 		let note = req.body.note;
 		
 		//check first if user is banned, as he wont be able to tip
@@ -6489,26 +6345,6 @@ app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async fu
 			return;
 		}
 		
-		//confirm matching funds password
-		let query = {user: user};
-		
-		let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-			if (!verifyFundsPass(fundsPass, entryFound.pass)){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
-		}
-
-		//reached here, we're fine
-
 		// the amount must be a real, positive number (parseFloat above lets NaN/negatives through)
 		amount = afitBalance.positiveAmount(amount);
 		if (amount === null){
@@ -8127,8 +7963,6 @@ app.get('/processBuyOrderHive', async function(req, res){
 	}else{
 		let user = req.query.user;
 		let product_id = req.query.product_id;
-		//confirm matching funds password
-		let query = {user: user};
 		
 		let access_token;
 		
@@ -8241,30 +8075,7 @@ async function processBuyOrder(req, res){
 	}else{
 		let user = req.query.user;
 		let product_id = req.query.product_id;
-		//confirm matching funds password
-		let query = {user: user};
-		
 		let access_token;
-		
-		/*let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-		if (entryFound == null){
-			res.send({'error': 'Account does not have a recorded funds password'});
-			return;
-		}else if (!entryFound.passVerified){
-			res.send({'error': 'Account\'s funds password not verified'});
-			return;
-		}else{
-		  //create encrypted version of sent password
-		  var cipher = crypto.createCipher(config.funds_encr_mode, config.funds_encr_key);
-		  let encr_pass = cipher.update(req.query.pass, 'utf8', 'hex');
-		  encr_pass += cipher.final('hex');
-			if (entryFound.pass !== encr_pass){
-				res.send({'error': 'Incorrect username and/or funds password'});
-				return;
-			}
-		}
-		*/
 		
 		//fetch product info
 		let product = await grabProductInfo (product_id);
@@ -8901,51 +8712,34 @@ app.get("/productBoughtToken", async function(req, res) {
 });
 
 
-app.get("/validatePassForDownload", async function(req, res) {
-	let user = req.query.user;
-	let product_id = req.query.product_id;
-	let query = {user: user};
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
+app.get("/validatePassForDownload", fundsPassRetired);
 
-	if (entryFound == null){
-		res.send({'error': 'Account does not have a recorded funds password'});
+/* Issues the logged-in user a NEW download token for a product they bought, so the ebook
+ * can be downloaded again. The account comes from the login session only. A fresh token
+ * (not the stored one re-enabled) means any token handed out before is dead from now on. */
+const reissueDownloadRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+app.get("/reissueDownloadToken", reissueDownloadRateLimit, checkHdrs, keyRotationGate, async function(req, res) {
+	const user = req.user._id;
+	const product_id = req.query.product_id;
+	if (typeof product_id !== 'string' || product_id.trim() === '') {
+		res.send({ 'error': 'generic error' });
 		return;
-	}else if (!entryFound.passVerified){
-		res.send({'error': 'Account\'s funds password not verified'});
-		return;
-	}else{
-		if (!verifyFundsPass(req.query.pass, entryFound.pass)) {
-			res.send({ 'error': 'Incorrect username and/or funds password' });
+	}
+	try {
+		let token_match = await db.collection('user_product_key').findOne({ user: user, product_id: product_id });
+		if (!token_match) {
+			res.send({ 'error': 'Access token record not found' });
 			return;
 		}
-
-		// 2. Re-enable download access
-		let token_match = await db.collection('user_product_key').findOne({ 
-			user: user, 
-			product_id: product_id 
-		});
-
-		if (token_match) {
-			token_match.enabled = true;
-			token_match.last_updated = new Date(); // Track when access was restored
-
-			try {
-				// FIX: Replace .save() with .replaceOne() and ADD 'await'
-				await db.collection('user_product_key').replaceOne(
-					{ _id: token_match._id }, 
-					token_match, 
-					{ upsert: true }
-				);
-				
-				// Return success only after DB update is confirmed
-				res.send({ 'success': 'success', 'access_token': token_match.access_token });
-			} catch (err) {
-				console.error('Error updating access token:', err);
-				res.status(500).send({ 'error': 'Database update failed' });
-			}
-		} else {
-			res.send({ 'error': 'Access token record not found' });
-		}
+		const access_token = crypto.randomBytes(24).toString('hex');
+		await db.collection('user_product_key').updateOne(
+			{ _id: token_match._id },
+			{ $set: { access_token: access_token, enabled: true, last_updated: new Date() } }
+		);
+		res.send({ 'success': 'success', 'access_token': access_token });
+	} catch (err) {
+		console.error('Error updating access token:', err);
+		res.status(500).send({ 'error': 'Database update failed' });
 	}
 });
 
@@ -9535,120 +9329,9 @@ app.get('/fetchVerifiedPost', async function(req,res){
 });
 
 
-/* end point for checking if user has funds pass */
-app.get('/userHasFundsPassSet/:user', async function (req, res) {
-	let query = {user: req.params.user};
-	console.log(query);
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-	if (entryFound != null){
-		res.send({'hasFundsPass': true, 'passVerified': entryFound.passVerified, 'date': entryFound.date});
-	}else{
-		res.send({'hasFundsPass': false});
-	}
-});
-
-/* end point for setting a user's funds pass */
-app.post('/setUserFundsPass', checkHdrs, keyRotationGate, async function (req, res) {
-	const user = req.user._id;
-	const pass = req.body.pass;
-	if (!pass) {
-		return res.send({'error': 'Missing password'});
-	}
-	let query = {user: user};
-	let entryFound = await db.collection('account_funds_pass').findOne(query, {projection : { _id:0} });
-
-	let proceed = true;
-	//password can be set/replaced only if none exists, or its not verified already and has not been 10 mins since setting first attempt
-	if (entryFound == null ||
-		(!entryFound.passVerified)){
-		if (entryFound != null){
-
-		  //checking last entry date
-		  var now = moment(new Date()); //todays date
-		  var end = moment(entryFound.date); // last update date
-		  var duration = moment.duration(now.diff(end));
-		  var mins = duration.asMinutes();
-		  if (mins < 10){
-			  res.send({'error': 'You can only update your funds pass once every 10 minutes'});
-			  proceed = false;
-		  }
-		}
-		if (proceed){
-
-		  //create encrypted version of the password
-		  let encr_pass = encryptFundsPass(pass);
-
-		  //store pass with unverified status
-		  let new_pass_entry = {user: user, pass: encr_pass, passVerified: false, date: new Date()};
-		  try{
-		    let transaction = await db.collection('account_funds_pass')
-				.replaceOne(query, new_pass_entry, { upsert: true });
-		    res.send({'status': 'Success'});
-		  }catch(e){
-		    console.log(e);
-		    res.send({'error': 'Error setting your funds password. Please contact us on discord if you wish to do so.'});
-		  }
-		}
-	}else{
-		res.send({'error': 'You cannot change your verified funds password. Please contact us on discord if you wish to do so.'});
-	}
-
-});
-
-
-
-//function handles the process of confirming password verification receipt, and sets proper password status accordingly
-app.get('/confirmPaymentPasswordVerify', async function(req,res){
-	let paymentReceivedTx = '';
-	let statusUpdated = false;
-	//keeping request alive to avoid timeouts
-	let intID = setInterval(function(){
-		res.write(' ');
-	},8000);
-	try{
-		let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
-		paymentReceivedTx = await utils.confirmPaymentReceivedPassword(req, bchain);
-		console.log('>>>> got TX '+paymentReceivedTx);
-		if (paymentReceivedTx != '') {
-		try {
-			// we found the transfer, now let's update the status properly
-			let query = { user: req.query.from };
-			console.log(query);
-			let entryFound = await db.collection('account_funds_pass').findOne(query);
-
-			if (entryFound != null && (!entryFound.passVerified)) {
-				try {
-					// we need to set this transaction as processed
-					entryFound.passVerified = true;
-					entryFound.verification_date = new Date(); // Audit trail for verification
-
-					// FIX: Replace .save() with .replaceOne()
-					// We use the unique _id to ensure we target the specific record
-					let transaction = await db.collection('account_funds_pass').replaceOne(
-						{ _id: entryFound._id },
-						entryFound,
-						{ upsert: true }
-					);
-					
-					statusUpdated = true;
-					console.log('saved successfully');
-				} catch (e) {
-					console.error('Inner Save Error:', e);
-				}
-			}
-		} catch (e) {
-			console.error('Outer Query Error:', e);
-		}
-	}
-	}catch(err){
-		console.log(err);
-	}
-	//we're done, let's clear our running interval
-	clearInterval(intID);
-	//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
-	res.write(JSON.stringify({'paymentReceivedTx': paymentReceivedTx, 'statusUpdated': statusUpdated}));
-	res.end();
-});
+app.get('/userHasFundsPassSet/:user', fundsPassRetired);
+app.post('/setUserFundsPass', fundsPassRetired);
+app.get('/confirmPaymentPasswordVerify', fundsPassRetired);
 
 
 //function handles the process of confirming buy event for AFIT via STEEM
@@ -9780,19 +9463,8 @@ app.get('/getProcessedTokenSwapTrans/', async function(req, res){
 	res.send({count: tokenSwapTrans.length, afit_tokens_exchanged: afit_count, pendingTransactions: tokenSwapTrans});
 });
 
-/* end point for getting exchanges pending upvotes  */
-app.get('/getUnverifiedFundsAccountList/', async function(req, res){
-	return securityDisabled(res, '/getUnverifiedFundsAccountList');
-	let pendingAccounts = await db.collection('account_funds_pass').find({passVerified: {$in: [null, false, 'false']}}, {projection : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
-	res.send({pendingAccounts: pendingAccounts, count: pendingAccounts.length});
-});
-
-/* end point for getting exchanges pending upvotes  */
-app.get('/getFullFundsAccountList/', async function(req, res){
-	return securityDisabled(res, '/getFullFundsAccountList');
-	let fullAccountList = await db.collection('account_funds_pass').find({}, {projection : {pass:0, _id: 0}}).sort({'date': 1}).toArray();
-	res.send({fullAccountList: fullAccountList, count: fullAccountList.length});
-});
+app.get('/getUnverifiedFundsAccountList/', fundsPassRetired);
+app.get('/getFullFundsAccountList/', fundsPassRetired);
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange.
  * Authorised by the user's login session (checkHdrs) for that same account, plus the
