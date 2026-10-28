@@ -125,11 +125,14 @@ const RETIRED = { error: 'Funds passwords have been retired. Your login session 
 		test('returns the token for a product the session user bought, and re-enables it', async () => {
 			const r = await reissue('?product_id=p1');
 			expect(r.status).toBe(200);
-			expect(r.body).toEqual({ success: 'success', access_token: 'alice-token' });
+			expect(r.body.success).toBe('success');
+			// a NEW token: the old one stops working
+			expect(r.body.access_token).toMatch(/^[0-9a-f]{48}$/);
+			expect(r.body.access_token).not.toBe('alice-token');
 			const row = await db.collection('user_product_key').findOne({ user: 'alice', product_id: 'p1' });
 			expect(row.enabled).toBe(true);
 			expect(row.last_updated).toBeInstanceOf(Date);
-			expect(row.access_token).toBe('alice-token');
+			expect(row.access_token).toBe(r.body.access_token);
 		});
 
 		test("refuses another user's product", async () => {

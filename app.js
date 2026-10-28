@@ -8229,8 +8229,6 @@ app.get('/processBuyOrderHive', async function(req, res){
 	}else{
 		let user = req.query.user;
 		let product_id = req.query.product_id;
-		//confirm matching funds password
-		let query = {user: user};
 		
 		let access_token;
 		
@@ -8972,9 +8970,11 @@ app.get("/productBoughtToken", async function(req, res) {
 
 app.get("/validatePassForDownload", fundsPassRetired);
 
-/* Re-enables the logged-in user's download token for a product they bought, so the ebook
- * can be downloaded again. The account comes from the login session only. */
-app.get("/reissueDownloadToken", modActionRateLimit, checkHdrs, keyRotationGate, async function(req, res) {
+/* Issues the logged-in user a NEW download token for a product they bought, so the ebook
+ * can be downloaded again. The account comes from the login session only. A fresh token
+ * (not the stored one re-enabled) means any token handed out before is dead from now on. */
+const reissueDownloadRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+app.get("/reissueDownloadToken", reissueDownloadRateLimit, checkHdrs, keyRotationGate, async function(req, res) {
 	const user = req.user._id;
 	const product_id = req.query.product_id;
 	if (typeof product_id !== 'string' || product_id.trim() === '') {
@@ -8987,11 +8987,12 @@ app.get("/reissueDownloadToken", modActionRateLimit, checkHdrs, keyRotationGate,
 			res.send({ 'error': 'Access token record not found' });
 			return;
 		}
+		const access_token = crypto.randomBytes(24).toString('hex');
 		await db.collection('user_product_key').updateOne(
 			{ _id: token_match._id },
-			{ $set: { enabled: true, last_updated: new Date() } }
+			{ $set: { access_token: access_token, enabled: true, last_updated: new Date() } }
 		);
-		res.send({ 'success': 'success', 'access_token': token_match.access_token });
+		res.send({ 'success': 'success', 'access_token': access_token });
 	} catch (err) {
 		console.error('Error updating access token:', err);
 		res.status(500).send({ 'error': 'Database update failed' });

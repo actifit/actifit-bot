@@ -6940,9 +6940,9 @@ paths:
     get:
       summary: Re-enable the download token for a bought ebook
       description: >-
-        Re-enables the logged-in user's download access token for a product they bought and
-        returns it (same response as the retired /validatePassForDownload). The account is
-        taken from the login session (x-acti-token or Authorization Bearer) only.
+        Issues the logged-in user a new download access token for a product they bought (any
+        earlier token stops working) and returns it, in the same response shape as the retired
+        /validatePassForDownload. The account is taken from the login session (x-acti-token or Authorization Bearer) only.
       security:
         - bearerAuth: []
       parameters:
@@ -6960,7 +6960,7 @@ paths:
                 $ref: '#/components/schemas/ValidatePassForDownloadSuccess'
         '401': { description: 'LOGIN_AGAIN - the posting key changed since this session was issued.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '403': { description: 'KEY_ROTATION_REQUIRED - the account must rotate its keys first.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '429': { description: 'Rate limited (5 per 15 minutes per IP).' }
+        '429': { description: 'Rate limited (20 per 15 minutes per IP).' }
         '500': { description: "{error: 'Database update failed'}", content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
   /downEbook:
     get:

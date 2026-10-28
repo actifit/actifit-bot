@@ -262,7 +262,6 @@ The current test suite consists of:
 - `findVerifyTrx` — transaction verification
 - `storeVerifiedTrx` — verified transaction storage
 - `confirmPaymentReceived` — payment confirmation
-- `confirmPaymentReceivedPassword` — password-protected payment confirmation
 - `confirmPaymentReceivedBuy` — purchase payment confirmation
 - `verifyGadgetPayTransaction` — gadget payment verification
 - `verifyAFITBuyTransaction` — AFIT purchase verification
