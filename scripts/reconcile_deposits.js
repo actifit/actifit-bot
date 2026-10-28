@@ -21,6 +21,12 @@
  *
  * Read-only by default. --fix mirrors the existing /recalculateUserTokens logic
  * (balance := ledger sum), so it cannot double-credit and is idempotent.
+ *
+ * CONCURRENCY: run this only while the API is quiet (no live AFIT spends, deposits or
+ * balance rebuilds for the affected users). It reads and then writes user_tokens without
+ * the per-user AFIT lock the API takes (afit_balance.js), so a request that changes the
+ * same balance in between can be overwritten. The API's own deposit credit
+ * (creditAfitDeposit in app.js) is the race-safe path.
  */
 
 const { MongoClient } = require('mongodb');

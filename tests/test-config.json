@@ -45,6 +45,7 @@
   "verifyPostToken": "test-post-token",
   "prop_key": "test-prop-key",
   "specPass": "test-spec-pass",
+  "admin_ops_token": "test-admin-ops-token",
   "funds_encr_mode": "aes192",
   "funds_encr_key": "testkeytestkeytestkey",
   "encr_mode": "aes192",

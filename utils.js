@@ -20,6 +20,7 @@ const axios = require('axios');
 const dhive = require('@hiveio/dhive');
 const keyRotation = require('./key_rotation');
 const signedTx = require('./signed_tx');
+const afitBalance = require('./afit_balance');
 
 const dblurt = require('dblurt');
 
@@ -642,7 +643,8 @@ async function broadcastBlurtWithFailover(ops, key, label){
 						console.log(err);
 					}
 				}else{
-					//return error
+					//out of attempts: stop polling (the timer used to keep firing forever)
+					clearInterval(th_id);
 					resolve(null);
 				}
 			}, 5000);
@@ -816,7 +818,8 @@ async function broadcastBlurtWithFailover(ops, key, label){
 						console.log(err);
 					}
 				}else{
-					//return error
+					//out of attempts: stop polling (the timer used to keep firing forever)
+					clearInterval(th_id);
 					resolve(null);
 				}
 			}, 5000);
@@ -911,9 +914,9 @@ async function broadcastBlurtWithFailover(ops, key, label){
 		// Parse the caller-supplied operation ONCE, before polling starts. It is
 		// deterministic input: if it is malformed, every one of the 30 ticks below would
 		// throw the identical SyntaxError, and inside an async setInterval callback that
-		// is an UNHANDLED REJECTION - nothing in this codebase installs an
-		// unhandledRejection handler and Node terminates on one by default, so it ends the
-		// API process. Doing it here turns a process kill into a returned error.
+		// is an UNHANDLED REJECTION. Node terminates on one by default; app.js now installs
+		// a process-level logger (which exits only on a burst), but each tick would still
+		// fail. Doing it here turns that into a returned error.
 		let expectedOps;
 		try{
 			expectedOps = JSON.parse(req.query.operation);
@@ -2624,9 +2627,17 @@ async function sendFirebaseNotification(db, user, details, url){
 	}*/
 }
 
+// Never rejects: most callers fire this without awaiting it, and a rejected promise with
+// no handler would take the whole process down. Every failure is logged and returns false.
 async function sendNotification(db, user, action_taker, type, category, details, url){
 	//check if user has notifications enabled
-	let setgs = await db.collection('user_settings').findOne({user: user});
+	let setgs = null;
+	try{
+		setgs = await db.collection('user_settings').findOne({user: user});
+	}catch(err){
+		console.log('notification settings lookup failed:', err && err.message);
+		return false;
+	}
 	let proceed = true;
 	if (setgs && setgs.settings){
 		//console.log(setgs.settings[config.mainNotificationsControl]);
@@ -2770,8 +2781,8 @@ async function claimRewards(target_account, p_key, target_chain) {
 		// 'account not found' branch was unreachable.
 		//
 		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
-		// which is async with no try/catch - and with no process-level
-		// unhandledRejection handler anywhere, that ENDS THE API PROCESS. The BLURT
+		// which is async with no try/catch - and before app.js had a process-level
+		// unhandledRejection logger, that ENDED THE API PROCESS. The BLURT
 		// leg below runs on every call and most Hive users have no Blurt account, so []
 		// was the common case rather than the rare one.
 		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');
@@ -2934,7 +2945,8 @@ async function fetchChainTrx(trxId, blkNo, chain){
 						}
 					}
 				}else{
-					//return error
+					//out of attempts: stop polling (the timer used to keep firing forever)
+					clearInterval(fetch_th_id);
 					resolve(null);
 				}
 			}catch(err){
@@ -3242,11 +3254,10 @@ function checkKeyRotation(username, currentKeys, since){
 	return keyRotation.checkRotation(hiveClient, username, currentKeys, since);
 }
 
-// Query filter for a token_count that is a real number. Used before every SUM of
-// token_count: a NaN (or a string) in one row would otherwise make the user's whole
-// balance NaN. Range-matching numbers excludes NaN, non-numeric types and missing values
-// (verified against a real MongoDB in tests/afit_amounts.test.js).
-const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
+// FINITE_AMOUNT (query filter for a token_count that is a real number) and finiteAmount
+// (the one rule for "is this an amount") live in afit_balance.js, which is load-time safe,
+// so the balance helpers and this module share exactly the same rule.
+const FINITE_AMOUNT = afitBalance.FINITE_AMOUNT;
 
 // The ONLY AFIT amounts the AFIT -> vote boost exchange accepts. They must be current
 // tiers of extra_reward_arr in actifit-voter (curation-bot.js), which looks the amount
@@ -3258,15 +3269,7 @@ const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
 // The web wallet offers exactly these four.
 const UPVOTE_EXCHANGE_TIERS = [50, 100, 150, 200];
 
-// An AFIT amount from a request or a stored balance, as a real number - or null when it
-// is missing, empty, NaN, Infinity or not numeric. The ONE rule for "is this an amount",
-// so a NaN can never pass a balance check (NaN < x is false) or be written to the ledger.
-function finiteAmount(value) {
-	if (typeof value !== 'number' && typeof value !== 'string') return null;   // not true, [5], {}
-	if (typeof value === 'string' && value.trim() === '') return null;
-	const n = Number(value);
-	return Number.isFinite(n) ? n : null;
-}
+const finiteAmount = afitBalance.finiteAmount;
 
  module.exports = {
 	FINITE_AMOUNT: FINITE_AMOUNT,

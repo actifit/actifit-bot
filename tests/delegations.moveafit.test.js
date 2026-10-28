@@ -112,14 +112,22 @@ describe('delegations - daily AFIT move cleanup & notifications', () => {
   });
 
   describe('mongodb driver 5.x migration regressions', () => {
-    test('updateUserCount decrements the off-chain balance via replaceOne', async () => {
+    test('updateUserCount decrements the off-chain balance atomically ($inc, not replaceOne)', async () => {
       db.collection('user_tokens').__seed([{ _id: 'grace', user: 'grace', tokens: 500 }]);
 
-      await delegations.updateUserCount({ user: 'grace', daily_afit_transfer: 100 });
+      await expect(delegations.updateUserCount({ user: 'grace', daily_afit_transfer: 100 })).resolves.toBe(true);
 
       const doc = db.collection('user_tokens').__data()[0];
       expect(doc.tokens).toBe(400);
-      expect(db.collection('user_tokens').replaceOne).toHaveBeenCalled();
+      expect(db.collection('user_tokens').updateOne).toHaveBeenCalledWith({ _id: 'grace' }, { $inc: { tokens: -100 } });
+      expect(db.collection('user_tokens').replaceOne).not.toHaveBeenCalled();
+    });
+
+    test('updateUserCount does not throw for a user without a balance row, or a bad amount', async () => {
+      await expect(delegations.updateUserCount({ user: 'nobody', daily_afit_transfer: 100 })).resolves.toBe(false);
+      await expect(delegations.updateUserCount({ user: 'grace', daily_afit_transfer: 'abc' })).resolves.toBe(false);
+      await expect(delegations.updateUserCount({ user: 'grace', daily_afit_transfer: -5 })).resolves.toBe(false);
+      expect(db.collection('user_tokens').__data()).toHaveLength(0);
     });
 
     test('rollBackTrans removes the inserted token_transaction via deleteOne', async () => {

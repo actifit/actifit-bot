@@ -2,6 +2,7 @@ const dhive = require('@hiveio/dhive')
 const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
+const afitBalance = require('./afit_balance')
 const mail = require('./mail')
 
 const config = utils.getConfig()
@@ -686,20 +687,43 @@ async function rollBackTrans(moveTrans){
 	}
 }
 
+// Run fn under the user's shared AFIT lock (afit_balance; the API's balance writers and its
+// balance rebuild take the same one). This job is not interactive, so it waits up to 30s and
+// then reports the debit as busy ({ok:false, reason:'busy'}) rather than run without it.
+async function withAfitLock(user, fn){
+	const lock = await afitBalance.acquireAfitLock(db, user, { waitMs: 30000 });
+	if (!lock) return { ok: false, reason: 'busy' };
+	try {
+		return await fn();
+	} finally {
+		await lock.release();
+	}
+}
+
+// Lower a user's cached AFIT balance by an amount that has ALREADY left (the transfer is
+// on chain), so it is unconditional - but atomic ($inc), never a read-modify-replaceOne that
+// overwrites a concurrent change, and it never throws (it used to crash on a user with no
+// user_tokens document). Returns true when the balance was updated.
 async function updateUserCount(entry){
 	//update user total token count
 	console.log('>>> update user token count');
-	let user_info = await db.collection('user_tokens').findOne({_id: entry.user});
-	let cur_sender_token_count = parseFloat(user_info.tokens);
-	let new_token_count = cur_sender_token_count - parseFloat(entry.daily_afit_transfer);
-	user_info.tokens = new_token_count;
-	console.log('user:' + entry.user + 'new_token_count:'+new_token_count);
+	const amount = afitBalance.positiveAmount(entry && entry.daily_afit_transfer);
+	if (!entry || typeof entry.user !== 'string' || amount === null){
+		console.log('updateUserCount: invalid entry, balance not updated');
+		return false;
+	}
 	try{
-		//driver 5.x: .save() removed - replace the user's token doc by _id
-		let trans = await db.collection('user_tokens').replaceOne({_id: user_info._id}, user_info);
+		let trans = await db.collection('user_tokens').updateOne({_id: entry.user}, {$inc: {tokens: -amount}});
+		if (!trans || trans.matchedCount !== 1){
+			// no cached balance to lower; the ledger row stands and the daily rebuild applies it
+			console.log('updateUserCount: no user_tokens row for ' + entry.user + ', left to the daily rebuild');
+			return false;
+		}
 		console.log('success updating user token count');
+		return true;
 	}catch(err){
 		console.log(err);
+		return false;
 	}
 }
 
@@ -869,9 +893,19 @@ async function moveAFITToSE(testMode){
 							}
 							
 							console.log(moveTrans);
-							//update our DB
+							//update our DB: take the AFIT atomically, only while the cached balance
+							//still covers it (the funds check above is only a read), and write the
+							//ledger row. Done BEFORE the broadcast; undone if the broadcast fails.
+							let debit = null;
 							if (!testMode){
-								let transaction = await db.collection('token_transactions').insertOne(moveTrans);
+								debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, dedc_amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
+								if (!debit.ok){
+									console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
+									if (debit.reason === 'insufficient_funds'){
+										await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + entry.daily_afit_transfer + ' AFIT to Hive-Engine was cancelled: your Actifit AFIT balance is below the requested amount. Earn or top up more AFIT and set up the move again.');
+									}
+									return;
+								}
 							}
 							console.log('success inserting move AFIT data');
 							
@@ -895,17 +929,17 @@ async function moveAFITToSE(testMode){
 									id: 'ssc-mainnet-hive',//ssc-mainnet1
 									json: JSON.stringify(json_data),
 								}, privateKey).then(
-									result => { 
-										console.log(result) 
-										//update user total count
-										updateUserCount(entry);
-										deactivateDailyAFITPowerDown(entry, testMode);
+									result => {
+										console.log(result)
+										//the balance was already lowered by the debit above
+										deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
 										},
-									error => { 
-										console.error(error) 
-										//roll back db transaction as there was issue sending to blockchain
-										rollBackTrans(moveTrans);
-										deactivateDailyAFITPowerDown(entry, testMode);
+									error => {
+										console.error(error)
+										//roll back: remove the ledger row and give the AFIT back, as there
+										//was an issue sending to blockchain
+										withAfitLock(entry.user, () => afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he')).catch((e) => console.log(e));
+										deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
 										}
 								)
 							}
@@ -1243,10 +1277,16 @@ async function getBenefactorPosts (account, start) {
   }
   //award transaction tokens
   if (foundTx){
-	bulk_transactions.execute();
+	// awaited: un-awaited, the balance rebuild below ran before the payout rows were written,
+	// and a failed bulk write was an unhandled rejection
+	try {
+		await bulk_transactions.execute();
+	} catch (err) {
+		console.log('>> Full AFIT payout bulk write failed: ' + (err && err.message));
+	}
 	console.log('-- Processed Full AFIT Payouts --')
 	//once done, update user total token count
-	updateUserTokens();
+	await updateUserTokens();
   }else{
 	console.log('-- No Posts to process --');
   }

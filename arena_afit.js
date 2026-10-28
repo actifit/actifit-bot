@@ -26,6 +26,9 @@
 
 'use strict';
 
+// load-time safe (no config/Firebase): the shared per-user AFIT lock
+const afitBalance = require('./afit_balance');
+
 const COL = {
 	LEDGER: 'token_transactions',   // append/upsert ledger; token_count = credit
 	BALANCES: 'user_tokens',        // materialized {_id:user, user, tokens}
@@ -205,18 +208,42 @@ async function arenaEmittedOn(db, user, at, excludeChallengeId) {
 // One NaN row would otherwise make a whole sum NaN, and Number(NaN) || 0 turns it into 0.
 const FINITE_AMOUNT = { $gte: -Number.MAX_VALUE, $lte: Number.MAX_VALUE };
 
+//
+// Concurrency: this REPLACES the cached balance with the ledger sum, so it must not run in
+// the middle of an app.js spend or credit (those change the cache and the ledger in two
+// separate writes; a rebuild in between counts the operation once too few or once too many).
+// It therefore takes the same per-user AFIT lock those writers hold (afit_balance), waiting
+// up to RECONCILE_LOCK_WAIT_MS. If the lock cannot be had it writes NOTHING and returns the
+// current cached balance: the ledger row is already written, so the daily rebuild applies it,
+// and a cache that lags the ledger is safe where one that leads it is not.
+const RECONCILE_LOCK_WAIT_MS = 10000;
+
 async function reconcileBalance(db, user) {
-	const agg = await db.collection(COL.LEDGER).aggregate([
-		{ $match: { user, token_count: FINITE_AMOUNT } },
-		{ $group: { _id: null, total: { $sum: '$token_count' } } },
-	]).toArray();
-	const tokens = (agg[0] && Number(agg[0].total)) || 0;
-	await db.collection(COL.BALANCES).replaceOne(
-		{ _id: user },
-		{ _id: user, user, tokens },
-		{ upsert: true }
-	);
-	return tokens;
+	let lock = null;
+	try {
+		lock = await afitBalance.acquireAfitLock(db, user, { waitMs: RECONCILE_LOCK_WAIT_MS });
+	} catch (e) {
+		lock = null;
+	}
+	if (!lock) {
+		try { console.log('arena reconcileBalance: AFIT lock busy for ' + user + ', cached balance left to the daily rebuild'); } catch (_) { /* logging must not throw */ }
+		return balanceOf(db, user);
+	}
+	try {
+		const agg = await db.collection(COL.LEDGER).aggregate([
+			{ $match: { user, token_count: FINITE_AMOUNT } },
+			{ $group: { _id: null, total: { $sum: '$token_count' } } },
+		]).toArray();
+		const tokens = (agg[0] && Number(agg[0].total)) || 0;
+		await db.collection(COL.BALANCES).replaceOne(
+			{ _id: user },
+			{ _id: user, user, tokens },
+			{ upsert: true }
+		);
+		return tokens;
+	} finally {
+		await lock.release();
+	}
 }
 
 /**

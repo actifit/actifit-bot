@@ -29,6 +29,9 @@
 
 const arenaAfit = require('./arena_afit');
 const arenaPools = require('./arena_pools');
+const afitBalance = require('./afit_balance');
+
+const FUND_LOCK_WAIT_MS = 30000;
 
 // token_transactions reward_activity keys (one row per challenge).
 const FUND_ACTIVITY = 'arena_fund:';   // creator debit (negative): prize + fee
@@ -68,27 +71,48 @@ async function fundChallenge(db, params) {
 	const existingPool = await db.collection('pools').findOne({ id: poolId });
 	if (existingPool) return { ok: true, noop: true, poolId, prize: existingPool.budget, fee };
 
-	// Debit the creator ONCE. Guarded by the keyed row so a crash-retry (pool not
-	// yet created) doesn't re-check-and-re-debit against the already-reduced balance.
-	const fundRow = await db.collection('token_transactions').findOne({ user: creator, reward_activity: FUND_ACTIVITY + challengeId });
-	if (!fundRow) {
-		const bal = await arenaAfit.balanceOf(db, creator);
-		if (bal < total) return { ok: false, reason: 'insufficient AFIT to fund the prize + fee' };
-		await db.collection('token_transactions').replaceOne(
-			{ user: creator, reward_activity: FUND_ACTIVITY + challengeId },
-			{
-				user: creator,
-				reward_activity: FUND_ACTIVITY + challengeId,
-				token_count: -total,           // prize funds winners; fee is burned
-				chain: 'HIVE',
-				orig_account: 'actifit',
-				challenge_id: challengeId,
-				prize: Number(prize),
-				fee,
-				date: new Date(at),
-			},
-			{ upsert: true }
-		);
+	// The debit and its ledger row run under the creator's AFIT lock (afit_balance), like
+	// every other balance writer, so a balance rebuild cannot land between them. If the
+	// lock is still busy after FUND_LOCK_WAIT_MS (only a stuck request holds it that long)
+	// it goes ahead anyway rather than reject the challenge for good: the reconcile below
+	// re-derives the balance from the ledger right after.
+	let lock = null;
+	try { lock = await afitBalance.acquireAfitLock(db, creator, { waitMs: FUND_LOCK_WAIT_MS }); } catch (e) { lock = null; }
+	if (!lock) console.log('arena fundChallenge: AFIT lock busy for ' + creator + ', funding without it');
+	try {
+		// Debit the creator ONCE. Guarded by the keyed row so a crash-retry (pool not
+		// yet created) doesn't re-check-and-re-debit against the already-reduced balance.
+		const fundRow = await db.collection('token_transactions').findOne({ user: creator, reward_activity: FUND_ACTIVITY + challengeId });
+		if (!fundRow) {
+			// Take prize + fee from the cached balance FIRST, in one conditional update that only
+			// matches while the balance still covers it. A read-check-then-write let a concurrent
+			// spend (a gadget buy, say) pass against the same balance, and the creator's ledger
+			// could go negative. Given back if the ledger row cannot be written.
+			const taken = await afitBalance.debitAfit(db, creator, total, { context: 'arena-fund' });
+			if (!taken.ok) return { ok: false, reason: 'insufficient AFIT to fund the prize + fee' };
+			try {
+				await db.collection('token_transactions').replaceOne(
+					{ user: creator, reward_activity: FUND_ACTIVITY + challengeId },
+					{
+						user: creator,
+						reward_activity: FUND_ACTIVITY + challengeId,
+						token_count: -total,           // prize funds winners; fee is burned
+						chain: 'HIVE',
+						orig_account: 'actifit',
+						challenge_id: challengeId,
+						prize: Number(prize),
+						fee,
+						date: new Date(at),
+					},
+					{ upsert: true }
+				);
+			} catch (e) {
+				await afitBalance.restoreAfit(db, creator, total, 'arena-fund');
+				throw e;
+			}
+		}
+	} finally {
+		if (lock) await lock.release();
 	}
 	// Reconcile unconditionally (idempotent) — so a crash-retry that skipped the
 	// debit block still refreshes the materialized balance to reflect the debit,

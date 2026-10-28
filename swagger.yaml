@@ -3477,7 +3477,7 @@ paths:
   /cancelAFITBuy:
     get:
       summary: Cancel AFIT purchase and refund
-      description: (ADMIN ONLY) Cancels a previous AFIT purchase and issues a refund by deducting AFIT from the user.
+      description: (ADMIN ONLY) Cancels a previous AFIT purchase and issues a refund by deducting AFIT from the user. Refused when the balance no longer covers the amount, unless force=1.
       parameters:
         - in: query
           name: specPass
@@ -3494,6 +3494,11 @@ paths:
           schema: { type: 'number', format: 'float', example: 100.0 }
           required: true
           description: The amount of AFIT to refund (deduct).
+        - in: query
+          name: force
+          schema: { type: 'string', enum: ['1'] }
+          required: false
+          description: 'Ops claw-back override: 1 deducts the amount even if the balance goes negative (the ledger row is marked forced). Without it, a balance that does not cover the amount is refused.'
       responses:
         '200':
           description: AFIT purchase cancellation and refund processed.
@@ -6741,7 +6746,7 @@ paths:
   /activateGadget/{user}/{gadget}/{blockNo}/{trxID}/{bchain}/{benefic?}:
     get:
       summary: Activate a gadget (Deprecated)
-      description: (DEPRECATED: Use /activateMultiGadget instead) Activates a single in-game gadget for a user, with optional beneficiary.
+      description: '(DEPRECATED: Use /activateMultiGadget instead) Activates a single in-game gadget for a user, with optional beneficiary.'
       parameters:
         - in: path
           name: user
