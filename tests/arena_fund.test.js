@@ -38,6 +38,37 @@ describe('arena_fund.fundChallenge', () => {
 		expect(await db.collection('pools').findOne({ id: 'poolch_ch1' })).toBeNull();
 	});
 
+	test('a creator lock that stays busy charges and funds nothing, and throws so the tailer retries the block', async () => {
+		const afitBalance = require('../afit_balance');
+		const db = createMockDb();
+		await seedBalance(db, 'creator', 200);
+		const spy = jest.spyOn(afitBalance, 'acquireAfitLock').mockResolvedValue(null);
+		try {
+			await expect(fund.fundChallenge(db, { creator: 'creator', challengeId: 'ch1', prize: 100, at: AT }))
+				.rejects.toMatchObject({ code: 'AFIT_LOCK_BUSY' });
+			// through the tailer: the tick fails, so the cursor does not pass the create
+			const tailer = require('../arena_tailer');
+			await tailer.saveCursor(db, 0);
+			const body = { op: 'challenge_create', v: 1, id: 'ch_busy', type: 'duel', origin_tier: 'community',
+				window: { start: '2026-08-25T00:00:00Z', end: '2026-08-26T00:00:00Z' }, entry: { mode: 'free' },
+				scoring: { metric: 'activity_count', rule: 'head_to_head' }, rewards: { afit: 100 } };
+			const blk = { timestamp: '2026-08-25T00:00:00', transaction_ids: ['trxF'], transactions: [{ operations: [['custom_json',
+				{ id: arena.ARENA_JSON_ID, json: JSON.stringify(body), required_posting_auths: ['creator'], required_auths: [] }]] }] };
+			const hive = { blockchain: { getCurrentBlockNum: async () => 1 }, database: { getBlock: async () => blk } };
+			await expect(tailer.catchUpOnce(db, hive, {
+				resolveTier: async () => 'community',
+				fundChallenge: (params) => fund.fundChallenge(db, params),
+			})).rejects.toMatchObject({ code: 'AFIT_LOCK_BUSY' });
+			expect(await tailer.loadCursor(db)).toBe(0);
+			expect(await db.collection('challenges').findOne({ id: 'ch_busy' })).toBeNull();
+		} finally {
+			spy.mockRestore();
+		}
+		expect(await afit.balanceOf(db, 'creator')).toBe(200);
+		expect(await db.collection('pools').findOne({ id: 'poolch_ch1' })).toBeNull();
+		for (const id of ['ch1', 'ch_busy']) expect(await db.collection('token_transactions').findOne({ user: 'creator', reward_activity: 'arena_fund:' + id })).toBeNull();
+	});
+
 	test('idempotent — re-funding the same challenge does not double-debit', async () => {
 		const db = createMockDb();
 		await seedBalance(db, 'creator', 500);

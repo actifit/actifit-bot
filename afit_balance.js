@@ -262,6 +262,196 @@ function acquireAfitLock(db, user, opts) {
 	return acquireLock(db, AFIT_LOCK + ':' + user, opts);
 }
 
+// A token quantity as Hive-Engine writes it: plain decimal digits, at most 8 decimals
+// (the engine's maximum precision). No sign, exponent, hex, spaces or empty parts, which
+// Number() would otherwise accept ("1e5", "0x10", " 5").
+const TOKEN_QUANTITY = /^\d+(\.\d{1,8})?$/;
+
+/** A deposit quantity (string as the engine sends it, or a finite number) > 0, or null. */
+function depositQuantity(value) {
+	if (typeof value === 'string') return TOKEN_QUANTITY.test(value) ? positiveAmount(value) : null;
+	if (typeof value === 'number') return positiveAmount(value);
+	return null;
+}
+
+/**
+ * Why a Hive-Engine account-history entry is NOT a creditable AFIT deposit, or null when it
+ * is. A deposit is a plain `tokens_transfer` of AFIT, from the user being credited, to the
+ * Actifit receiving account, with a transaction id and a well-formed positive quantity.
+ * Anything else that shows up in that account's history (stakes, delegations, transfers to
+ * other accounts, other tokens, outgoing transfers) is not credited.
+ *
+ * @param {object} entry   one row of the engine's accountHistory
+ * @param {object} expect
+ * @param {string} expect.receivingAccount  the configured Actifit account; when it is
+ *                                          missing or empty every entry is refused
+ * @param {string} [expect.user]            the user being credited (must be the sender)
+ * @returns {string|null}
+ */
+function depositError(entry, expect = {}) {
+	if (!entry || typeof entry !== 'object') return 'invalid_deposit';
+	const receiving = expect.receivingAccount;
+	if (typeof receiving !== 'string' || receiving.length === 0) return 'no_receiving_account';
+	if (entry.operation !== 'tokens_transfer') return 'not_a_transfer';
+	if (entry.symbol !== 'AFIT') return 'not_afit';
+	if (entry.to !== receiving) return 'wrong_recipient';
+	if (!validUser(entry.from) || entry.from === receiving) return 'invalid_sender';
+	if (expect.user !== undefined && entry.from !== expect.user) return 'sender_mismatch';
+	const ref = entry.transactionId;
+	if (!((typeof ref === 'string' && ref.length > 0) || Number.isFinite(ref))) return 'invalid_deposit';
+	if (depositQuantity(entry.quantity) === null) return 'invalid_amount';
+	return null;
+}
+
+// A $sum result as a finite number, or null when it cannot be read as one. FINITE_AMOUNT
+// also matches Decimal128 rows (numeric type bracketing), and one such row turns the whole
+// $sum into a Decimal128; that is converted. Anything else is unreadable.
+function sumValue(total) {
+	if (typeof total === 'number') return Number.isFinite(total) ? total : null;
+	if (total && total._bsontype === 'Decimal128') {
+		const n = Number(total.toString());
+		return Number.isFinite(n) ? n : null;
+	}
+	return null;
+}
+
+/**
+ * The ledger sum of one user's real-number rows (0 when there are none). Rejects when the
+ * sum cannot be read as a finite number, so a caller never writes 0 for it.
+ */
+async function ledgerSum(db, user) {
+	const agg = await db.collection(LEDGER).aggregate([
+		{ $match: { user, token_count: FINITE_AMOUNT } },
+		{ $group: { _id: null, total: { $sum: '$token_count' } } },
+	]).toArray();
+	if (!agg[0]) return 0;
+	const n = sumValue(agg[0].total);
+	if (n === null) throw new Error('ledger sum is not a finite number (' + String(agg[0].total) + ')');
+	return n;
+}
+
+// Two balances are "the same" when they differ only by floating-point noise (the cache is
+// built by many $inc, the ledger sum by one $sum, in a different order).
+function sameAmount(a, b) {
+	if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+	return Math.abs(a - b) <= 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+}
+
+/**
+ * The daily rebuild of every cached balance from the ledger, safe while the API is
+ * spending and crediting.
+ *
+ * It used to be one aggregation with `$out: 'user_tokens'`: the ledger was summed (minutes,
+ * over the whole ledger) and the result then REPLACED the collection. Any debit or credit
+ * that changed a cached balance in the meantime was overwritten with a sum read before it
+ * happened - a spend made during the rebuild was undone (the user got the AFIT back), and
+ * a deposit could be counted twice or not at all depending on when its ledger row was read.
+ *
+ * Now nothing is written from the bulk sum itself:
+ *   1. sum the ledger per user (one read-only pass, as before);
+ *   2. compare each sum with the cached balance; a user whose cache already matches is
+ *      left alone (no write, so nothing can be clobbered);
+ *   3. for each user that differs (or has no cache row, or a cache row but no ledger rows),
+ *      take that user's AFIT lock - the same lock every spend and credit holds - and, under
+ *      it, re-sum THAT user's ledger fresh (indexed on user) and $set the result.
+ * Step 3 is what makes it safe: the value written is read under the lock, so no spend or
+ * credit can be half-done (cache changed but ledger row not yet written, or the reverse)
+ * and none can land between the read and the write. The bulk sum in step 1 only decides
+ * WHO to look at. A user whose lock stays busy is retried once at the end, then left for
+ * the next run (their cache is still kept current by the incremental writes).
+ *
+ * Writers that only add ledger rows and leave the cache to this rebuild (the daily reward
+ * jobs in delegations.js) need no lock: step 3 reads their rows like any other.
+ *
+ * Never throws for one user's failure (counted in `failed`); rejects only when the ledger
+ * or the cache cannot be read at all.
+ *
+ * @param {object} db
+ * @param {object} [opts]
+ * @param {number} [opts.lockWaitMs=5000]   per-user lock wait in the main pass
+ * @param {number} [opts.retryWaitMs=30000] lock wait for the end-of-run retry of busy users
+ * @param {number} [opts.concurrency=8]     users processed in parallel in step 3
+ * @param {function} [opts.log]
+ * @returns {Promise<{users:number, cached:number, candidates:number, updated:number, busy:string[], failed:number}>}
+ */
+async function rebuildCachedBalances(db, opts = {}) {
+	const lockWaitMs = Number.isFinite(opts.lockWaitMs) ? opts.lockWaitMs : 5000;
+	const retryWaitMs = Number.isFinite(opts.retryWaitMs) ? opts.retryWaitMs : 30000;
+	const concurrency = Number.isInteger(opts.concurrency) && opts.concurrency > 0 ? opts.concurrency : 8;
+	const say = (m) => { try { (opts.log || logLoud)(m); } catch (_) { /* logging must not throw */ } };
+
+	// 1. ledger sums - read only
+	const sums = new Map();
+	const agg = db.collection(LEDGER).aggregate([
+		{ $match: { token_count: FINITE_AMOUNT } },
+		{ $group: { _id: '$user', tokens: { $sum: '$token_count' } } },
+	], { allowDiskUse: true });
+	for await (const row of agg) {
+		if (validUser(row._id)) sums.set(row._id, sumValue(row.tokens));
+	}
+
+	// 2. compare with the cache
+	const candidates = [];
+	let cached = 0;
+	const seen = new Set();
+	for await (const doc of db.collection(BALANCES).find({}, { projection: { tokens: 1 } })) {
+		if (!validUser(doc._id)) continue;
+		cached += 1;
+		seen.add(doc._id);
+		const expected = sums.has(doc._id) ? sums.get(doc._id) : 0; // null: unreadable sum
+		// only a stored NUMBER counts as matching: a numeric string is rewritten as a number
+		// (debitAfit's conditional update never matches a string balance)
+		if (typeof doc.tokens !== 'number' || !sameAmount(doc.tokens, expected)) candidates.push(doc._id);
+	}
+	for (const [user, tokens] of sums) {
+		if (!seen.has(user) && (tokens === null || !sameAmount(tokens, 0))) candidates.push(user);
+	}
+
+	// 3. fix each differing user under their lock, from a fresh read
+	let updated = 0;
+	let failed = 0;
+	const fixOne = async (user, waitMs) => {
+		let lock;
+		try {
+			lock = await acquireAfitLock(db, user, { waitMs });
+		} catch (err) {
+			failed += 1;
+			say('balance rebuild: lock error for ' + user + ' - ' + (err && err.message));
+			return 'failed';
+		}
+		if (!lock) return 'busy';
+		try {
+			const tokens = await ledgerSum(db, user);
+			// $set only the balance (other fields of the document are kept), like /recalculateUserTokens
+			await db.collection(BALANCES).updateOne({ _id: user }, { $set: { tokens, user } }, { upsert: true });
+			updated += 1;
+			return 'done';
+		} catch (err) {
+			failed += 1;
+			say('balance rebuild: could not rebuild ' + user + ' - ' + (err && err.message));
+			return 'failed';
+		} finally {
+			await lock.release();
+		}
+	};
+	const runAll = async (users, waitMs) => {
+		const busy = [];
+		let next = 0;
+		const worker = async () => {
+			while (next < users.length) {
+				const user = users[next++];
+				if ((await fixOne(user, waitMs)) === 'busy') busy.push(user);
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(concurrency, users.length) }, worker));
+		return busy;
+	};
+	let busy = await runAll(candidates, lockWaitMs);
+	if (busy.length) busy = await runAll(busy, retryWaitMs);
+	if (busy.length) say('balance rebuild: AFIT lock stayed busy for ' + busy.length + ' user(s), left for the next run: ' + busy.join(', '));
+	return { users: sums.size, cached, candidates: candidates.length, updated, busy, failed };
+}
+
 /**
  * Unique ledger indexes that make credits idempotent at the database level. Both are
  * PARTIAL, so only the rows they are about are indexed and constrained (the ledger is
@@ -308,11 +498,34 @@ const LEDGER_INDEXES = [
 // from crashed requests. request_locks is tiny, so building it at startup is cheap.
 const REQUEST_LOCKS_TTL = { key: { at: 1 }, options: { name: 'request_locks_ttl', expireAfterSeconds: 3600 } };
 
+// verified_tx is the replay guard for signed on-chain payments (utils.findVerifyTrx): one row
+// per chain transaction. Without a unique index two requests racing with the same
+// transaction can both pass the "already used?" lookup and both be stored. PARTIAL on a
+// string tx_id so rows without one (older broadcast results) are left out. Like the ledger
+// indexes it is NOT built at startup - see scripts/build_ledger_indexes.md.
+const VERIFIED_TX = 'verified_tx';
+const VERIFIED_TX_INDEX = {
+	key: { tx_id: 1 },
+	options: { name: 'verified_tx_unique', unique: true, partialFilterExpression: { tx_id: { $type: 'string' } } },
+};
+
+async function indexesOf(db, name) {
+	const col = db.collection(name);
+	if (!col || typeof col.indexes !== 'function') return null;
+	try {
+		return await col.indexes();
+	} catch (err) {
+		// a collection that does not exist yet has no indexes
+		if (err && (err.code === 26 || /ns does not exist|NamespaceNotFound/i.test(String(err.message)))) return [];
+		throw err;
+	}
+}
+
 /**
- * Startup check. NEVER builds the ledger indexes and NEVER rejects: it lists the ledger's
- * indexes and logs a loud warning for each one that is missing. It does create the TTL
- * index on the small request_locks collection.
- * @returns {Promise<{name: string, present: boolean}[]>}  the ledger indexes' status
+ * Startup check. NEVER builds the ledger or verified_tx indexes and NEVER rejects: it lists
+ * their indexes and logs a loud warning for each one that is missing. It does create the
+ * TTL index on the small request_locks collection.
+ * @returns {Promise<{name: string, present: boolean}[]>}  the checked indexes' status
  */
 async function ensureLedgerIndexes(db, log) {
 	const out = [];
@@ -323,21 +536,33 @@ async function ensureLedgerIndexes(db, log) {
 	} catch (err) {
 		say('request_locks TTL index not created: ' + ((err && err.message) || err));
 	}
-	let names;
 	try {
-		const ledger = db.collection(LEDGER);
-		if (!ledger || typeof ledger.indexes !== 'function') return out;
-		names = (await ledger.indexes()).map((i) => i.name);
+		const ledgerIdx = await indexesOf(db, LEDGER);
+		if (ledgerIdx) {
+			const names = ledgerIdx.map((i) => i.name);
+			for (const idx of LEDGER_INDEXES) {
+				const present = names.includes(idx.options.name);
+				if (!present) {
+					say('!!! token_transactions index ' + idx.options.name + ' is MISSING: the database-level double-credit guard for these rows is not in place (the code-level check still applies). Build it off-peak - see scripts/build_ledger_indexes.md.');
+				}
+				out.push({ name: idx.options.name, present });
+			}
+		}
 	} catch (err) {
 		say('could not list token_transactions indexes: ' + ((err && err.message) || err));
-		return out;
 	}
-	for (const idx of LEDGER_INDEXES) {
-		const present = names.includes(idx.options.name);
-		if (!present) {
-			say('!!! token_transactions index ' + idx.options.name + ' is MISSING: the database-level double-credit guard for these rows is not in place (the code-level check still applies). Build it off-peak - see scripts/build_ledger_indexes.md.');
+	try {
+		const txIdx = await indexesOf(db, VERIFIED_TX);
+		if (txIdx) {
+			// any unique index on exactly {tx_id: 1} does the job, whatever its name
+			const present = txIdx.some((i) => i.unique === true && i.key && Object.keys(i.key).length === 1 && i.key.tx_id === 1);
+			if (!present) {
+				say('!!! verified_tx unique index on tx_id is MISSING: two requests racing with the same signed transaction can both be accepted (the lookup check still applies). Build it off-peak - see scripts/build_ledger_indexes.md.');
+			}
+			out.push({ name: VERIFIED_TX_INDEX.options.name, present });
 		}
-		out.push({ name: idx.options.name, present });
+	} catch (err) {
+		say('could not list verified_tx indexes: ' + ((err && err.message) || err));
 	}
 	return out;
 }
@@ -347,12 +572,19 @@ async function createLedgerIndexes(db) {
 	for (const idx of LEDGER_INDEXES) await db.collection(LEDGER).createIndex(idx.key, idx.options);
 }
 
+/** Build the verified_tx unique index (ops procedure / tests - NOT called at startup). Rejects on failure. */
+async function createVerifiedTxIndex(db) {
+	await db.collection(VERIFIED_TX).createIndex(VERIFIED_TX_INDEX.key, VERIFIED_TX_INDEX.options);
+}
+
 module.exports = {
 	LEDGER_INDEXES,
 	WEB_REWARD_UNIQUE_FROM,
 	REQUEST_LOCKS_TTL,
 	ensureLedgerIndexes,
 	createLedgerIndexes,
+	VERIFIED_TX_INDEX,
+	createVerifiedTxIndex,
 	LEDGER,
 	BALANCES,
 	AFIT_LOCK,
@@ -368,4 +600,7 @@ module.exports = {
 	creditAfit,
 	acquireLock,
 	acquireAfitLock,
+	depositQuantity,
+	depositError,
+	rebuildCachedBalances,
 };

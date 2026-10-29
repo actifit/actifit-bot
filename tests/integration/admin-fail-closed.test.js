@@ -20,6 +20,7 @@ for (const m of ['node:fs', 'fs']) {
 				const cfg = JSON.parse(actual.readFileSync(path.join(__dirname, '../test-config.json'), 'utf8'));
 				delete cfg.admin_ops_token;
 				delete cfg.specPass;
+				for (const k of ['verifyPostToken', 'verifyNotifToken', 'prop_key', 'prodMintSecret']) delete cfg[k];
 				cfg.hive_engine_trans_acct_his = 'https://history.example.invalid/accountHistory';
 				return JSON.stringify(cfg);
 			}),
@@ -81,4 +82,20 @@ test.each(['/refundPurchase', '/cancelAFITBuy'])('%s is refused when specPass is
 	const r = await request(app).get(route + '?user=alice&afit=5&afit_paid=5&product_id=x&specPass=');
 	expect(r.body).toEqual({ error: 'error' });
 	expect(mockDb.collection('token_transactions').__data()).toHaveLength(0);
+});
+
+test.each([
+	['/appendVerifiedPost?author=a&permlink=p&json_metadata=%7B%7D', '{}'],
+	['/appendVerifiedPost?author=a&permlink=p&json_metadata=%7B%7D&verifyParam=', '{}'],
+	['/appendVerifiedPost?author=a&permlink=p&json_metadata=%7B%7D&verifyParam=undefined', '{}'],
+	['/sendNotification?notifType=none&user=a', '{}'],
+	['/sendNotification?notifType=none&user=a&verifyNotifParam=', '{}'],
+	['/updateProposalNotified?author=a&permlink=p&secr=undefined', '{}'],
+	['/mintProducts', '{"error":"error"}'],
+	['/mintProducts?secret=', '{"error":"error"}'],
+])('%s is refused when its secret is not configured', async (route, body) => {
+	const r = await request(app).get(route);
+	expect(r.text).toBe(body);
+	expect(mockDb.collection('verified_posts').insertOne).not.toHaveBeenCalled();
+	expect(mockDb.collection('products').updateMany).not.toHaveBeenCalled();
 });

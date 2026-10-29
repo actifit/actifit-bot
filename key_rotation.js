@@ -149,6 +149,37 @@ const ERROR_CACHE_MS = 30 * 1000;
 const SESSION_HOLD_MS = 25 * 60 * 60 * 1000;
 const SIGNED_TX_HOLD_MS = 10 * 60 * 60 * 1000;
 
+/**
+ * Whether an operation already on chain (indexed by a tailer, not sent to an HTTP route)
+ * from a flagged account may be acted on. Pure.
+ *
+ * The HTTP gates refuse a flagged account's signed transactions outright (they may carry
+ * the exposed key). An op the tailer reads is in the same position, with one advantage: its
+ * block and time are known. So:
+ *   - no entry for the account: allowed;
+ *   - an ACTIVE flag (not cleared): refused, KEY_ROTATION_REQUIRED;
+ *   - a CLEARED flag: allowed only when the op was included AFTER the key change - after
+ *     `rotated_block` when the clear recorded it (a posting key that was replaced can no
+ *     longer sign), otherwise at or after `cleared_at` (clearing needs a login with the new
+ *     key, so the change happened before it). An earlier op is refused, KEY_ROTATION_HOLD.
+ *     Unlike the HTTP hold this never lapses with time: the op's own block decides.
+ *
+ * @param {object|null} flag  the entry that applies (createTracker's findFlag)
+ * @param {{block_num?: number, timestamp?: string}} chainOp
+ * @returns {{allowed: boolean, code?: string}}
+ */
+function decideChainOp(flag, chainOp) {
+	if (!flag) return { allowed: true };
+	if (!(flag.cleared_at instanceof Date)) return { allowed: false, code: 'KEY_ROTATION_REQUIRED' };
+	const block = Number(chainOp && chainOp.block_num);
+	if (Number.isInteger(flag.rotated_block) && Number.isInteger(block)) {
+		return block > flag.rotated_block ? { allowed: true } : { allowed: false, code: 'KEY_ROTATION_HOLD' };
+	}
+	const at = chainOp && chainOp.timestamp ? chainTime(chainOp.timestamp) : null;
+	if (at && !isNaN(at.getTime()) && at.getTime() >= flag.cleared_at.getTime()) return { allowed: true };
+	return { allowed: false, code: 'KEY_ROTATION_HOLD' };
+}
+
 function tokenHash(token) {
 	return crypto.createHash('sha256').update(String(token)).digest('hex');
 }
@@ -320,6 +351,14 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 		};
 	}
 
+	// For chain tailers (arena_tailer): may an op signed by `username` be acted on? See
+	// decideChainOp. Rejects when the flag cannot be read, so the caller retries the block
+	// rather than acting on (or dropping) an op it could not check.
+	async function checkChainOp(username, chainOp) {
+		if (typeof username !== 'string' || !username) return { allowed: true };
+		return decideChainOp(await findFlag(username), chainOp);
+	}
+
 	// Called by /loginAuth once the session made with the new key is saved. `rotatedBlock`
 	// is the block of the key change (from status), kept so that signed transactions can
 	// be checked against it.
@@ -337,7 +376,7 @@ function createTracker({ getCollection, getAccount, checkRotation: check, endSes
 		await getCollection().updateMany({ user: username }, { $unset: { cleared_at: '', cleared_session: '', rotated_block: '' } });
 	}
 
-	return { status, gate, gateForUser, clear, unclear };
+	return { status, gate, gateForUser, checkChainOp, clear, unclear };
 }
 
-module.exports = { decideRotation, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS, SIGNED_TX_HOLD_MS };
+module.exports = { decideRotation, decideChainOp, checkRotation, createTracker, KEY_ROTATION_MESSAGE, HISTORY_FILTER_LOW, POSTING_AUTHORITY_OPS, SIGNED_TX_HOLD_MS };

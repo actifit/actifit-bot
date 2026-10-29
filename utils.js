@@ -584,8 +584,10 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				if (attempts < max_attempts){
 					attempts += 1;
 					console.log('Check AFIT Power Up');
-					//let's call the service by S-E
-					let url = new URL(config.hive_engine_trans_acct_his);
+					//let's call the service by S-E (the same history and receiving account as
+					//the /confirmAFITSEBulk job uses for this chain)
+					let url = new URL(bchain == 'STEEM' ? config.steem_engine_trans_acct_his : config.hive_engine_trans_acct_his);
+					const receivingAccount = bchain == 'STEEM' ? config.steem_engine_actifit_se : config.hive_engine_actifit_he;
 
 					//connect with our service to confirm AFIT received to proper wallet
 					try{
@@ -594,8 +596,10 @@ async function fetchOneAccount(chainLnk, account_name, label){
 						
 						let match_trx;
 						
-						//check if we have a proper entry matching user transfer
-						if (match_trx = trx_entries.find(trx => trx.from == targetUser)) {
+						//check if we have a proper entry matching user transfer: a plain AFIT
+						//tokens_transfer from this user to the receiving account (a stake,
+						//another token or a malformed entry is not a deposit)
+						if (Array.isArray(trx_entries) && (match_trx = trx_entries.find(trx => !afitBalance.depositError(trx, { user: targetUser, receivingAccount: receivingAccount })))) {
 							//found match, let's make sure transaction is recent enough
 							console.log('found match');
 							let paymentFound = true;
@@ -659,6 +663,12 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				console.log('success inserting transaction details');
 				return true;
 			}catch(err){
+				// another request stored this transaction first (unique index verified_tx_unique):
+				// it is already used, not a storage failure to retry
+				if (afitBalance.isDuplicateKeyError(err)){
+					console.log('trx already exists: ' + tx.transaction_id);
+					return 'duplicate';
+				}
 				// Report the failure instead of swallowing it. verified_tx is both the
 				// replay guard findVerifyTrx checks on entry AND the data source the
 				// stage-two verifiers (verifyGadgetTransaction and friends) re-read, so
@@ -764,7 +774,13 @@ async function fetchOneAccount(chainLnk, account_name, label){
 									//store transaction
 									stored = await storeVerifiedTrx(matchTrx, db, bchain);
 								}
-								if (stored){
+								if (stored === 'duplicate'){
+									// a concurrent request with the same transaction stored it first
+									clearInterval(fv_th_id);
+									resolve({error: 'trx already exists'});
+									return;
+								}
+								if (stored === true){
 									matchFound = true;
 								}
 							}

@@ -32,6 +32,10 @@ const dhive = require('@hiveio/dhive');
 const arena = require('./arena');
 
 const TAILER_STATE = 'arena_tailer_state';
+// Ops not indexed because a signer is under a posting-key rotation flag (see
+// processArenaBlock). Never applied automatically; replayHeldOps (run by hand through
+// scripts/replay_arena_held_ops.js) indexes the ones the CURRENT flag state allows.
+const HELD_OPS = 'arena_held_ops';
 const CURSOR_ID = 'cursor';
 const DEFAULT_NODES = ['https://api.hive.blog', 'https://api.deathwing.me'];
 
@@ -63,15 +67,88 @@ function extractArenaOps(block, blockNum) {
 	return out;
 }
 
+/** Every account that signed the op (posting and active auths), de-duplicated. */
+function opSigners(chainOp) {
+	const all = [].concat(chainOp.required_posting_auths || [], chainOp.required_auths || []);
+	return [...new Set(all.filter((a) => typeof a === 'string' && a))];
+}
+
+/**
+ * The key-rotation check the HTTP routes have, for ops read from the chain. With
+ * `opts.keyRotationCheck(account, chainOp)` (key_rotation createTracker().checkChainOp), an
+ * op whose signer is under a rotation flag - or signed before a cleared flag's key change -
+ * is NOT indexed: it may carry an exposed key. It is recorded in arena_held_ops (once, however
+ * often the block is re-tailed) and reported as {ok:false, held:true, reason}. A failing
+ * check throws, so the block is retried on the next tick instead of being passed over.
+ * Returns null when the op may be indexed.
+ */
+async function holdForKeyRotation(db, chainOp, opts) {
+	if (typeof opts.keyRotationCheck !== 'function') return null;
+	for (const account of opSigners(chainOp)) {
+		const verdict = await opts.keyRotationCheck(account, chainOp);
+		if (verdict && verdict.allowed === false) {
+			const reason = verdict.code || 'KEY_ROTATION_REQUIRED';
+			await db.collection(HELD_OPS).updateOne(
+				{ trx_id: chainOp.trx_id, block_num: chainOp.block_num, json: chainOp.json },
+				{ $setOnInsert: Object.assign({}, chainOp, { account, reason, held_at: new Date() }) },
+				{ upsert: true }
+			);
+			return { ok: false, held: true, reason };
+		}
+	}
+	return null;
+}
+
+// The chainOp fields indexArenaOp reads, from a held-op row.
+const CHAIN_OP_FIELDS = ['id', 'json', 'required_posting_auths', 'required_auths', 'trx_id', 'block_num', 'timestamp'];
+
+/**
+ * Re-check every held op (not yet replayed) against the CURRENT key-rotation state, oldest
+ * block first, and - with `opts.apply` - index the ones that are now allowed through the
+ * same indexArenaOp path as the tailer (idempotent: an op already indexed is a no-op). An op
+ * signed with the new key before the account's flag was cleared becomes allowed once the
+ * clear records the key-change block (decideChainOp). Each replayed row is marked with
+ * `replayed_at` and `replay_result` (indexArenaOp's answer, which may be a rejection) and is
+ * never replayed again. Without `apply` nothing is written (dry run).
+ *
+ * @param {object} db
+ * @param {object} opts  keyRotationCheck (required), apply, and the indexArenaOp options
+ * @returns {Promise<Array<{trx_id, block_num, status: 'still_held'|'would_replay'|'replayed'|'rejected', reason?, result?}>>}
+ */
+async function replayHeldOps(db, opts = {}) {
+	if (typeof opts.keyRotationCheck !== 'function') throw new Error('replayHeldOps needs keyRotationCheck');
+	const held = await db.collection(HELD_OPS).find({ replayed_at: { $exists: false } }).sort({ block_num: 1, _id: 1 }).toArray();
+	const out = [];
+	for (const row of held) {
+		const chainOp = {};
+		for (const k of CHAIN_OP_FIELDS) chainOp[k] = row[k];
+		const ref = { trx_id: row.trx_id, block_num: row.block_num };
+		let blocked = null;
+		for (const account of opSigners(chainOp)) {
+			const verdict = await opts.keyRotationCheck(account, chainOp);
+			if (verdict && verdict.allowed === false) { blocked = verdict.code || 'KEY_ROTATION_REQUIRED'; break; }
+		}
+		if (blocked) { out.push(Object.assign(ref, { status: 'still_held', reason: blocked })); continue; }
+		if (!opts.apply) { out.push(Object.assign(ref, { status: 'would_replay' })); continue; }
+		const result = await arena.indexArenaOp(db, chainOp, opts);
+		await db.collection(HELD_OPS).updateOne(
+			{ trx_id: row.trx_id, block_num: row.block_num, json: row.json },
+			{ $set: { replayed_at: new Date(), replay_result: result } }
+		);
+		out.push(Object.assign(ref, { status: result.ok ? 'replayed' : 'rejected', result }));
+	}
+	return out;
+}
+
 /** Apply every arena op in one block to the index. Returns the per-op results. */
 async function processArenaBlock(db, block, blockNum, opts = {}) {
 	const chainOps = extractArenaOps(block, blockNum);
 	const results = [];
 	for (const chainOp of chainOps) {
-		const res = await arena.indexArenaOp(db, chainOp, opts);
+		const res = (await holdForKeyRotation(db, chainOp, opts)) || await arena.indexArenaOp(db, chainOp, opts);
 		results.push({ trx_id: chainOp.trx_id, ...res });
 		if (typeof opts.log === 'function') {
-			const status = res.ok ? `${res.action}${res.noop ? ' (noop)' : ''}` : `REJECTED ${res.reason}`;
+			const status = res.ok ? `${res.action}${res.noop ? ' (noop)' : ''}` : `${res.held ? 'HELD' : 'REJECTED'} ${res.reason}`;
 			opts.log(`arena blk ${blockNum} ${chainOp.trx_id}: ${status}`);
 		}
 	}
@@ -173,8 +250,10 @@ function startArenaTailer(db, opts = {}) {
 
 module.exports = {
 	TAILER_STATE,
+	HELD_OPS,
 	extractArenaOps,
 	processArenaBlock,
+	replayHeldOps,
 	loadCursor,
 	saveCursor,
 	getTargetBlock,

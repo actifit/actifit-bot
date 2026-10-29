@@ -2049,32 +2049,17 @@ async function updateProperties () {
 }
 
 //function handles updating current user token count
+// Rebuilds every cached balance (user_tokens) from the ledger. This used to be one
+// aggregation with $out over user_tokens, which replaced the whole collection with sums
+// read minutes earlier and so undid any spend or credit the API made during the run. It now
+// only rewrites the users whose cache differs, each under their per-user AFIT lock and from
+// a fresh read of their ledger - see afit_balance.rebuildCachedBalances.
 async function updateUserTokens() {
   console.log('---- Updating User Tokens ----');
 
   try {
-    // This entire pipeline runs on the server and replaces the collection atomically
-    await db.collection('token_transactions').aggregate([
-      // only real numbers: one NaN row would make that user's whole balance NaN
-      { $match: { token_count: utils.FINITE_AMOUNT } },
-      { 
-        $group: { 
-          _id: "$user", 
-          tokens: { $sum: "$token_count" } 
-        } 
-      },
-      { $sort: { tokens: -1 } },
-      { 
-        $project: { 
-          _id: 1, 
-          user: "$_id", 
-          tokens: 1 
-        } 
-      },
-      { $out: "user_tokens" } // Replaces the collection automatically
-    ]).next(); // Use .next() or .toArray() to trigger execution
-
-    console.log('---- Updating User Tokens Complete ----');
+    const r = await afitBalance.rebuildCachedBalances(db, { log: (m) => console.log(m) });
+    console.log('---- Updating User Tokens Complete ---- ' + r.users + ' ledger user(s), ' + r.candidates + ' differed, ' + r.updated + ' rebuilt, ' + r.busy.length + ' busy, ' + r.failed + ' failed');
   } catch (err) {
     console.error('>> Update User Tokens Error: ' + err.message);
   }

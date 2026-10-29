@@ -46,6 +46,8 @@
   "prop_key": "test-prop-key",
   "specPass": "test-spec-pass",
   "admin_ops_token": "test-admin-ops-token",
+  "hive_engine_trans_acct_his": "https://history.example.invalid/accountHistory",
+  "hive_engine_actifit_he": "wallet.test",
   "funds_encr_mode": "aes192",
   "funds_encr_key": "testkeytestkeytestkey",
   "encr_mode": "aes192",
