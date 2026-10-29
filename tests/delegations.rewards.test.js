@@ -16,7 +16,7 @@ describe('delegations - per-job pause switches', () => {
 	test('only delegator rewards run; value-moving jobs and unknown names stay paused', () => {
 		process.env.NODE_ENV = 'production';
 		expect(d.payoutsPaused('delegatorRewards')).toBe(false);
-		for (const job of ['afitMove', 'gadgetPrize', 'bscBridge', 'redeemDelegations', 'someNewJob']) {
+		for (const job of ['afitMove', 'gadgetPrize', 'bscBridge', 'someNewJob']) {
 			expect(d.payoutsPaused(job)).toBe(true);
 		}
 	});

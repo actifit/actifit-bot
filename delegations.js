@@ -79,8 +79,7 @@ let schedule = require('node-schedule')
 
 // Each scheduled job has its own switch. true = paused. Change one and redeploy.
 // The jobs that move value off Actifit (AFIT move to Hive-Engine, BSC bridge, gadget
-// prize transfers) stay paused until each one has its own fixes. redeemDelegations
-// stays paused for good: it would cancel users' HP delegations in bulk.
+// prize transfers) stay paused until each one has its own fixes.
 // A job name that is not listed here counts as paused.
 // Skipped under the test runner so tests still exercise the functions.
 const JOB_PAUSED = {
@@ -88,7 +87,6 @@ const JOB_PAUSED = {
 	afitMove: true,
 	gadgetPrize: true,
 	bscBridge: true,
-	redeemDelegations: true,
 };
 function payoutsPaused(job) {
 	if (process.env.NODE_ENV === 'test') return false;
@@ -153,15 +151,6 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	  processGadgetBuyPrize();//param test
 	});
 	
-	//schedule the delegation cancellation event at 11:00 every day
-	let delegCancellation = schedule.scheduleJob({hour: 11, minute: 0}, function(){
-	  console.log('--- Cancel outdated delegations ---');
-	  // utils.redeemDelegations is not exported, so this call used to throw and kill the
-	  // process every day at 11:00. Do not simply export it: it cancels HP delegations
-	  // on chain in bulk. Kept paused.
-	  if (payoutsPaused('redeemDelegations')) return;
-	  if (typeof utils.redeemDelegations === 'function') utils.redeemDelegations();
-	});
 	
 	//run the airdrop once
 	/*const date = new Date(2021, 9, 26, 9, 00, 00);

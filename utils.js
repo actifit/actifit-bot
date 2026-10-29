@@ -262,8 +262,8 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	//     endpoint over the winner's healthy one. Reproduced with two concurrent
 	//     requests - and GET /getAccountData needs no auth and has no rate limit.
 	//   - for the length of a walk, every OTHER Blurt caller on the singleton
-	//     (getChainInfo, getTransactionAsync payment verification, every broadcast via
-	//     processSteemTrx) was pointed at whatever node the walk had reached.
+	//     (getChainInfo, getTransactionAsync payment verification, broadcasts) was pointed
+	//     at whatever node the walk had reached.
 	//   - a broadcast straddling a rotation could take its TaPoS reference block from
 	//     one node and broadcast to another.
 	// Those callers now keep config.blurt_node exactly as they did before this change.
@@ -336,132 +336,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	}
  }
  
-  async function encodeMemo(memo, userPubKey, bchain){
-	let chainLnk = await setProperNode(bchain);
-	console.log('utils decodememo')
-	memo = '#'+memo;
-	let encoded_msg = await chainLnk.memo.encode(config.full_pay_ac_key, userPubKey, memo); 
-	console.log(encoded_msg);
-	return encoded_msg;
- }
- 
- async function decodeMemo(memo, userKey, bchain){
-	let chainLnk = await setProperNode(bchain);
-	console.log('utils decodememo')
-	let decrypted = await chainLnk.memo.decode(userKey, memo); 
-	console.log(decrypted);
-	return decrypted;
- }
- 
-// Broadcast a Blurt transaction, rotating endpoints on failure.
-//
-// WHY THIS EXISTS: processSteemTrx is every Blurt WRITE this service performs - reward
-// claims, votes, transfers, comments and web posts all funnel through /performTrx and
-// /performTrxPost. It used blurtjs's broadcast, which is bound to a module-level
-// singleton pinned to config.blurt_node at load: one node, one attempt, no retry. A
-// public node throttling writes (observed: HTTP 429 on claim_reward_balance) failed the
-// user's action outright. Reads got endpoint rotation and account creation got dblurt
-// failover; writes were the remaining gap.
-//
-// WHY NOT ROTATE THE blurtjs SINGLETON: blurtjs's broadcast module hard-requires the
-// DEFAULT api instance, so it cannot be pointed at a per-attempt client. Rotating the
-// shared one mid-broadcast is worse than the bug - a broadcast is three sequential
-// calls, and a concurrent rotation between them takes the TaPoS reference block from
-// one node and broadcasts to another, producing a transaction the chain rejects.
-//
-// Doing the prepare/sign/send steps here rather than calling dblurt's sendOperations is
-// deliberate twofold: all three run against the SAME per-attempt client, so TaPoS can
-// never split across nodes; and sendOperations returns only the confirmation, while
-// both callers treat ref_block_num as the success signal - so we must return it.
-async function broadcastBlurtWithFailover(ops, key, label){
-	let privKey;
-	try{
-		privKey = dblurt.PrivateKey.fromString(key);
-	}catch(err){
-		return {error: 'invalid Blurt key: ' + (err && err.message ? err.message : err)};
-	}
-	try{
-		return await blurtCallWithFailover(async (c) => {
-			// TaPoS and the broadcast MUST come from this one client.
-			const props = await c.database.getDynamicGlobalProperties();
-			const ref_block_num = props.head_block_number & 0xffff;
-			const ref_block_prefix = Buffer.from(props.head_block_id, 'hex').readUInt32LE(4);
-			const expiration = new Date(new Date(props.time + 'Z').getTime() + 60000)
-				.toISOString().slice(0, -5);
-			const unsigned = { expiration, extensions: [], operations: ops, ref_block_num, ref_block_prefix };
-			const confirmation = await c.broadcast.send(c.broadcast.sign(unsigned, privKey));
-			if (confirmation && confirmation.expired === true){
-				throw new Error('transaction expired');
-			}
-			// Carry ref_block_num back out: /performTrx and /performTrxPost both read it
-			// to decide success, and verified_tx stores it.
-			return Object.assign({}, confirmation, { ref_block_num, ref_block_prefix, expiration });
-		}, label);
-	}catch(err){
-		return {error: err && err.message ? err.message : String(err)};
-	}
-}
 
-
- async function processSteemTrx(ops, userKey, bchain, db, active){
-	console.log('utils processSteemTrx');
-	//console.log(operation);
-	//const ops = [ operation ];
-	console.log('>>>>>>>>>>>> selected bchain <<<<<<<<<<');
-	console.log(ops);
-	
-	let chainLnk = await setProperNode(bchain);
-	let tx;
-	//console.log('using active:'+active);
-	//console.log(userKey);
-	if (bchain == 'BLURT'){
-		// Blurt goes through the rotating dblurt path; Hive keeps its existing client,
-		// which already has alternative_api_endpoints configured at module load.
-		tx = await broadcastBlurtWithFailover(ops, active || userKey,
-			'broadcast ' + (Array.isArray(ops) && ops[0] ? ops[0][0] : 'ops'));
-	}else if (active){
-		console.log('active key')
-		tx = await chainLnk.broadcast.sendAsync( 
-		   { operations: ops, extensions: [] },
-		   { active: active }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	}else{
-		console.log('posting')
-		tx = await chainLnk.broadcast.sendAsync( 
-		   { operations: ops, extensions: [] },
-		   { posting: userKey }
-		).catch(err => {
-			console.log(err.message);
-			return {error: err.message};
-		});
-	}
-	//store the trx also to actifit as verified
-	
-	//console.log(tx);
-	
-	if (tx && tx.ref_block_num){
-		let tx_entry = {
-			tx_id: tx.id,
-			ref_block_num: tx.ref_block_num,
-			tx: tx,
-			chain: bchain == 'BLURT' ? 'BLURT' : 'HIVE', // the chain setProperNode actually queried
-			date: new Date(),
-		};
-		try{
-			let transaction = await db.collection('verified_tx').insertOne(tx_entry);
-			console.log('success inserting transaction details');
-		}catch(err){
-			console.log(err);
-		}
-	}
-	
-	console.log(tx);
-	return {tx: tx};
- }
- 
  async function purchaseRealProd(req){
 	console.log('performing purchase on blockchain');
 	
@@ -601,89 +476,6 @@ async function broadcastBlurtWithFailover(ops, key, label){
 			return res;
 			
 		//});
-	}
-	
-	//function handles confirming if AFIT from SE were received
-	async function confirmAFITXTransition (targetUser, txid, amount, bchain, standardAfit) {
-		getConfig();
-		//track attempts for timeout
-		let attempts = 1;
-		let max_attempts = 15;
-		return new Promise((resolve, reject) => {
-			let th_id = setInterval(async function(){
-				if (attempts < max_attempts){
-					attempts += 1;
-					console.log('Check Move');
-					//let's call the service by S-E
-					let url = new URL(config.hive_engine_afitx_trx);
-					if (standardAfit == 1){
-						url = new URL(config.hive_engine_afit_trx);
-					}
-
-					//connect with our service to confirm AFIT received to proper wallet
-					try{
-						let se_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
-						let trx_entries = await se_connector.json();
-						console.log(trx_entries);
-						let match_trx;
-						
-						//check if we have a proper entry matching user transfer
-						if (match_trx = trx_entries.find(trx => (trx.from == targetUser && parseFloat(trx.quantity) == parseFloat(amount) && trx.transactionId == txid))) {
-							//found match, let's make sure transaction is recent enough
-							console.log('found match');
-							let paymentFound = true;
-							if (paymentFound){
-								//need to look again
-								console.log('found');
-								clearInterval(th_id);
-								resolve(match_trx);
-							}
-						}
-					}catch(err){
-						console.log(err);
-					}
-				}else{
-					//out of attempts: stop polling (the timer used to keep firing forever)
-					clearInterval(th_id);
-					resolve(null);
-				}
-			}, 5000);
-		});
-	}
-	
-	async function proceedAfitxMove (targetAcct, amount, chain, standardAfit){
-
-		let transId = 'ssc-mainnet-hive';
-		//let targetBchain = 'STEEM';
-		//other option is moving tokens from H-E to S-E
-
-		let tokenSymbol = 'AFITX';
-		if (standardAfit == 1){
-			tokenSymbol = 'AFIT';
-		}
-		
-		let json_data = {
-			contractName: 'tokens',
-			contractAction: 'transfer',
-			contractPayload: {
-				symbol: tokenSymbol,
-				to: targetAcct,
-				quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
-				memo: ''
-			}
-		}
-		
-		//send out transaction to blockchain
-		let chainLnk = await setProperNode(chain);
-		let tx = await chainLnk.broadcast.customJsonAsync(
-				config.active_key, 
-				[ config.account ] , 
-				[], 
-				transId, 
-				JSON.stringify(json_data)
-			).catch(err => {
-				console.log(err.message);
-		});
 	}
 	
 	
@@ -1151,53 +943,6 @@ async function broadcastBlurtWithFailover(ops, key, label){
 					resolve(tx_id);
 				}
 				//});
-			}, 5000);
-		});
-	}
-	
-	//function handles confirming if payment was received
-	async function confirmPaymentReceivedBuy (req, bchain) {
-		getConfig();
-		console.log('confirmPaymentReceivedBuy');
-		return new Promise((resolve, reject) => {
-			let th_id = setInterval(async function(){
-				console.log('check buy funds');
-				//let chainLnk = await setProperNode(bchain);
-				
-				let transactions;
-				transactions = await hiveClient.database.call('get_account_history', [config.buy_account, -1, 800]);
-				console.log("newestTxId:"+transactions[0][0]);
-
-					let tx_id = '';
-					let paymentFound = false;
-					for (let txs of transactions) {
-						let op = txs[1].op
-						//check if we received a transfer to our target account
-						//if we found a transfer operation sent to our target account, with the correct sender and the proper amount, proceed
-						if (op[0] === 'transfer'){
-							let sentAmount = op[1].amount.split(' ')[0];
-							if (op[1].to === config.buy_account && op[1].from === req.query.from && sentAmount === req.query.steem_amount){  
-								console.log(op[1]);
-								
-								let now = moment(new Date()); //todays date
-								let end = moment(txs[1].timestamp); // last update date
-								let duration = moment.duration(now.diff(end));
-								let hrs = duration.asHours();
-								//transaction needs to have been concluded within 5 hours.
-								if (hrs < 5){
-									tx_id = txs[1].trx_id;
-									paymentFound = true;
-									break;
-								}
-							}
-						}
-					}
-					if (paymentFound){
-						//need to look again
-						console.log('found');
-						clearInterval(th_id);
-						resolve(tx_id);
-					}
 			}, 5000);
 		});
 	}
@@ -2758,246 +2503,6 @@ async function fetchPendingRewards(user, bchain){
 	
 }
 
-//claimRewards('actifit', config.posting_key, 'HIVE');
-
-async function claimRewards(target_account, p_key, target_chain) {
-	console.log('>>>>> claiming rewards');
-	
-	let targetAccount = null;
-	
-	let claim_currency
-	let claim_currency_stable
-	let chainLnk
-	if (target_chain == 'HIVE'){
-		chainLnk = hive;
-		// fetchOneAccount collapses the three ways this can fail - node error, node
-		// timeout, and an account that simply does not exist - into a single null.
-		//
-		// It replaces `.catch(err => {return err;})`, which caught the error INTO THE
-		// VALUE: targetAccount then held an Error, the guard below passed because an
-		// Error is truthy, targetAccount[0] was undefined, and the next property read
-		// threw. The guard also tested the ARRAY rather than the element, so a genuine
-		// [] from a nonexistent account took exactly the same path and the
-		// 'account not found' branch was unreachable.
-		//
-		// Either way the TypeError escaped into the /claimRewards handler (app.js:2408),
-		// which is async with no try/catch - and before app.js had a process-level
-		// unhandledRejection logger, that ENDED THE API PROCESS. The BLURT
-		// leg below runs on every call and most Hive users have no Blurt account, so []
-		// was the common case rather than the rare one.
-		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards HIVE');
-		if (!targetAccount){
-			return {error: 'account not found'};
-		}
-		//console.log(targetAccount);
-		claim_currency = targetAccount.reward_hive_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
-		claim_currency_stable = targetAccount.reward_hbd_balance;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
-		console.log('pending HBD'+claim_currency_stable);
-	}else if (target_chain == 'BLURT'){
-		chainLnk = blurt;
-		// Same fix as the HIVE branch above, and this is the leg that actually fired:
-		// /claimRewards always calls BLURT, and an account that exists on Hive but not
-		// on Blurt answers [] - which is most users.
-		targetAccount = await fetchOneAccount(chainLnk, target_account, 'claimRewards BLURT');
-		if (!targetAccount){
-			return {error: 'account not found'};
-		}
-		//console.log(targetAccount);
-		claim_currency = targetAccount.reward_blurt_balance;//targetAccount.reward_steem_balance.replace("HIVE", "STEEM");
-		claim_currency_stable = targetAccount.reward_vesting_blurt;//targetAccount.reward_sbd_balance.replace("HBD", "SBD");
-		if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-			// Log the real failure instead of resolving the Error as the value: reading
-			// .ref_block_num off an Error silently reported 'n/a' and threw the cause away.
-			let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, targetAccount.reward_vesting_balance)
-				.catch(err => { console.log('claimRewards BLURT: broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
-			//return outc;
-			//console.log(outc);
-			if (outc && outc.ref_block_num){
-				console.log('success');
-				return {success: true};
-			}else{
-				console.log('error')
-				return {error: 'n/a'}
-			}
-		}else{
-			console.log('nothing to claim')
-			return {error: 'nothing to claim'};
-		}
-	}
-	
-	// Make api call only if you have actual reward
-	if (parseFloat(claim_currency) > 0 || parseFloat(claim_currency_stable) > 0 || parseFloat(targetAccount.reward_vesting_balance) > 0) {
-		
-		console.log('>>CLAIMING<<')
-		
-		// As above - surface the cause rather than reporting a bare 'n/a'.
-		let outc = await chainLnk.broadcast.claimRewardBalanceAsync(p_key, target_account, claim_currency, claim_currency_stable, targetAccount.reward_vesting_balance)
-			.catch(err => { console.log('claimRewards ' + target_chain + ': broadcast failed for ' + target_account + ' - ' + (err && err.message ? err.message : err)); return null; });
-		//console.log(outc);
-		if (outc && outc.ref_block_num){
-			console.log('success');
-			return {success: true};
-		}else{
-			console.log('error')
-			return {error: 'n/a'}
-		}
-			
-	}else{
-		console.log('nothing to claim.');
-		return {error: 'nothing to claim'};
-	}
-}
-
-
-async function proceedSendToken (tipper, srcAcct, srcAcctActKey, targetAcct, amount, chain, tokenSymbol){
-
-	let transId = 'ssc-mainnet-hive';
-	
-	
-	let json_data = {
-		contractName: 'tokens',
-		contractAction: 'transfer',
-		contractPayload: {
-			symbol: tokenSymbol,
-			to: targetAcct,
-			quantity: amount.toFixed(6),//needs to be string and a max of 6 digits supported
-			memo: tipper//'tipped '+amount+ ' ' + tokenSymbol + ' by @'+tipper
-		}
-	}
-	
-	//send out transaction to blockchain
-	//let chainLnk = await setProperNode(chain);
-	let tx = await hive.broadcast.customJsonAsync(
-	//let tx = await chainLnk.broadcast.customJsonAsync(
-			srcAcctActKey, 
-			[ srcAcct ] , 
-			[], 
-			transId, 
-			JSON.stringify(json_data)
-		).catch(err => {
-			console.log(err.message);
-	});
-	return tx;
-}
-
-async function fetchChainTrx(trxId, blkNo, chain){
-	let chainLnk = await setProperNode(chain);
-		
-	//track attempts for timeout
-	let attempts = 1;
-	let max_attempts = 30; //30 attempts x 8 seconds = 160 seconds (more than enough time for blockchain to confirm)
-	
-	return new Promise((resolve, reject) => {
-		let fetch_th_id = setInterval(async function(){
-			
-			try{
-				if (attempts < max_attempts){
-					console.log('finding trx ' + attempts);
-					attempts += 1;
-					let trx;
-					trx = await chainLnk.api.getTransactionAsync(trxId);
-					if (trx && trx.operations){
-						let ops = trx.operations;
-						for (const i in ops) {
-							const op = ops[i];
-							
-							if (op[0] === "comment") {
-								
-								let action = op[1];
-								let targetUser = action.parent_author;
-								let author = action.author;
-								let permlnk = action.parent_permlink;
-								let authPermlnk = action.permlink;
-								
-								//only comments & matching !AFIT keyword with or without amount
-								let matchingArr = action.body.match(/\!AFIT( *(\d+))?/i);
-								
-								if (targetUser != "" && matchingArr.length > 0) { //has a parent post and targets sending AFIT
-									let amnt = config.default_tip_amnt;
-									try{
-										if (matchingArr.length>2){
-											let tempAmnt = parseInt(matchingArr[2]);
-											if (tempAmnt < config.max_tip_amnt){
-												//set as new amount
-												amnt = tempAmnt;
-											}
-										}
-									}catch(parseErr){
-										console.log(parseErr);
-									}
-									
-									let result = {
-										reqUser: author,
-										reqPermlnk: authPermlnk,
-										tgtUser: targetUser,
-										cmtPermlnk: permlnk,
-										amnt: amnt,
-										chain: chain,
-										symbol: 'AFIT'
-									}
-									console.log('stop spinning. Get back');
-									//return result;
-									clearInterval(fetch_th_id);
-									resolve(result);
-								}
-								
-							}
-						}
-					}
-				}else{
-					//out of attempts: stop polling (the timer used to keep firing forever)
-					clearInterval(fetch_th_id);
-					resolve(null);
-				}
-			}catch(err){
-				console.log(err);
-				resolve(null);
-			}
-		}, 8000);
-	});
-	//return {};
-}
-
-async function commentToChain(reslt){
-	console.log('commenting to chain ' + reslt.chain);
-	let chainLnk = await setProperNode(reslt.chain);
-	let permalink = 're-' + reslt.tgtUser.replace(/\./g, '') + '-' + reslt.cmtPermlnk + '-' + new Date().toISOString().replace(/-|:|\./g, '').toLowerCase();
-	let jsonMetadata = {};
-	let tgtUser = reslt.tgtUser;
-	let tgtPermlnk = reslt.cmtPermlnk;
-	if (!reslt.eligible){
-		tgtUser = reslt.reqUser;
-		tgtPermlnk = reslt.reqPermlnk;
-	}
-	const operations = [ 
-		   ['comment', 
-			 { 
-			   "parent_author": tgtUser, 
-			   "parent_permlink": tgtPermlnk, 
-			   "author": config.tip_account,
-			   "permlink": permalink, 
-			   "title": reslt.symbol + ' tip ', 
-			   "body": reslt.content, 
-			   "json_metadata" : JSON.stringify(jsonMetadata)
-			 } 
-		   ]
-	];
-	
-	console.log(operations);
-	
-	let res = await chainLnk.broadcast.sendAsync( 
-		   { 
-			   operations: operations, 
-			   extensions: [] 
-			}, 
-		   { posting: config.tip_account_posting_key }
-	   ).catch(e => console.log(e))
-	console.log(res);
-	if (res && res.ref_block_num) {
-		console.log('Posted comment: ' + permalink);
-		//resolve(res);
-	}	
-}
 
 
 async function getGadgetBuyTickets(db){
@@ -3056,56 +2561,6 @@ function rewardCap(chain){
 	return weekly_rewd_cap;
 }
 
-
-//redeemDelegations();
-
-async function redeemDelegations(){
-	await delegationRedeemer('HIVE');
-	await delegationRedeemer('STEEM');
-}
-
-async function delegationRedeemer(bchain, threshold){
-	//go through delegations by funds account, and cancel outdated ones (3 months and beyond)
-	const max_limit = 1000;
-	let i = 0;
-	let today = new Date();
-	try{
-		let chainLnk = await setProperNode(bchain);
-		let delg = await chainLnk.api.getVestingDelegationsAsync(config.full_pay_benef_account, '', max_limit);
-		for (i=0;i<delg.length;i++){
-			//skip this user
-			if (config.perpetDelgList.includes(delg[i].delegatee)){
-				console.log('skipping '+delg[i].delegatee);
-				continue;
-			}
-			console.log('checking '+delg[i].delegatee)
-			let del_date = new Date(delg[i].min_delegation_time);
-			let dates_diff = today.getTime() - del_date.getTime();
-			let diff_in_days = Math.ceil(dates_diff / (1000 * 3600 * 24));
-
-			console.log(delg[i].min_delegation_time); 
-			console.log(diff_in_days);
-			let minDays = 3*30;
-			if (threshold){
-				minDays = threshold;
-			}
-			if (diff_in_days > minDays){
-				console.log('cancel out delegation to'+delg[i].delegatee);
-				//cancel out delegation
-				if (bchain == 'HIVE'){
-					//cancel HP delegation
-					await delegateToAccount(delg[i].delegatee, 0, bchain, 1);
-				}else{
-					await delegateToAccount(delg[i].delegatee, 0, bchain);
-				}
-			}
-		}
-		//console.log(delg);
-	}catch(err){
-		console.log(err);
-	}
-	
-}
 
 //launch();
 
@@ -3309,7 +2764,6 @@ const finiteAmount = afitBalance.finiteAmount;
    signupUsdPrices: signupUsdPrices,
    _resetSignupPriceCache: _resetSignupPriceCache,
    confirmSEAFITReceived: confirmSEAFITReceived,
-   confirmPaymentReceivedBuy: confirmPaymentReceivedBuy,
    sortArrLodash: sortArrLodash,
    getAccountData: getAccountData,
    // exported for tests/blurt-failover.test.js - the rotation is the thing that
@@ -3319,19 +2773,13 @@ const finiteAmount = afitBalance.finiteAmount;
    // exported for tests/createaccount-blurt-failover.test.js - rotation for the
    // dblurt client createAccount uses (not covered by #120's blurtjs rotation)
    blurtCallWithFailover: blurtCallWithFailover,
-   broadcastBlurtWithFailover: broadcastBlurtWithFailover,
    getChainInfo: getChainInfo,
    rewardPost: rewardPost,
    verifyFriendTransaction: verifyFriendTransaction,
    verifyGadgetTransaction: verifyGadgetTransaction,
    removeArrMatchLodash: removeArrMatchLodash,
    validateAccountLogin: validateAccountLogin,
-   processSteemTrx: processSteemTrx,
-   decodeMemo: decodeMemo,
-   encodeMemo: encodeMemo,
    sendNotification: sendNotification,
-   confirmAFITXTransition: confirmAFITXTransition,
-   proceedAfitxMove: proceedAfitxMove,
    verifyGadgetPayTransaction: verifyGadgetPayTransaction,
    verifyAFITBuyTransaction: verifyAFITBuyTransaction,
    verifyWorkoutTransaction: verifyWorkoutTransaction,
@@ -3342,11 +2790,7 @@ const finiteAmount = afitBalance.finiteAmount;
    calcScoreExtended: calcScoreExtended,
    verifyTipTransactions: verifyTipTransactions,
    updateTipBalances: updateTipBalances,
-   fetchChainTrx: fetchChainTrx,
-   commentToChain: commentToChain,
-   proceedSendToken: proceedSendToken,
    fetchPendingRewards: fetchPendingRewards,
-   claimRewards: claimRewards,
    findVerifyTrx: findVerifyTrx,
    rewardCap: rewardCap,
    delegateRC: delegateRC,

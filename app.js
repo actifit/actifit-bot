@@ -1995,16 +1995,8 @@ function redactForLog(obj){
 	return out;
 }
 
-function encrypt(text) {
- let cipher = crypto.createCipheriv(config.ppkey_enc_mode, config.user_ppkey_db, config.user_ppkey_iv);
- let encrypted = cipher.update(text);
- encrypted = Buffer.concat([encrypted, cipher.final()]);
- //return { iv: iv.toString('hex'), encryptedData: encrypted.toString('hex') };
- return encrypted.toString('hex');
-}
-
 function decrypt(text) {
- // Returns null rather than throwing. Every one of the 8 call sites is
+ // Returns null rather than throwing. Every call site is
  // `const receivedPlaintext = decrypt(req.ppkey);` inside an ASYNC route handler with
  // no try/catch, and there is no Express error handler, so a throw here is
  // an unhandled rejection - which used to end the API process (the process-level logger
@@ -2013,8 +2005,8 @@ function decrypt(text) {
  // It is reachable without anything being wrong: checkHdrs assigns
  // `req.ppkey = user_tkn[0].ppkey` with no existence check, and the Keychain login path
  // only PRESERVES a previously stored ppkey - a Keychain-only user has none. So
- // `Buffer.from(undefined, 'hex')` threw for any such user hitting /claimRewards,
- // /fetchUserData and five other routes. decipher.final() throws 'bad decrypt' the same
+ // `Buffer.from(undefined, 'hex')` threw for any such user on a route that calls
+ // this. decipher.final() throws 'bad decrypt' the same
  // way if user_ppkey_db/_iv ever differ between hosts sharing one Mongo.
  if (typeof text !== 'string' || text === '') {
   return null;
@@ -2436,160 +2428,10 @@ function fundsPassRetired(req, res) {
 	return res.status(410).send(FUNDS_PASS_RETIRED);
 }
 
-app.post('/performTrxPost', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/performTrxPost');
-	console.log('>>performTrx');
-
-	
-	const receivedPlaintext = decrypt(req.ppkey);
-	
-	//set HIVE as default
-	let bchain = 'HIVE';
-	
-	let userKey = receivedPlaintext;
-	
-	let operation;
-	if (req.body && req.body.operation){
-		try {
-			operation = JSON.parse(req.body.operation);
-		} catch (e) {
-			res.send({error: 'Invalid operation format'});
-			return;
-		}
-		//operation = req.query.operation;
-	}else{
-		res.send({error: 'operation not supplied'});
-	}
-
-	if (req.query.bchain){
-		bchain = req.query.bchain;
-	}
-
-	let match_arr = Object.entries(operation);
-	
-	//res.send({error: true, trx: performTrx});
-	//return;
-	let active = null;
-	if (req.body.active){
-		active = req.body.active;
-	}
-	
-	//perform transaction
-	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, active);
-	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, active);
-	console.log(performTrx);
-	if (!performTrx.tx.ref_block_num){
-		res.send({error: true, trx: performTrx});
-	}else{
-		res.send({success: true, trx: performTrx});
-	}
-});
-
 app.get('/availableHiveNodes', async function(req, res){
 	
 	res.send({'hiveNodes':config.alt_hive_nodes})
 });
-
-app.get('/delegateRC', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/delegateRC');
-	if (!req.query || !req.query.user || !req.query.delegatees || !req.query.max_rc){
-		res.send({});
-	}
-	let prm = req.query;
-	const receivedPlaintext = decrypt(req.ppkey);
-	let userKey = receivedPlaintext;
-	let outc = await utils.delegateRC(prm.user, userKey, [prm.delegatees], prm.max_rc);
-	console.log(outc);
-	res.send(outc)
-});
-
-app.post('/memoDecode', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/memoDecode');
-	console.log('memo decode');
-	//set HIVE as default
-	let bchain = 'HIVE';
-	const receivedPlaintext = decrypt(req.ppkey);
-	if (req.query && req.query.bchain){
-		bchain = req.query.bchain;
-	}
-	if (req.body && req.body.memo){
-		let outc = await utils.decodeMemo(req.body.memo, receivedPlaintext);
-		console.log('result');
-		console.log(outc);
-		res.send({xcstkn: outc});
-		return;
-	}
-	res.send({error:'unable to decode'});
-});
-
-app.get('/performTrx', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/performTrx');
-	console.log('>>performTrx');
-	
-	
-	const receivedPlaintext = decrypt(req.ppkey);
-	
-	//set HIVE as default
-	let bchain = 'HIVE';
-	
-	let userKey = receivedPlaintext;
-	
-	let operation;
-	console.log(req.query.operation);
-	if (req.query && req.query.operation){
-		try {
-			operation = JSON.parse(req.query.operation);
-		} catch (e) {
-			res.send({error: 'Invalid operation format'});
-			return;
-		}
-		//operation = req.query.operation;
-	}else{
-		res.send({error: 'operation not supplied'});
-	}
-	
-	if (req.query.bchain){
-		bchain = req.query.bchain;
-	}
-	
-	let match_arr = Object.entries(operation);
-	
-	//perform transaction
-	//let performTrx = await utils.processSteemTrx(match_arr[0][1], userKey, bchain, db, null);
-	let performTrx = await utils.processSteemTrx(operation, userKey, bchain, db, null);
-	//console.log(performTrx);
-	if (!performTrx.tx.ref_block_num){
-		res.send({error: true, trx: performTrx});
-	}else{
-		res.send({success: true, trx: performTrx});
-	}
-});
-
-
-app.get('/claimRewards', checkHdrs, keyRotationGate, async function (req, res){
-	return securityDisabled(res, '/claimRewards');
-	if (!req.query || !req.query.user){
-		res.send({'error':''})
-		return
-	}
-	
-	const receivedPlaintext = decrypt(req.ppkey);
-
-	// No stored key (Keychain-only login) or an undecryptable one. Say so instead of
-	// broadcasting with a null key.
-	if (!receivedPlaintext){
-		res.send({error: 'no posting key on file for this login'});
-		return;
-	}
-
-	let userKey = receivedPlaintext;
-	
-	/*res.send({'hive': {'success': true}, 'blurt': {'success': true}});*/
-	let outcHive = await utils.claimRewards(req.query.user, userKey, 'HIVE');
-	let outcBlurt = await utils.claimRewards(req.query.user, userKey, 'BLURT');
-	res.send({'hive': outcHive, 'blurt': outcBlurt});
-});
-
 
 app.get('/afitMarkets', async function (req, res){
 	let markets = [
@@ -2851,98 +2693,6 @@ app.get('/notificationTypes/', async function (req, res) {
 
 const loginRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
 const modActionRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
-
-app.post('/loginKeychain/', loginRateLimit, async function (req, res) {
-	return securityDisabled(res, '/loginKeychain');
-	try{
-		console.log('loginkeychain');
-		//const username = sanitize(req.body.username);
-		const username = req.body.username;
-		let bchain = req.body.bchain?req.body.bchain:'HIVE';
-		
-		if (username && username.length < 20 && username.length > 3) {
-			
-			//check if account is deleted, if so do not allow login
-			let result = await db.collection('deleted_accounts').findOne({user: username});
-			if (!result){
-				let account = await utils.getAccountData(username, bchain);
-				let pubKey = account[bchain].posting.key_auths[0][0];
-				console.log(pubKey);
-				let memo = encrypt(username+pubKey);
-				let encoded_message = await utils.encodeMemo(memo, pubKey, bchain);
-				res.send({message : encoded_message});
-				return;
-			}else{
-				res.send({error: 'error'});
-				return;
-			}
-		}
-		res.send({error: 'error'})
-	}catch(err){
-		console.log(err);
-		res.send({error: 'error'})
-	}
-});
-
-/* second phase of keychain login: verify the decrypted challenge and issue a session JWT.
-   /loginKeychain hands the client an encrypted-memo challenge; the client decrypts it via
-   Hive Keychain (proving it holds the private posting key) and posts the result back here.
-   Keychain logins store no posting key, so this issues a longer-lived token used purely for
-   authenticating checkHdrs API calls. */
-app.post('/loginKeychainVerify', loginRateLimit, async function (req, res) {
-	return securityDisabled(res, '/loginKeychainVerify');
-	try {
-		const username = req.body.username;
-		const decrypted = req.body.decrypted;
-		let bchain = req.body.bchain ? req.body.bchain : 'HIVE';
-
-		if (!username || username.length >= 20 || username.length <= 3 || !decrypted) {
-			return res.send({ success: false, message: 'Authentication failed! Please check the request' });
-		}
-
-		// do not allow login for deleted accounts
-		let deleted = await db.collection('deleted_accounts').findOne({ user: username });
-		if (deleted) {
-			return res.send({ success: false, message: 'error' });
-		}
-
-		// recompute the challenge for this account's posting public key
-		let account = await utils.getAccountData(username, bchain);
-		let pubKey = account[bchain].posting.key_auths[0][0];
-		let expected = encrypt(username + pubKey);
-
-		// the client returns the keychain-decrypted memo; normalize any leading '#'
-		let provided = String(decrypted).trim().replace(/^#/, '');
-		if (provided !== expected) {
-			return res.send({ success: false, message: 'Keychain verification failed' });
-		}
-
-		// proof valid -> issue a session token (no posting key is stored for keychain logins)
-		let token = jwt.sign({ username: username }, config.secret, { expiresIn: '30d' });
-
-		let db_col = db.collection('user_login_token');
-		// refresh the token on the existing record; posting keys are never kept
-		let user_tkn = await db_col.findOne({ user: username });
-		if (!user_tkn) {
-			user_tkn = {};
-		}
-		user_tkn.user = username;
-		user_tkn.token_hash = sessionToken.hashToken(token);
-		delete user_tkn.token;
-		delete user_tkn.ppkey;
-		user_tkn.lastlogin = new Date();
-		user_tkn.loginsrc = 'keychain';
-
-		await db_col.replaceOne({ user: username }, user_tkn, { upsert: true });
-
-		// return both `userdata` (used by LoginModal) and the chain-keyed account
-		// (spread, so callers relying on e.g. json.HIVE keep working)
-		res.send(Object.assign({ success: true, message: 'Authentication successful!', token: token, userdata: account[bchain] }, account));
-	} catch (err) {
-		console.log(err);
-		res.send({ success: false, message: 'error' });
-	}
-});
 
 /* Issue a session for a user whose control of the account was just proven (posting key
    checked against the chain, or a signed login challenge). Applies the key-rotation notice
@@ -5643,6 +5393,23 @@ app.get('/generateWorkout/:user/:blockNo/:trxID/:bchain', checkHdrs, sameUserPar
 	res.send(outc)
 });
 
+/* end point for buy workout generation via keychain / on-device signing: the transaction
+   is first confirmed on chain (findVerifyTrx with ?operation=), then the fee is charged */
+app.get('/generateWorkoutKeychain/:user/:trxID/:bchain', checkHdrs, sameUserParam, keyRotationGateByParam, async function (req, res) {
+	try {
+		let conf_trx = await utils.findVerifyTrx(req, db);
+		if (!conf_trx || conf_trx.error){
+			res.send({status: 'error'});
+			return;
+		}
+		let outc = await performBuyWorkout(req.params);
+		res.send(outc);
+	} catch (err) {
+		console.log('generateWorkoutKeychain failed - ' + (err && err.message ? err.message : err));
+		if (!res.headersSent) res.send({'error': 'Error performing buy action'});
+	}
+});
+
 /* end point for fetching pending user's friend requests */
 app.get('/userFriendRequests/:user', async function (req, res) {
 	let user_requests = await db.collection('user_requests').find({initiator: req.params.user, status:'pending'}).toArray();
@@ -7710,87 +7477,6 @@ app.get('/availableTipBalance', async function (req, res){
 	res.send(dt);
 })
 
-app.get('/processTipRequest', async function (req, res){
-	return securityDisabled(res, '/processTipRequest');
-	if (!adminOpsTokenOk(req)) { return res.send({}); }
-	if (!req.query.trxId || !req.query.blkNo){
-		res.send({status: "error", error: "missing data"});
-		return;
-	}
-	
-	//update tip transactions before proceeding
-	utils.verifyTipTransactions(db);
-	
-	//fetch the relevant transaction, and process it
-	let trxId = req.query.trxId;
-	let blkNo = req.query.blkNo;
-	
-	//default chain
-	let chain = 'HIVE';//req.query.chain;
-	if (req.query.chain){
-		chain = req.query.chain;
-	}
-	
-	//check if trx has been processed before
-	let matchCriteria = {trx_id: trxId, blk_no: blkNo, chain: chain};
-	let matchTrx = await db.collection('tip_trx_processed').findOne(matchCriteria);
-	console.log(matchTrx);
-	if (matchTrx && matchTrx.processed==true){
-		//found existing processed trx, bail
-		res.send({status: "error", error: "trx already processed"});
-		return;
-	}
-	
-	let reslt = await utils.fetchChainTrx(trxId, blkNo, chain);
-	console.log(reslt);
-	
-	if (reslt && reslt.reqUser && reslt.tgtUser && reslt.amnt){
-		//recalculate tip balances
-		let tipBal = await utils.updateTipBalances(db);
-	
-		//fetch user tip balance
-		let dt = await db.collection('tip_balance').findOne({user: reslt.reqUser});
-		//only send amount if user has enough balance
-		if (dt && dt.tip_balance && dt.tip_balance >= reslt.amnt ){
-			
-			//send out the tip
-			let tx_res = await utils.proceedSendToken(reslt.reqUser, config.tip_account, config.tip_account_active_key, reslt.tgtUser, reslt.amnt, chain, reslt.symbol);
-			
-			if (tx_res && tx_res.ref_block_num){
-				//update user tip balances
-				tipBal = await utils.updateTipBalances(db);
-				
-				//confirm trx was processed to db, to avoid any future abuse
-				await db.collection('tip_trx_processed').insertOne({trx_id: trxId, blk_no: blkNo, chain: chain, processed: true, pay_trx_id: tx_res.ref_block_num, date:new Date()})
-				reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
-				reslt.content += '<br/>Hey @'+reslt.tgtUser+', you just received '+reslt.amnt+' '+reslt.symbol+' tip from @'+reslt.reqUser+'!';
-				reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
-				reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
-				reslt.eligible = true;
-				//also write comment on blockchain
-				await utils.commentToChain(reslt);
-				//success
-				res.send({status: "success"});
-			}
-			//update tip balances
-			//console.log(trx);
-		}else{
-			reslt.content = '<img src="https://files.peakd.com/file/peakd-hive/afitbot/23yJk8EGMSLCRMAnLGQPirdaC6MdeMZMFTqrxuzYy5Qa9asTGhbLW8zqAdVGYkif4SWaD.png" >';
-			reslt.content += 'Hey @'+reslt.reqUser+', we could not send a tip as your tip balance is below threshold. To tip other users, please send a minimum of '+reslt.amnt+' '+reslt.symbol+' on hive-engine to @actifit.tip account, and then retry. ';
-			reslt.content += '<br/>For more info about tipping AFIT tokens, check out [this link](https://links.actifit.io/tipping-afit)';
-			reslt.content += '<br/><img src="https://cdn.steemitimages.com/DQmXrZz658YfMQBXNTA12rmbzqWXASfaGcNSqatJJ2ba7NR/rulersig2.jpg" >'
-			reslt.eligible = false;
-			//also write comment on blockchain
-			await utils.commentToChain(reslt);
-			res.send({status: "error", error: "user '+reslt.reqUser+' does not have enough tip balance"});
-			return;
-		}
-	}else{
-		res.send({status: "error", error: "trx not found"});
-		return;
-	}
-});
-
 //function handles updating user tip balances
 app.get('/updateTipBalances', async function (req, res){
 	let outcome = await utils.updateTipBalances(db);
@@ -7861,262 +7547,6 @@ app.get('/confirmAFITSEReceipt', checkHdrs, async function(req,res){
 		res.end();
 	}
 });
-
-
-//function handles the process of confirming AFITX S-E receipt into proper account, and then duplicating to new exchange
-app.get('/proceedAfitxTransition', async function(req,res){
-	return securityDisabled(res, '/proceedAfitxTransition');
-	if (!req.query.user || !req.query.amount || !req.query.txid){
-		res.send('{}');
-	}else{
-		//keeping request alive to avoid timeouts
-		let intID = setInterval(function(){
-			res.write(' ');
-		}, 6000);
-		let found_entry = false;
-		let afitx_amount = '';
-		let status = '';
-		try{
-			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
-			//attempt to find matching transaction
-			let targetUser = req.query.user;
-			let amount = req.query.amount;
-			let txid = req.query.txid;
-			let match_trx = await utils.confirmAFITXTransition(targetUser, txid, amount, bchain);
-			console.log(match_trx);
-			
-			//we found a match
-			if (match_trx){
-				found_entry = true;				
-				//query to see if entry already stored
-				let tokenExchangeTransQuery = {
-					user: targetUser,
-					token_count: amount,
-					trx: match_trx.transactionId,
-					block: match_trx.blockNumber,
-					chain: bchain,
-				}
-				//store the transaction to the user's profile
-				let tokenExchangeTrans = {
-					user: targetUser,
-					action: 'Move AFITX ',
-					token_count: amount,
-					net_amount: amount * (1-config.trx_burn_rate),//apply 0.5% burn rate
-					trx: match_trx.transactionId,
-					block: match_trx.blockNumber,
-					chain: bchain,
-					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
-				}
-				console.log(tokenExchangeTrans);
-				try{
-					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('afitx_transitions').find(tokenExchangeTransQuery).toArray();
-					if (Array.isArray(transaction) && transaction.length > 0){
-						//match found, duplicate request, ignore
-						console.log('Existing processed transaction. Ignore');
-						status = 'error';
-					}else{
-						//apply 0.5% burn rate
-						amount = amount * (1-config.trx_burn_rate)
-						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'));
-						let transaction = await db.collection('afitx_transitions').insertOne(tokenExchangeTrans);
-						console.log('success moving & inserting transaction data');
-						afitx_amount = amount;
-						status = 'success';
-					}
-				}catch(err){
-					console.log(err);
-					res.write(JSON.stringify({'error': 'Error moving AFITX tokens to user balance'}));
-					res.end();
-					return;
-				}
-			}
-		}catch(err){
-			console.log(err);
-		}
-		//we're done, let's clear our running interval
-		clearInterval(intID);
-		//send response
-		res.write(JSON.stringify({'afitx_transition': status, 'afitx_amount': afitx_amount}));
-		res.end();
-	}
-});
-
-//function handles the process of confirming AFIT S-E receipt into proper account, and then duplicating to new exchange
-app.get('/proceedAfitTransition', async function(req,res){
-	return securityDisabled(res, '/proceedAfitTransition');
-	if (!req.query.user || !req.query.amount || !req.query.txid){
-		res.send('{}');
-	}else{
-		//keeping request alive to avoid timeouts
-		let intID = setInterval(function(){
-			res.write(' ');
-		}, 6000);
-		let found_entry = false;
-		let afitx_amount = '';
-		let status = '';
-		try{
-			let bchain = (req.query&&req.query.bchain?req.query.bchain:'HIVE');
-			//attempt to find matching transaction
-			let targetUser = req.query.user;
-			let amount = req.query.amount;
-			let txid = req.query.txid;
-			let standardAfit = 1;
-			let match_trx = await utils.confirmAFITXTransition(targetUser, txid, amount, bchain, standardAfit);
-			console.log(match_trx);
-			
-			//we found a match
-			if (match_trx){
-				found_entry = true;				
-				//query to see if entry already stored
-				let tokenExchangeTransQuery = {
-					user: targetUser,
-					token_count: amount,
-					trx: match_trx.transactionId,
-					block: match_trx.blockNumber,
-					chain: bchain,
-				}
-				//store the transaction to the user's profile
-				let tokenExchangeTrans = {
-					user: targetUser,
-					action: 'Move AFIT',
-					token_count: amount,
-					net_amount: amount * (1-config.trx_burn_rate),//apply 0.5% burn rate
-					trx: match_trx.transactionId,
-					block: match_trx.blockNumber,
-					chain: bchain,
-					date: new Date(match_trx.timestamp * 1000) //timestamp linux convert to seconds first
-				}
-				console.log(tokenExchangeTrans);
-				try{
-					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('afit_transitions').find(tokenExchangeTransQuery).toArray();
-					if (Array.isArray(transaction) && transaction.length > 0){
-						//match found, duplicate request, ignore
-						console.log('Existing processed transaction. Ignore');
-						status = 'error';
-					}else{
-						//apply 0.5% burn rate
-						amount = amount * (1-config.trx_burn_rate)
-						let res = await utils.proceedAfitxMove(targetUser, amount, (bchain=='STEEM'?'HIVE':'STEEM'), standardAfit);
-						let transaction = await db.collection('afit_transitions').insertOne(tokenExchangeTrans);
-						console.log('success moving & inserting transaction data');
-						afitx_amount = amount;
-						status = 'success';
-					}
-				}catch(err){
-					console.log(err);
-					res.write(JSON.stringify({'error': 'Error moving AFIT tokens to user balance'}));
-					res.end();
-					return;
-				}
-			}
-		}catch(err){
-			console.log(err);
-		}
-		//we're done, let's clear our running interval
-		clearInterval(intID);
-		//send response
-		res.write(JSON.stringify({'afit_transition': status, 'afit_amount': afitx_amount}));
-		res.end();
-	}
-});
-
-
-/* function handles the processing of a buy order paid in HIVE */
-app.get('/processBuyOrderHive', async function(req, res){
-	return securityDisabled(res, '/processBuyOrderHive');
-	if (!req.query.user || !req.query.product_id) {
-		//make sure all params are sent
-		res.send({'error':'generic error'});
-	}else{
-		let user = req.query.user;
-		let product_id = req.query.product_id;
-		
-		let access_token;
-		
-		//fetch product info
-		let product = await grabProductInfo (product_id);
-		if (!product){
-			res.send({'error': 'Product not found'});
-			return;
-		}
-		
-		let price_options = product.price;
-		let price_options_count = price_options.length;
-		let item_price = 0;
-		let item_currency = 'HIVE';
-		let actifit_percent_cut = 10;
-		for (let i=0; i < price_options_count; i++){
-			let entry = price_options[i];
-			item_price = entry.price;
-			item_currency = entry.currency;
-			actifit_percent_cut = entry.actifit_percent_cut;
-		}
-		
-	
-		//product.provider = 'actifit.test.provider';
-		
-		//perform transaction
-		let productBuyTrans = {
-			user: user,
-			reward_activity: 'Buy Product',
-			buyer: user,
-			seller: product.provider,
-			product_id: product_id,
-			product_type: product.type,
-			product_price: item_price,
-			token_count: -item_price,
-			note: 'Bought Product '+product.name+ ' by '+product.provider,
-			date: new Date(),
-		}
-		try{
-			console.log(productBuyTrans);
-			let transaction = await db.collection('token_transactions').insertOne(productBuyTrans);
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
-		}
-		
-		
-		
-		//store this in escrow
-		let productSellTrans = {
-			user: config.escrow_account,//targetAccount,//product.provider,//config.escrow_account,
-			reward_activity: 'Sell Product',
-			buyer: user,
-			seller: product.provider,
-			product_id: product_id,
-			product_type: product.type,
-			product_price: item_price,
-			token_count: item_price,
-			actifit_percent_cut: actifit_percent_cut,
-			note: 'Sold Product '+product.name+ ' to '+user,
-			date: new Date(),
-		}
-		
-		//alternatively, send to provider directly
-		if (product.type == 'ebook'){
-			//close the transaction on the fly, no need to put in escrow. Rewards goes to seller
-			productSellTrans.user = product.provider;
-			productSellTrans.token_count = parseFloat(item_price) * (100 - parseFloat(actifit_percent_cut)) / 100;
-		}
-		
-		try{
-			console.log(productSellTrans);
-			let transaction = await db.collection('gadget_transactions_hive').insertOne(productSellTrans);
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error performing sell action. DB storing issue'});
-			return;
-		}		
-		
-		res.send({'status': 'Success', 'access_token': access_token});
-	}
-})
 
 
 /* function handles the processing of a buy order */
@@ -8617,16 +8047,14 @@ app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?',
 	
 });
 
-//NOTICE: deprecated in favor of activateMultiGadget
-//end point handles activating a bought gadget
-app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+/* activates one bought gadget, once its activate-gadget transaction is in verified_tx */
+async function performActivateTrx(req){
 	let user = req.params.user;
 	let gadget = req.params.gadget;
 	
 	//make sure friend and user are different
 	if (req.params.benefic && req.params.benefic.replace('@','') == user){
-		res.send({'error': 'User & friend cannot be the same account'});
-		return;
+		return ({'error': 'User & friend cannot be the same account'});
 	}
 	
 	console.log('activateGadget');
@@ -8634,8 +8062,7 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRo
 	console.log(ver_trx);
 	//ensure proper transaction
 	if (!ver_trx){
-		res.send({status: 'error'});
-		return;
+		return ({status: 'error'});
 	}
 	
 	// find item to activate and proceed activating
@@ -8673,17 +8100,40 @@ app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRo
 				{ upsert: true }
 			);
 			
-			// Only send success after the DB write is confirmed
-			res.send({ 'status': 'success' });
+			// Only report success after the DB write is confirmed
+			return ({ 'status': 'success' });
 		} catch (err) {
 			console.error('Error activating gadget:', err);
-			res.send({ 'error': 'Database update failed' });
+			return ({ 'error': 'Database update failed' });
 		}
 	} else {
-		res.send({ 'error': 'Product not found' });
+		return ({ 'error': 'Product not found' });
+	}
+}
+
+//end point handles activating a bought gadget via keychain / on-device signing: the
+//transaction is first confirmed on chain (findVerifyTrx with ?operation=)
+app.get('/activateGadgetKeychain/:user/:gadget/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+	try {
+		let conf_trx = await utils.findVerifyTrx(req, db);
+		if (!conf_trx || conf_trx.error){
+			res.send({status: 'error'});
+			return;
+		}
+		let outc = await performActivateTrx(req);
+		res.send(outc);
+	} catch (err) {
+		console.log('activateGadgetKeychain failed - ' + (err && err.message ? err.message : err));
+		if (!res.headersSent) res.send({'error': 'Error activating gadget'});
 	}
 });
 
+//NOTICE: deprecated in favor of activateMultiGadget
+//end point handles activating a bought gadget
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+	let outc = await performActivateTrx(req);
+	res.send(outc);
+});
 
 async function performDeactivateTrx(req){
 	let user = req.params.user;
@@ -9403,72 +8853,6 @@ app.post('/setUserFundsPass', fundsPassRetired);
 app.get('/confirmPaymentPasswordVerify', fundsPassRetired);
 
 
-//function handles the process of confirming buy event for AFIT via STEEM
-app.get('/confirmBuyAction', checkHdrs, async function(req,res){
-	return securityDisabled(res, '/confirmBuyAction');
-	if (!req.query.from || req.query.from !== req.user._id) {
-		res.write(JSON.stringify({error: 'Forbidden'}));
-		res.end();
-		return;
-	}
-	let match_trx = '';
-	let statusUpdated = false;
-	//keeping request alive to avoid timeouts
-	let intID = setInterval(function(){
-		res.write(' ');
-	},8000);
-	try{
-		let bchain = (req.query&&req.query.bchain?req.query.bchain:'');
-		match_trx = await utils.confirmPaymentReceivedBuy(req, bchain);
-		console.log('>>>> got TX '+match_trx);
-		let targetUser = req.query.from;
-		if (match_trx != ''){
-			try{
-				//we found the transfer, now let's book proper AFIT tokens for the user
-				//query to see if entry already stored
-				let tokenBuyTransQuery = {
-					user: targetUser,
-					buy_trx_ref: match_trx
-				}
-				//store the transaction to the user's profile
-				let tokenBuyTrans = {
-					reward_activity: 'Buy AFIT Actifit.io',
-					steem_spent: parseFloat(req.query.steem_amount),
-					buy_trx_ref: match_trx,
-					date: new Date(),
-				}
-				try{
-					console.log(tokenBuyTrans);
-					// once per buy transaction: the ledger row is written only if none exists for
-					// it, then the balance is raised with an atomic $inc (afitBalance.creditAfit)
-					const credit = await withAfitLock(targetUser, () => afitBalance.creditAfit(db, targetUser, req.query.afit_amount, tokenBuyTrans, { dedupe: tokenBuyTransQuery, context: 'confirm-buy-action' }), 30000);
-					if (credit.busy || (!credit.value.ok && !credit.value.duplicate)){
-						throw new Error('AFIT buy not credited: ' + (credit.busy ? 'busy' : credit.value.reason));
-					}
-					if (credit.value.ok) console.log('success adding AFIT tokens to user balance');
-				}catch(err){
-					console.log(err);
-					clearInterval(intID); // a timer left running wrote to the finished response
-					res.write(JSON.stringify({'error': 'Error adding AFIT tokens to user balance'}));
-					res.end();
-					return;
-				}
-			}catch(e){
-				console.log(e);
-			}
-		}
-	}catch(err){
-		console.log(err);
-	}
-	//we're done, let's clear our running interval
-	clearInterval(intID);
-	//res.send({'paymentReceivedTx':paymentReceivedTx, 'accountCreated': accountCreated});
-	res.write(JSON.stringify({'paymentReceivedTx': match_trx}));
-	res.end();
-});
-
-
-
 /* end point finding whether user has a pending AFIT token swap */
 app.get('/userHasPendingTokenSwap/:user', async function(req, res){
 	let user_pending_swap = await db.collection('exchange_afit_steem').findOne({user: req.params.user,upvote_processed: {$in: [null, false, 'false']}},{projection : { _id:0} });
@@ -10154,14 +9538,8 @@ function gk_add_commas(nStr) {
 
 /*************************** X BOOST REWARDS *************************/
 
-// In-memory cache for liking_users — refreshed at most once every 10 minutes
-let xLikersCache = { tweetId: null, likers: [], fetchedAt: 0 };
-
 // In-memory cache for up to 2 latest Actifit tweets — refreshed once per hour
 let xLatestTweetCache = { tweets: [], fetchedAt: 0 };
-
-// Per-user attempt counter to block cache-miss spam (resets on server restart)
-let xClaimAttempts = {};
 
 async function getLatestActifitTweet() {
 	const ONE_HOUR = 60 * 60 * 1000;
@@ -10213,28 +9591,6 @@ async function getLatestActifitTweet() {
 	}
 }
 
-async function getXLikers(tweetId) {
-	const TEN_MIN = 10 * 60 * 1000;
-	if (xLikersCache.tweetId === tweetId && Date.now() - xLikersCache.fetchedAt < TEN_MIN) {
-		return xLikersCache.likers;
-	}
-	const bearerToken = config.x_bearer_token || process.env.X_BEARER_TOKEN;
-	if (!bearerToken) {
-		console.error('x_bearer_token not configured');
-		return [];
-	}
-	try {
-		const resp = await axios.get(
-			`https://api.twitter.com/2/tweets/${tweetId}/liking_users?max_results=1000`,
-			{ headers: { Authorization: `Bearer ${bearerToken}` } }
-		);
-		xLikersCache = { tweetId, likers: resp.data.data || [], fetchedAt: Date.now() };
-	} catch (err) {
-		console.error('X API liking_users error:', err.message);
-	}
-	return xLikersCache.likers;
-}
-
 /* Returns up to 2 latest Actifit X post details — fetched automatically, cached 1 hour */
 app.get('/latestXPost', async function (req, res) {
 	const tweets = await getLatestActifitTweet();
@@ -10250,104 +9606,6 @@ app.get('/latestXPost', async function (req, res) {
 			tweetImageUrl: tweet.tweetImageUrl || tweet.profileImageUrl || ''
 		}))
 	});
-});
-
-/* Links a user's X account — stores OAuth tokens server-side */
-app.post('/linkXAccount', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/linkXAccount');
-	const user = req.query.user;
-	const { xUserId, xUsername, accessToken, refreshToken } = req.body;
-
-	if (!xUserId || !xUsername || !accessToken) {
-		return res.send({ error: 'Missing required X account fields' });
-	}
-
-	try {
-		await db.collection('x_linked_accounts').updateOne(
-			{ user },
-			{ $set: { user, x_user_id: xUserId, x_username: xUsername, access_token: accessToken, refresh_token: refreshToken || '', linked_at: new Date() } },
-			{ upsert: true }
-		);
-		res.send({ success: true });
-	} catch (err) {
-		console.error('linkXAccount DB error:', err);
-		res.send({ error: 'Failed to link X account' });
-	}
-});
-
-/* Verifies that the user liked the latest Actifit X post and awards AFIT */
-app.get('/claimXEngagementReward', checkHdrs, keyRotationGate, async function (req, res) {
-	return securityDisabled(res, '/claimXEngagementReward');
-	const user = req.query.user;
-	const tweetId = req.query.tweetId;
-
-	if (!tweetId) {
-		return res.send({ error: 'tweetId is required' });
-	}
-
-	// Check if user already claimed this tweet
-	const existing = await db.collection('x_engagement_claims').findOne({ user, tweet_id: tweetId });
-	if (existing) {
-		return res.send({ error: 'Already claimed for this post' });
-	}
-
-	// Rate-limit claim attempts per user per tweet
-	const attemptKey = user + '_' + tweetId;
-	xClaimAttempts[attemptKey] = (xClaimAttempts[attemptKey] || 0) + 1;
-	if (xClaimAttempts[attemptKey] > 3) {
-		return res.send({ error: 'Too many claim attempts. Please wait for the cache to refresh.' });
-	}
-
-	// Look up user's linked X account
-	const linkedAccount = await db.collection('x_linked_accounts').findOne({ user });
-	if (!linkedAccount) {
-		return res.send({ error: 'No linked X account found. Please link your X account first.' });
-	}
-
-	// Check cached liker list
-	const likers = await getXLikers(tweetId);
-	const hasLiked = likers.some(l => l.id === linkedAccount.x_user_id);
-
-	if (!hasLiked) {
-		return res.send({ success: false, retryInSeconds: 600, message: 'Like not detected yet. Cache refreshes every 10 minutes — please try again shortly.' });
-	}
-
-	// Calculate reward (1–5 AFIT, randomised)
-	const amount = Math.floor((Math.random() * 4 + 1) * 1000) / 1000;
-
-	try {
-		// Record claim to prevent double-claiming
-		await db.collection('x_engagement_claims').insertOne({
-			user,
-			tweet_id: tweetId,
-			amount,
-			claimed_at: new Date()
-		});
-
-		// Record to token_transactions (same pattern as AdMob rewards)
-		const tweetUrl = `https://x.com/actifit_fitness/status/${tweetId}`;
-		await db.collection('token_transactions').insertOne({
-			user,
-			token_count: amount,
-			reward_activity: 'X Engagement',
-			date: new Date(),
-			url: tweetUrl
-		});
-
-		// Reset attempt counter on successful claim
-		delete xClaimAttempts[attemptKey];
-
-		// Notify user
-		utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment',
-			`You received ${amount} AFIT for liking the Actifit X post!`,
-			tweetUrl
-		);
-
-		res.send({ success: true, amount });
-	} catch (err) {
-		console.error('claimXEngagementReward DB error:', err);
-		res.send({ error: 'Failed to record claim' });
-	}
 });
 
 /*************************** END X BOOST REWARDS *************************/

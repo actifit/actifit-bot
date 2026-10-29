@@ -37,7 +37,7 @@ const SECRET = 'correct-horse-battery-staple-MASTER';
 const loadRedactor = () => {
   const src = require('fs').readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
   const start = src.indexOf('const SENSITIVE_LOG_KEYS');
-  const end = src.indexOf('function encrypt(text)');
+  const end = src.indexOf('function decrypt(text)');
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('redactForLog block not found in app.js - was it renamed or moved?');
   }

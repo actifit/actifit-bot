@@ -201,22 +201,6 @@ components:
           type: array
           items: { type: 'string', format: 'url', example: 'https://api.hive.blog' }
       required: [hiveNodes]
-    DelegateRCOutcome:
-      type: object
-      description: Outcome of the RC delegation transaction. Refine based on actual 'utils.delegateRC' output.
-      example: { 'success': true, 'txId': '...' }
-    MemoDecodeResponse:
-      type: object
-      properties:
-        xcstkn: { type: 'string', description: 'Decoded memo content.', example: 'some_decoded_token' }
-      required: [xcstkn]
-    ClaimRewardsResponse:
-      type: object
-      properties:
-        hive: { type: 'object', example: { 'success': true } } # Refine with actual claim response
-        steem: { type: 'object', example: { 'success': true } } # Refine
-        blurt: { type: 'object', example: { 'success': true } } # Refine
-      required: [hive, steem, blurt]
     MarketPair:
       type: object
       properties:
@@ -286,11 +270,6 @@ components:
       items:
         type: string # Assuming config.notificationTypes is an array of strings
       example: ['new_post', 'mention', 'vote', 'receive_afit']
-    LoginKeychainMessage:
-      type: object
-      properties:
-        message: { type: 'string', example: 'your_encrypted_memo_message' }
-      required: [message]
     LoginAuthSuccess:
       type: object
       properties:
@@ -1053,11 +1032,6 @@ components:
         json_metadata: { type: 'object', example: { "tags": ["actifit"], "weight": 70 } }
         date: { type: 'string', format: 'date-time' }
       required: [author, permlink, date]
-    ConfirmBuyActionResponse:
-      type: object
-      properties:
-        paymentReceivedTx: { type: 'string', example: 'tx_id_for_buy_action' }
-      required: [paymentReceivedTx]
     UserPendingTokenSwap:
       type: object
       properties:
@@ -1312,17 +1286,6 @@ components:
         afit_se_power: { type: 'string', example: 'success' }
         afit_amount: { type: 'number', format: 'float', example: 123.45 }
       required: [afit_se_power, afit_amount]
-    ProceedAFITXTransitionResponse:
-      type: object
-      properties:
-        afitx_transition: { type: 'string', example: 'success' }
-        afitx_amount: { type: 'number', format: 'float', example: 99.5 }
-      required: [afitx_transition, afitx_amount]
-    ProcessTipRequestResponse:
-      type: object
-      properties:
-        status: { type: 'string', example: 'success' }
-        error: { type: 'string', nullable: true }
     TipBalance:
       type: object
       properties:
@@ -1866,43 +1829,6 @@ paths:
         '404': { description: 'No matching survey found.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
-  /performTrxPost:
-    post:
-      summary: Perform a blockchain transaction (POST method)
-      description: Submits a blockchain operation using the POST method, with the operation in the request body.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM', 'BLURT'], default: 'HIVE' }
-          required: false
-          description: The blockchain on which to perform the transaction.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                operation: { type: 'string', description: 'JSON string of the blockchain operation.', example: '{"id":"custom_json","json":{"my_data":"test"}}' }
-                active: { type: 'boolean', description: 'Whether to use active key for the transaction.', example: false, nullable: true }
-              required: [operation]
-      responses:
-        '200':
-          description: Transaction performed successfully.
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessResponse'
-                  - type: object
-                    properties:
-                      trx: { $ref: '#/components/schemas/TransactionOutcome' }
-        '400': { description: 'Operation not supplied.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or transaction failed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
   /availableHiveNodes:
     get:
       summary: Get available Hive nodes
@@ -1915,125 +1841,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/AvailableHiveNodesResponse'
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /delegateRC:
-    get:
-      summary: Delegate Resource Credits (RC)
-      description: Delegates Resource Credits (RC) from the authenticated user to specified delegatees.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The delegating username.
-        - in: query
-          name: delegatees
-          schema: { type: 'string', example: 'another-user' }
-          required: true
-          description: Comma-separated list of usernames to delegate to (currently supports single delegatee).
-        - in: query
-          name: max_rc
-          schema: { type: 'number', example: 10000000000000 } # Example RC amount
-          required: true
-          description: The maximum Resource Credits to delegate.
-      responses:
-        '200':
-          description: RC delegation initiated successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/DelegateRCOutcome'
-        '400': { description: 'Missing required query parameters.', content: { 'application/json': { schema: { type: 'object', example: {} } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or delegation failed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /memoDecode:
-    post:
-      summary: Decode a blockchain memo
-      description: Decodes an encrypted blockchain memo using the user's private key.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM', 'BLURT'], default: 'HIVE' }
-          required: false
-          description: The blockchain where the memo originated.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                memo: { type: 'string', description: 'The encrypted memo string.', example: '#encoded_memo_string' }
-              required: [memo]
-      responses:
-        '200':
-          description: Memo decoded successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MemoDecodeResponse'
-        '400': { description: 'Memo not supplied or unable to decode.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /performTrx:
-    get:
-      summary: Perform a blockchain transaction (GET method)
-      description: Submits a blockchain operation using the GET method, with the operation as a query parameter.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: operation
-          schema: { type: 'string', description: 'JSON string of the blockchain operation.', example: '{"id":"custom_json","json":{"my_data":"test"}}' }
-          required: true
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM', 'BLURT'], default: 'HIVE' }
-          required: false
-          description: The blockchain on which to perform the transaction.
-      responses:
-        '200':
-          description: Transaction performed successfully.
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SuccessResponse'
-                  - type: object
-                    properties:
-                      trx: { $ref: '#/components/schemas/TransactionOutcome' }
-        '400': { description: 'Operation not supplied.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or transaction failed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /claimRewards:
-    get:
-      summary: Claim pending blockchain rewards
-      description: Allows an authenticated user to claim pending rewards for HIVE, STEEM, and BLURT.
-      security:
-        - bearerAuth: []
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username claiming rewards.
-      responses:
-        '200':
-          description: Rewards claiming initiated for all chains.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ClaimRewardsResponse'
-        '400': { description: 'Missing user query parameter.', content: { 'application/json': { schema: { type: 'object', properties: { error: { type: 'string', example: '' } } } } } }
-        '401': { description: 'Authenticated user not identified.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or rewards claiming failed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /afitMarkets:
     get:
@@ -2310,30 +2117,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/NotificationTypesResponse'
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /loginKeychain/:
-    post:
-      summary: Initiate Keychain login
-      description: Initiates a login process using Keychain by returning an encoded message.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                username: { type: 'string', example: 'actifit-user' }
-                bchain: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM', 'BLURT'], default: 'HIVE' }
-              required: [username]
-      responses:
-        '200':
-          description: Successfully initiated Keychain login.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/LoginKeychainMessage'
-        '400': { description: 'Invalid username format or missing data.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or account deleted.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /loginAuth:
     post:
@@ -4024,6 +3807,39 @@ paths:
         '400': { description: 'Transaction verification failed, product not found, or insufficient AFIT funds.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error or DB storing issue.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
+  /generateWorkoutKeychain/{user}/{trxID}/{bchain}:
+    get:
+      summary: Buy a workout generation (Keychain / on-device signing)
+      description: Requires a session (x-acti-token) for the same user. Charges the workout generation fee after the generate-workout-wizard transaction, signed by the user, is confirmed on chain.
+      parameters:
+        - in: path
+          name: user
+          schema: { type: 'string', example: 'actifit-user' }
+          required: true
+          description: The user buying the workout (must be the session user).
+        - in: path
+          name: trxID
+          schema: { type: 'string', example: 'tx_hash_abc123' }
+          required: true
+          description: The transaction ID.
+        - in: path
+          name: bchain
+          schema: { type: 'string', example: 'HIVE' }
+          required: true
+          description: The blockchain of the transaction.
+        - in: query
+          name: operation
+          schema: { type: 'string' }
+          required: true
+          description: JSON of the signed transaction's operations, compared with the transaction found on chain.
+      responses:
+        '200':
+          description: Outcome of the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+
   /generateWorkout/{user}/{blockNo}/{trxID}/{bchain}:
     get:
       summary: Purchase workout generation
@@ -5686,40 +5502,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/FundsPassRetired'
 
-  /confirmBuyAction:
-    get:
-      summary: Confirm AFIT purchase via STEEM/HIVE payment
-      description: Confirms a payment for AFIT tokens made via STEEM or HIVE and credits the user's AFIT balance.
-      parameters:
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'] }
-          required: false
-          description: The blockchain of the payment.
-        - in: query
-          name: from
-          schema: { type: 'string', example: 'buyer-user' }
-          required: true
-          description: The user who sent the payment.
-        - in: query
-          name: steem_amount
-          schema: { type: 'number', format: 'float', example: 5.0 }
-          required: true
-          description: The amount of STEEM/HIVE paid.
-        - in: query
-          name: afit_amount
-          schema: { type: 'number', format: 'float', example: 100.0 }
-          required: true
-          description: The amount of AFIT to credit.
-      responses:
-        '200':
-          description: Payment confirmed and AFIT credited.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ConfirmBuyActionResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
   /userHasPendingTokenSwap/{user}:
     get:
       summary: Check for pending AFIT token swap
@@ -6157,36 +5939,6 @@ paths:
         '400': { description: 'Missing user query parameter.', content: { 'application/json': { schema: { type: 'object', example: {} } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
-  /processTipRequest:
-    get:
-      summary: Process a tip request
-      description: Processes a tip request based on a blockchain transaction, sending tokens and commenting on chain.
-      parameters:
-        - in: query
-          name: trxId
-          schema: { type: 'string', example: 'tx_hash_abc123' }
-          required: true
-          description: The transaction ID of the tip request.
-        - in: query
-          name: blkNo
-          schema: { type: 'integer', example: 123456789 }
-          required: true
-          description: The block number of the transaction.
-        - in: query
-          name: chain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'], default: 'HIVE' }
-          required: false
-          description: The blockchain of the transaction.
-      responses:
-        '200':
-          description: Tip request processed successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProcessTipRequestResponse'
-        '400': { description: 'Missing data or transaction already processed.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-        '500': { description: 'Internal server error or transaction not found.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
   /updateTipBalances:
     get:
       summary: Update user tip balances
@@ -6225,101 +5977,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConfirmAFITSEReceiptResponse'
         '400': { description: 'Missing user query parameter.', content: { 'application/json': { schema: { type: 'object', example: {} } } } } # Code returns {} on no user
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /proceedAfitxTransition:
-    get:
-      summary: Proceed AFITX cross-chain transition
-      description: Processes a cross-chain transfer of AFITX tokens (e.g., Hive-Engine to Steem-Engine).
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The user initiating the transition.
-        - in: query
-          name: amount
-          schema: { type: 'number', format: 'float', example: 100.0 }
-          required: true
-          description: The amount of AFITX to transfer.
-        - in: query
-          name: txid
-          schema: { type: 'string', example: 'tx_hash_abc123' }
-          required: true
-          description: The transaction ID of the initial transfer.
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'], default: 'HIVE' }
-          required: false
-          description: The source blockchain of the transfer.
-      responses:
-        '200':
-          description: AFITX transition processed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProceedAFITXTransitionResponse'
-        '400': { description: 'Missing data or existing processed transaction.', content: { 'application/json': { schema: { type: 'object', example: {} } } } } # Code returns {} on no data
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /proceedAfitTransition:
-    get:
-      summary: Proceed AFIT cross-chain transition
-      description: Processes a cross-chain transfer of AFIT tokens (e.g., Hive-Engine to Steem-Engine).
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The user initiating the transition.
-        - in: query
-          name: amount
-          schema: { type: 'number', format: 'float', example: 1000.0 }
-          required: true
-          description: The amount of AFIT to transfer.
-        - in: query
-          name: txid
-          schema: { type: 'string', example: 'tx_hash_abc123' }
-          required: true
-          description: The transaction ID of the initial transfer.
-        - in: query
-          name: bchain
-          schema: { type: 'string', example: 'HIVE', enum: ['HIVE', 'STEEM'], default: 'HIVE' }
-          required: false
-          description: The source blockchain of the transfer.
-      responses:
-        '200':
-          description: AFIT transition processed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProceedAFITXTransitionResponse' # Reusing schema structure
-        '400': { description: 'Missing data or existing processed transaction.', content: { 'application/json': { schema: { type: 'object', example: {} } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /processBuyOrderHive:
-    get:
-      summary: Process product buy order with HIVE
-      description: Processes a product purchase where payment is made in HIVE.
-      parameters:
-        - in: query
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The buyer's username.
-        - in: query
-          name: product_id
-          schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
-          required: true
-          description: The ID of the product being purchased.
-      responses:
-        '200':
-          description: Product purchase processed successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProcessBuyOrderResponse'
-        '400': { description: 'Missing data, product not found, or DB storing issue.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /processBuyOrder:
@@ -6743,6 +6400,49 @@ paths:
         '400': { description: 'User and beneficiary cannot be the same, or transaction verification failed/product not found.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
+  /activateGadgetKeychain/{user}/{gadget}/{trxID}/{bchain}/{benefic?}:
+    get:
+      summary: Activate a gadget (Keychain / on-device signing)
+      description: Activates one bought gadget after its activate-gadget transaction, signed by the user, is confirmed on chain.
+      parameters:
+        - in: path
+          name: user
+          schema: { type: 'string', example: 'actifit-user' }
+          required: true
+          description: The user activating the gadget.
+        - in: path
+          name: gadget
+          schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
+          required: true
+          description: The gadget's product id (user_gadgets.gadget), as in the signed transaction.
+        - in: path
+          name: trxID
+          schema: { type: 'string', example: 'tx_hash_abc123' }
+          required: true
+          description: The transaction ID.
+        - in: path
+          name: bchain
+          schema: { type: 'string', example: 'HIVE' }
+          required: true
+          description: The blockchain of the transaction.
+        - in: path
+          name: benefic
+          schema: { type: 'string', example: 'friend-user' }
+          required: false
+          description: Optional reward beneficiary; must match the signed transaction.
+        - in: query
+          name: operation
+          schema: { type: 'string' }
+          required: true
+          description: JSON of the signed transaction's operations, compared with the transaction found on chain.
+      responses:
+        '200':
+          description: Outcome of the request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericResponse'
+
   /activateGadget/{user}/{gadget}/{blockNo}/{trxID}/{bchain}/{benefic?}:
     get:
       summary: Activate a gadget (Deprecated)
@@ -6757,7 +6457,7 @@ paths:
           name: gadget
           schema: { type: 'string', example: '651a9e8f1d2e3f4a5b6c7d8e' }
           required: true
-          description: The MongoDB _id of the gadget to activate.
+          description: The gadget's product id (user_gadgets.gadget), as in the signed transaction.
         - in: path
           name: blockNo
           schema: { type: 'integer', example: 123456789 }

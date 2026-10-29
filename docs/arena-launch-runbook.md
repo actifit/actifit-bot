@@ -720,7 +720,6 @@ Which jobs actually double-spend, if a duplicate ever does run:
 | `processBSCTransfers` (every 3 min) | **NO** — sends real BEP20 AFIT from `config.bridgeWallet`, then marks the queue row *after* the send |
 | 00:01 gadget prize | **NO** — broadcasts the Hive transfer first, inserts the draw record after; no pre-claim lock |
 | 10:00 `moveAFITToSE` | **NO** — broadcasts per `powering_down_he` row |
-| 11:00 `redeemDelegations` | unverified — treat as unsafe |
 
 So the exposure window is **minutes, not three clock times a day**. A duplicate alive
 for three minutes re-sends the entire pending BSC bridge queue.
