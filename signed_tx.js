@@ -10,9 +10,15 @@
  * - If a signer is flagged in `key_rotation_required`, the transaction must come from a
  *   block after that account's key change (`rotated_block`): one from before may have been
  *   signed with the old, possibly exposed key. A still-active flag refuses it outright.
+ *   Gadget transactions are exempt (KEY_ROTATION_EXEMPT).
  */
 
 const SIGNED_TX_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+// Gadget buys, activations and deactivations spend the signer's own AFIT on gadgets that
+// stay on the account, so they are accepted from a flagged signer too (an owner decision,
+// including activations that name a reward beneficiary).
+const KEY_ROTATION_EXEMPT = new Set(['buy-gadget', 'activate-gadget', 'deactivate-gadget']);
 const { SIGNED_TX_HOLD_MS } = require('./key_rotation');
 
 // Chain timestamps are UTC ISO strings without a zone ("2026-10-23T10:00:00"), which
@@ -34,7 +40,7 @@ async function claimVerifiedTx(db, tx_id, purpose, now = Date.now) {
 			'tx.expiration': { $gte: chainTimestamp(now() - SIGNED_TX_MAX_AGE_MS) },
 		});
 		if (!row) return false;
-		if (!(await signedAfterKeyChange(db, row.tx, now))) {
+		if (!KEY_ROTATION_EXEMPT.has(purpose) && !(await signedAfterKeyChange(db, row.tx, now))) {
 			console.log('claimVerifiedTx: ' + id + ' is from before a signer key change; refused');
 			return false;
 		}

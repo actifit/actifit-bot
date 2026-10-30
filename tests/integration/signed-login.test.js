@@ -277,13 +277,13 @@ const upd = (ts, keys, block) => [0, Object.assign({ timestamp: ts, op: ['accoun
 			expect(await db.collection('exchange_afit_steem').countDocuments({ user: 'alice' })).toBe(1);
 		});
 
-		test('a flagged account that has not changed keys is refused', async () => {
+		test('a flagged account that has not changed keys can still exchange (it only spends its own AFIT)', async () => {
 			await db.collection('key_rotation_required').insertOne({ user: 'alice', since: FLAG_SINCE });
 			history = [upd('2026-01-01T00:00:00', [OLD], 100)];
 			const r = await exchange({ user: 'alice', tokens: '50' });
-			expect(r.status).toBe(403);
-			expect(r.body.code).toBe('KEY_ROTATION_REQUIRED');
-			expect(await ledger()).toHaveLength(0);
+			expect(r.status).toBe(200);
+			expect(r.body.status).toBe('Success');
+			expect(await ledger()).toHaveLength(1);
 		});
 
 		test('only the exchange tiers are accepted: legacy-priced and voter-crashing amounts are refused', async () => {
