@@ -999,6 +999,156 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		return outcHive;
 	}
 	
+	const SIGNUP_KEY_ROLES = ['owner', 'active', 'posting', 'memo'];
+
+	// Hive account-name rules: 3-16 chars, dot-separated segments that each start with a
+	// letter, are at least 3 long, end in a letter or digit, and hold only a-z 0-9 -.
+	function isValidHiveAccountName (name){
+		if (typeof name !== 'string' || name.length < 3 || name.length > 16) return false;
+		return name.split('.').every((seg) => /^[a-z][a-z0-9-]+[a-z0-9]$/.test(seg));
+	}
+
+	// The regex pins the STM prefix and the length of a 33-byte compressed key plus
+	// checksum; dhive then rejects a bad checksum or a point that is not on the curve.
+	function isValidHivePublicKey (key){
+		if (typeof key !== 'string' || !/^STM[1-9A-HJ-NP-Za-km-z]{50}$/.test(key)) return false;
+		try{
+			dhive.PublicKey.fromString(key);
+			return true;
+		}catch(err){
+			return false;
+		}
+	}
+
+	// Public keys of every key in our own config. A signup must never put one of these
+	// on a new account. Not cached, so a key rotation is picked up; never logged.
+	function getOwnPublicKeys (){
+		const found = new Set();
+		for (const field of Object.keys(config)){
+			if (!/_key$/.test(field) || typeof config[field] !== 'string') continue;
+			try{
+				found.add(dhive.PrivateKey.fromString(config[field]).createPublic().toString());
+			}catch(err){
+				// not a Hive private key (e.g. an API key)
+			}
+		}
+		return found;
+	}
+
+	// Strictly checks the four public keys a client sends for a new account. Returns
+	// {owner, active, posting, memo} as STM strings, or null if anything is off.
+	function parseSignupPublicKeys (keys){
+		if (!keys || typeof keys !== 'object') return null;
+		const out = {};
+		for (const role of SIGNUP_KEY_ROLES){
+			if (!isValidHivePublicKey(keys[role])) return null;
+			out[role] = keys[role];
+		}
+		const values = Object.values(out);
+		if (new Set(values).size !== values.length) return null;
+		const own = getOwnPublicKeys();
+		if (values.some((k) => own.has(k))) return null;
+		return out;
+	}
+
+	// True when `account` is the one we created for these keys: same single owner key
+	// and our account as recovery account. Proves a retry after a lost response, not a
+	// stranger who holds the name.
+	function isOurAccountForKeys (account, ownerPub){
+		const owner = account.owner.key_auths;
+		return owner.length === 1 && String(owner[0][0]) === String(ownerPub)
+			&& account.recovery_account === config.account;
+	}
+
+	// Broadcasts the Hive account create from PUBLIC keys only. Shared by the legacy
+	// password signup (which derives the keys first) and the key-based app signup.
+	// Uses a claimed account token when we hold one; otherwise pays `fee`, or refuses
+	// when `fee` is null. A broadcast error is not proof of failure (a node can accept
+	// the tx and then drop the connection), so the chain is checked before giving up.
+	// Returns 'created' | 'no_account_token' | 'failed'.
+	async function broadcastHiveAccountCreate (username, pub, pendingClaimed, fee){
+		const auth = (key) => ({ weight_threshold: 1, account_auths: [], key_auths: [[key, 1]] });
+		const fields = {
+			creator: config.account,
+			new_account_name: username,
+			owner: auth(pub.owner),
+			active: auth(pub.active),
+			posting: auth(pub.posting),
+			memo_key: pub.memo,
+			json_metadata: '',
+			extensions: [],
+		};
+		let op;
+		if (pendingClaimed > 0){
+			op = ['create_claimed_account', fields];
+		}else if (fee){
+			op = ['account_create', Object.assign({ fee: fee }, fields)];
+		}else{
+			console.log('createAccount: no claimed account tokens left, not paying a fee for ' + username);
+			return 'no_account_token';
+		}
+		try{
+			await hiveClient.broadcast.sendOperations([op], dhive.PrivateKey.fromString(config.active_key));
+			console.log('success');
+			return 'created';
+		}catch(err){
+			console.log(err);
+			try{
+				const check = await hiveClient.database.call('get_accounts', [[username]]);
+				if (check.length > 0 && isOurAccountForKeys(check[0], pub.owner)){
+					console.log('hive account present with our keys after broadcast error - treating as created');
+					return 'created';
+				}
+			}catch(verifyErr){
+				console.log(verifyErr);
+			}
+			return 'failed';
+		}
+	}
+
+	// Creates a Hive account from public keys the client derived on its own device; the
+	// password never reaches us. Hive only. Never pays a creation fee unless
+	// opts.allowFee is set, and then reads the fee from the chain.
+	// Returns { created, reason } where reason is one of: created, already_created,
+	// invalid_username, invalid_keys, username_taken, no_account_token, node_down,
+	// creation_failed. already_created means an earlier attempt with these exact keys
+	// landed, so a retry after a lost response still succeeds.
+	async function createHiveAccountWithKeys (username, keys, opts = {}){
+		if (typeof config == 'undefined' || config == null){
+			getConfig();
+		}
+		if (!isValidHiveAccountName(username)) return { created: false, reason: 'invalid_username' };
+		const pub = parseSignupPublicKeys(keys);
+		if (!pub) return { created: false, reason: 'invalid_keys' };
+
+		let creatorAccount;
+		try{
+			const existing = await hiveClient.database.call('get_accounts', [[username]]);
+			if (existing.length > 0){
+				return isOurAccountForKeys(existing[0], pub.owner)
+					? { created: true, reason: 'already_created' }
+					: { created: false, reason: 'username_taken' };
+			}
+			creatorAccount = (await hiveClient.database.call('get_accounts', [[config.account]]))[0];
+		}catch(err){
+			console.log('createHiveAccountWithKeys: hive lookup failed for ' + username + ' - ' + (err && err.message ? err.message : err));
+			return { created: false, reason: 'node_down' };
+		}
+
+		let fee = null;
+		if (opts.allowFee && !(creatorAccount.pending_claimed_accounts > 0)){
+			try{
+				fee = (await hiveClient.database.getChainProperties()).account_creation_fee;
+			}catch(err){
+				return { created: false, reason: 'node_down' };
+			}
+		}
+		const outcome = await broadcastHiveAccountCreate(username, pub, creatorAccount.pending_claimed_accounts, fee);
+		console.log('createHiveAccountWithKeys outcome for ' + username + ': ' + outcome);
+		if (outcome === 'created') return { created: true, reason: 'created' };
+		return { created: false, reason: outcome === 'no_account_token' ? 'no_account_token' : 'creation_failed' };
+	}
+
 	//function handles creating accounts via discounted claimed spots or normal paid method
 	async function createAccount (username, password, chain){
 		if (typeof config == 'undefined' || config == null){
@@ -1110,7 +1260,6 @@ async function fetchOneAccount(chainLnk, account_name, label){
 
 
 		//container for required ops
-		let hiveOps = [];
 		let blurtOps = [];
 
 		//if we have discounted accounts still available, let's do that, otherwise let's pay for account
@@ -1127,70 +1276,14 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				]);
 				console.log('current pending claimed accounts: ' + _creator_account[0].pending_claimed_accounts);
 
-				//create keys for new account
-				const ownerKey = dhive.PrivateKey.fromLogin(username, password, 'owner');
-				const activeKey = dhive.PrivateKey.fromLogin(username, password, 'active');
-				const postingKey = dhive.PrivateKey.fromLogin(username, password, 'posting');
-				let memoKey = dhive.PrivateKey.fromLogin(username, password, 'memo').createPublic();
-
-				//create auth values for passing to account creation
-				const ownerAuth = {
-					weight_threshold: 1,
-					account_auths: [],
-					key_auths: [[ownerKey.createPublic(), 1]],
-				};
-				const activeAuth = {
-					weight_threshold: 1,
-					account_auths: [],
-					key_auths: [[activeKey.createPublic(), 1]],
-				};
-				const postingAuth = {
-					weight_threshold: 1,
-					account_auths: [],
-					key_auths: [[postingKey.createPublic(), 1]],
-				};
-
-				if (_creator_account[0].pending_claimed_accounts > 0) {
-
-					//the create discounted account operation
-					const create_op = [
-						'create_claimed_account',
-						{
-							creator: creator,
-							new_account_name: username,
-							owner: ownerAuth,
-							active: activeAuth,
-							posting: postingAuth,
-							memo_key: memoKey,
-							json_metadata: '',
-							extensions: [],
-						}
-					];
-					hiveOps.push(create_op);
-				}else{
-
-					const create_op = [
-						'account_create',
-						{
-							fee: '3.000 HIVE',
-							creator: creator,
-							new_account_name: username,
-							owner: ownerAuth,
-							active: activeAuth,
-							posting: postingAuth,
-							memo_key: memoKey,
-							json_metadata: '',
-							extensions: [],
-						}
-					];
-					hiveOps.push(create_op);
+				//derive the new account's public keys; the create itself is shared with the app's key-based signup
+				const pub = {};
+				for (const role of SIGNUP_KEY_ROLES){
+					pub[role] = dhive.PrivateKey.fromLogin(username, password, role).createPublic();
 				}
-
-				const privateKey = dhive.PrivateKey.fromString(config.active_key);
-				//proceed executing the selected operation(s)
-				await hiveClient.broadcast.sendOperations(hiveOps, privateKey);
-				console.log('success');
-				hiveAccountSuccess = true;
+				const outcome = await broadcastHiveAccountCreate(username, pub,
+					_creator_account[0].pending_claimed_accounts, '3.000 HIVE');
+				hiveAccountSuccess = (outcome === 'created');
 			}catch(err){
 				console.log(err);
 				hiveAccountSuccess = false;
@@ -2774,6 +2867,9 @@ const finiteAmount = afitBalance.finiteAmount;
    vestsToSteemPower: vestsToSteemPower,
    vestsToHivePower: vestsToHivePower,
    createAccount: createAccount,
+   createHiveAccountWithKeys: createHiveAccountWithKeys,
+   parseSignupPublicKeys: parseSignupPublicKeys,
+   isValidHiveAccountName: isValidHiveAccountName,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
    signupRequiredCrypto: signupRequiredCrypto,
