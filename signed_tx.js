@@ -15,9 +15,9 @@
 
 const SIGNED_TX_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
-// Gadget buys, activations and deactivations spend the signer's own AFIT on gadgets that
-// stay on the account, so they are accepted from a flagged signer too (an owner decision,
-// including activations that name a reward beneficiary).
+// Gadget buys, activations and deactivations act only on the signer's own AFIT and gadgets,
+// so they are accepted from a flagged signer too (an owner decision, activations that name
+// a reward beneficiary included).
 const KEY_ROTATION_EXEMPT = new Set(['buy-gadget', 'activate-gadget', 'deactivate-gadget']);
 const { SIGNED_TX_HOLD_MS } = require('./key_rotation');
 

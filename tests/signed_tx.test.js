@@ -112,7 +112,7 @@ const uri = process.env.MONGO_TEST_URI;
 				expiration: new Date(Date.now() + 30 * 60 * 1000).toISOString().slice(0, 19),
 				block_num: 10, operations: [['transfer', { from: 'u6', to: 'actifit.market', amount: '1.000 HIVE', memo: 'buy-gadget:x' }]],
 			} });
-			expect(await claim(r)).toBe(true);
+			expect(await claim(r, 'buy-gadget-hive')).toBe(true);
 		});
 	});
 	// a row as findVerifyTrx stores it: recorded now, signed `signedAgoMs` ago

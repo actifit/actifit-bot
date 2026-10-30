@@ -8997,6 +8997,8 @@ app.get('/getFullFundsAccountList/', fundsPassRetired);
 /* end point handling storing transaction for AFIT/STEEM upvote exchange.
  * Authorised by the user's login session (checkHdrs) for that same account. It is not
  * key-rotation gated: it only spends the account's own AFIT on votes for its own reports.
+ * (So a session opened with an old key keeps working here until the user logs in with
+ * the new one, which ends the other sessions.)
  * It used to accept the account's funds password instead; every funds
  * password is treated as known to the attacker since the 2026-10-21 incident, so it is
  * no longer used here. A per-account lock stops a double submit from paying twice. */
