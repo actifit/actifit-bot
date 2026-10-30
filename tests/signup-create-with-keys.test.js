@@ -87,7 +87,6 @@ let dbCalls;
 const OUR_ACTIVE = dhive.PrivateKey.fromSeed('actifit-test-active-key');
 
 /** Script the chain: what the new name and our creator account look like. */
-/** Script the chain: what the new name and our creator account look like. */
 const chain = ({ existing = null, claimed = 5, creator = true, broadcastThrows = false, afterBroadcast = null,
   lookupThrows = false } = {}) => {
   let broadcasted = false;
@@ -225,6 +224,7 @@ describe('createHiveAccountWithKeys', () => {
     ['another memo key', () => ({ ...onChain(KEYS), memo_key: keysFor('newguy', 'else').memo })],
     ['a second owner key', () => ({ ...onChain(KEYS), owner: { ...single(KEYS.owner), key_auths: [[KEYS.owner, 1], [keysFor('x', 'y').owner, 1]] } })],
     ['an account auth on posting', () => ({ ...onChain(KEYS), posting: { ...single(KEYS.posting), account_auths: [['someone', 1]] } })],
+    ['a different owner threshold', () => ({ ...onChain(KEYS), owner: { ...single(KEYS.owner), weight_threshold: 2 } })],
     ['another recovery account', () => onChain(KEYS, 'someone')],
     ['an unexpected shape', () => ({ name: 'newguy' })],
   ])('reports username_taken when the existing account has %s', async (_label, make) => {
