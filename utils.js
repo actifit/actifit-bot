@@ -1020,16 +1020,17 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		}
 	}
 
-	// Public keys of every key in our own config. A signup must never put one of these
-	// on a new account. Not cached, so a key rotation is picked up; never logged.
+	// Public keys of every Hive private key in our config, whatever the field is called
+	// (active_key, rewards_account_pkey, ...). A signup must never put one of these on a
+	// new account. Not cached, so a key rotation is picked up; never logged.
 	function getOwnPublicKeys (){
 		const found = new Set();
-		for (const field of Object.keys(config)){
-			if (!/_key$/.test(field) || typeof config[field] !== 'string') continue;
+		for (const value of Object.values(config)){
+			if (typeof value !== 'string') continue;
 			try{
-				found.add(dhive.PrivateKey.fromString(config[field]).createPublic().toString());
+				found.add(dhive.PrivateKey.fromString(value).createPublic().toString());
 			}catch(err){
-				// not a Hive private key (e.g. an API key)
+				// not a Hive private key
 			}
 		}
 		return found;
@@ -1041,7 +1042,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		if (!keys || typeof keys !== 'object') return null;
 		const out = {};
 		for (const role of SIGNUP_KEY_ROLES){
-			if (!isValidHivePublicKey(keys[role])) return null;
+			if (!Object.prototype.hasOwnProperty.call(keys, role) || !isValidHivePublicKey(keys[role])) return null;
 			out[role] = keys[role];
 		}
 		const values = Object.values(out);
@@ -1051,21 +1052,25 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		return out;
 	}
 
-	// True when `account` is the one we created for these keys: same single owner key
-	// and our account as recovery account. Proves a retry after a lost response, not a
-	// stranger who holds the name.
-	function isOurAccountForKeys (account, ownerPub){
-		const owner = account.owner.key_auths;
-		return owner.length === 1 && String(owner[0][0]) === String(ownerPub)
+	// True when `account` is exactly what we would create for these keys: one key per
+	// authority, no account auths, all four keys equal, us as recovery account. Every
+	// one of those is public, so a match does NOT prove the caller made the request;
+	// the route must tie it to its own signup record before treating it as success.
+	function accountMatchesKeys (account, pub){
+		const single = (auth, key) => !!auth && auth.weight_threshold === 1
+			&& Array.isArray(auth.account_auths) && auth.account_auths.length === 0
+			&& Array.isArray(auth.key_auths) && auth.key_auths.length === 1
+			&& String(auth.key_auths[0][0]) === String(key);
+		return !!account && single(account.owner, pub.owner) && single(account.active, pub.active)
+			&& single(account.posting, pub.posting) && String(account.memo_key) === String(pub.memo)
 			&& account.recovery_account === config.account;
 	}
 
 	// Broadcasts the Hive account create from PUBLIC keys only. Shared by the legacy
 	// password signup (which derives the keys first) and the key-based app signup.
 	// Uses a claimed account token when we hold one; otherwise pays `fee`, or refuses
-	// when `fee` is null. A broadcast error is not proof of failure (a node can accept
-	// the tx and then drop the connection), so the chain is checked before giving up.
-	// Returns 'created' | 'no_account_token' | 'failed'.
+	// when `fee` is null. Throws if the broadcast fails.
+	// Returns 'created' | 'no_account_token'.
 	async function broadcastHiveAccountCreate (username, pub, pendingClaimed, fee){
 		const auth = (key) => ({ weight_threshold: 1, account_auths: [], key_auths: [[key, 1]] });
 		const fields = {
@@ -1087,32 +1092,24 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			console.log('createAccount: no claimed account tokens left, not paying a fee for ' + username);
 			return 'no_account_token';
 		}
-		try{
-			await hiveClient.broadcast.sendOperations([op], dhive.PrivateKey.fromString(config.active_key));
-			console.log('success');
-			return 'created';
-		}catch(err){
-			console.log(err);
-			try{
-				const check = await hiveClient.database.call('get_accounts', [[username]]);
-				if (check.length > 0 && isOurAccountForKeys(check[0], pub.owner)){
-					console.log('hive account present with our keys after broadcast error - treating as created');
-					return 'created';
-				}
-			}catch(verifyErr){
-				console.log(verifyErr);
-			}
-			return 'failed';
-		}
+		await hiveClient.broadcast.sendOperations([op], dhive.PrivateKey.fromString(config.active_key));
+		console.log('success');
+		return 'created';
 	}
 
 	// Creates a Hive account from public keys the client derived on its own device; the
 	// password never reaches us. Hive only. Never pays a creation fee unless
-	// opts.allowFee is set, and then reads the fee from the chain.
-	// Returns { created, reason } where reason is one of: created, already_created,
+	// opts.allowFee === true (server policy only, never client input), and then reads
+	// the fee from the chain.
+	// Returns { created, reason }. reason: created, exists_with_same_keys,
 	// invalid_username, invalid_keys, username_taken, no_account_token, node_down,
-	// creation_failed. already_created means an earlier attempt with these exact keys
-	// landed, so a retry after a lost response still succeeds.
+	// creation_failed.
+	// - exists_with_same_keys (created:false): the account is on chain exactly as these
+	//   keys would make it, either from an earlier attempt or from a broadcast that
+	//   errored but landed. Keys are public, so only the caller's own signup record can
+	//   turn this into success.
+	// - creation_failed: the broadcast errored and the account was not visible yet. It
+	//   may still land; treat it as unknown and check again, never as final.
 	async function createHiveAccountWithKeys (username, keys, opts = {}){
 		if (typeof config == 'undefined' || config == null){
 			getConfig();
@@ -1121,32 +1118,42 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		const pub = parseSignupPublicKeys(keys);
 		if (!pub) return { created: false, reason: 'invalid_keys' };
 
+		const lookup = async () => (await hiveClient.database.call('get_accounts', [[username]]))[0];
 		let creatorAccount;
 		try{
-			const existing = await hiveClient.database.call('get_accounts', [[username]]);
-			if (existing.length > 0){
-				return isOurAccountForKeys(existing[0], pub.owner)
-					? { created: true, reason: 'already_created' }
-					: { created: false, reason: 'username_taken' };
+			const existing = await lookup();
+			if (existing){
+				return { created: false, reason: accountMatchesKeys(existing, pub) ? 'exists_with_same_keys' : 'username_taken' };
 			}
 			creatorAccount = (await hiveClient.database.call('get_accounts', [[config.account]]))[0];
 		}catch(err){
 			console.log('createHiveAccountWithKeys: hive lookup failed for ' + username + ' - ' + (err && err.message ? err.message : err));
 			return { created: false, reason: 'node_down' };
 		}
+		if (!creatorAccount) return { created: false, reason: 'node_down' };
 
 		let fee = null;
-		if (opts.allowFee && !(creatorAccount.pending_claimed_accounts > 0)){
+		if (opts.allowFee === true && !(creatorAccount.pending_claimed_accounts > 0)){
 			try{
 				fee = (await hiveClient.database.getChainProperties()).account_creation_fee;
 			}catch(err){
 				return { created: false, reason: 'node_down' };
 			}
 		}
-		const outcome = await broadcastHiveAccountCreate(username, pub, creatorAccount.pending_claimed_accounts, fee);
-		console.log('createHiveAccountWithKeys outcome for ' + username + ': ' + outcome);
-		if (outcome === 'created') return { created: true, reason: 'created' };
-		return { created: false, reason: outcome === 'no_account_token' ? 'no_account_token' : 'creation_failed' };
+		try{
+			const outcome = await broadcastHiveAccountCreate(username, pub, creatorAccount.pending_claimed_accounts, fee);
+			console.log('createHiveAccountWithKeys outcome for ' + username + ': ' + outcome);
+			return outcome === 'created' ? { created: true, reason: 'created' } : { created: false, reason: outcome };
+		}catch(err){
+			// Not proof of failure: a node can accept the tx and then drop the connection.
+			console.log(err);
+			try{
+				if (accountMatchesKeys(await lookup(), pub)) return { created: false, reason: 'exists_with_same_keys' };
+			}catch(verifyErr){
+				console.log(verifyErr);
+			}
+			return { created: false, reason: 'creation_failed' };
+		}
 	}
 
 	//function handles creating accounts via discounted claimed spots or normal paid method

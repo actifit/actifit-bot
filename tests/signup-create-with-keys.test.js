@@ -4,11 +4,12 @@
  *
  * What these tests pin:
  * - only well-formed, distinct public keys that are not ours reach the chain;
- * - a retry after a lost response succeeds only when the existing account carries
- *   the SAME owner key and we are its recovery account (not "someone owns the name");
- * - no claimed token means no account unless the caller explicitly allows paying the
- *   chain fee;
- * - the legacy password signup still builds the same operation through the shared code.
+ * - an account already on chain with these exact keys is reported as
+ *   exists_with_same_keys, never as success: keys are public, so only the route's own
+ *   signup record can prove the caller made the original request;
+ * - no claimed token means no account unless the caller passes allowFee === true;
+ * - the legacy password signup builds the same operation through the shared code and
+ *   still reports a broadcast error as failure.
  */
 
 const path = require('path');
@@ -61,6 +62,8 @@ jest.mock('dblurt', () => {
 
 const dhive = require('@hiveio/dhive');
 const utils = require('../utils');
+const { Types } = require('@hiveio/dhive/lib/chain/serializer');
+const ByteBuffer = require('bytebuffer');
 const config = utils.getConfig();
 
 // Shared with the Android app's key-derivation tests (dhive PrivateKey.fromLogin).
@@ -84,15 +87,16 @@ let dbCalls;
 const OUR_ACTIVE = dhive.PrivateKey.fromSeed('actifit-test-active-key');
 
 /** Script the chain: what the new name and our creator account look like. */
-const chain = ({ existing = null, claimed = 5, broadcastThrows = false, afterBroadcast = null,
+/** Script the chain: what the new name and our creator account look like. */
+const chain = ({ existing = null, claimed = 5, creator = true, broadcastThrows = false, afterBroadcast = null,
   lookupThrows = false } = {}) => {
   let broadcasted = false;
   dhive.Client.__db = (method, params) => {
     const name = params[0][0];
     dbCalls.push(name);
     if (lookupThrows) return Promise.reject(new Error('HTTP 503'));
-    if (name === config.account) return Promise.resolve([{ name, pending_claimed_accounts: claimed }]);
-    const acct = broadcasted && afterBroadcast !== undefined && afterBroadcast !== null ? afterBroadcast : existing;
+    if (name === config.account) return Promise.resolve(creator ? [{ name, pending_claimed_accounts: claimed }] : []);
+    const acct = broadcasted && afterBroadcast ? afterBroadcast : existing;
     return Promise.resolve(acct ? [acct] : []);
   };
   dhive.Client.__send = (ops) => {
@@ -102,22 +106,30 @@ const chain = ({ existing = null, claimed = 5, broadcastThrows = false, afterBro
   };
 };
 
-const onChain = (owner, recovery) => ({
-  name: 'newguy', owner: { weight_threshold: 1, key_auths: [[owner, 1]] }, recovery_account: recovery,
+const single = (key) => ({ weight_threshold: 1, account_auths: [], key_auths: [[key, 1]] });
+/** An account on chain exactly as we would have created it for `keys`. */
+const onChain = (keys, recovery = config.account) => ({
+  name: 'newguy', owner: single(keys.owner), active: single(keys.active), posting: single(keys.posting),
+  memo_key: keys.memo, recovery_account: recovery,
+});
+
+let origActive;
+let origPkey;
+beforeEach(() => {
+  sends = [];
+  dbCalls = [];
+  origActive = config.active_key;
+  origPkey = config.rewards_account_pkey;
+  config.active_key = OUR_ACTIVE.toString();
+  dhive.Client.__props = () => Promise.resolve({ account_creation_fee: '3.000 HIVE' });
+  chain();
+});
+afterEach(() => {
+  config.active_key = origActive;
+  if (origPkey === undefined) delete config.rewards_account_pkey; else config.rewards_account_pkey = origPkey;
 });
 
 describe('createHiveAccountWithKeys', () => {
-  let origActive;
-
-  beforeEach(() => {
-    sends = [];
-    dbCalls = [];
-    origActive = config.active_key;
-    config.active_key = OUR_ACTIVE.toString();
-    chain();
-  });
-  afterEach(() => { config.active_key = origActive; });
-
   it('derives the shared test vector the Android app is checked against', () => {
     expect(KEYS.owner).toBe(VECTOR_OWNER);
   });
@@ -134,6 +146,8 @@ describe('createHiveAccountWithKeys', () => {
     expect(op.posting.key_auths).toEqual([[KEYS.posting, 1]]);
     expect(op.memo_key).toBe(KEYS.memo);
     expect(op.fee).toBeUndefined();
+    // The op must serialize as a real Hive operation.
+    expect(() => Types.Operation(new ByteBuffer(ByteBuffer.DEFAULT_CAPACITY, ByteBuffer.LITTLE_ENDIAN), sends[0][0])).not.toThrow();
   });
 
   it('refuses rather than paying a fee when no claimed token is left', async () => {
@@ -142,13 +156,19 @@ describe('createHiveAccountWithKeys', () => {
     expect(sends).toHaveLength(0);
   });
 
-  it('pays the fee the chain asks for, only when the caller allows it', async () => {
+  it('pays the fee the chain asks for, only when the caller allows it with true', async () => {
     chain({ claimed: 0 });
     dhive.Client.__props = () => Promise.resolve({ account_creation_fee: '3.500 HIVE' });
     await expect(utils.createHiveAccountWithKeys('newguy', KEYS, { allowFee: true })).resolves.toEqual({ created: true, reason: 'created' });
     const [[type, op]] = sends[0];
     expect(type).toBe('account_create');
     expect(op.fee).toBe('3.500 HIVE');
+  });
+
+  it.each([['the string "true"', 'true'], ['1', 1]])('does not pay a fee for allowFee = %s', async (_label, value) => {
+    chain({ claimed: 0 });
+    await expect(utils.createHiveAccountWithKeys('newguy', KEYS, { allowFee: value })).resolves.toEqual({ created: false, reason: 'no_account_token' });
+    expect(sends).toHaveLength(0);
   });
 
   it.each([
@@ -172,44 +192,59 @@ describe('createHiveAccountWithKeys', () => {
 
   it.each([
     ['missing a role', () => ({ owner: KEYS.owner, active: KEYS.active, posting: KEYS.posting })],
+    ['a role only on the prototype', () => Object.assign(Object.create({ memo: KEYS.memo }), { owner: KEYS.owner, active: KEYS.active, posting: KEYS.posting })],
     ['not an object', () => 'STM...'],
     ['a key that is not a string', () => ({ ...KEYS, memo: { $gt: '' } })],
     ['a bad checksum', () => ({ ...KEYS, posting: KEYS.posting.slice(0, -1) + (KEYS.posting.endsWith('1') ? '2' : '1') })],
     ['the wrong prefix', () => ({ ...KEYS, active: 'BLT' + KEYS.active.slice(3) })],
     ['a point off the curve', () => ({ ...KEYS, memo: OFF_CURVE })],
     ['the same key in two roles', () => ({ ...KEYS, active: KEYS.owner })],
-    ['one of our own keys', () => ({ ...KEYS, posting: OUR_ACTIVE.createPublic().toString() })],
+    ['our own active key', () => ({ ...KEYS, posting: OUR_ACTIVE.createPublic().toString() })],
   ])('rejects keys with %s, before touching the chain', async (_label, make) => {
     await expect(utils.createHiveAccountWithKeys('newguy', make())).resolves.toEqual({ created: false, reason: 'invalid_keys' });
     expect(dbCalls).toHaveLength(0);
   });
 
-  it('answers already_created for a retry whose account landed with the same owner key', async () => {
-    chain({ existing: onChain(KEYS.owner, config.account) });
-    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: true, reason: 'already_created' });
+  it('rejects one of our keys stored under a field not named *_key', async () => {
+    const other = dhive.PrivateKey.fromSeed('actifit-test-rewards-key');
+    config.rewards_account_pkey = other.toString();
+    await expect(utils.createHiveAccountWithKeys('newguy', { ...KEYS, memo: other.createPublic().toString() }))
+      .resolves.toEqual({ created: false, reason: 'invalid_keys' });
+  });
+
+  it('reports exists_with_same_keys (not success) when the account is already on chain with these keys', async () => {
+    // Keys are public, so this alone cannot prove the caller made the original request.
+    chain({ existing: onChain(KEYS) });
+    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'exists_with_same_keys' });
     expect(sends).toHaveLength(0);
   });
 
-  it('answers username_taken when the name is held under another owner key', async () => {
-    chain({ existing: onChain(keysFor('newguy', 'someone-else').owner, config.account) });
+  it.each([
+    ['another owner key', () => ({ ...onChain(KEYS), owner: single(keysFor('newguy', 'else').owner) })],
+    ['another active key', () => ({ ...onChain(KEYS), active: single(keysFor('newguy', 'else').active) })],
+    ['another memo key', () => ({ ...onChain(KEYS), memo_key: keysFor('newguy', 'else').memo })],
+    ['a second owner key', () => ({ ...onChain(KEYS), owner: { ...single(KEYS.owner), key_auths: [[KEYS.owner, 1], [keysFor('x', 'y').owner, 1]] } })],
+    ['an account auth on posting', () => ({ ...onChain(KEYS), posting: { ...single(KEYS.posting), account_auths: [['someone', 1]] } })],
+    ['another recovery account', () => onChain(KEYS, 'someone')],
+    ['an unexpected shape', () => ({ name: 'newguy' })],
+  ])('reports username_taken when the existing account has %s', async (_label, make) => {
+    chain({ existing: make() });
     await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'username_taken' });
     expect(sends).toHaveLength(0);
   });
 
-  it('answers username_taken when the owner key matches but we are not the recovery account', async () => {
-    chain({ existing: onChain(KEYS.owner, 'someone') });
-    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'username_taken' });
+  it('reports exists_with_same_keys when the broadcast errors but the account then shows up with these keys', async () => {
+    chain({ broadcastThrows: true, afterBroadcast: onChain(KEYS) });
+    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'exists_with_same_keys' });
   });
 
-  it('treats a broadcast error as success when the account then exists with our keys', async () => {
-    chain({ broadcastThrows: true, afterBroadcast: onChain(KEYS.owner, config.account) });
-    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: true, reason: 'created' });
-  });
-
-  it('reports creation_failed when the broadcast errors and the name is absent or someone else\'s', async () => {
+  it('reports creation_failed when the broadcast errors and the name is still absent', async () => {
     chain({ broadcastThrows: true });
     await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'creation_failed' });
-    chain({ broadcastThrows: true, afterBroadcast: onChain(keysFor('newguy', 'x').owner, config.account) });
+  });
+
+  it('reports creation_failed when the broadcast errors and the name now holds other keys', async () => {
+    chain({ broadcastThrows: true, afterBroadcast: onChain(keysFor('newguy', 'x')) });
     await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'creation_failed' });
   });
 
@@ -218,20 +253,23 @@ describe('createHiveAccountWithKeys', () => {
     await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'node_down' });
     expect(sends).toHaveLength(0);
   });
+
+  it('reports node_down when our creator account comes back empty', async () => {
+    chain({ creator: false });
+    await expect(utils.createHiveAccountWithKeys('newguy', KEYS)).resolves.toEqual({ created: false, reason: 'node_down' });
+    expect(sends).toHaveLength(0);
+  });
+
+  it('reports node_down when the fee cannot be read', async () => {
+    chain({ claimed: 0 });
+    dhive.Client.__props = () => Promise.reject(new Error('HTTP 503'));
+    await expect(utils.createHiveAccountWithKeys('newguy', KEYS, { allowFee: true })).resolves.toEqual({ created: false, reason: 'node_down' });
+    expect(sends).toHaveLength(0);
+  });
 });
 
 describe('createAccount (legacy password signup) through the shared create', () => {
-  let origActive;
-  beforeEach(() => {
-    sends = [];
-    dbCalls = [];
-    origActive = config.active_key;
-    config.active_key = OUR_ACTIVE.toString();
-  });
-  afterEach(() => { config.active_key = origActive; });
-
   it('still creates the account from the password-derived keys', async () => {
-    chain();
     await expect(utils.createAccount(VECTOR_USER, VECTOR_PASS, 'HIVE|')).resolves.toBe(true);
     const [[type, op]] = sends[0];
     expect(type).toBe('create_claimed_account');
@@ -245,5 +283,12 @@ describe('createAccount (legacy password signup) through the shared create', () 
     const [[type, op]] = sends[0];
     expect(type).toBe('account_create');
     expect(op.fee).toBe('3.000 HIVE');
+  });
+
+  it('still reports failure on a broadcast error, even if the account then shows up', async () => {
+    // Unchanged on purpose: that route claims its memo non-atomically, so reading a
+    // landed account as success would let a double tap record the signup twice.
+    chain({ broadcastThrows: true, afterBroadcast: onChain(KEYS) });
+    await expect(utils.createAccount(VECTOR_USER, VECTOR_PASS, 'HIVE|')).resolves.toBe(false);
   });
 });
