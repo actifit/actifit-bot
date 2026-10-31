@@ -5674,14 +5674,13 @@ async function performAcceptFriendTrx(req) {
             return { status: 'error', message: 'Transaction verification failed' };
         }
 
-        // 2. Query for the request in either direction
-        // This ensures that if A requested B, OR B requested A, we find it.
+        // 2. Only a pending request that userB sent to userA (the signer) can be
+        // accepted: a sender must not be able to approve their own request.
         let friendshipQuery = {
             request: 'friendship',
-            $or: [
-                { initiator: req.params.userB, target: req.params.userA },
-                { initiator: req.params.userA, target: req.params.userB }
-            ]
+            initiator: req.params.userB,
+            target: req.params.userA,
+            status: 'pending'
         };
 
         // 3. Update the existing request status to 'approved'

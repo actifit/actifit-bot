@@ -350,6 +350,24 @@ const chainTx = (trxID, operations) => ({
 			expect(await db.collection('friends').countDocuments({})).toBe(1);
 		});
 
+		test('the sender of a request cannot accept it themselves', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
+			// alice signs an acceptance of her own request to bob
+			const self = op('alice', 'accept-friendship', 'bob');
+			chainHas(chainTx('fs1', self));
+			expect((await call('acceptFriendHiveKeychain', 'alice', 'bob', 'fs1', self)).body.status).toBe('error');
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'pending' });
+			expect(await db.collection('friends').countDocuments({})).toBe(0);
+		});
+
+		test('a cancelled request cannot be accepted', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'cancelled', date: new Date() });
+			const accept = op('bob', 'accept-friendship', 'alice');
+			chainHas(chainTx('fc1', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fc1', accept)).body.status).toBe('error');
+			expect(await db.collection('friends').countDocuments({})).toBe(0);
+		});
+
 		test('cancel and drop work once each', async () => {
 			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
 			const cancel = op('alice', 'cancel-friend-request', 'bob');
