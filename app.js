@@ -487,6 +487,9 @@ const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query
 // transactions included after a cleared account's key change. Gadget routes are not gated
 // (see KEY_ROTATION_EXEMPT in signed_tx.js).
 const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user, { exactTx: true });
+// Friend routes: userA signs the transaction and is the one acting (sending, cancelling,
+// accepting or dropping); its transaction is claimed via claimVerifiedTx too.
+const keyRotationGateByUserA = keyRotationTracker.gateForUser((req) => req.params && req.params.userA, { exactTx: true });
 // For session routes that take the user from the URL: it must be the session's user.
 function sameUserParam(req, res, next) {
 	if (!req.params || req.params.user !== req.user._id) return res.send({ error: 'User mismatch' });
@@ -5587,7 +5590,7 @@ app.get('/userVidNotifier', async function (req, res){
 })
 
 /* end point for adding user's friend */
-app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5601,7 +5604,7 @@ app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async fu
 
 
 /* end point for adding user's friend */
-app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performAddFriendTrx(req);
 	res.send(outc)
 });
@@ -5636,7 +5639,7 @@ async function performCancelFriendRequestTrx(req){
 }
 
 /* end point for cancelling friend request */
-app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5648,7 +5651,7 @@ app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain'
 
 });
 
-app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performCancelFriendRequestTrx(req);
 	res.send(outc)
 
@@ -5731,7 +5734,7 @@ async function performAcceptFriendTrx(req) {
     }
 }
 /* end point for cancelling friend request */
-app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
@@ -5745,7 +5748,7 @@ app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async
 });
 
 /* end point for cancelling friend request */
-app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performAcceptFriendTrx(req);
 	res.send(outc)
 });
@@ -5776,7 +5779,7 @@ async function performDropFriendTrx(req){
 }
 
 /* end point for dropping friendship */
-app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5788,7 +5791,7 @@ app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', asy
 });
 
 /* end point for dropping friendship */
-app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performDropFriendTrx(req);
 	res.send(outc)
 });

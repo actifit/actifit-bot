@@ -2247,7 +2247,8 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 								&& json_data.transaction == tx_type && json_data.target == userB){
 				console.log('match found');
-				return true
+				// one action per signed transaction, and the signer's key-change check
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('could not find trx A');
 			return false;
@@ -2261,7 +2262,7 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	}catch(err){
 		console.log(err);
 	}
-	//return false;
+	return false;
 }
 
 async function findUserMatchingDevice(db, user){
