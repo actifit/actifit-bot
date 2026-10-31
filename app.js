@@ -483,8 +483,9 @@ const keyRotationTracker = keyRotation.createTracker({
 const keyRotationStatus = keyRotationTracker.status;
 const keyRotationGate = keyRotationTracker.gate;
 const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query && req.query.user);
-// Gadget, workout and activation routes: their transaction is claimed via claimVerifiedTx,
-// which only accepts transactions included after a cleared account's key change.
+// Workout routes: their transaction is claimed via claimVerifiedTx, which only accepts
+// transactions included after a cleared account's key change. Gadget routes are not gated
+// (see KEY_ROTATION_EXEMPT in signed_tx.js).
 const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user, { exactTx: true });
 // For session routes that take the user from the URL: it must be the session's user.
 function sameUserParam(req, res, next) {
@@ -5356,7 +5357,7 @@ async function performMultiBuyTrx(req){
 }
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
+app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', async function (req, res) {
 	try {
 		let conf_trx = await utils.findVerifyTrx(req, db);
 		if (!conf_trx || conf_trx.error){
@@ -5373,7 +5374,7 @@ app.get('/buyMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain', keyRotationGate
 });
 
 /* end point for tracking multi gadget buy orders */
-app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
+app.get('/buyMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain', async function (req, res) {
 	let outc = await performMultiBuyTrx(req);
 	res.send(outc)
 });
@@ -5422,7 +5423,7 @@ async function performBuyTrx(infoParam){
 }
 
 /* end point for buying gadgets via keychain */
-app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res){
+app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res){
 	try {
 		let conf_trx = await utils.findVerifyTrx(req, db);
 		if (!conf_trx || conf_trx.error){
@@ -5439,7 +5440,7 @@ app.get('/buyGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByPara
 })
 
 /* end point for tracking gadget buy orders */
-app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
+app.get('/buyGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	let outc = await performBuyTrx(req.params);
 	res.send(outc)
 });
@@ -8099,7 +8100,7 @@ async function performActivateMultiTrx(req){
 	}
 }
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', async function (req, res) {
 	console.log('multi gadget activate keychain')
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
@@ -8112,7 +8113,7 @@ app.get('/activateMultiGadgetKeychain/:user/:gadgets/:trxID/:bchain/:benefic?', 
 });
 
 //end point handles activating multi bought gadgets/
-app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+app.get('/activateMultiGadget/:user/:gadgets/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 		
 	let outc = await performActivateMultiTrx(req);
 	res.send(outc);
@@ -8185,7 +8186,7 @@ async function performActivateTrx(req){
 
 //end point handles activating a bought gadget via keychain / on-device signing: the
 //transaction is first confirmed on chain (findVerifyTrx with ?operation=)
-app.get('/activateGadgetKeychain/:user/:gadget/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+app.get('/activateGadgetKeychain/:user/:gadget/:trxID/:bchain/:benefic?', async function (req, res) {
 	try {
 		let conf_trx = await utils.findVerifyTrx(req, db);
 		if (!conf_trx || conf_trx.error){
@@ -8202,7 +8203,7 @@ app.get('/activateGadgetKeychain/:user/:gadget/:trxID/:bchain/:benefic?', keyRot
 
 //NOTICE: deprecated in favor of activateMultiGadget
 //end point handles activating a bought gadget
-app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', keyRotationGateByParam, async function (req, res) {
+app.get('/activateGadget/:user/:gadget/:blockNo/:trxID/:bchain/:benefic?', async function (req, res) {
 	let outc = await performActivateTrx(req);
 	res.send(outc);
 });
@@ -8249,7 +8250,7 @@ async function performDeactivateTrx(req){
 }
 
 //end point handles deactivating bought gadget via keychain
-app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
+app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -8261,7 +8262,7 @@ app.get('/deactivateGadgetKeychain/:user/:gadget/:trxID/:bchain', keyRotationGat
 });
 
 //end point handles deactivating a bought gadget
-app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', keyRotationGateByParam, async function (req, res) {
+app.get('/deactivateGadget/:user/:gadget/:blockNo/:trxID/:bchain', async function (req, res) {
 	let outc = await performDeactivateTrx(req);
 	res.send(outc);
 });
@@ -8994,11 +8995,14 @@ app.get('/getUnverifiedFundsAccountList/', fundsPassRetired);
 app.get('/getFullFundsAccountList/', fundsPassRetired);
 
 /* end point handling storing transaction for AFIT/STEEM upvote exchange.
- * Authorised by the user's login session (checkHdrs) for that same account, plus the
- * key-rotation gate. It used to accept the account's funds password instead; every funds
+ * Authorised by the user's login session (checkHdrs) for that same account. It is not
+ * key-rotation gated: it only spends the account's own AFIT on votes for its own reports.
+ * (So a session opened with an old key keeps working here until the user logs in with
+ * the new one, which ends the other sessions.)
+ * It used to accept the account's funds password instead; every funds
  * password is treated as known to the attacker since the 2026-10-21 incident, so it is
  * no longer used here. A per-account lock stops a double submit from paying twice. */
-app.post('/performAfitSteemExchange', modActionRateLimit, checkHdrs, keyRotationGate, async function(req, res){
+app.post('/performAfitSteemExchange', modActionRateLimit, checkHdrs, async function(req, res){
 	const user = req.user._id;
 	if (req.body && req.body.user && req.body.user !== user) {
 		res.send({'error': 'User mismatch'});

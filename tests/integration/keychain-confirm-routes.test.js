@@ -257,6 +257,42 @@ const chainTx = (trxID, operations) => ({
 		});
 	});
 
+	describe('an account flagged to change its posting key', () => {
+		const gadget = new ObjectId();
+		const flagAlice = () => db.collection('key_rotation_required').insertOne({ user: 'alice', since: new Date('2026-10-21T19:00:00Z') });
+		afterEach(() => db.collection('key_rotation_required').deleteMany({}));
+
+		test('can still activate and deactivate its gadgets', async () => {
+			await flagAlice();
+			await db.collection('user_gadgets').insertOne({ user: 'alice', gadget, status: 'bought' });
+			const act = signedOp('alice', { transaction: 'activate-gadget', gadget: String(gadget) });
+			chainHas(chainTx('flagAct', act));
+			const r = await request(app).get('/activateGadgetKeychain/alice/' + gadget + '/flagAct/HIVE?operation=' + encodeURIComponent(JSON.stringify(act)))
+				.set('X-Forwarded-For', ip());
+			expect(r.body).toEqual({ status: 'success' });
+			expect((await db.collection('user_gadgets').findOne({ user: 'alice', gadget })).status).toBe('active');
+
+			const deact = signedOp('alice', { transaction: 'deactivate-gadget', gadget: String(gadget) });
+			chainHas(chainTx('flagDeact', deact));
+			const d = await request(app).get('/deactivateGadgetKeychain/alice/' + gadget + '/flagDeact/HIVE?operation=' + encodeURIComponent(JSON.stringify(deact)))
+				.set('X-Forwarded-For', ip());
+			expect(d.body.status).toBe('success');
+			expect((await db.collection('user_gadgets').findOne({ user: 'alice', gadget })).status).toBe('bought');
+		});
+
+		test('still cannot generate a workout', async () => {
+			await flagAlice();
+			await setBal('alice', 12);
+			const op = signedOp('alice', { transaction: 'generate-workout-wizard' });
+			chainHas(chainTx('flagWk', op));
+			const r = await request(app).get('/generateWorkoutKeychain/alice/flagWk/HIVE?operation=' + encodeURIComponent(JSON.stringify(op)))
+				.set('X-Forwarded-For', ip()).set('x-acti-token', token);
+			expect(r.status).toBe(403);
+			expect(r.body.code).toBe('KEY_ROTATION_REQUIRED');
+			expect(await bal('alice')).toBe(12);
+		});
+	});
+
 	describe('real findVerifyTrx (only the chain lookup is stubbed)', () => {
 		const hive = require('@hiveio/hive-js');
 		const gadget = new ObjectId();
