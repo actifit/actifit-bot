@@ -5478,13 +5478,36 @@ app.get('/userFriendRequests/:user', async function (req, res) {
 	res.send({sent_pending: user_requests, received_pending: user_targets});
 });
 
+// a friendship is stored as one `friends` row {userA, userB}, in either order
+function friendshipFilter(user1, user2){
+	return { $or: [ { userA: user1, userB: user2 }, { userA: user2, userB: user1 } ] };
+}
+
 async function performAddFriendTrx(req){
 	//ensure proper transaction
 	let ver_trx = await utils.verifyFriendTransaction(req.params.userA, req.params.userB, 'add-friend-request', req.params.blockNo, req.params.trxID, req.params.bchain, db);
 	if (!ver_trx){
 		return ({status: 'error'});
 	}
-	
+	const userA = req.params.userA, userB = req.params.userB;
+	if (userA === userB){
+		return ({status: 'error', message: 'You cannot send a friend request to yourself'});
+	}
+	try{
+		if (await db.collection('friends').findOne(friendshipFilter(userA, userB))){
+			return ({status: 'error', message: 'You are already friends'});
+		}
+		if (await db.collection('user_requests').findOne({initiator: userA, target: userB, request: 'friendship', status: 'pending'})){
+			return ({status: 'error', message: 'Friend request already sent'});
+		}
+		if (await db.collection('user_requests').findOne({initiator: userB, target: userA, request: 'friendship', status: 'pending'})){
+			return ({status: 'error', message: 'This user already sent you a friend request, accept it instead'});
+		}
+	}catch(err){
+		console.log('error');
+		return ({status: 'error'});
+	}
+
 	let user_friendship = {
 		initiator: req.params.userA,
 		request: 'friendship',
@@ -5709,15 +5732,19 @@ async function performAcceptFriendTrx(req) {
             `https://actifit.io/${req.params.userA}`
         );
 
-        // 5. Insert the final friendship record
-        // Standard practice: store them alphabetically or in a consistent way to avoid duplicates
-        let friendshipEntry = {
-            userA: req.params.userA,
-            userB: req.params.userB,
-            date: new Date(),
-        };
+        // 5. If both users had sent each other a request, the reverse one (from userA
+        // to userB) is settled by this acceptance too, so it cannot be accepted again
+        await db.collection('user_requests').updateMany(
+            { request: 'friendship', initiator: req.params.userA, target: req.params.userB, status: 'pending' },
+            { $set: { status: 'approved', date: new Date() } }
+        );
 
-        await db.collection('friends').insertOne(friendshipEntry);
+        // 6. Insert the friendship record, unless the pair is already friends (in either order)
+        await db.collection('friends').updateOne(
+            friendshipFilter(req.params.userA, req.params.userB),
+            { $setOnInsert: { userA: req.params.userA, userB: req.params.userB, date: new Date() } },
+            { upsert: true }
+        );
         
         return { status: 'success' };
 
@@ -8937,9 +8964,12 @@ app.get('/getUserTokenSwapHistory/:user', async function(req, res){
 });
 
 /* end point for getting number of AFIT -> STEEM upvotes pending exchanges */
+// banned users' exchanges are left out: the voter never matches them (a banned user's
+// posts are never picked for a vote), so they take no place in the queue
 app.get('/getPendingTokenSwapTransCount/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}}).sort({'date': 1}).toArray();
-	res.send({pendingSwap: tokenSwapTrans.length});
+	let banned_arr = await getBannedAccountsArr();
+	let pendingSwap = await db.collection('exchange_afit_steem').countDocuments({upvote_processed: {$ne: true}, user: {$nin: banned_arr}});
+	res.send({pendingSwap: pendingSwap});
 });
 
 
@@ -8959,14 +8989,13 @@ app.get('/getPendingTokenSwapTrans/', async function(req, res){
 	//console.log(banned_arr);
 	//generate total AFIT value as well
 	let afit_count = 0;
-	let finalList = [];
-	for (let i=0;i<tokenSwapTrans.length;i++){
-		tokenSwapTrans[i].order = i+1;
-		tokenSwapTrans[i].reward_round = Math.ceil((i+1)/config.max_afit_steem_upvotes_per_session);
-		afit_count += +tokenSwapTrans[i].paid_afit
-		if (!banned_arr.includes(tokenSwapTrans[i].user)){
-			finalList.push(tokenSwapTrans[i]);
-		}
+	// banned users' exchanges are not listed, numbered or counted: the voter never
+	// matches them, so they take no place in the queue
+	let finalList = tokenSwapTrans.filter(entry => !banned_arr.includes(entry.user));
+	for (let i=0;i<finalList.length;i++){
+		finalList[i].order = i+1;
+		finalList[i].reward_round = Math.ceil((i+1)/config.max_afit_steem_upvotes_per_session);
+		afit_count += +finalList[i].paid_afit
 	}
 	res.send({pendingTransactions: finalList, count: finalList.length, afit_tokens_pending: afit_count});
 	//res.send({pendingTransactions: tokenSwapTrans, count: tokenSwapTrans.length, afit_tokens_pending: afit_count});

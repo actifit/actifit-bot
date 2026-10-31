@@ -393,6 +393,85 @@ const chainTx = (trxID, operations) => ({
 			expect(await db.collection('friends').countDocuments({})).toBe(1);
 		});
 
+		test('a friend request to yourself is refused', async () => {
+			const ops = op('alice', 'add-friend-request', 'alice');
+			chainHas(chainTx('fy1', ops));
+			const r = (await call('addFriendHiveKeychain', 'alice', 'alice', 'fy1', ops)).body;
+			expect(r).toEqual({ status: 'error', message: expect.any(String) });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(0);
+		});
+
+		test.each([
+			['alice', 'bob'],
+			['bob', 'alice'],
+		])('a friend request is refused when the pair is already friends (row stored as %s/%s)', async (a, b) => {
+			await db.collection('friends').insertOne({ userA: a, userB: b, date: new Date() });
+			const ops = op('alice', 'add-friend-request', 'bob');
+			chainHas(chainTx('fy2', ops));
+			const r = (await call('addFriendHiveKeychain', 'alice', 'bob', 'fy2', ops)).body;
+			expect(r).toEqual({ status: 'error', message: expect.any(String) });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(0);
+		});
+
+		test.each([
+			['alice', 'bob'],
+			['bob', 'alice'],
+		])('a friend request is refused when a pending request from %s to %s exists', async (initiator, target) => {
+			await db.collection('user_requests').insertOne({ initiator, target, request: 'friendship', status: 'pending', date: new Date() });
+			const ops = op('alice', 'add-friend-request', 'bob');
+			chainHas(chainTx('fy3', ops));
+			const r = (await call('addFriendHiveKeychain', 'alice', 'bob', 'fy3', ops)).body;
+			expect(r).toEqual({ status: 'error', message: expect.any(String) });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(1);
+		});
+
+		test('a new request is allowed once an earlier one was cancelled', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'cancelled', date: new Date() });
+			const ops = op('alice', 'add-friend-request', 'bob');
+			chainHas(chainTx('fy4', ops));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fy4', ops)).body).toEqual({ status: 'success' });
+			expect(await db.collection('user_requests').countDocuments({ status: 'pending' })).toBe(1);
+		});
+
+		test('with requests pending both ways, one acceptance makes one friendship and settles both requests', async () => {
+			await db.collection('user_requests').insertMany([
+				{ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() },
+				{ initiator: 'bob', target: 'alice', request: 'friendship', status: 'pending', date: new Date() },
+			]);
+			const accept = op('bob', 'accept-friendship', 'alice');
+			chainHas(chainTx('fm1', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fm1', accept)).body).toEqual({ status: 'success' });
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'approved' });
+			expect(await pending('bob', 'alice')).toMatchObject({ status: 'approved' });
+			// alice accepting the leftover request finds nothing pending and adds no row
+			const back = op('alice', 'accept-friendship', 'bob');
+			chainHas(chainTx('fm2', back));
+			expect((await call('acceptFriendHiveKeychain', 'alice', 'bob', 'fm2', back)).body.status).toBe('error');
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+		});
+
+		test('accepting a request when the pair is already friends adds no second row', async () => {
+			await db.collection('friends').insertOne({ userA: 'alice', userB: 'bob', date: new Date() });
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
+			const accept = op('bob', 'accept-friendship', 'alice');
+			chainHas(chainTx('fm3', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fm3', accept)).body).toEqual({ status: 'success' });
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+		});
+
+		test('drop removes every friendship row for the pair, in both orders, and only that pair', async () => {
+			await db.collection('friends').insertMany([
+				{ userA: 'alice', userB: 'bob', date: new Date() },
+				{ userA: 'bob', userB: 'alice', date: new Date() },
+				{ userA: 'alice', userB: 'bob', date: new Date() },
+				{ userA: 'alice', userB: 'carol', date: new Date() },
+			]);
+			const drop = op('alice', 'cancel-friendship', 'bob');
+			chainHas(chainTx('fd2', drop));
+			expect((await call('dropFriendshipHiveKeychain', 'alice', 'bob', 'fd2', drop)).body).toEqual({ status: 'success' });
+			expect(await db.collection('friends').find({}, { projection: { _id: 0, userA: 1, userB: 1 } }).toArray()).toEqual([{ userA: 'alice', userB: 'carol' }]);
+		});
+
 		test.each([
 			['addFriendHiveKeychain', 'add-friend-request'],
 			['addFriend', 'add-friend-request'],
