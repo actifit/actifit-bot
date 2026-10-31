@@ -25,6 +25,7 @@ for (const m of ['node:fs', 'fs']) {
 					hive_engine_actifit_he: WALLET, steem_engine_actifit_se: WALLET,
 					workoutGenerationFeesAFIT: 5,
 					actifitWebVoteToken: 'vote-token', actifitWebEditRewardAmount: 2,
+					max_afit_steem_upvotes_per_session: 2,
 				});
 				return JSON.stringify(cfg);
 			}),
@@ -97,7 +98,7 @@ const pub = (k) => k.createPublic().toString();
 	});
 	beforeEach(async () => {
 		logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-		for (const c of ['user_tokens', 'token_transactions', 'user_gadgets', 'products', 'request_locks', 'exchange_afit_steem']) {
+		for (const c of ['user_tokens', 'token_transactions', 'user_gadgets', 'products', 'request_locks', 'exchange_afit_steem', 'banned_accounts']) {
 			await db.collection(c).deleteMany({});
 		}
 		utils.verifyGadgetTransaction = jest.fn(async () => true);
@@ -528,6 +529,26 @@ const pub = (k) => k.createPublic().toString();
 			expect(await bal('alice')).toBe(50);
 			expect(await ledger({ user: 'alice', reward_activity: 'Refund Exchange AFIT To Upvote' })).toHaveLength(1);
 		});
+	});
+
+	test('the public exchange queue leaves banned users out of the list, the numbering and the totals', async () => {
+		const t = (m) => new Date(Date.UTC(2026, 9, 1, 0, m));
+		await db.collection('banned_accounts').insertMany([
+			{ user: 'mallory', ban_status: 'active' },
+			{ user: 'oldban', ban_status: 'lifted' },
+		]);
+		await db.collection('exchange_afit_steem').insertMany([
+			{ user: 'mallory', paid_afit: 200, upvote_processed: false, date: t(1) },
+			{ user: 'alice', paid_afit: 50, upvote_processed: false, date: t(2) },
+			{ user: 'oldban', paid_afit: 100, upvote_processed: null, date: t(3) },
+			{ user: 'bob', paid_afit: 150, upvote_processed: false, date: t(4) },
+			{ user: 'carol', paid_afit: 50, upvote_processed: true, date: t(5) },
+		]);
+		const r = (await request(app).get('/getPendingTokenSwapTrans/')).body;
+		expect(r.pendingTransactions.map((e) => [e.user, e.order, e.reward_round])).toEqual([['alice', 1, 1], ['oldban', 2, 1], ['bob', 3, 2]]);
+		expect(r.count).toBe(3);
+		expect(r.afit_tokens_pending).toBe(300);
+		expect((await request(app).get('/getPendingTokenSwapTransCount/')).body).toEqual({ pendingSwap: 3 });
 	});
 
 	test('a new user reads tokens as the same "x.xxx" string as everyone else', async () => {
