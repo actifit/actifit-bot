@@ -17,6 +17,7 @@ var arenaPools = require('./arena_pools');
 var arenaTier = require('./arena_tier');
 var arenaJobs = require('./arena_jobs');
 var arenaRoutes = require('./arena_routes');
+var signupWithKeys = require('./signup_with_keys');
 var featured = require('./featured');
 const moment = require('moment')
 var crypto = require('crypto');
@@ -243,6 +244,7 @@ client.connect()
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
+	    signupWithKeys.ensureSignupIndexes(db, (m) => utils.log(m, 'api')); // signup claims (one per memo / payment)
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -8708,6 +8710,50 @@ app.post('/app/confirmPayment', appSignupRateLimit, async function(req,res){
 	req.body = Object.assign({}, req.body, { confirm_payment_token: config.confirmPaymentToken });
 	return handleConfirmPayment(req, res);
 });
+
+/*
+ * Signup with device-generated keys (signup_with_keys.js). The app sends only public keys.
+ * Off until the `settings` doc {_id: 'signup_with_keys', enabled: true} exists; the old
+ * confirmPayment routes above stay disabled.
+ */
+const signupCostUsd = () => (parseFloat(config.signupCostUsd) > 0 ? parseFloat(config.signupCostUsd) : 2.0);
+signupWithKeys.registerSignupWithKeysRoutes(app, {
+	getDb: () => db,
+	getConfig: () => config,
+	log: (m) => utils.log(m, 'api'),
+	hiveCall: (method, params) => utils.hiveDatabaseCall(method, params),
+	isValidName: utils.isValidHiveAccountName,
+	parseKeys: utils.parseSignupPublicKeys,
+	// fee only from a claimed token: a paid signup never falls back to burning 3 HIVE
+	createAccount: (name, keys) => utils.createHiveAccountWithKeys(name, keys, { allowFee: false }),
+	quoteAmount: (cur) => utils.signupQuoteCrypto(cur, hivePrice),
+	requiredAmount: (cur) => utils.signupRequiredCrypto(cur, hivePrice),
+	// fixed server-side reward for the signup cost (not the amount paid), same ceiling as before
+	paidAfitReward: () => capSignupAfitReward(SIGNUP_AFIT_PER_LOT, { amount: signupCostUsd(), currency: 'HBD' }),
+	promoAfitReward: (promo) => promoSignupAfitReward(promo, undefined),
+	delegate: (name) => utils.delegateToAccount(name, 10, 'HIVE'),
+	recordSignup: async (s) => {
+		const req = { params: {}, query: {
+			new_account: s.new_account,
+			memo: s.memo,
+			referrer: s.referrer || undefined,
+			email: s.email || undefined,
+			afit_reward: s.afit_reward,
+			confirming_tx: s.confirming_tx,
+			usd_invest: s.promo ? 0 : signupCostUsd(),
+			steem_invest: s.verified_amount,
+			promo_code: s.promo ? String(s.promo._id) : undefined,
+			promo_proceed: !!s.promo,
+			signup_reward: s.signup_reward,
+			referrer_reward: s.referrer_reward,
+		} };
+		const stored = await storeSignupTransaction(req);
+		if (req.query.referrer && (!s.promo || s.referrer_reward)) {
+			await storeReferralReward(req);
+		}
+		return stored;
+	},
+}, { ipOf: clientIpKey });
 
 /* core function for discounted account claims and creation */
 const claimAndCreateAccount = async function (req){
