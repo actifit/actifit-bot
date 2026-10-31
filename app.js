@@ -5621,16 +5621,10 @@ async function performCancelFriendRequestTrx(req){
 		request: 'friendship',
 		status: 'pending',
 	}
-	let userFriendship = {
-		initiator: req.params.userA,
-		request: 'friendship',
-		target: req.params.userB,
-		date: new Date(),
-		status: 'cancelled',
-	};
 	try{
-		let transaction = await db.collection('user_requests').replaceOne(friendshipQuery, userFriendship, { upsert: true });
-		console.log('success inserting post data');
+		// only an existing pending request is cancelled; nothing is created
+		let result = await db.collection('user_requests').updateOne(friendshipQuery, { $set: { status: 'cancelled', date: new Date() } });
+		if (result.matchedCount === 0) return ({status: 'error'});
 		return ({status: 'success'});
 	}catch(err){
 		console.log('error');

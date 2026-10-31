@@ -2237,9 +2237,11 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	try{
 		
 		//query db to find transaction
-		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id, chain: 'HIVE'});
 		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
 			
+			// only an Actifit custom_json counts as a friend action
+			if (trx.tx.operations[0][0] !== 'custom_json' || trx.tx.operations[0][1].id !== 'actifit') return false;
 			let trx_details = trx.tx.operations[0][1];
 			let json_data = JSON.parse(trx_details.json);
 			

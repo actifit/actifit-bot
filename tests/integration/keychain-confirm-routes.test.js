@@ -374,6 +374,13 @@ const chainTx = (trxID, operations) => ({
 			chainHas(chainTx('fc1', cancel));
 			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'bob', 'fc1', cancel)).body).toEqual({ status: 'success' });
 			expect(await pending('alice', 'bob')).toMatchObject({ status: 'cancelled' });
+			// replaying the cancel does nothing, and a cancel with no pending request creates no row
+			utils.findVerifyTrx = jest.fn(async () => chainTx('fc1', cancel));
+			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'bob', 'fc1', cancel)).body).toEqual({ status: 'error' });
+			const stray = op('alice', 'cancel-friend-request', 'carol');
+			chainHas(chainTx('fc2', stray));
+			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'carol', 'fc2', stray)).body).toEqual({ status: 'error' });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(1);
 
 			await db.collection('friends').insertOne({ userA: 'bob', userB: 'alice', date: new Date() });
 			const drop = op('alice', 'cancel-friendship', 'bob');
