@@ -8984,14 +8984,12 @@ const getBannedAccountsArr = async function (){
 
 /* end point for getting exchanges pending upvotes  */
 app.get('/getPendingTokenSwapTrans/', async function(req, res){
-	let tokenSwapTrans = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}}).sort({'date': 1}).toArray();
-	let banned_arr = await getBannedAccountsArr();
-	//console.log(banned_arr);
-	//generate total AFIT value as well
-	let afit_count = 0;
 	// banned users' exchanges are not listed, numbered or counted: the voter never
 	// matches them, so they take no place in the queue
-	let finalList = tokenSwapTrans.filter(entry => !banned_arr.includes(entry.user));
+	let banned_arr = await getBannedAccountsArr();
+	let finalList = await db.collection('exchange_afit_steem').find({upvote_processed: {$ne: true}, user: {$nin: banned_arr}}).sort({'date': 1}).toArray();
+	//generate total AFIT value as well
+	let afit_count = 0;
 	for (let i=0;i<finalList.length;i++){
 		finalList[i].order = i+1;
 		finalList[i].reward_round = Math.ceil((i+1)/config.max_afit_steem_upvotes_per_session);

@@ -338,7 +338,7 @@ const chainTx = (trxID, operations) => ({
 			chainHas(chainTx('fa1', accept));
 			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fa1', accept)).body).toEqual({ status: 'success' });
 			expect(await pending('alice', 'bob')).toMatchObject({ status: 'approved' });
-			expect(await db.collection('friends').countDocuments({})).toBe(1);
+			expect(await db.collection('friends').find({}, { projection: { _id: 0, userA: 1, userB: 1 } }).toArray()).toEqual([{ userA: 'bob', userB: 'alice' }]);
 			// replayed: no second friendship row
 			utils.findVerifyTrx = jest.fn(async () => chainTx('fa1', accept));
 			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fa1', accept)).body.status).toBe('error');
@@ -447,7 +447,7 @@ const chainTx = (trxID, operations) => ({
 			const back = op('alice', 'accept-friendship', 'bob');
 			chainHas(chainTx('fm2', back));
 			expect((await call('acceptFriendHiveKeychain', 'alice', 'bob', 'fm2', back)).body.status).toBe('error');
-			expect(await db.collection('friends').countDocuments({})).toBe(1);
+			expect(await db.collection('friends').find({}, { projection: { _id: 0, userA: 1, userB: 1 } }).toArray()).toEqual([{ userA: 'bob', userB: 'alice' }]);
 		});
 
 		test('accepting a request when the pair is already friends adds no second row', async () => {
