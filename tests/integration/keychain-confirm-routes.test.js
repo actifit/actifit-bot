@@ -5,7 +5,8 @@
  *
  * utils.findVerifyTrx (the on-chain lookup) is stubbed: the stub records the transaction
  * in verified_tx the way the real one does after a chain match, so the rest of the path
- * (verifyGadgetTransaction / verifyWorkoutTransaction and claimVerifiedTx) runs for real.
+ * (verifyGadgetTransaction / verifyWorkoutTransaction / verifyFriendTransaction and
+ * claimVerifiedTx) runs for real.
  */
 
 const path = require('path');
@@ -111,7 +112,7 @@ const chainTx = (trxID, operations) => ({
 	});
 	beforeEach(async () => {
 		logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-		for (const c of ['user_tokens', 'token_transactions', 'user_gadgets', 'verified_tx', 'consumed_tx', 'request_locks']) {
+		for (const c of ['user_tokens', 'token_transactions', 'user_gadgets', 'verified_tx', 'consumed_tx', 'request_locks', 'user_requests', 'friends']) {
 			await db.collection(c).deleteMany({});
 		}
 		utils.findVerifyTrx = jest.fn(async () => false);
@@ -290,6 +291,142 @@ const chainTx = (trxID, operations) => ({
 			expect(r.status).toBe(403);
 			expect(r.body.code).toBe('KEY_ROTATION_REQUIRED');
 			expect(await bal('alice')).toBe(12);
+		});
+	});
+
+	describe('friend routes', () => {
+		// userA signs and acts; the signed json names userB as the target
+		const op = (signer, transaction, target) => signedOp(signer, { transaction, target });
+		const url = (route, userA, userB, trx, ops) => '/' + route + '/' + userA + '/' + userB + '/1/' + trx + '/HIVE?operation=' + encodeURIComponent(JSON.stringify(ops));
+		const call = (route, userA, userB, trx, ops) => request(app).get(url(route, userA, userB, trx, ops)).set('X-Forwarded-For', ip());
+		const pending = (initiator, target) => db.collection('user_requests').findOne({ initiator, target, request: 'friendship' });
+		const flag = (user) => db.collection('key_rotation_required').insertOne({ user, since: new Date('2026-10-21T19:00:00Z') });
+		afterEach(() => db.collection('key_rotation_required').deleteMany({}));
+
+		test('a signed friend request works once; replaying it on either route is refused', async () => {
+			const ops = op('alice', 'add-friend-request', 'bob');
+			chainHas(chainTx('fr1', ops));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr1', ops)).body).toEqual({ status: 'success' });
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'pending' });
+			expect(await db.collection('consumed_tx').findOne({ _id: 'fr1' })).toMatchObject({ purpose: 'add-friend-request' });
+
+			// the transaction stays recorded in verified_tx, but it authorises one action only
+			utils.findVerifyTrx = jest.fn(async () => chainTx('fr1', ops));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr1', ops)).body).toEqual({ status: 'error' });
+			expect((await call('addFriend', 'alice', 'bob', 'fr1', ops)).body).toEqual({ status: 'error' });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(1);
+		});
+
+		test('the acting user must be the signer, for the named target and action', async () => {
+			const bySomeoneElse = op('mallory', 'add-friend-request', 'bob');
+			chainHas(chainTx('fr2', bySomeoneElse));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr2', bySomeoneElse)).body).toEqual({ status: 'error' });
+			const otherTarget = op('alice', 'add-friend-request', 'carol');
+			chainHas(chainTx('fr3', otherTarget));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr3', otherTarget)).body).toEqual({ status: 'error' });
+			const otherAction = op('alice', 'cancel-friendship', 'bob');
+			chainHas(chainTx('fr4', otherAction));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr4', otherAction)).body).toEqual({ status: 'error' });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(0);
+			expect(await db.collection('consumed_tx').countDocuments({})).toBe(0);
+		});
+
+		test('accept is signed by the accepting user (userA); a transaction signed by the requester does not act for them', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
+			// bob accepts alice's request
+			const accept = op('bob', 'accept-friendship', 'alice');
+			chainHas(chainTx('fa1', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fa1', accept)).body).toEqual({ status: 'success' });
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'approved' });
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+			// replayed: no second friendship row
+			utils.findVerifyTrx = jest.fn(async () => chainTx('fa1', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fa1', accept)).body.status).toBe('error');
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+			// a transaction signed by alice cannot accept as bob
+			const forged = op('alice', 'accept-friendship', 'alice');
+			chainHas(chainTx('fa2', forged));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fa2', forged)).body.status).toBe('error');
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+		});
+
+		test('the sender of a request cannot accept it themselves', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
+			// alice signs an acceptance of her own request to bob
+			const self = op('alice', 'accept-friendship', 'bob');
+			chainHas(chainTx('fs1', self));
+			expect((await call('acceptFriendHiveKeychain', 'alice', 'bob', 'fs1', self)).body.status).toBe('error');
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'pending' });
+			expect(await db.collection('friends').countDocuments({})).toBe(0);
+		});
+
+		test('a cancelled request cannot be accepted', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'cancelled', date: new Date() });
+			const accept = op('bob', 'accept-friendship', 'alice');
+			chainHas(chainTx('fc1', accept));
+			expect((await call('acceptFriendHiveKeychain', 'bob', 'alice', 'fc1', accept)).body.status).toBe('error');
+			expect(await db.collection('friends').countDocuments({})).toBe(0);
+		});
+
+		test('cancel and drop work once each', async () => {
+			await db.collection('user_requests').insertOne({ initiator: 'alice', target: 'bob', request: 'friendship', status: 'pending', date: new Date() });
+			const cancel = op('alice', 'cancel-friend-request', 'bob');
+			chainHas(chainTx('fc1', cancel));
+			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'bob', 'fc1', cancel)).body).toEqual({ status: 'success' });
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'cancelled' });
+			// replaying the cancel does nothing, and a cancel with no pending request creates no row
+			utils.findVerifyTrx = jest.fn(async () => chainTx('fc1', cancel));
+			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'bob', 'fc1', cancel)).body).toEqual({ status: 'error' });
+			const stray = op('alice', 'cancel-friend-request', 'carol');
+			chainHas(chainTx('fc2', stray));
+			expect((await call('cancelFriendRequestHiveKeychain', 'alice', 'carol', 'fc2', stray)).body).toEqual({ status: 'error' });
+			expect(await db.collection('user_requests').countDocuments({})).toBe(1);
+
+			await db.collection('friends').insertOne({ userA: 'bob', userB: 'alice', date: new Date() });
+			const drop = op('alice', 'cancel-friendship', 'bob');
+			chainHas(chainTx('fd1', drop));
+			expect((await call('dropFriendshipHiveKeychain', 'alice', 'bob', 'fd1', drop)).body).toEqual({ status: 'success' });
+			expect(await db.collection('friends').countDocuments({})).toBe(0);
+			// replaying the drop on the non-Keychain route removes nothing
+			await db.collection('friends').insertOne({ userA: 'bob', userB: 'alice', date: new Date() });
+			expect((await call('dropFriendship', 'alice', 'bob', 'fd1', drop)).body).toEqual({ status: 'error' });
+			expect(await db.collection('friends').countDocuments({})).toBe(1);
+		});
+
+		test.each([
+			['addFriendHiveKeychain', 'add-friend-request'],
+			['addFriend', 'add-friend-request'],
+			['cancelFriendRequestHiveKeychain', 'cancel-friend-request'],
+			['cancelFriendRequest', 'cancel-friend-request'],
+			['acceptFriendHiveKeychain', 'accept-friendship'],
+			['acceptFriend', 'accept-friendship'],
+			['dropFriendshipHiveKeychain', 'cancel-friendship'],
+			['dropFriendship', 'cancel-friendship'],
+		])('a flagged acting user is refused on /%s', async (route, transaction) => {
+			await flag('alice');
+			const ops = op('alice', transaction, 'bob');
+			chainHas(chainTx('flag-' + route, ops));
+			const r = await call(route, 'alice', 'bob', 'flag-' + route, ops);
+			expect(r.status).toBe(403);
+			expect(r.body.code).toBe('KEY_ROTATION_REQUIRED');
+			expect(utils.findVerifyTrx).not.toHaveBeenCalled();
+			expect(await db.collection('consumed_tx').countDocuments({})).toBe(0);
+		});
+
+		test('the claim itself refuses a flagged signer (friend actions are not key-change exempt)', async () => {
+			await flag('alice');
+			const ops = op('alice', 'add-friend-request', 'bob');
+			await db.collection('verified_tx').insertOne({ tx_id: 'fx1', tx: chainTx('fx1', ops), chain: 'HIVE', date: new Date() });
+			expect(await utils.verifyFriendTransaction('alice', 'bob', 'add-friend-request', 1, 'fx1', 'HIVE', db)).toBe(false);
+			expect(await db.collection('consumed_tx').countDocuments({})).toBe(0);
+		});
+
+		test('an unflagged acting user is unaffected, even when the target is flagged', async () => {
+			await flag('bob');
+			const ops = op('alice', 'add-friend-request', 'bob');
+			chainHas(chainTx('fr5', ops));
+			expect((await call('addFriendHiveKeychain', 'alice', 'bob', 'fr5', ops)).body).toEqual({ status: 'success' });
+			expect(await pending('alice', 'bob')).toMatchObject({ status: 'pending' });
 		});
 	});
 

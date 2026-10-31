@@ -487,6 +487,9 @@ const keyRotationGateByQuery = keyRotationTracker.gateForUser((req) => req.query
 // transactions included after a cleared account's key change. Gadget routes are not gated
 // (see KEY_ROTATION_EXEMPT in signed_tx.js).
 const keyRotationGateByParam = keyRotationTracker.gateForUser((req) => req.params && req.params.user, { exactTx: true });
+// Friend routes: userA signs the transaction and is the one acting (sending, cancelling,
+// accepting or dropping); its transaction is claimed via claimVerifiedTx too.
+const keyRotationGateByUserA = keyRotationTracker.gateForUser((req) => req.params && req.params.userA, { exactTx: true });
 // For session routes that take the user from the URL: it must be the session's user.
 function sameUserParam(req, res, next) {
 	if (!req.params || req.params.user !== req.user._id) return res.send({ error: 'User mismatch' });
@@ -5587,7 +5590,7 @@ app.get('/userVidNotifier', async function (req, res){
 })
 
 /* end point for adding user's friend */
-app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5601,7 +5604,7 @@ app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async fu
 
 
 /* end point for adding user's friend */
-app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/addFriend/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performAddFriendTrx(req);
 	res.send(outc)
 });
@@ -5618,16 +5621,10 @@ async function performCancelFriendRequestTrx(req){
 		request: 'friendship',
 		status: 'pending',
 	}
-	let userFriendship = {
-		initiator: req.params.userA,
-		request: 'friendship',
-		target: req.params.userB,
-		date: new Date(),
-		status: 'cancelled',
-	};
 	try{
-		let transaction = await db.collection('user_requests').replaceOne(friendshipQuery, userFriendship, { upsert: true });
-		console.log('success inserting post data');
+		// only an existing pending request is cancelled; nothing is created
+		let result = await db.collection('user_requests').updateOne(friendshipQuery, { $set: { status: 'cancelled', date: new Date() } });
+		if (result.matchedCount === 0) return ({status: 'error'});
 		return ({status: 'success'});
 	}catch(err){
 		console.log('error');
@@ -5636,7 +5633,7 @@ async function performCancelFriendRequestTrx(req){
 }
 
 /* end point for cancelling friend request */
-app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5648,7 +5645,7 @@ app.get('/cancelFriendRequestHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain'
 
 });
 
-app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/cancelFriendRequest/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performCancelFriendRequestTrx(req);
 	res.send(outc)
 
@@ -5671,14 +5668,13 @@ async function performAcceptFriendTrx(req) {
             return { status: 'error', message: 'Transaction verification failed' };
         }
 
-        // 2. Query for the request in either direction
-        // This ensures that if A requested B, OR B requested A, we find it.
+        // 2. Only a pending request that userB sent to userA (the signer) can be
+        // accepted: a sender must not be able to approve their own request.
         let friendshipQuery = {
             request: 'friendship',
-            $or: [
-                { initiator: req.params.userB, target: req.params.userA },
-                { initiator: req.params.userA, target: req.params.userB }
-            ]
+            initiator: req.params.userB,
+            target: req.params.userA,
+            status: 'pending'
         };
 
         // 3. Update the existing request status to 'approved'
@@ -5731,7 +5727,7 @@ async function performAcceptFriendTrx(req) {
     }
 }
 /* end point for cancelling friend request */
-app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
@@ -5745,7 +5741,7 @@ app.get('/acceptFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async
 });
 
 /* end point for cancelling friend request */
-app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/acceptFriend/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performAcceptFriendTrx(req);
 	res.send(outc)
 });
@@ -5776,7 +5772,7 @@ async function performDropFriendTrx(req){
 }
 
 /* end point for dropping friendship */
-app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let conf_trx = await utils.findVerifyTrx(req, db);
 	if (!conf_trx || conf_trx.error){
 		res.send({status: 'error'});
@@ -5788,7 +5784,7 @@ app.get('/dropFriendshipHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', asy
 });
 
 /* end point for dropping friendship */
-app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', async function (req, res) {
+app.get('/dropFriendship/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {
 	let outc = await performDropFriendTrx(req);
 	res.send(outc)
 });

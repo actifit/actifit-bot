@@ -2337,9 +2337,11 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	try{
 		
 		//query db to find transaction
-		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id});
+		let trx = await db.collection('verified_tx').findOne({tx_id: tx_id, chain: 'HIVE'});
 		if (trx && trx.tx && trx.tx.operations && trx.tx.operations.length > 0){
 			
+			// only an Actifit custom_json counts as a friend action
+			if (trx.tx.operations[0][0] !== 'custom_json' || trx.tx.operations[0][1].id !== 'actifit') return false;
 			let trx_details = trx.tx.operations[0][1];
 			let json_data = JSON.parse(trx_details.json);
 			
@@ -2347,7 +2349,8 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 			if (trx_details.required_posting_auths.length > 0 && trx_details.required_posting_auths[0] == userA
 								&& json_data.transaction == tx_type && json_data.target == userB){
 				console.log('match found');
-				return true
+				// one action per signed transaction, and the signer's key-change check
+				return signedTx.claimVerifiedTx(db, tx_id, tx_type);
 			}
 			console.log('could not find trx A');
 			return false;
@@ -2361,7 +2364,7 @@ async function verifyFriendTransaction(userA, userB, tx_type, block_num, tx_id, 
 	}catch(err){
 		console.log(err);
 	}
-	//return false;
+	return false;
 }
 
 async function findUserMatchingDevice(db, user){
