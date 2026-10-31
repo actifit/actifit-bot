@@ -240,11 +240,11 @@ client.connect()
 	    // never here: this only warns loudly if they are missing, and adds the TTL index on
 	    // the small request_locks collection. It checks the verified_tx unique index on
 	    // tx_id the same way. Never rejects; the .catch() is belt and braces.
+	    signupWithKeys.ensureSignupIndexes(db, (m) => utils.log(m, 'api')); // signup claims; async, never throws
 	    afitBalance.ensureLedgerIndexes(db, (m) => { console.log(m); try { utils.log(m, 'api'); } catch (_) { /* logging must not throw */ } })
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
-	    signupWithKeys.ensureSignupIndexes(db, (m) => utils.log(m, 'api')); // signup claims (one per memo / payment)
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -7416,10 +7416,16 @@ const storeReferralReward = async function (req){
 	console.log('reward referrer');
 	//setup new reward transaction for user
 	let refRewarded = false;
+	// a NaN token_count poisons the referrer's whole balance (see storeSignupTransaction)
+	const referralAmount = utils.finiteAmount(req.query.afit_reward * config.referrerBonus);
+	if (referralAmount === null || referralAmount < 0){
+		console.log('referral reward NOT recorded for ' + req.query.referrer + ': amount is not valid');
+		return false;
+	}
 	let new_transaction = {
 		user: req.query.referrer,
 		reward_activity: 'Signup Referral',
-		token_count: parseFloat(req.query.afit_reward * config.referrerBonus),
+		token_count: referralAmount,
 		date: new Date(),
 		referred: req.query.new_account,
 		note: 'Referral reward for signup of user '+req.query.new_account,
@@ -8727,10 +8733,16 @@ signupWithKeys.registerSignupWithKeysRoutes(app, {
 	// fee only from a claimed token: a paid signup never falls back to burning 3 HIVE
 	createAccount: (name, keys) => utils.createHiveAccountWithKeys(name, keys, { allowFee: false }),
 	quoteAmount: (cur) => utils.signupQuoteCrypto(cur, hivePrice),
-	requiredAmount: (cur) => utils.signupRequiredCrypto(cur, hivePrice),
+	// same 10% tolerance as signupRequiredCrypto, but `live` says whether the price was real
+	requiredAmount: async (cur) => {
+		const q = await utils.signupQuoteCrypto(cur, hivePrice);
+		return { amount: q.amount * 0.9, live: q.live };
+	},
 	// fixed server-side reward for the signup cost (not the amount paid), same ceiling as before
 	paidAfitReward: () => capSignupAfitReward(SIGNUP_AFIT_PER_LOT, { amount: signupCostUsd(), currency: 'HBD' }),
-	promoAfitReward: (promo) => promoSignupAfitReward(promo, undefined),
+	// existing promo docs carry no amount: fall back to the server maximum, as the old route allowed
+	promoAfitReward: (promo) => promoSignupAfitReward(promo,
+		parseFloat(config.promoMaxAfitReward) > 0 ? parseFloat(config.promoMaxAfitReward) : PROMO_MAX_AFIT_REWARD_DEFAULT),
 	delegate: (name) => utils.delegateToAccount(name, 10, 'HIVE'),
 	recordSignup: async (s) => {
 		const req = { params: {}, query: {
@@ -8742,7 +8754,7 @@ signupWithKeys.registerSignupWithKeysRoutes(app, {
 			confirming_tx: s.confirming_tx,
 			usd_invest: s.promo ? 0 : signupCostUsd(),
 			steem_invest: s.verified_amount,
-			promo_code: s.promo ? String(s.promo._id) : undefined,
+			promo_code: s.promo ? s.promo.code : undefined,
 			promo_proceed: !!s.promo,
 			signup_reward: s.signup_reward,
 			referrer_reward: s.referrer_reward,

@@ -4,13 +4,14 @@
  * What these tests pin:
  * - everything is off until the settings doc enables it (and promo codes separately);
  * - the request never carries a password or private key, and every field is a checked string;
- * - a payment is bound to the exact signup details through the memo;
- * - one claim per memo and one per payment transaction, so a double tap or replay can never
- *   create or reward twice;
- * - an account that already exists with the submitted (public) keys only counts as ours when
- *   we broadcast for this claim before;
- * - failures that might still land stay retryable; definitive ones are final and the promo
- *   entry is given back only when nothing was broadcast.
+ * - a payment is bound to the exact signup details (promo code included) through the memo;
+ * - one claim per memo, leased to one request at a time; a stale request can't overwrite it;
+ * - an account that already exists with the submitted (public) keys only counts as ours when,
+ *   for this claim, we saw the name free and broadcast;
+ * - payments are found through a shared transfer index that survives dust floods and needs
+ *   no chain call per submit;
+ * - failures that might still land stay retryable; definitive ones are final; a wrong promo
+ *   code never locks the signup details; rewards that can't be recorded are flagged.
  */
 
 const express = require('express');
@@ -32,6 +33,7 @@ function matches(doc, q) {
 				if (op === '$gte' && !(val >= arg)) return false;
 				if (op === '$lt' && !(val < arg)) return false;
 				if (op === '$type' && typeof val !== arg) return false;
+				if (op === '$exists' && (val !== undefined) !== arg) return false;
 			}
 		} else if (val !== v) return false;
 	}
@@ -56,7 +58,10 @@ function makeCollection(name, uniqueFields = []) {
 		if (u.$inc) for (const [k, n] of Object.entries(u.$inc)) next[k] = (next[k] || 0) + n;
 		return next;
 	};
-	const replaceAt = (i, next) => { checkUnique(next, docs[i]); docs[i] = next; };
+	const upsertDoc = (q, u) => {
+		const base = Object.fromEntries(Object.entries(q).filter(([, v]) => typeof v !== 'object'));
+		const d = apply({ ...base, ...(u.$setOnInsert || {}) }, u); checkUnique(d, null); docs.push(d); return d;
+	};
 	return {
 		name, docs,
 		async insertOne(doc) { const d = { _id: nextId++, ...doc }; checkUnique(d, null); docs.push(d); return { insertedId: d._id }; },
@@ -64,24 +69,29 @@ function makeCollection(name, uniqueFields = []) {
 		async updateOne(q, u, opts = {}) {
 			const i = docs.findIndex((x) => matches(x, q));
 			if (i === -1) {
-				if (!opts.upsert) return { matchedCount: 0 };
-				const base = Object.fromEntries(Object.entries(q).filter(([, v]) => typeof v !== 'object'));
-				const d = apply({ ...base, ...(u.$setOnInsert || {}) }, u); checkUnique(d, null); docs.push(d); return { upsertedCount: 1 };
+				if (!opts.upsert) return { matchedCount: 0, modifiedCount: 0 };
+				upsertDoc(q, u); return { matchedCount: 0, modifiedCount: 0, upsertedCount: 1 };
 			}
-			replaceAt(i, apply(docs[i], u));
-			return { matchedCount: 1 };
+			const next = apply(docs[i], u); checkUnique(next, docs[i]);
+			const changed = JSON.stringify(next) !== JSON.stringify(docs[i]);
+			docs[i] = next;
+			return { matchedCount: 1, modifiedCount: changed ? 1 : 0 };
+		},
+		async deleteOne(q) {
+			const i = docs.findIndex((x) => matches(x, q));
+			if (i !== -1) docs.splice(i, 1);
+			return { deletedCount: i === -1 ? 0 : 1 };
 		},
 		async findOneAndUpdate(q, u, opts = {}) {
 			const i = docs.findIndex((x) => matches(x, q));
 			if (i === -1) {
 				if (!opts.upsert) return null;
-				const base = Object.fromEntries(Object.entries(q).filter(([, v]) => typeof v !== 'object'));
-				const d = apply({ ...base, ...(u.$setOnInsert || {}) }, u); checkUnique(d, null); docs.push(d);
+				const d = upsertDoc(q, u);
 				return opts.returnDocument === 'after' ? { ...d } : null;
 			}
 			const before = docs[i];
-			replaceAt(i, apply(before, u));
-			return opts.returnDocument === 'after' ? { ...docs[i] } : { ...before };
+			const next = apply(before, u); checkUnique(next, before); docs[i] = next;
+			return opts.returnDocument === 'after' ? { ...next } : { ...before };
 		},
 		async countDocuments(q) { return docs.filter((x) => matches(x, q)).length; },
 	};
@@ -90,7 +100,7 @@ function makeCollection(name, uniqueFields = []) {
 function makeDb() {
 	const cols = {
 		settings: makeCollection('settings'),
-		signup_claims: makeCollection('signup_claims', ['payment_trx_id']),
+		signup_claims: makeCollection('signup_claims', ['payment_ref']),
 		signup_promo_codes: makeCollection('signup_promo_codes'),
 		signup_rate_limits: makeCollection('signup_rate_limits'),
 	};
@@ -105,7 +115,6 @@ const keysFor = (user, pass) => {
 	return out;
 };
 const KEYS = keysFor('newguy', 'P5Ksignuptestpassword');
-const OTHER_KEYS = keysFor('newguy', 'someone-else');
 const NOW = Date.parse('2026-11-01T12:00:00Z');
 const chainTs = (ms) => new Date(ms).toISOString().slice(0, 19); // Hive style, no Z
 
@@ -113,40 +122,58 @@ function isValidName(name) {
 	if (typeof name !== 'string' || name.length < 3 || name.length > 16) return false;
 	return name.split('.').every((seg) => /^[a-z][a-z0-9-]+[a-z0-9]$/.test(seg));
 }
+// Format-level stand-in for utils.parseSignupPublicKeys (its checksum and curve checks are
+// covered in signup-create-with-keys.test.js); keeps this suite fast.
 function parseKeys(keys) {
 	if (!keys || typeof keys !== 'object') return null;
 	const out = {};
 	for (const role of ['owner', 'active', 'posting', 'memo']) {
 		const k = Object.prototype.hasOwnProperty.call(keys, role) ? keys[role] : undefined;
-		if (typeof k !== 'string') return null;
-		try { dhive.PublicKey.fromString(k); } catch (_) { return null; }
+		if (typeof k !== 'string' || !/^STM[1-9A-HJ-NP-Za-km-z]{50}$/.test(k)) return null;
 		out[role] = k;
 	}
 	return new Set(Object.values(out)).size === 4 ? out : null;
 }
+// distinct, well-formed public key sets without deriving keys
+const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+const fakeKeys = (n) => Object.fromEntries(Object.entries(KEYS).map(([role, k]) =>
+	[role, k.slice(0, -2) + B58[Math.floor(n / B58.length) % B58.length] + B58[n % B58.length]]));
 
-let db, chain, created, recorded, delegated, createOutcomes, app, svcNow;
+let db, chain, created, recorded, delegated, createOutcomes, app, svcNow, deps, historyCalls, nextIdx;
 
-function transfer({ memo, amount = '40.000 HIVE', to = 'actifit.signup', ageMs = 60 * 1000, trx = 'trx1', idx = 10, from = 'payer' }) {
-	return [idx, { trx_id: trx, timestamp: chainTs(svcNow - ageMs), op: ['transfer', { from, to, amount, memo }] }];
+/** Append a transfer to the signup account's history (indices only grow, like on chain). */
+function pay({ memo, amount = '40.000 HIVE', to = 'actifit.signup', ageMs = 60 * 1000, from = 'payer' }) {
+	const idx = nextIdx++;
+	chain.history.push([idx, { trx_id: 'trx' + idx, timestamp: chainTs(svcNow - ageMs), op: ['transfer', { from, to, amount, memo }] }]);
+	return 'trx' + idx;
+}
+function dust(n, memo = 'spam') {
+	for (let i = 0; i < n; i++) {
+		const idx = nextIdx++;
+		chain.history.push([idx, { trx_id: 'd' + idx, timestamp: chainTs(svcNow - 1000), op: ['transfer', { from: 'x', to: 'actifit.signup', amount: '0.001 HBD', memo }] }]);
+	}
 }
 
-function build({ enabled = true, promo = false, cap } = {}) {
+function build({ enabled = true, promo = false, cap, promoCap } = {}) {
 	db = makeDb();
-	if (enabled !== null) db.cols.settings.docs.push({ _id: 'signup_with_keys', enabled, promo_enabled: promo, ...(cap !== undefined ? { daily_cap: cap } : {}) });
+	if (enabled !== null) {
+		db.cols.settings.docs.push({ _id: 'signup_with_keys', enabled, promo_enabled: promo,
+			...(cap !== undefined ? { daily_cap: cap } : {}), ...(promoCap !== undefined ? { promo_daily_cap: promoCap } : {}) });
+	}
 	chain = { accounts: new Set(['referrer1', 'promoowner']), history: [] };
-	created = []; recorded = []; delegated = []; createOutcomes = [];
-	svcNow = NOW;
-	const deps = {
+	created = []; recorded = []; delegated = []; createOutcomes = []; historyCalls = [];
+	svcNow = NOW; nextIdx = 0;
+	deps = {
 		getDb: () => db,
 		getConfig: () => ({ signup_account: 'actifit.signup', account: 'actifit' }),
 		now: () => svcNow,
 		hiveCall: async (method, params) => {
 			if (method === 'get_accounts') return params[0].filter((n) => chain.accounts.has(n)).map((name) => ({ name }));
 			if (method === 'get_account_history') {
-				const [, start, limit] = params;
-				const all = chain.history.slice().sort((a, b) => a[0] - b[0]);
-				const upto = start === -1 ? all : all.filter((e) => e[0] <= start);
+				const [account, start, limit, filterLow] = params;
+				historyCalls.push({ account, start, limit, filterLow });
+				if (start !== -1 && start < limit - 1) throw new Error('hived: start must be >= limit - 1');
+				const upto = start === -1 ? chain.history : chain.history.filter((e) => e[0] <= start);
 				return upto.slice(-limit);
 			}
 			throw new Error('unexpected ' + method);
@@ -155,11 +182,12 @@ function build({ enabled = true, promo = false, cap } = {}) {
 		createAccount: async (name, keys) => {
 			created.push({ name, keys });
 			const out = createOutcomes.length ? createOutcomes.shift() : 'created';
+			if (typeof out === 'function') return out(name);
 			if (out === 'created') chain.accounts.add(name);
 			return { created: out === 'created', reason: out };
 		},
 		quoteAmount: async (cur) => (cur === 'HIVE' ? { amount: 40, live: true } : { amount: 2, live: true }),
-		requiredAmount: async (cur) => (cur === 'HIVE' ? 36 : 1.8),
+		requiredAmount: async (cur) => (cur === 'HIVE' ? { amount: 36, live: true } : { amount: 1.8, live: true }),
 		paidAfitReward: () => 50,
 		promoAfitReward: (p) => p.reward || 0,
 		delegate: async (name) => { delegated.push(name); },
@@ -167,7 +195,8 @@ function build({ enabled = true, promo = false, cap } = {}) {
 	};
 	app = express();
 	app.use(express.json());
-	swk.registerSignupWithKeysRoutes(app, deps, { ipOf: () => '1.2.3.4' });
+	// the routes read deps through this object, so tests can swap a dependency after build
+	swk.registerSignupWithKeysRoutes(app, new Proxy({}, { get: (_t, k) => deps[k] }), { ipOf: () => '1.2.3.4' });
 }
 
 const base = (over = {}) => ({ new_account: 'newguy', keys: KEYS, referrer: 'referrer1', email: 'New@Example.com', sent_cur: 'HIVE', ...over });
@@ -175,19 +204,20 @@ const memoOf = (body) => swk.signupMemo({ ...body, email: (body.email || '').toL
 const quote = (body) => request(app).post('/app/signupQuote').send(body);
 const submit = (body) => request(app).post('/app/signupWithKeys').send({ memo: memoOf(body), ...body });
 const claimOf = (body) => db.cols.signup_claims.docs.find((d) => d._id === memoOf(body));
+const later = (ms = 11 * 1000) => { svcNow += ms; };
 
 beforeEach(() => build());
 
 // ---- memo ----------------------------------------------------------------------------------
 
 describe('signupMemo', () => {
-	it('is stable and changes with every field the signup depends on', () => {
-		const f = { new_account: 'newguy', keys: KEYS, referrer: 'a', email: 'b@c.de', sent_cur: 'HIVE' };
+	it('is stable and changes with every field the signup depends on, promo code included', () => {
+		const f = { new_account: 'newguy', keys: KEYS, referrer: 'a', email: 'b@c.de', sent_cur: 'HIVE', promo_code: '' };
 		const m = swk.signupMemo(f);
 		expect(m).toMatch(/^signup:[0-9a-f]{24}$/);
 		expect(swk.signupMemo({ ...f })).toBe(m);
-		for (const change of [{ new_account: 'newguy2' }, { keys: { ...KEYS, memo: OTHER_KEYS.memo } }, { referrer: '' },
-			{ email: '' }, { sent_cur: 'HBD' }]) {
+		for (const change of [{ new_account: 'newguy2' }, { keys: { ...KEYS, memo: fakeKeys(2).memo } }, { referrer: '' },
+			{ email: '' }, { sent_cur: 'HBD' }, { promo_code: 'CODE1' }]) {
 			expect(swk.signupMemo({ ...f, ...change })).not.toBe(m);
 		}
 	});
@@ -196,21 +226,22 @@ describe('signupMemo', () => {
 // ---- quote ---------------------------------------------------------------------------------
 
 describe('POST /app/signupQuote', () => {
-	it('is off without the settings doc, and when it is disabled', async () => {
+	it('is off without the settings doc, when disabled, and when the settings read fails', async () => {
 		build({ enabled: null });
 		expect((await quote(base())).status).toBe(503);
 		build({ enabled: false });
-		const res = await quote(base());
-		expect(res.status).toBe(503);
-		expect(res.body).toEqual({ enabled: false, reason: 'signup_disabled' });
+		expect((await quote(base())).body).toEqual({ enabled: false, reason: 'signup_disabled' });
+		build();
+		db.cols.settings.findOne = async () => { throw new Error('db down'); };
+		expect((await quote(base())).status).toBe(503);
 	});
 
-	it('quotes the memo, amounts rounded up to 3 dp, the pay-to account and the fixed reward', async () => {
-		const res = await quote(base());
+	it('quotes the memo, the amount in the chosen currency rounded up, the pay-to account and the reward', async () => {
+		const res = await quote(base({ sent_cur: 'HBD' }));
 		expect(res.status).toBe(200);
 		expect(res.body).toEqual({
-			enabled: true, reason: 'quoted', memo: memoOf(base()),
-			amounts: { HIVE: '40.000', HBD: '2.000' }, signup_account: 'actifit.signup', afit_reward: 50,
+			enabled: true, reason: 'quoted', memo: memoOf(base({ sent_cur: 'HBD' })),
+			amounts: { HBD: '2.000' }, signup_account: 'actifit.signup', afit_reward: 50,
 		});
 	});
 
@@ -236,43 +267,49 @@ describe('POST /app/signupQuote', () => {
 		expect(res.body.reason).toBe(reason);
 	});
 
-	it('refuses a name that already exists', async () => {
+	it('refuses a name that already exists, and a referrer that does not', async () => {
 		chain.accounts.add('newguy');
 		expect((await quote(base())).body.reason).toBe('username_taken');
-	});
-
-	it('refuses a referrer that does not exist on chain', async () => {
+		chain.accounts.delete('newguy');
 		const res = await quote(base({ referrer: 'ghost' }));
 		expect(res.status).toBe(400);
 		expect(res.body.reason).toBe('invalid_referrer');
 	});
 
 	it('refuses to quote on a guessed price', async () => {
-		const deps2App = express(); deps2App.use(express.json());
-		swk.registerSignupWithKeysRoutes(deps2App, {
-			getDb: () => db, getConfig: () => ({ signup_account: 'actifit.signup' }), now: () => svcNow,
-			hiveCall: async () => [], isValidName, parseKeys,
-			quoteAmount: async () => ({ amount: 40, live: false }), paidAfitReward: () => 50,
-		}, { ipOf: () => '1.2.3.4' });
-		const res2 = await request(deps2App).post('/app/signupQuote').send(base({ referrer: '' }));
-		expect(res2.status).toBe(503);
-		expect(res2.body.reason).toBe('server_error');
+		deps.quoteAmount = async () => ({ amount: 40, live: false });
+		const res = await quote(base());
+		expect(res.status).toBe(503);
+		expect(res.body.reason).toBe('price_unavailable');
 	});
 
-	it('stops quoting paid signups once the daily cap is used', async () => {
+	it('reports a retryable server_error when the chain lookup fails', async () => {
+		deps.hiveCall = async () => { throw new Error('node down'); };
+		const res = await quote(base());
+		expect(res.status).toBe(503);
+		expect(res.body).toMatchObject({ reason: 'server_error', retryable: true });
+	});
+
+	it('stops quoting paid signups once the paid daily cap is used; promo signups do not count', async () => {
 		build({ cap: 1 });
-		db.cols.signup_claims.docs.push({ _id: 'x', status: 'created', finalized_at: new Date(NOW - 1000) });
+		db.cols.signup_claims.docs.push({ _id: 'p', path: 'promo', status: 'created', finalized_at: new Date(NOW - 1000) });
+		expect((await quote(base())).status).toBe(200);
+		db.cols.signup_claims.docs.push({ _id: 'x', path: 'paid', status: 'created', finalized_at: new Date(NOW - 1000) });
 		expect((await quote(base())).status).toBe(503);
 	});
 
-	it('says promo_invalid for a promo code while promo signups are off', async () => {
-		expect((await quote(base({ promo_code: 'CODE1' }))).body.reason).toBe('promo_invalid');
+	it('says promo_invalid while promo signups are off; otherwise quotes only the memo', async () => {
+		expect((await quote(base({ promo_code: 'CODE1' }))).body).toEqual({ enabled: true, reason: 'promo_invalid' });
+		build({ promo: true });
+		const res = await quote(base({ promo_code: 'CODE1' }));
+		expect(res.body).toEqual({ enabled: true, reason: 'quoted', memo: memoOf(base({ promo_code: 'CODE1' })) });
 	});
 
-	it('rate limits per IP through a counter kept in the DB', async () => {
+	it('rate limits quotes per IP through a counter kept in the DB', async () => {
 		let last;
 		for (let i = 0; i < 31; i++) last = await quote(base());
 		expect(last.status).toBe(429);
+		expect(db.cols.signup_rate_limits.docs.some((d) => d._id.startsWith('quote:1.2.3.4:'))).toBe(true);
 	}, 60000);
 });
 
@@ -286,117 +323,201 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(res.body.reason).toBe('signup_disabled');
 	});
 
-	it('rejects a memo that does not match the details', async () => {
+	it('rejects a memo that does not match the details, writing nothing', async () => {
 		const res = await request(app).post('/app/signupWithKeys').send({ ...base(), memo: 'signup:000000000000000000000000' });
 		expect(res.status).toBe(400);
 		expect(res.body.reason).toBe('memo_mismatch');
 		expect(db.cols.signup_claims.docs).toHaveLength(0);
 	});
 
-	it('returns payment_pending until the payment is on chain, and leaves the claim open', async () => {
+	it('writes no claim for a name that is taken or a referrer that does not exist', async () => {
+		chain.accounts.add('newguy');
+		expect((await submit(base())).body.reason).toBe('username_taken');
+		chain.accounts.delete('newguy');
+		expect((await submit(base({ referrer: 'ghost' }))).body.reason).toBe('invalid_referrer');
+		expect(db.cols.signup_claims.docs).toHaveLength(0);
+	});
+
+	it('returns payment_pending with retry_after until the payment is on chain, and leaves the claim open', async () => {
 		const res = await submit(base());
-		expect(res.body).toEqual({ accountCreated: false, paymentReceivedTx: '', reason: 'payment_pending', retryable: true });
-		expect(claimOf(base()).status).toBe('pending');
+		expect(res.body).toEqual({ accountCreated: false, paymentReceivedTx: '', reason: 'payment_pending', retryable: true, retry_after: 10 });
+		expect(claimOf(base())).toMatchObject({ status: 'pending' });
+		expect(claimOf(base()).expires_at).toBeInstanceOf(Date);
 		expect(created).toHaveLength(0);
 	});
 
 	it('creates the account with exactly the submitted keys once the payment is found', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
+		const trx = pay({ memo: memoOf(base()) });
 		const res = await submit(base());
-		expect(res.body).toEqual({ accountCreated: true, paymentReceivedTx: 'trx1', reason: 'created', retryable: false });
+		expect(res.body).toEqual({ accountCreated: true, paymentReceivedTx: trx, reason: 'created', retryable: false });
 		expect(created).toEqual([{ name: 'newguy', keys: KEYS }]);
 		expect(recorded).toHaveLength(1);
 		expect(recorded[0]).toMatchObject({
 			new_account: 'newguy', referrer: 'referrer1', email: 'new@example.com', afit_reward: 50,
-			confirming_tx: 'trx1', verified_amount: 40, verified_currency: 'HIVE', promo: null,
+			confirming_tx: trx, verified_amount: 40, verified_currency: 'HIVE', promo: null,
 		});
 		expect(delegated).toEqual(['newguy']);
 		const claim = claimOf(base());
-		expect(claim).toMatchObject({ status: 'created', payment_trx_id: 'trx1', payment_from: 'payer', verified_amount: 40 });
-		expect(claim.keys).toEqual(KEYS);
+		expect(claim).toMatchObject({ status: 'created', payment_trx_id: trx, payment_from: 'payer', verified_amount: 40,
+			reward_amount: 50, reward_pending: false, delegated: true });
+		expect(claim.lease_token).toBeUndefined();
+		expect(claim.expires_at).toBeUndefined();
 	});
 
+	it('reads history with the transfer filter and pages that hived accepts', async () => {
+		deps.historyPageSize = 50;
+		pay({ memo: memoOf(base()), ageMs: 3600 * 1000 });
+		dust(150);
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(historyCalls.length).toBeGreaterThan(1);
+		for (const c of historyCalls) {
+			expect(c).toMatchObject({ account: 'actifit.signup', filterLow: 4 });
+			if (c.start !== -1) expect(c.start).toBeGreaterThanOrEqual(c.limit - 1);
+		}
+	});
+
+	it('does not re-read the chain for every submit (shared index, refreshed at most every 10 s)', async () => {
+		await submit(base());
+		const calls = historyCalls.length;
+		await submit(base({ new_account: 'otherguy', keys: fakeKeys(1) }));
+		expect(historyCalls.length).toBe(calls);
+	});
+
+	it('still finds a payment buried under a dust flood that arrived after the index was built', async () => {
+		deps.historyPageSize = 10; // a refresh walks 20 pages = 200 entries, so 300 dust leaves a gap
+		await submit(base()); // builds the index
+		const trx = pay({ memo: memoOf(base()) });
+		dust(300, 'signup:dustdustdustdustdustdust');
+		later();
+		const res = await submit(base());
+		expect(res.body).toMatchObject({ reason: 'created', paymentReceivedTx: trx });
+	}, 60000);
+
 	it('answers a repeat submit with already_created and creates or rewards nothing again', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
+		const trx = pay({ memo: memoOf(base()) });
 		await submit(base());
 		const res = await submit(base());
-		expect(res.body).toMatchObject({ accountCreated: true, reason: 'already_created', paymentReceivedTx: 'trx1' });
+		expect(res.body).toMatchObject({ accountCreated: true, reason: 'already_created', paymentReceivedTx: trx });
 		expect(created).toHaveLength(1);
 		expect(recorded).toHaveLength(1);
 	});
 
-	it('returns payment_pending while another request holds the claim', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		await db.cols.signup_claims.insertOne({ _id: memoOf(base()), path: 'paid', status: 'processing', lease_until: new Date(NOW + 60000) });
-		const res = await submit(base());
-		expect(res.body.reason).toBe('payment_pending');
+	it('checks one claim at most every 10 seconds', async () => {
+		await submit(base());
+		const checkedAt = claimOf(base()).last_checked_at;
+		pay({ memo: memoOf(base()) });
+		later(5000);
+		expect((await submit(base())).body.reason).toBe('payment_pending');
 		expect(created).toHaveLength(0);
+		expect(claimOf(base()).last_checked_at).toEqual(checkedAt); // not even leased
+		later(6000);
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
 	});
 
-	it('takes over a claim whose lease expired', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		await db.cols.signup_claims.insertOne({ _id: memoOf(base()), path: 'paid', status: 'processing', lease_until: new Date(NOW - 1) });
+	it('returns payment_pending while another request holds the claim, and takes over an expired lease', async () => {
+		pay({ memo: memoOf(base()) });
+		await db.cols.signup_claims.insertOne({ _id: memoOf(base()), path: 'paid', status: 'processing', lease_token: 'other',
+			lease_until: new Date(NOW + 60000), created_at: new Date(NOW) });
+		expect((await submit(base())).body.reason).toBe('payment_pending');
+		later(61000);
 		expect((await submit(base())).body.reason).toBe('created');
+	});
+
+	it('does not let a stale request overwrite a claim another request finished', async () => {
+		pay({ memo: memoOf(base()) });
+		let releaseA;
+		const gate = new Promise((r) => { releaseA = r; });
+		// request A broadcasts (the account appears) but hangs past its lease
+		createOutcomes.push(async (name) => { chain.accounts.add(name); await gate; return { reason: 'created' }; });
+		const a = submit(base()).then((r) => r);
+		for (let i = 0; i < 50 && created.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+		later(6 * 60 * 1000);
+		// request B takes over, sees the account with our keys after our broadcast, finishes
+		createOutcomes.push('exists_with_same_keys');
+		const b = await submit(base());
+		expect(b.body.reason).toBe('created');
+		releaseA();
+		await a;
+		expect(claimOf(base()).status).toBe('created');
+		expect(recorded).toHaveLength(1);
+		expect(delegated).toHaveLength(1);
 	});
 
 	it.each([
 		['too little', { amount: '10.000 HIVE' }],
 		['the wrong currency', { amount: '40.000 HBD' }],
-	])('reports payment_insufficient for %s', async (_l, over) => {
-		chain.history.push(transfer({ memo: memoOf(base()), ...over }));
+	])('reports payment_insufficient for %s and flags the claim for a refund', async (_l, over) => {
+		const trx = pay({ memo: memoOf(base()), ...over });
 		const res = await submit(base());
 		expect(res.body).toMatchObject({ reason: 'payment_insufficient', retryable: false, accountCreated: false });
 		expect(created).toHaveLength(0);
-		expect(claimOf(base())).toMatchObject({ status: 'pending', insufficient_trx_id: 'trx1' });
+		expect(claimOf(base())).toMatchObject({ status: 'pending', insufficient_trx_id: trx, needs_refund: true });
+		expect(claimOf(base()).expires_at).toBeUndefined();
 	});
 
-	it('ignores a transfer older than 72 hours, or to another account', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()), ageMs: 73 * 3600 * 1000 }));
-		chain.history.push(transfer({ memo: memoOf(base()), to: 'someone', trx: 'trx2', idx: 11 }));
+	it('completes an underpaid claim when a full transfer follows', async () => {
+		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
+		await submit(base());
+		pay({ memo: memoOf(base()) });
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base()).needs_refund).toBe(false);
+	});
+
+	it('never judges a payment against a guessed price', async () => {
+		pay({ memo: memoOf(base()) });
+		deps.requiredAmount = async () => ({ amount: 360, live: false });
+		const res = await submit(base());
+		expect(res.body).toMatchObject({ reason: 'server_error', retryable: true });
+		expect(claimOf(base()).status).toBe('pending');
+	});
+
+	it('ignores transfers outside the window or to another account', async () => {
+		pay({ memo: memoOf(base()), ageMs: 73 * 3600 * 1000 });
+		pay({ memo: memoOf(base()), to: 'someone' });
 		expect((await submit(base())).body.reason).toBe('payment_pending');
 	});
 
-	it('finds a payment beyond the first history page', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()), idx: 5, ageMs: 3600 * 1000 }));
-		for (let i = 0; i < 1000; i++) chain.history.push(transfer({ memo: 'other', idx: 100 + i, trx: 'o' + i }));
+	it('counts the 72 h window from when the claim was made, not from now', async () => {
+		await submit(base()); // claim made now
+		pay({ memo: memoOf(base()), ageMs: 60 * 1000 });
+		later(100 * 3600 * 1000); // submitted again 100 h later
 		expect((await submit(base())).body.reason).toBe('created');
 	});
 
-	it('refuses to use one payment transaction for two claims', async () => {
-		// a forged second claim already took trx1
-		await db.cols.signup_claims.insertOne({ _id: 'signup:other', path: 'paid', status: 'created', payment_trx_id: 'trx1' });
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		const res = await submit(base());
-		expect(res.body.reason).toBe('memo_mismatch');
-		expect(created).toHaveLength(0);
-	});
-
-	it('does not treat an existing account with these keys as ours on the first attempt', async () => {
-		// keys are public: anyone could submit an existing account's keys
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		createOutcomes.push('exists_with_same_keys');
+	it('does not treat an existing account with these keys as ours when we never saw the name free', async () => {
+		// keys are public: an account with these keys appears after a refusal that broadcast nothing
+		pay({ memo: memoOf(base()) });
+		createOutcomes.push('node_down');
+		expect((await submit(base())).body).toMatchObject({ reason: 'server_error', retryable: true });
+		expect(claimOf(base()).broadcast_attempted).toBe(false);
+		chain.accounts.add('newguy');
+		later();
 		const res = await submit(base());
 		expect(res.body).toMatchObject({ reason: 'username_taken', accountCreated: false });
+		expect(claimOf(base())).toMatchObject({ status: 'failed', needs_refund: true });
 		expect(recorded).toHaveLength(0);
-		expect((await submit(base())).body.reason).toBe('username_taken'); // final
 	});
 
 	it('finishes a signup whose broadcast result was unknown, on retry', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		createOutcomes.push('creation_failed', 'exists_with_same_keys');
+		pay({ memo: memoOf(base()) });
+		createOutcomes.push(async (name) => { chain.accounts.add(name); return { reason: 'creation_failed' }; }, 'exists_with_same_keys');
 		const first = await submit(base());
-		expect(first.body).toMatchObject({ reason: 'creation_failed', retryable: true, paymentReceivedTx: 'trx1' });
-		expect(claimOf(base()).status).toBe('pending');
+		expect(first.body).toMatchObject({ reason: 'creation_failed', retryable: true });
+		expect(claimOf(base())).toMatchObject({ status: 'pending', broadcast_attempted: true });
+		later();
 		const second = await submit(base());
 		expect(second.body).toMatchObject({ reason: 'created', accountCreated: true });
 		expect(recorded).toHaveLength(1);
 	});
 
-	it('fails for good when the name was taken by someone else', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
+	it('fails for good, flagged for a refund, when the name was taken by someone else', async () => {
+		pay({ memo: memoOf(base()) });
 		createOutcomes.push('username_taken');
 		expect((await submit(base())).body).toMatchObject({ reason: 'username_taken', retryable: false });
-		expect(claimOf(base())).toMatchObject({ status: 'failed', failure_reason: 'username_taken' });
+		expect(claimOf(base())).toMatchObject({ status: 'failed', failure_reason: 'username_taken', needs_refund: true });
+		later();
 		expect((await submit(base())).body.reason).toBe('username_taken');
 		expect(created).toHaveLength(1);
 	});
@@ -404,27 +525,64 @@ describe('POST /app/signupWithKeys (paid)', () => {
 	it.each([
 		['no_account_token', 'creation_failed'],
 		['node_down', 'server_error'],
-	])('keeps the claim open and retryable on %s', async (outcome, reason) => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
+	])('keeps the claim open and retryable on %s, then finishes', async (outcome, reason) => {
+		pay({ memo: memoOf(base()) });
 		createOutcomes.push(outcome);
-		expect((await submit(base())).body).toMatchObject({ reason, retryable: true });
-		expect(claimOf(base()).status).toBe('pending');
+		expect((await submit(base())).body).toMatchObject({ reason, retryable: true, retry_after: 10 });
+		expect(claimOf(base())).toMatchObject({ status: 'pending', broadcast_attempted: false });
 		expect(recorded).toHaveLength(0);
-		expect((await submit(base())).body.reason).toBe(outcome === 'no_account_token' ? 'created' : 'created');
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
 	});
 
-	it('records the signup without the referrer when the referrer no longer exists', async () => {
-		chain.history.push(transfer({ memo: memoOf(base()) }));
-		chain.accounts.delete('referrer1');
-		await submit(base());
-		expect(recorded[0].referrer).toBe('');
+	it('returns a retryable server_error when createAccount throws', async () => {
+		pay({ memo: memoOf(base()) });
+		createOutcomes.push(async () => { throw new Error('boom'); });
+		const res = await submit(base());
+		expect(res.status).toBe(500);
+		expect(res.body).toMatchObject({ reason: 'server_error', retryable: true });
+		expect(claimOf(base()).status).toBe('pending');
+	});
+
+	it('finishes the account but flags the reward when the reward amount is unavailable', async () => {
+		pay({ memo: memoOf(base()) });
+		deps.paidAfitReward = () => 0;
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(recorded).toHaveLength(0);
+		expect(claimOf(base())).toMatchObject({ status: 'created', reward_pending: true, reward_amount: 0 });
+	});
+
+	it.each([
+		['returns false', async () => false],
+		['throws', async () => { throw new Error('calcRank failed'); }],
+	])('finishes the account and flags the reward when recordSignup %s', async (_l, fn) => {
+		pay({ memo: memoOf(base()) });
+		deps.recordSignup = fn;
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base())).toMatchObject({ status: 'created', reward_pending: true });
+	});
+
+	it('still finishes when the delegation fails', async () => {
+		pay({ memo: memoOf(base()) });
+		deps.delegate = async () => { throw new Error('rc'); };
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base())).toMatchObject({ status: 'created' });
+		expect(claimOf(base()).delegated).toBeUndefined();
 	});
 
 	it('honours a paid submit even when the daily cap is used', async () => {
 		build({ cap: 0 });
-		chain.history.push(transfer({ memo: memoOf(base()) }));
+		pay({ memo: memoOf(base()) });
 		expect((await submit(base())).body.reason).toBe('created');
 	});
+
+	it('rate limits new claims per IP, but not checks on an existing claim', async () => {
+		const users = Array.from({ length: 21 }, (_, i) => base({ new_account: 'user' + String.fromCharCode(97 + i) + 'x', keys: fakeKeys(10 + i) }));
+		for (let i = 0; i < 20; i++) expect((await submit(users[i])).status).toBe(200);
+		expect((await submit(users[20])).status).toBe(429);
+		later();
+		expect((await submit(users[0])).status).toBe(200);
+	}, 60000);
 });
 
 // ---- promo submit --------------------------------------------------------------------------
@@ -452,11 +610,40 @@ describe('POST /app/signupWithKeys (promo)', () => {
 		expect(promo().entries).toBe(1);
 	});
 
+	it('does not lock the details after a wrong code: the right code still works', async () => {
+		build({ promo: true }); addPromo();
+		expect((await submit(promoBody({ promo_code: 'TYPO' }))).body.reason).toBe('promo_invalid');
+		expect(db.cols.signup_claims.docs).toHaveLength(0);
+		expect((await submit(promoBody())).body.reason).toBe('created');
+	});
+
+	it('lets the user pay instead after a wrong code', async () => {
+		build({ promo: true }); addPromo();
+		await submit(promoBody({ promo_code: 'TYPO' }));
+		pay({ memo: memoOf(base()) });
+		expect((await submit(base())).body.reason).toBe('created');
+	});
+
 	it('reports promo_invalid for an unknown or used-up code', async () => {
 		build({ promo: true }); addPromo({ entries: 0 });
 		expect((await submit(promoBody())).body.reason).toBe('promo_invalid');
 		expect((await submit(promoBody({ promo_code: 'NOPE' }))).body.reason).toBe('promo_invalid');
 		expect(created).toHaveLength(0);
+	});
+
+	it('locks promo signups for the hour after too many wrong codes', async () => {
+		build({ promo: true }); addPromo();
+		db.cols.signup_rate_limits.docs.push({ _id: 'promo_fail:' + Math.floor(NOW / 3600000), n: 30 });
+		expect((await submit(promoBody())).body.reason).toBe('promo_invalid');
+		expect((await quote(promoBody())).body.reason).toBe('promo_invalid');
+		expect(promo().entries).toBe(2);
+	});
+
+	it('counts wrong codes towards that lock', async () => {
+		build({ promo: true }); addPromo();
+		await submit(promoBody({ promo_code: 'TYPO' }));
+		const doc = db.cols.signup_rate_limits.docs.find((d) => d._id.startsWith('promo_fail:'));
+		expect(doc.n).toBe(1);
 	});
 
 	it('gives the entry back when nothing was broadcast', async () => {
@@ -468,36 +655,47 @@ describe('POST /app/signupWithKeys (promo)', () => {
 
 	it('keeps the entry held when the broadcast result is unknown, and finishes on retry without a second entry', async () => {
 		build({ promo: true }); addPromo();
-		createOutcomes.push('creation_failed', 'exists_with_same_keys');
+		createOutcomes.push(async (name) => { chain.accounts.add(name); return { reason: 'creation_failed' }; }, 'exists_with_same_keys');
 		expect((await submit(promoBody())).body).toMatchObject({ reason: 'creation_failed', retryable: true });
 		expect(promo().entries).toBe(1);
+		later();
 		expect((await submit(promoBody())).body.reason).toBe('created');
 		expect(promo().entries).toBe(1);
 		expect(recorded).toHaveLength(1);
 	});
 
-	it('restores the entry and stays retryable when no account token is left', async () => {
+	it('restores the entry exactly once and stays retryable when no account token is left', async () => {
 		build({ promo: true }); addPromo();
 		createOutcomes.push('no_account_token');
 		expect((await submit(promoBody())).body).toMatchObject({ reason: 'creation_failed', retryable: true });
 		expect(promo().entries).toBe(2);
 		expect(claimOf(promoBody()).promo_id).toBeUndefined();
+		later();
+		expect((await submit(promoBody())).body.reason).toBe('created');
+		expect(promo().entries).toBe(1);
 	});
 
-	it('stops promo signups once the daily cap is used', async () => {
-		build({ promo: true, cap: 1 }); addPromo();
-		db.cols.signup_claims.docs.push({ _id: 'x', status: 'created', finalized_at: new Date(NOW - 1000) });
+	it('does not let a stale request give back an entry another request used', async () => {
+		build({ promo: true }); addPromo();
+		let releaseA;
+		const gate = new Promise((r) => { releaseA = r; });
+		// A holds the entry, then hangs past its lease and finally reports a refusal
+		createOutcomes.push(async () => { await gate; return { reason: 'node_down' }; });
+		const a = submit(promoBody()).then((x) => x);
+		for (let i = 0; i < 50 && created.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+		later(6 * 60 * 1000);
+		expect((await submit(promoBody())).body.reason).toBe('created'); // B uses the held entry
+		releaseA();
+		await a;
+		expect(promo().entries).toBe(1);
+		expect(claimOf(promoBody()).status).toBe('created');
+	});
+
+	it('stops promo signups once the promo daily cap is used', async () => {
+		build({ promo: true, promoCap: 1 }); addPromo();
+		db.cols.signup_claims.docs.push({ _id: 'x', path: 'promo', status: 'created', finalized_at: new Date(NOW - 1000) });
 		expect((await submit(promoBody())).body).toMatchObject({ reason: 'signup_disabled', retryable: true });
 		expect(promo().entries).toBe(2);
-	});
-
-	it('does not let a paid claim be reused as a promo claim', async () => {
-		build({ promo: true }); addPromo();
-		await submit(base({ promo_code: '' }));
-		const res = await submit(promoBody({ promo_code: 'CODE1' }));
-		// same details -> same memo, different path
-		expect(res.status).toBe(400);
-		expect(res.body.reason).toBe('memo_mismatch');
 	});
 });
 
@@ -508,7 +706,7 @@ describe('kill switch', () => {
 		expect((await quote(base())).status).toBe(200);
 		db.cols.settings.docs[0].enabled = false;
 		expect((await quote(base())).status).toBe(200); // cached
-		svcNow += 61 * 1000;
+		later(61 * 1000);
 		expect((await quote(base())).status).toBe(503);
 	});
 });
