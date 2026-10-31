@@ -453,6 +453,8 @@ function createSignupWithKeys(deps) {
 		}
 		// from here a broadcast may happen, so mark it (and renew the lease)
 		if (!(await guarded(claim, { $set: { broadcast_attempted: true, lease_until: new Date(t + CLAIM_LEASE_MS) } }))) return 'lease_lost';
+		// staleness counts from the LAST broadcast, so a takeover can never race one that may still land
+		if (!(await names.updateOne({ _id: f.new_account, memo: claim._id }, { $set: { at: new Date(t) } })).matchedCount) return 'username_taken';
 		const out = await deps.createAccount(f.new_account, f.keys);
 		if (['node_down', 'no_account_token', 'invalid_username', 'invalid_keys'].includes(out.reason) && !attemptedBefore) {
 			// refused before broadcasting: nothing went out for this claim, so free the name too

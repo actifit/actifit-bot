@@ -695,6 +695,19 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(db.cols.signup_names.docs[0]).toMatchObject({ memo: memoOf(base()), took_over_from: 'signup:' + 'a'.repeat(24) });
 	});
 
+	it('counts staleness from the last broadcast by the holder, not its first reservation', async () => {
+		const h = base({ referrer: '' }); // the holder: same name, another memo
+		db.cols.signup_claims.docs.push({ _id: memoOf(h), path: 'paid', new_account: 'newguy', status: 'pending', broadcast_attempted: true,
+			payment_trx_id: 'tH', verified_amount: 40, verified_currency: 'HIVE', created_at: new Date(NOW - 3 * 3600 * 1000) });
+		db.cols.signup_names.docs.push({ _id: 'newguy', memo: memoOf(h), at: new Date(NOW - 2 * 3600 * 1000) });
+		createOutcomes.push('creation_failed'); // the holder retries now and broadcasts again (outcome unknown)
+		expect((await submit(h)).body.reason).toBe('creation_failed');
+		pay({ memo: memoOf(base()) });
+		later(1000);
+		expect((await submit(base())).body.reason).toBe('username_taken'); // too soon after that broadcast
+		expect(db.cols.signup_names.docs[0].memo).toBe(memoOf(h));
+	});
+
 	it('does not take over a reservation whose claim is still processing', async () => {
 		pay({ memo: memoOf(base()) });
 		const old = 'signup:' + 'b'.repeat(24);
