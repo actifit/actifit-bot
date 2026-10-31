@@ -7311,7 +7311,8 @@ const storeSignupTransaction = async function (req){
 	if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
 		
 		new_transaction['referrer'] = req.query.referrer;
-		new_transaction['referrer_afit_reward'] = parseFloat(req.query.afit_reward * config.referrerBonus);
+		// never NaN, even in this record (see storeReferralReward)
+		new_transaction['referrer_afit_reward'] = utils.finiteAmount(req.query.afit_reward * config.referrerBonus) || 0;
 		
 		//calculate proper referral reward based on user data
 		

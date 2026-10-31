@@ -43,15 +43,20 @@ const DEFAULT_PROMO_DAILY_CAP = 10;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // longer than a slow account-history read + broadcast; renewed right before broadcasting
 const CLAIM_LEASE_MS = 5 * 60 * 1000;
-const PAYMENT_WINDOW_MS = 72 * 60 * 60 * 1000;
+// The memo already binds a payment to one signup; the window only bounds how far back we look.
+const PAYMENT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const PENDING_CLAIM_TTL_MS = 7 * DAY_MS;
 // how often one claim may trigger a payment check
 const CLAIM_CHECK_INTERVAL_MS = 10 * 1000;
 const RETRY_AFTER_S = 10;
 // transfer index
 const INDEX_REFRESH_MS = 10 * 1000;
-const INDEX_RETENTION_MS = 7 * DAY_MS;
+// longer than the payment window + pending-claim TTL, so a late submit still finds its payment
+const INDEX_RETENTION_MS = 14 * DAY_MS;
 const INDEX_MAX_ENTRIES = 100000;
+const MAX_TRANSFERS_PER_MEMO = 10;
+// transfers below this are dust: never indexed, never a payment (a signup costs ~$2)
+const MIN_INDEXED_AMOUNT = { HIVE: 1, HBD: 0.25 };
 const HISTORY_PAGE = 1000;
 const FIRST_SCAN_MAX_PAGES = 50;
 const REFRESH_MAX_PAGES = 20;
@@ -61,8 +66,10 @@ const TRANSFER_FILTER_LOW = 4;
 const RATE_WINDOW_MS = 60 * 60 * 1000;
 const QUOTES_PER_IP = 30;
 const NEW_CLAIMS_PER_IP = 20;
-const FAILED_PROMOS_PER_HOUR = 30;
+const FAILED_PROMOS_PER_IP = 10;
+const FAILED_PROMOS_GLOBAL = 300;
 const MEMO_PREFIX = 'signup:';
+const MEMO_RE = /^signup:[0-9a-f]{24}$/;
 const CURRENCIES = ['HIVE', 'HBD'];
 // Fields that must never be sent: the keys are made on the device, and only public keys travel.
 const FORBIDDEN_FIELDS = ['new_pass', 'password', 'master_password', 'owner_key', 'active_key',
@@ -137,39 +144,54 @@ function matchPayment(transfers, { currency, required, notBefore }) {
 }
 
 /**
- * Transfers to the signup account that carry a signup memo, kept in memory and refreshed
- * incrementally (newest entries first, then any gap a flood left), so a submit costs no
- * chain call and dust transfers cannot push a payment out of view.
+ * Transfers to the signup account that carry a well-formed signup memo and at least a
+ * minimum amount, kept in memory and refreshed incrementally (newest entries first, then
+ * any gap left behind), so a submit costs no chain call and dust cannot hide a payment.
+ * Bounded: at most MAX_TRANSFERS_PER_MEMO per memo and `maxEntries` in total; when full, the
+ * walk stops and keeps the rest as a gap to retry, so nothing is skipped for good.
  */
-function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_PAGE }) {
+function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_PAGE, maxEntries = INDEX_MAX_ENTRIES }) {
 	const byMemo = new Map();
 	const seen = new Set();
 	let high = null; // highest history index fetched
 	let gaps = []; // [{start, stopAt}] ranges still to walk (indices > stopAt, <= start)
 	let refreshedAt = 0;
 	let inflight = null;
-	let full = false;
+	let fullLogged = false;
 
+	/** Index one history entry. Returns false only when the index is full. */
 	function add(entry) {
 		const [idx, h] = entry;
-		if (seen.has(idx) || !h || !Array.isArray(h.op) || h.op[0] !== 'transfer') return;
+		if (seen.has(idx) || !h || !Array.isArray(h.op) || h.op[0] !== 'transfer') return true;
 		const op = h.op[1] || {};
-		if (op.to !== account || typeof op.memo !== 'string' || !op.memo.startsWith(MEMO_PREFIX)) return;
-		if (seen.size >= INDEX_MAX_ENTRIES) {
-			if (!full) log('signup transfer index is full (' + INDEX_MAX_ENTRIES + ' entries); possible flood');
-			full = true;
-			return;
+		if (op.to !== account || typeof op.memo !== 'string' || !MEMO_RE.test(op.memo)) return true;
+		const [amountStr, currency] = String(op.amount || '').split(' ');
+		const amount = parseFloat(amountStr);
+		if (!(amount >= (MIN_INDEXED_AMOUNT[currency] || Infinity))) return true; // dust
+		const timestamp = chainTime(h.timestamp);
+		if (timestamp.getTime() < now() - INDEX_RETENTION_MS) return true;
+		const list = byMemo.get(op.memo) || [];
+		// keep the OLDEST transfers per memo: later ones (anyone can send to a public memo)
+		// must not push out the payment that came first
+		if (list.length >= MAX_TRANSFERS_PER_MEMO) {
+			if (idx > list[list.length - 1].idx) return true;
+			seen.delete(list.pop().idx);
+		}
+		if (seen.size >= maxEntries) {
+			if (!fullLogged) log('signup transfer index is full (' + maxEntries + ' entries); possible flood');
+			fullLogged = true;
+			return false;
 		}
 		seen.add(idx);
-		const [amountStr, currency] = String(op.amount || '').split(' ');
-		const t = { idx, trx_id: h.trx_id, from: op.from, amount: parseFloat(amountStr), currency, timestamp: chainTime(h.timestamp) };
-		const list = byMemo.get(op.memo) || [];
-		list.push(t);
-		list.sort((a, b) => a.idx - b.idx);
+		const t = { idx, trx_id: h.trx_id, from: op.from, amount, currency, timestamp };
+		let i = list.length;
+		while (i > 0 && list[i - 1].idx > idx) i--;
+		list.splice(i, 0, t);
 		byMemo.set(op.memo, list);
+		return true;
 	}
 
-	/** Walk back from `start` until index `stopAt`, the retention cutoff, or `maxPages`. */
+	/** Walk back from `start` until index `stopAt`, the retention cutoff, `maxPages`, or a full index. */
 	async function walk(start, stopAt, maxPages) {
 		const cutoff = now() - INDEX_RETENTION_MS;
 		let maxIdx = -1;
@@ -177,14 +199,17 @@ function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_P
 			// with a filter, hived needs start >= limit - 1
 			const limit = start === -1 ? pageSize : Math.min(pageSize, start + 1);
 			const res = await hiveCall('get_account_history', [account, start, limit, TRANSFER_FILTER_LOW, 0]);
-			if (!Array.isArray(res) || !res.length) return { done: true, maxIdx };
+			// only an empty array means "no more history"; anything else is a node error
+			if (!Array.isArray(res)) throw new Error('bad get_account_history reply');
+			if (!res.length) return { done: true, maxIdx };
+			const entries = res.slice().sort((a, b) => b[0] - a[0]); // newest first
+			maxIdx = Math.max(maxIdx, entries[0][0]);
 			let oldest = Infinity;
 			let oldestTs = Infinity;
-			for (const e of res) {
-				maxIdx = Math.max(maxIdx, e[0]);
+			for (const e of entries) {
 				if (e[0] <= stopAt) continue;
-				add(e);
-				oldest = Math.min(oldest, e[0]);
+				if (!add(e)) return { done: false, next: e[0], maxIdx }; // full: retry from here later
+				oldest = e[0];
 				if (e[1] && e[1].timestamp) oldestTs = Math.min(oldestTs, chainTime(e[1].timestamp).getTime());
 			}
 			if (oldest === Infinity || oldest <= 0 || oldest - 1 <= stopAt || oldestTs < cutoff) return { done: true, maxIdx };
@@ -196,27 +221,28 @@ function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_P
 	function prune() {
 		const cutoff = now() - INDEX_RETENTION_MS;
 		for (const [memo, list] of byMemo) {
-			const kept = list.filter((t) => t.timestamp.getTime() >= cutoff);
-			for (const t of list) if (!kept.includes(t)) seen.delete(t.idx);
+			const kept = [];
+			for (const t of list) {
+				if (t.timestamp.getTime() >= cutoff) kept.push(t); else seen.delete(t.idx);
+			}
 			if (kept.length) byMemo.set(memo, kept); else byMemo.delete(memo);
 		}
-		if (seen.size < INDEX_MAX_ENTRIES) full = false;
+		if (seen.size < maxEntries) fullLogged = false;
 	}
 
 	async function doRefresh() {
+		prune();
 		const first = high === null;
-		const r = await walk(-1, first ? -1 : high, first ? FIRST_SCAN_MAX_PAGES : REFRESH_MAX_PAGES);
 		const prevHigh = first ? -1 : high;
-		if (r.maxIdx > prevHigh) high = r.maxIdx;
-		else if (first) high = Math.max(r.maxIdx, -1);
-		if (!r.done) gaps.push({ start: r.next, stopAt: prevHigh });
+		const r = await walk(-1, prevHigh, first ? FIRST_SCAN_MAX_PAGES : REFRESH_MAX_PAGES);
+		const newGaps = r.done ? [] : [{ start: r.next, stopAt: prevHigh }];
+		high = Math.max(prevHigh, r.maxIdx);
 		const remaining = [];
-		for (const g of gaps) {
+		for (const g of gaps.concat(newGaps)) {
 			const gr = await walk(g.start, g.stopAt, REFRESH_MAX_PAGES);
 			if (!gr.done) remaining.push({ start: gr.next, stopAt: g.stopAt });
 		}
 		gaps = remaining;
-		prune();
 		refreshedAt = now();
 	}
 
@@ -240,8 +266,8 @@ function createSignupWithKeys(deps) {
 	let index = null;
 	const transfers = () => {
 		if (!index) {
-			index = createTransferIndex({ hiveCall: deps.hiveCall, account: deps.getConfig().signup_account, now, log,
-				pageSize: deps.historyPageSize || HISTORY_PAGE }); // historyPageSize: tests only
+			index = createTransferIndex({ hiveCall: (m, p) => deps.hiveCall(m, p), account: deps.getConfig().signup_account, now, log,
+				pageSize: deps.historyPageSize || HISTORY_PAGE, maxEntries: deps.indexMaxEntries || INDEX_MAX_ENTRIES }); // tests only
 		}
 		return index;
 	};
@@ -281,12 +307,21 @@ function createSignupWithKeys(deps) {
 		}
 	}
 
-	async function promoLocked() {
+	/** Wrong promo codes lock that IP for the hour; a very high global count locks everyone (alarm). */
+	async function promoLocked(ip) {
 		const bucket = Math.floor(now() / RATE_WINDOW_MS);
 		try {
-			const doc = await deps.getDb().collection('signup_rate_limits').findOne({ _id: 'promo_fail:' + bucket });
-			return !!(doc && doc.n >= FAILED_PROMOS_PER_HOUR);
+			const col = deps.getDb().collection('signup_rate_limits');
+			const mine = await col.findOne({ _id: 'promo_fail:' + String(ip || 'unknown') + ':' + bucket });
+			if (mine && mine.n >= FAILED_PROMOS_PER_IP) return true;
+			const all = await col.findOne({ _id: 'promo_fail_all:' + bucket });
+			return !!(all && all.n >= FAILED_PROMOS_GLOBAL);
 		} catch (_) { return false; }
+	}
+
+	async function countPromoMiss(ip) {
+		await overLimit('promo_fail:' + String(ip || 'unknown'), Infinity);
+		if (await overLimit('promo_fail_all', FAILED_PROMOS_GLOBAL - 1)) log('signup: global wrong-promo-code limit reached; promo signups locked for the hour');
 	}
 
 	async function accountExists(name) {
@@ -310,7 +345,7 @@ function createSignupWithKeys(deps) {
 		if (parsed.error) return { status: 400, body: { reason: parsed.error } };
 		const f = parsed.fields;
 		if (f.promo_code) {
-			if (!s.promo_enabled || await promoLocked()) return { status: 200, body: { enabled: true, reason: 'promo_invalid' } };
+			if (!s.promo_enabled || await promoLocked(ip)) return { status: 200, body: { enabled: true, reason: 'promo_invalid' } };
 		} else if ((await createdToday('paid')) >= s.daily_cap) {
 			// stop new payments once the day's budget is used; paid submits are always honoured
 			return { status: 503, body: { enabled: false, reason: 'signup_disabled' } };
@@ -348,11 +383,16 @@ function createSignupWithKeys(deps) {
 	/** Take the claim's processing lease. Returns the claim (with its lease token) or null. */
 	async function acquire(memo) {
 		const t = now();
-		return claimsCol().findOneAndUpdate(
+		const claim = await claimsCol().findOneAndUpdate(
 			{ _id: memo, $or: [{ status: 'pending' }, { status: 'processing', lease_until: { $lt: new Date(t) } }] },
 			{ $set: { status: 'processing', lease_token: crypto.randomBytes(12).toString('hex'),
 				lease_until: new Date(t + CLAIM_LEASE_MS), last_checked_at: new Date(t), updated_at: new Date(t) } },
 			{ returnDocument: 'after', includeResultMetadata: false });
+		if (claim && claim.expires_at) {
+			await claimsCol().updateOne({ _id: memo, lease_token: claim.lease_token, expires_at: { $exists: true } },
+				{ $set: { expires_at: new Date(t + PENDING_CLAIM_TTL_MS) } });
+		}
+		return claim;
 	}
 
 	/** Update a claim only while this request still holds its lease. Returns true if it did. */
@@ -387,13 +427,24 @@ function createSignupWithKeys(deps) {
 			const out = await deps.createAccount(f.new_account, f.keys); // verifies the keys match
 			return out.reason === 'exists_with_same_keys' ? 'created' : out.reason;
 		}
-		// the name is free: from here a broadcast may happen, so mark it (and renew the lease)
+		// the name is free. One claim per name may broadcast: two claims for the same name
+		// (say, different referrers) must not both end up "created".
+		const names = deps.getDb().collection('signup_names');
 		const t = now();
+		try {
+			await names.insertOne({ _id: f.new_account, memo: claim._id, at: new Date(t) });
+		} catch (err) {
+			if (!(err && err.code === 11000)) throw err;
+			const holder = await names.findOne({ _id: f.new_account });
+			if (!holder || holder.memo !== claim._id) return 'username_taken';
+		}
+		// from here a broadcast may happen, so mark it (and renew the lease)
 		if (!(await guarded(claim, { $set: { broadcast_attempted: true, lease_until: new Date(t + CLAIM_LEASE_MS) } }))) return 'lease_lost';
 		const out = await deps.createAccount(f.new_account, f.keys);
 		if (['node_down', 'no_account_token', 'invalid_username', 'invalid_keys'].includes(out.reason) && !attemptedBefore) {
-			// refused before broadcasting: nothing went out for this claim
+			// refused before broadcasting: nothing went out for this claim, so free the name too
 			await guarded(claim, { $set: { broadcast_attempted: false } });
+			await names.deleteOne({ _id: f.new_account, memo: claim._id });
 		}
 		return out.reason === 'exists_with_same_keys' ? 'created' : out.reason;
 	}
@@ -403,17 +454,17 @@ function createSignupWithKeys(deps) {
 		// a request that lost its lease leaves rewards and delegation to the one holding it
 		if (!(await guarded(claim, { $set: { account_created_at: new Date(now()) } }))) return;
 		const reward = extra.afit_reward;
-		let rewardRecorded = false;
-		if (!(reward > 0) && extra.reward_expected) {
-			log('signup reward pending for ' + f.new_account + ': reward amount unavailable (claim ' + claim._id + ')');
-		} else {
-			try {
-				rewardRecorded = (await deps.recordSignup(Object.assign({ new_account: f.new_account, memo: claim._id, email: f.email }, extra))) === true;
-			} catch (err) {
-				log('signup record failed for ' + f.new_account + ' (claim ' + claim._id + '): ' + (err && err.message));
-			}
-			if (!rewardRecorded) log('signup reward pending for ' + f.new_account + ' (claim ' + claim._id + ')');
+		// always record the signup; an unavailable amount is recorded as 0 and flagged for payout
+		const amountMissing = !(reward > 0) && extra.reward_expected;
+		let recorded = false;
+		try {
+			recorded = (await deps.recordSignup(Object.assign({ new_account: f.new_account, memo: claim._id, email: f.email },
+				extra, { afit_reward: reward > 0 ? reward : 0 }))) === true;
+		} catch (err) {
+			log('signup record failed for ' + f.new_account + ' (claim ' + claim._id + '): ' + (err && err.message));
 		}
+		const rewardRecorded = recorded && !amountMissing;
+		if (!rewardRecorded) log('signup reward pending for ' + f.new_account + ' (claim ' + claim._id + ')');
 		if (extra.delegate && claim.delegated !== true) {
 			try {
 				await deps.delegate(f.new_account);
@@ -444,7 +495,7 @@ function createSignupWithKeys(deps) {
 			if (await overLimit('claim:' + String(ip || 'unknown'), NEW_CLAIMS_PER_IP)) {
 				return { status: 429, body: { accountCreated: false, reason: 'rate_limited', retryable: true, retry_after: 3600 } };
 			}
-			if (path === 'promo' && await promoLocked()) return reply('promo_invalid');
+			if (path === 'promo' && await promoLocked(ip)) return reply('promo_invalid');
 			try {
 				if (await accountExists(f.new_account)) return reply('username_taken');
 				if (f.referrer && !(await accountExists(f.referrer))) return { status: 400, body: { accountCreated: false, reason: 'invalid_referrer', retryable: false } };
@@ -467,13 +518,13 @@ function createSignupWithKeys(deps) {
 		if (existing.status === 'created') return reply('already_created', { accountCreated: true, paymentReceivedTx: existing.payment_trx_id || '' });
 		if (existing.status === 'failed') return reply(existing.failure_reason || 'creation_failed');
 		if (existing.status === 'pending' && existing.last_checked_at && now() - existing.last_checked_at.getTime() < CLAIM_CHECK_INTERVAL_MS) {
-			return pending();
+			return pending({ paymentReceivedTx: existing.payment_trx_id || '' });
 		}
 
 		const claim = await acquire(memo);
 		if (!claim) return pending(); // another request holds the lease
 		try {
-			return path === 'paid' ? await submitPaid(claim, f) : await submitPromo(claim, f, s);
+			return path === 'paid' ? await submitPaid(claim, f) : await submitPromo(claim, f, s, ip);
 		} catch (err) {
 			log('signup submit error for ' + f.new_account + ': ' + (err && err.message));
 			try { await release(claim); } catch (_) { /* the lease expires on its own */ }
@@ -508,10 +559,13 @@ function createSignupWithKeys(deps) {
 				return reply('payment_insufficient');
 			}
 			payment = m.payment;
+			const others = transfers().transfersFor(claim._id).filter((t) => t.trx_id !== payment.trx_id);
+			if (others.length) log('signup claim ' + claim._id + ' also received ' + others.length + ' other transfer(s); refund them');
 			try {
 				const ok = await guarded(claim, { $set: {
 					payment_trx_id: payment.trx_id, payment_ref: payment.trx_id + '/' + claim._id, payment_from: payment.from,
-					verified_amount: payment.amount, verified_currency: payment.currency, needs_refund: false },
+					verified_amount: payment.amount, verified_currency: payment.currency, needs_refund: others.length > 0,
+					extra_transfers: others.map((t) => t.trx_id) },
 				$unset: { expires_at: '' } });
 				if (!ok) return pending();
 			} catch (err) {
@@ -540,7 +594,7 @@ function createSignupWithKeys(deps) {
 			{ retryable: true, retry_after: RETRY_AFTER_S, paymentReceivedTx: payment.trx_id });
 	}
 
-	async function submitPromo(claim, f, s) {
+	async function submitPromo(claim, f, s, ip) {
 		const promos = deps.getDb().collection('signup_promo_codes');
 		let promo = null;
 		if (claim.promo_id !== undefined && claim.promo_id !== null) {
@@ -556,7 +610,7 @@ function createSignupWithKeys(deps) {
 				{ includeResultMetadata: false });
 			if (!promo) {
 				// a wrong code must not lock these details: drop the claim, count the miss
-				await overLimit('promo_fail', Infinity);
+				await countPromoMiss(ip);
 				await claimsCol().deleteOne({ _id: claim._id, status: 'processing', lease_token: claim.lease_token });
 				return reply('promo_invalid');
 			}
@@ -573,7 +627,7 @@ function createSignupWithKeys(deps) {
 			try {
 				const res = await claimsCol().updateOne(
 					{ _id: claim._id, status: 'processing', lease_token: claim.lease_token, promo_id: { $exists: true } },
-					{ $unset: { promo_id: '' } });
+					{ $unset: { promo_id: '' }, $set: { expires_at: new Date(now() + PENDING_CLAIM_TTL_MS) } });
 				if (res && res.modifiedCount) await promos.updateOne({ _id: claim.promo_id }, { $inc: { entries: 1 } });
 			} catch (err) { log('signup promo entry restore failed: ' + (err && err.message)); }
 		};

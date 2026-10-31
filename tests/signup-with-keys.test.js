@@ -103,6 +103,7 @@ function makeDb() {
 		signup_claims: makeCollection('signup_claims', ['payment_ref']),
 		signup_promo_codes: makeCollection('signup_promo_codes'),
 		signup_rate_limits: makeCollection('signup_rate_limits'),
+		signup_names: makeCollection('signup_names'),
 	};
 	return { cols, collection: (n) => cols[n] };
 }
@@ -139,7 +140,7 @@ const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const fakeKeys = (n) => Object.fromEntries(Object.entries(KEYS).map(([role, k]) =>
 	[role, k.slice(0, -2) + B58[Math.floor(n / B58.length) % B58.length] + B58[n % B58.length]]));
 
-let db, chain, created, recorded, delegated, createOutcomes, app, svcNow, deps, historyCalls, nextIdx;
+let db, chain, created, recorded, delegated, createOutcomes, app, svcNow, deps, historyCalls, nextIdx, svc;
 
 /** Append a transfer to the signup account's history (indices only grow, like on chain). */
 function pay({ memo, amount = '40.000 HIVE', to = 'actifit.signup', ageMs = 60 * 1000, from = 'payer' }) {
@@ -147,12 +148,14 @@ function pay({ memo, amount = '40.000 HIVE', to = 'actifit.signup', ageMs = 60 *
 	chain.history.push([idx, { trx_id: 'trx' + idx, timestamp: chainTs(svcNow - ageMs), op: ['transfer', { from, to, amount, memo }] }]);
 	return 'trx' + idx;
 }
-function dust(n, memo = 'spam') {
+function dust(n, { memo = 'spam', amount = '0.001 HBD', ageMs = 1000, distinct = false } = {}) {
 	for (let i = 0; i < n; i++) {
 		const idx = nextIdx++;
-		chain.history.push([idx, { trx_id: 'd' + idx, timestamp: chainTs(svcNow - 1000), op: ['transfer', { from: 'x', to: 'actifit.signup', amount: '0.001 HBD', memo }] }]);
+		const m = distinct ? 'signup:' + String(i).padStart(24, '0') : memo;
+		chain.history.push([idx, { trx_id: 'd' + idx, timestamp: chainTs(svcNow - ageMs), op: ['transfer', { from: 'x', to: 'actifit.signup', amount, memo: m }] }]);
 	}
 }
+const VALID_FLOOD_MEMO = 'signup:' + 'f'.repeat(24);
 
 function build({ enabled = true, promo = false, cap, promoCap } = {}) {
 	db = makeDb();
@@ -196,7 +199,7 @@ function build({ enabled = true, promo = false, cap, promoCap } = {}) {
 	app = express();
 	app.use(express.json());
 	// the routes read deps through this object, so tests can swap a dependency after build
-	swk.registerSignupWithKeysRoutes(app, new Proxy({}, { get: (_t, k) => deps[k] }), { ipOf: () => '1.2.3.4' });
+	svc = swk.registerSignupWithKeysRoutes(app, new Proxy({}, { get: (_t, k) => deps[k] }), { ipOf: () => '1.2.3.4' });
 }
 
 const base = (over = {}) => ({ new_account: 'newguy', keys: KEYS, referrer: 'referrer1', email: 'New@Example.com', sent_cur: 'HIVE', ...over });
@@ -387,7 +390,7 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		deps.historyPageSize = 10; // a refresh walks 20 pages = 200 entries, so 300 dust leaves a gap
 		await submit(base()); // builds the index
 		const trx = pay({ memo: memoOf(base()) });
-		dust(300, 'signup:dustdustdustdustdustdust');
+		dust(300, { memo: VALID_FLOOD_MEMO, amount: '1.000 HIVE' });
 		later();
 		const res = await submit(base());
 		expect(res.body).toMatchObject({ reason: 'created', paymentReceivedTx: trx });
@@ -462,7 +465,9 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		pay({ memo: memoOf(base()) });
 		later();
 		expect((await submit(base())).body.reason).toBe('created');
-		expect(claimOf(base()).needs_refund).toBe(false);
+		// the short transfer still has to go back
+		expect(claimOf(base())).toMatchObject({ needs_refund: true });
+		expect(claimOf(base()).extra_transfers).toHaveLength(1);
 	});
 
 	it('never judges a payment against a guessed price', async () => {
@@ -473,16 +478,17 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(claimOf(base()).status).toBe('pending');
 	});
 
-	it('ignores transfers outside the window or to another account', async () => {
-		pay({ memo: memoOf(base()), ageMs: 73 * 3600 * 1000 });
+	it('ignores transfers outside the window, dust, or to another account', async () => {
+		pay({ memo: memoOf(base()), ageMs: 8 * 24 * 3600 * 1000 });
+		pay({ memo: memoOf(base()), amount: '0.500 HIVE' });
 		pay({ memo: memoOf(base()), to: 'someone' });
 		expect((await submit(base())).body.reason).toBe('payment_pending');
 	});
 
-	it('counts the 72 h window from when the claim was made, not from now', async () => {
+	it('counts the 7 day window from when the claim was made, not from now', async () => {
 		await submit(base()); // claim made now
 		pay({ memo: memoOf(base()), ageMs: 60 * 1000 });
-		later(100 * 3600 * 1000); // submitted again 100 h later
+		later(8 * 24 * 3600 * 1000); // submitted again 8 days later
 		expect((await submit(base())).body.reason).toBe('created');
 	});
 
@@ -544,11 +550,12 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(claimOf(base()).status).toBe('pending');
 	});
 
-	it('finishes the account but flags the reward when the reward amount is unavailable', async () => {
+	it('records the signup with 0 and flags the reward when the reward amount is unavailable', async () => {
 		pay({ memo: memoOf(base()) });
 		deps.paidAfitReward = () => 0;
 		expect((await submit(base())).body.reason).toBe('created');
-		expect(recorded).toHaveLength(0);
+		expect(recorded).toHaveLength(1);
+		expect(recorded[0]).toMatchObject({ afit_reward: 0, referrer: 'referrer1' });
 		expect(claimOf(base())).toMatchObject({ status: 'created', reward_pending: true, reward_amount: 0 });
 	});
 
@@ -568,6 +575,88 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect((await submit(base())).body.reason).toBe('created');
 		expect(claimOf(base())).toMatchObject({ status: 'created' });
 		expect(claimOf(base()).delegated).toBeUndefined();
+	});
+
+	it('lets only one claim per name broadcast; the other is refused and flagged for a refund', async () => {
+		const other = base({ referrer: '' }); // same name and keys, different referrer: another memo
+		pay({ memo: memoOf(base()) });
+		pay({ memo: memoOf(other) });
+		let releaseA;
+		const gate = new Promise((r) => { releaseA = r; });
+		createOutcomes.push(async (name) => { await gate; chain.accounts.add(name); return { reason: 'created' }; });
+		const a = submit(base()).then((x) => x);
+		for (let i = 0; i < 50 && created.length === 0; i++) await new Promise((r) => setTimeout(r, 20));
+		const b = await submit(other); // name still free on chain, but A holds the name
+		expect(b.body).toMatchObject({ reason: 'username_taken', accountCreated: false });
+		expect(claimOf(other)).toMatchObject({ status: 'failed', needs_refund: true });
+		releaseA();
+		expect((await a).body.reason).toBe('created');
+		expect(created).toHaveLength(1);
+		expect(recorded).toHaveLength(1);
+	});
+
+	it('frees the name when the broadcast was refused, so a retry can take it', async () => {
+		pay({ memo: memoOf(base()) });
+		createOutcomes.push('no_account_token');
+		await submit(base());
+		expect(db.cols.signup_names.docs).toHaveLength(0);
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(db.cols.signup_names.docs).toEqual([expect.objectContaining({ _id: 'newguy', memo: memoOf(base()) })]);
+	});
+
+	it('keeps at most 10 transfers per memo', async () => {
+		for (let i = 0; i < 12; i++) pay({ memo: memoOf(base()), amount: '2.000 HIVE' });
+		pay({ memo: memoOf(base()) }); // the 13th, a full payment, is beyond the cap
+		const res = await submit(base());
+		expect(res.body.reason).toBe('payment_insufficient');
+		expect(svc._transfers().transfersFor(memoOf(base()))).toHaveLength(10);
+	});
+
+	it('does not skip a payment when the index is full: it keeps a gap and reads it once there is room', async () => {
+		deps.indexMaxEntries = 5;
+		deps.historyPageSize = 3;
+		const trx = pay({ memo: memoOf(base()) });
+		// five newer flood transfers that will age out of the index first
+		dust(5, { amount: '1.000 HIVE', distinct: true, ageMs: 14 * 24 * 3600 * 1000 - 60 * 1000 });
+		expect((await submit(base())).body.reason).toBe('payment_pending');
+		expect(svc._transfers()._state().gaps).toHaveLength(1);
+		later(2 * 60 * 1000); // the flood is now past retention and gets pruned
+		const res = await submit(base());
+		expect(res.body).toMatchObject({ reason: 'created', paymentReceivedTx: trx });
+		expect(svc._transfers()._state().gaps).toHaveLength(0);
+	});
+
+	it('treats a bad history reply as an error, not as the end of history', async () => {
+		pay({ memo: memoOf(base()) });
+		const real = deps.hiveCall;
+		deps.hiveCall = async (m, p) => (m === 'get_account_history' ? null : real(m, p));
+		const res = await submit(base());
+		expect(res.status).toBe(500);
+		expect(res.body).toMatchObject({ reason: 'server_error', retryable: true });
+		expect(svc._transfers()._state().high).toBeNull();
+		deps.hiveCall = real;
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+	});
+
+	it('runs a single first scan for concurrent cold submits', async () => {
+		await Promise.all([submit(base()), submit(base({ new_account: 'otherguy', keys: fakeKeys(3) }))]);
+		expect(historyCalls.filter((c) => c.start === -1)).toHaveLength(1);
+	});
+
+	it('works with an account that has no history yet', async () => {
+		expect((await submit(base())).body.reason).toBe('payment_pending');
+		expect(svc._transfers()._state().high).toBe(-1);
+		pay({ memo: memoOf(base()) });
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+	});
+
+	it('drops transfers older than the index retention', async () => {
+		pay({ memo: memoOf(base()), ageMs: 15 * 24 * 3600 * 1000 });
+		expect((await submit(base())).body.reason).toBe('payment_pending');
+		expect(svc._transfers()._state().size).toBe(0);
 	});
 
 	it('honours a paid submit even when the daily cap is used', async () => {
@@ -631,19 +720,30 @@ describe('POST /app/signupWithKeys (promo)', () => {
 		expect(created).toHaveLength(0);
 	});
 
-	it('locks promo signups for the hour after too many wrong codes', async () => {
+	it.each([
+		['this IP made 10 wrong guesses', 'promo_fail:1.2.3.4:', 10],
+		['everyone made 300 wrong guesses', 'promo_fail_all:', 300],
+	])('locks promo signups for the hour when %s', async (_l, prefix, n) => {
 		build({ promo: true }); addPromo();
-		db.cols.signup_rate_limits.docs.push({ _id: 'promo_fail:' + Math.floor(NOW / 3600000), n: 30 });
+		db.cols.signup_rate_limits.docs.push({ _id: prefix + Math.floor(NOW / 3600000), n });
 		expect((await submit(promoBody())).body.reason).toBe('promo_invalid');
 		expect((await quote(promoBody())).body.reason).toBe('promo_invalid');
 		expect(promo().entries).toBe(2);
 	});
 
-	it('counts wrong codes towards that lock', async () => {
+	it('does not lock other IPs below the global limit', async () => {
+		build({ promo: true }); addPromo();
+		db.cols.signup_rate_limits.docs.push({ _id: 'promo_fail:9.9.9.9:' + Math.floor(NOW / 3600000), n: 50 });
+		db.cols.signup_rate_limits.docs.push({ _id: 'promo_fail_all:' + Math.floor(NOW / 3600000), n: 299 });
+		expect((await submit(promoBody())).body.reason).toBe('created');
+	});
+
+	it('counts a wrong code against the IP and the global total', async () => {
 		build({ promo: true }); addPromo();
 		await submit(promoBody({ promo_code: 'TYPO' }));
-		const doc = db.cols.signup_rate_limits.docs.find((d) => d._id.startsWith('promo_fail:'));
-		expect(doc.n).toBe(1);
+		const byId = (p) => db.cols.signup_rate_limits.docs.find((d) => d._id.startsWith(p));
+		expect(byId('promo_fail:1.2.3.4:').n).toBe(1);
+		expect(byId('promo_fail_all:').n).toBe(1);
 	});
 
 	it('gives the entry back when nothing was broadcast', async () => {
@@ -670,6 +770,7 @@ describe('POST /app/signupWithKeys (promo)', () => {
 		expect((await submit(promoBody())).body).toMatchObject({ reason: 'creation_failed', retryable: true });
 		expect(promo().entries).toBe(2);
 		expect(claimOf(promoBody()).promo_id).toBeUndefined();
+		expect(claimOf(promoBody()).expires_at).toBeInstanceOf(Date); // can expire again
 		later();
 		expect((await submit(promoBody())).body.reason).toBe('created');
 		expect(promo().entries).toBe(1);
