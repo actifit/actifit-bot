@@ -480,7 +480,7 @@ describe('POST /app/signupWithKeys (paid)', () => {
 
 	it('ignores transfers outside the window, dust, or to another account', async () => {
 		pay({ memo: memoOf(base()), ageMs: 8 * 24 * 3600 * 1000 });
-		pay({ memo: memoOf(base()), amount: '0.500 HIVE' });
+		pay({ memo: memoOf(base()), amount: '0.050 HIVE' }); // below the dust floor
 		pay({ memo: memoOf(base()), to: 'someone' });
 		expect((await submit(base())).body.reason).toBe('payment_pending');
 	});
@@ -657,6 +657,63 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		pay({ memo: memoOf(base()), ageMs: 15 * 24 * 3600 * 1000 });
 		expect((await submit(base())).body.reason).toBe('payment_pending');
 		expect(svc._transfers()._state().size).toBe(0);
+	});
+
+	it('refuses to quote an amount below the dust floor', async () => {
+		deps.quoteAmount = async () => ({ amount: 0.1, live: true }); // 0.09 after tolerance < 0.1 HIVE
+		expect((await quote(base())).body.reason).toBe('price_unavailable');
+	});
+
+	it('keeps a gap when a later walk in the same refresh fails', async () => {
+		deps.historyPageSize = 3;
+		await submit(base({ new_account: 'warmup', keys: fakeKeys(5) })); // builds the (empty) index
+		const trx = pay({ memo: memoOf(base()) });
+		dust(100); // more than one refresh's head walk (20 pages x 3)
+		const real = deps.hiveCall;
+		let calls = 0;
+		deps.hiveCall = async (m, p) => {
+			if (m === 'get_account_history' && ++calls === 21) throw new Error('node blip'); // first gap walk
+			return real(m, p);
+		};
+		later();
+		expect((await submit(base())).status).toBe(500);
+		expect(svc._transfers()._state().gaps).toHaveLength(1);
+		deps.hiveCall = real;
+		later();
+		const res = await submit(base());
+		expect(res.body).toMatchObject({ reason: 'created', paymentReceivedTx: trx });
+	});
+
+	it('takes over a stale name reservation whose claim is gone, but not a fresh one', async () => {
+		pay({ memo: memoOf(base()) });
+		db.cols.signup_names.docs.push({ _id: 'newguy', memo: 'signup:' + 'a'.repeat(24), at: new Date(NOW - 10 * 60 * 1000) });
+		expect((await submit(base())).body.reason).toBe('username_taken');
+		build();
+		pay({ memo: memoOf(base()) });
+		db.cols.signup_names.docs.push({ _id: 'newguy', memo: 'signup:' + 'a'.repeat(24), at: new Date(NOW - 2 * 3600 * 1000) });
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(db.cols.signup_names.docs[0]).toMatchObject({ memo: memoOf(base()), took_over_from: 'signup:' + 'a'.repeat(24) });
+	});
+
+	it('does not take over a reservation whose claim is still processing', async () => {
+		pay({ memo: memoOf(base()) });
+		const old = 'signup:' + 'b'.repeat(24);
+		db.cols.signup_claims.docs.push({ _id: old, path: 'paid', status: 'processing', lease_until: new Date(NOW + 60000) });
+		db.cols.signup_names.docs.push({ _id: 'newguy', memo: old, at: new Date(NOW - 2 * 3600 * 1000) });
+		expect((await submit(base())).body.reason).toBe('username_taken');
+	});
+
+	it('does not let the old holder count the account after its reservation was taken over', async () => {
+		const a = base({ referrer: '' }); // same name and keys, another memo
+		db.cols.signup_claims.docs.push({ _id: memoOf(a), path: 'paid', new_account: 'newguy', status: 'pending', broadcast_attempted: true,
+			payment_trx_id: 'tA', verified_amount: 40, verified_currency: 'HIVE', created_at: new Date(NOW - 3 * 3600 * 1000) });
+		db.cols.signup_names.docs.push({ _id: 'newguy', memo: memoOf(a), at: new Date(NOW - 2 * 3600 * 1000) });
+		pay({ memo: memoOf(base()) });
+		expect((await submit(base())).body.reason).toBe('created'); // takes over the stale reservation
+		createOutcomes.push('exists_with_same_keys');
+		const res = await submit(a);
+		expect(res.body).toMatchObject({ reason: 'username_taken', accountCreated: false });
+		expect(recorded).toHaveLength(1);
 	});
 
 	it('honours a paid submit even when the daily cap is used', async () => {

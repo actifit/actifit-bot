@@ -55,8 +55,12 @@ const INDEX_REFRESH_MS = 10 * 1000;
 const INDEX_RETENTION_MS = 14 * DAY_MS;
 const INDEX_MAX_ENTRIES = 100000;
 const MAX_TRANSFERS_PER_MEMO = 10;
-// transfers below this are dust: never indexed, never a payment (a signup costs ~$2)
-const MIN_INDEXED_AMOUNT = { HIVE: 1, HBD: 0.25 };
+// transfers below this are dust: never indexed, never a payment. Kept well under a signup's
+// price (a quote below it is refused) so a rising HIVE price can't turn a payment into dust.
+const MIN_INDEXED_AMOUNT = { HIVE: 0.1, HBD: 0.05 };
+// a name reservation whose claim is no longer working on it can be taken over after this
+// (longer than a Hive transaction can stay valid, so its broadcast can no longer land)
+const NAME_LOCK_STALE_MS = 60 * 60 * 1000;
 const HISTORY_PAGE = 1000;
 const FIRST_SCAN_MAX_PAGES = 50;
 const REFRESH_MAX_PAGES = 20;
@@ -232,17 +236,22 @@ function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_P
 
 	async function doRefresh() {
 		prune();
-		const first = high === null;
-		const prevHigh = first ? -1 : high;
-		const r = await walk(-1, prevHigh, first ? FIRST_SCAN_MAX_PAGES : REFRESH_MAX_PAGES);
-		const newGaps = r.done ? [] : [{ start: r.next, stopAt: prevHigh }];
-		high = Math.max(prevHigh, r.maxIdx);
-		const remaining = [];
-		for (const g of gaps.concat(newGaps)) {
-			const gr = await walk(g.start, g.stopAt, REFRESH_MAX_PAGES);
-			if (!gr.done) remaining.push({ start: gr.next, stopAt: g.stopAt });
+		// while full, leave `high` alone and only retry the gaps: the head walk would stop at
+		// its first entry and add one more gap on every refresh
+		if (high === null || seen.size < maxEntries) {
+			const first = high === null;
+			const prevHigh = first ? -1 : high;
+			const r = await walk(-1, prevHigh, first ? FIRST_SCAN_MAX_PAGES : REFRESH_MAX_PAGES);
+			// record the gap before moving `high`, so a later failure can't lose that range
+			if (!r.done) gaps = gaps.concat([{ start: r.next, stopAt: prevHigh }]);
+			high = Math.max(prevHigh, r.maxIdx);
 		}
-		gaps = remaining;
+		for (let i = 0; i < gaps.length;) {
+			const g = gaps[i];
+			const gr = await walk(g.start, g.stopAt, REFRESH_MAX_PAGES); // a throw keeps every gap
+			if (gr.done) gaps.splice(i, 1);
+			else { gaps[i] = { start: gr.next, stopAt: g.stopAt }; i++; }
+		}
 		refreshedAt = now();
 	}
 
@@ -360,7 +369,7 @@ function createSignupWithKeys(deps) {
 		const out = { enabled: true, reason: 'quoted', memo: signupMemo(f) };
 		if (!f.promo_code) {
 			const q = await deps.quoteAmount(f.sent_cur);
-			if (!q || !q.live || !(q.amount > 0)) {
+			if (!q || !q.live || !(q.amount * 0.9 >= MIN_INDEXED_AMOUNT[f.sent_cur])) {
 				return { status: 503, body: { enabled: true, reason: 'price_unavailable', retryable: true } };
 			}
 			out.amounts = { [f.sent_cur]: (Math.ceil(q.amount * 1000) / 1000).toFixed(3) };
@@ -422,31 +431,50 @@ function createSignupWithKeys(deps) {
 		const attemptedBefore = claim.broadcast_attempted === true;
 		let exists;
 		try { exists = await accountExists(f.new_account); } catch (_) { return 'node_down'; }
+		const names = deps.getDb().collection('signup_names');
 		if (exists) {
 			if (!attemptedBefore) return 'username_taken';
+			// our reservation may have been taken over after going stale: the account is not ours
+			const holder = await names.findOne({ _id: f.new_account });
+			if (!holder || holder.memo !== claim._id) return 'username_taken';
 			const out = await deps.createAccount(f.new_account, f.keys); // verifies the keys match
 			return out.reason === 'exists_with_same_keys' ? 'created' : out.reason;
 		}
 		// the name is free. One claim per name may broadcast: two claims for the same name
 		// (say, different referrers) must not both end up "created".
-		const names = deps.getDb().collection('signup_names');
 		const t = now();
 		try {
 			await names.insertOne({ _id: f.new_account, memo: claim._id, at: new Date(t) });
 		} catch (err) {
 			if (!(err && err.code === 11000)) throw err;
 			const holder = await names.findOne({ _id: f.new_account });
-			if (!holder || holder.memo !== claim._id) return 'username_taken';
+			if (!holder) return 'username_taken';
+			if (holder.memo !== claim._id && !(await takeOverStaleName(names, holder, claim, t))) return 'username_taken';
 		}
 		// from here a broadcast may happen, so mark it (and renew the lease)
 		if (!(await guarded(claim, { $set: { broadcast_attempted: true, lease_until: new Date(t + CLAIM_LEASE_MS) } }))) return 'lease_lost';
 		const out = await deps.createAccount(f.new_account, f.keys);
 		if (['node_down', 'no_account_token', 'invalid_username', 'invalid_keys'].includes(out.reason) && !attemptedBefore) {
 			// refused before broadcasting: nothing went out for this claim, so free the name too
-			await guarded(claim, { $set: { broadcast_attempted: false } });
-			await names.deleteOne({ _id: f.new_account, memo: claim._id });
+			if (await guarded(claim, { $set: { broadcast_attempted: false } })) {
+				await names.deleteOne({ _id: f.new_account, memo: claim._id });
+			}
 		}
 		return out.reason === 'exists_with_same_keys' ? 'created' : out.reason;
+	}
+
+	/**
+	 * Take over a name reservation whose claim is no longer working on it: old enough that its
+	 * broadcast can no longer land (the caller has just seen the name free on chain), and its
+	 * claim is gone, failed, or back to pending. Atomic on the exact old reservation.
+	 */
+	async function takeOverStaleName(names, holder, claim, t) {
+		if (!(holder.at instanceof Date) || t - holder.at.getTime() < NAME_LOCK_STALE_MS) return false;
+		const other = await claimsCol().findOne({ _id: holder.memo });
+		if (other && (other.status === 'processing' || other.status === 'created')) return false;
+		const res = await names.updateOne({ _id: holder._id, memo: holder.memo, at: holder.at },
+			{ $set: { memo: claim._id, at: new Date(t), took_over_from: holder.memo } });
+		return !!(res && res.modifiedCount);
 	}
 
 	/** The account exists on chain: record it, reward once, and mark the claim created. */
