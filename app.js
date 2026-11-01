@@ -8768,6 +8768,21 @@ signupWithKeys.registerSignupWithKeysRoutes(app, {
 	},
 }, { ipOf: clientIpKey });
 
+// Signup watcher (signup_watch.js): one email digest to report_emails for refunds owed,
+// rewards not recorded, unmatched payments, low claimed tokens and new signups.
+// SECOND_API only, so each item is mailed once. Set signup_watch_enabled: false to stop it.
+if (process.env.BOT_THREAD == 'SECOND_API' && !(config.signup_watch_enabled === false || config.signup_watch_enabled === 'false')) {
+	const signupWatch = require('./signup_watch').createSignupWatch({
+		getDb: () => db,
+		getConfig: () => config,
+		log: (m) => utils.log(m, 'api'),
+		hiveCall: (method, params) => utils.hiveDatabaseCall(method, params),
+		// local require: keeps the SMTP transport out of boot, as the arena alerts do
+		sendMail: (subject, body, to) => require('./mail').sendPlainMail(subject, body, to),
+	});
+	schedule.scheduleJob(config.signup_watch_cron || '*/10 * * * *', () => signupWatch.run());
+}
+
 /* core function for discounted account claims and creation */
 const claimAndCreateAccount = async function (req){
 	let accountClaimed = false;

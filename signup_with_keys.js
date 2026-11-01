@@ -264,6 +264,8 @@ function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_P
 	return {
 		refresh,
 		transfersFor: (memo) => (byMemo.get(memo) || []).slice(),
+		// every indexed signup transfer, for the signup watcher
+		all: () => [...byMemo].flatMap(([memo, list]) => list.map((t) => Object.assign({ memo }, t))),
 		_state: () => ({ high, gaps: gaps.slice(), size: seen.size }),
 	};
 }
@@ -702,6 +704,7 @@ async function ensureSignupIndexes(db, log = () => {}) {
 		// pending claims with nothing paid or held; the field is removed once there is
 		await claims.createIndex({ expires_at: 1 }, { expireAfterSeconds: 0, name: 'signup_pending_ttl' });
 		await db.collection('signup_rate_limits').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0, name: 'signup_rate_ttl' });
+		await db.collection('signup_watch_seen').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0, name: 'signup_watch_seen_ttl' });
 	} catch (err) {
 		log('signup index setup failed: ' + (err && err.message));
 	}
