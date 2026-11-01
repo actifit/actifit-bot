@@ -20,6 +20,7 @@ function matches(doc, q) {
 			for (const [op, arg] of Object.entries(v)) {
 				if (op === '$exists' && (val !== undefined) !== arg) return false;
 				if (op === '$in' && !arg.includes(val)) return false;
+				if (op === '$lt' && !(val < arg)) return false;
 			}
 		} else if (val !== v) return false;
 	}
@@ -143,8 +144,8 @@ describe('signup watch: claims', () => {
 		const r = await t.watch.run();
 		expect(r.mailed).toBe(true);
 		expect(t.mails).toHaveLength(1);
-		expect(t.mails[0].subject).toMatch(/1 new signups/);
-		expect(t.mails[0].body).toMatch(/@newguy paid 3\.000 HIVE from @payer, referrer @friend, reward 50 AFIT/);
+		expect(t.mails[0].subject).toMatch(/new signups: 1/);
+		expect(t.mails[0].body).toMatch(/@newguy paid 3\.000 HIVE from @payer in trx0, referrer @friend, reward 50 AFIT/);
 		expect(t.mails[0].to).toEqual(['ops@example.com']);
 		await t.watch.run();
 		expect(t.mails).toHaveLength(1);
@@ -155,7 +156,7 @@ describe('signup watch: claims', () => {
 		t.chain.pay({ memo: MEMO_A });
 		t.addClaim(paidClaim({ status: 'failed', failure_reason: 'username_taken', needs_refund: true }));
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/1 refunds owed/);
+		expect(t.mails[0].subject).toMatch(/refunds owed: 1/);
 		expect(t.mails[0].body).toMatch(/@newguy \(failed, username_taken\), paid 3\.000 HIVE from @payer in trx0, memo signup:a+/);
 		const c = t.claims.docs[0];
 		expect(c.status).toBe('failed');
@@ -170,7 +171,7 @@ describe('signup watch: claims', () => {
 		t.addClaim({ _id: MEMO_A, new_account: 'under', status: 'pending', needs_refund: true, insufficient_trx_id: 'trxU' });
 		t.addClaim(paidClaim({ _id: MEMO_B, new_account: 'extra', needs_refund: true, extra_transfers: ['trxE'] }));
 		await t.watch.run();
-		expect(t.mails[0].body).toMatch(/@under \(pending, underpaid \(trxU\)\)/);
+		expect(t.mails[0].body).toMatch(/@under \(pending, underpaid in trxU\)/);
 		expect(t.mails[0].body).toMatch(/@extra \(created, extra transfers trxE\)/);
 	});
 
@@ -179,7 +180,7 @@ describe('signup watch: claims', () => {
 		t.chain.pay({ memo: MEMO_A });
 		t.addClaim(paidClaim({ reward_pending: true, reward_amount: 0 }));
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/1 rewards not recorded/);
+		expect(t.mails[0].subject).toMatch(/rewards not recorded: 1/);
 		expect(t.mails[0].body).toMatch(/Rewards not recorded \(1\)\n- @newguy \(referrer @friend\)/);
 		expect(t.mails[0].body).toMatch(/reward 0 AFIT \(pending\)/);
 	});
@@ -198,10 +199,10 @@ describe('signup watch: claims', () => {
 				reward_amount: 1, updated_at: new Date(NOW - (60 - i) * 1000) });
 		}
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/50 new signups/);
+		expect(t.mails[0].subject).toMatch(/new signups: 50/);
 		expect(t.mails[0].body).toMatch(/@u0 /);
 		await t.watch.run();
-		expect(t.mails[1].subject).toMatch(/10 new signups/);
+		expect(t.mails[1].subject).toMatch(/new signups: 10/);
 		expect(t.mails[1].body).toMatch(/@u59 /);
 		await t.watch.run();
 		expect(t.mails).toHaveLength(2);
@@ -213,7 +214,7 @@ describe('signup watch: unmatched payments', () => {
 		const t = setup();
 		t.chain.pay({ memo: MEMO_A, amount: '3.100 HIVE', from: 'stranger' });
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/1 unmatched payments/);
+		expect(t.mails[0].subject).toMatch(/unmatched payments: 1/);
 		expect(t.mails[0].body).toMatch(/3\.100 HIVE from @stranger in trx0 \(.*\), memo signup:a+, no claim/);
 		await t.watch.run();
 		expect(t.mails).toHaveLength(1);
@@ -246,7 +247,7 @@ describe('signup watch: unmatched payments', () => {
 		t.addClaim({ _id: MEMO_B, new_account: 'waiting', status: 'pending' });
 		t.addClaim(paidClaim({ payment_trx_id: 'trx1', watch_created_at: new Date(NOW) }));
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/2 unmatched payments/);
+		expect(t.mails[0].subject).toMatch(/unmatched payments: 2/);
 		expect(t.mails[0].body).toMatch(/from @paidnever in trx0 .*claim pending for @waiting/);
 		expect(t.mails[0].body).toMatch(/from @again in trx2 .*claim created for @newguy/);
 		expect(t.mails[0].body).not.toMatch(/in trx1/);
@@ -284,7 +285,7 @@ describe('signup watch: claimed account tokens', () => {
 		const t = setup();
 		t.chain.tokens = 3;
 		await t.watch.run();
-		expect(t.mails[0].subject).toMatch(/1 claimed account tokens/);
+		expect(t.mails[0].subject).toMatch(/claimed tokens low \(3\)/);
 		expect(t.mails[0].body).toMatch(/@actifit has 3 claimed account token\(s\), below 5/);
 		t.chain.tokens = 2;
 		await t.watch.run();
@@ -310,7 +311,7 @@ describe('signup watch: claimed account tokens', () => {
 		const r = await t.watch.run();
 		expect(r.errors).toEqual(['tokens']);
 		expect(r.mailed).toBe(true);
-		expect(t.mails[0].subject).toMatch(/1 new signups/);
+		expect(t.mails[0].subject).toMatch(/new signups: 1/);
 		expect(t.logs.some((l) => /tokens check failed: node down/.test(l))).toBe(true);
 	});
 });
@@ -329,7 +330,7 @@ describe('signup watch: delivery', () => {
 		t.deps.mailFails = false;
 		await t.watch.run();
 		expect(t.mails).toHaveLength(1);
-		expect(t.mails[0].subject).toMatch(/1 unmatched payments, 1 claimed account tokens/);
+		expect(t.mails[0].subject).toMatch(/unmatched payments: 1, claimed tokens low \(1\)/);
 	});
 
 	test('with no report_emails it logs and keeps the items for later', async () => {
@@ -358,7 +359,7 @@ describe('signup watch: delivery', () => {
 		t.deps.getDb = () => { throw new Error('not connected'); };
 		const r = await t.watch.run();
 		expect(r.mailed).toBe(false);
-		expect(r.errors.sort()).toEqual(['created', 'refunds', 'rewards', 'tokens', 'unmatched']);
+		expect(r.errors.sort()).toEqual(['created', 'refunds', 'rewards', 'stuck', 'tokens', 'unmatched']);
 	});
 
 	test('mail text never carries the signup email address', async () => {
@@ -366,5 +367,162 @@ describe('signup watch: delivery', () => {
 		t.addClaim(paidClaim({ email: 'private@example.org', needs_refund: true }));
 		await t.watch.run();
 		expect(t.mails[0].body).not.toMatch(/private@example\.org/);
+	});
+});
+
+describe('signup watch: review round 1', () => {
+	const flagAgain = (t, id, set) => {
+		const c = t.claims.docs.find((d) => d._id === id);
+		Object.assign(c, set, { refund_flagged_at: new Date(t.deps.clock + 1) });
+		delete c.watch_refund_at; // what signup_with_keys does on every new refund flag
+	};
+
+	test('a claim flagged for a refund again is reported again', async () => {
+		const t = setup();
+		t.addClaim({ _id: MEMO_A, new_account: 'under', needs_refund: true, insufficient_trx_id: 'trxU', refund_flagged_at: new Date(NOW - 1000) });
+		await t.watch.run();
+		flagAgain(t, MEMO_A, { status: 'failed', failure_reason: 'username_taken', payment_trx_id: 'trxP', payment_from: 'p',
+			verified_amount: 3, verified_currency: 'HIVE' });
+		t.deps.clock += 10 * 60 * 1000;
+		await t.watch.run();
+		expect(t.mails).toHaveLength(2);
+		expect(t.mails[1].body).toMatch(/@under \(failed, username_taken; underpaid in trxU\), paid 3\.000 HIVE from @p in trxP/);
+	});
+
+	test('a refund flagged again while the mail is going out is not lost', async () => {
+		const t = setup();
+		t.addClaim({ _id: MEMO_A, new_account: 'under', needs_refund: true, insufficient_trx_id: 'trxU', refund_flagged_at: new Date(NOW - 1000) });
+		const send = t.deps.sendMail;
+		t.deps.sendMail = async (...a) => { flagAgain(t, MEMO_A, { status: 'failed', failure_reason: 'username_taken' }); return send(...a); };
+		await t.watch.run();
+		expect(t.claims.docs[0].watch_refund_at).toBeUndefined();
+		t.deps.sendMail = send;
+		await t.watch.run();
+		expect(t.mails).toHaveLength(2);
+		expect(t.mails[1].body).toMatch(/failed, username_taken/);
+		await t.watch.run();
+		expect(t.mails).toHaveLength(2);
+	});
+
+	test('a refund on a claim from before refund_flagged_at existed is marked too', async () => {
+		const t = setup();
+		t.addClaim({ _id: MEMO_A, new_account: 'old', needs_refund: true, status: 'failed', failure_reason: 'username_taken' });
+		await t.watch.run();
+		await t.watch.run();
+		expect(t.mails).toHaveLength(1);
+	});
+
+	test('lists every refund reason on a claim', async () => {
+		const t = setup();
+		t.addClaim(paidClaim({ status: 'failed', failure_reason: 'username_taken', needs_refund: true,
+			insufficient_trx_id: 'trxU', extra_transfers: ['trxE1', 'trxE2'], watch_created_at: new Date(NOW) }));
+		await t.watch.run();
+		expect(t.mails[0].body).toMatch(/\(failed, username_taken; underpaid in trxU; extra transfers trxE1, trxE2\)/);
+	});
+
+	test('reports a paid claim whose account is still not created an hour later, once', async () => {
+		const t = setup();
+		t.chain.pay({ memo: MEMO_A });
+		t.chain.pay({ memo: MEMO_B });
+		t.addClaim(paidClaim({ status: 'pending', updated_at: new Date(NOW - 2 * 60 * 60 * 1000) }));
+		t.addClaim(paidClaim({ _id: MEMO_B, new_account: 'recent', payment_trx_id: 'trx1', status: 'pending', updated_at: new Date(NOW - 30 * 60 * 1000) }));
+		t.addClaim(paidClaim({ _id: 'signup:' + 'c'.repeat(24), new_account: 'done', payment_trx_id: 'trx9', updated_at: new Date(NOW - 5 * 60 * 60 * 1000), watch_created_at: new Date(NOW) }));
+		t.addClaim(paidClaim({ _id: 'signup:' + 'd'.repeat(24), new_account: 'refused', payment_trx_id: 'trx8', status: 'failed', updated_at: new Date(NOW - 5 * 60 * 60 * 1000) }));
+		await t.watch.run();
+		expect(t.mails[0].subject).toBe('[Actifit signup watch] paid, account not created: 1');
+		expect(t.mails[0].body).toMatch(/@newguy paid 3\.000 HIVE from @payer in trx0, memo signup:a+\. The app retries/);
+		expect(t.mails[0].body).not.toMatch(/@recent|@done|@refused/);
+		await t.watch.run();
+		expect(t.mails).toHaveLength(1);
+	});
+
+	test('says a pending claim can still be submitted before calling its payment unmatched', async () => {
+		const t = setup();
+		t.chain.pay({ memo: MEMO_A });
+		t.addClaim({ _id: MEMO_A, new_account: 'waiting', status: 'pending' });
+		await t.watch.run();
+		expect(t.mails[0].body).toMatch(/claim pending for @waiting: the app can still submit it, check before refunding/);
+	});
+
+	test('lists the oldest unmatched payments first when there are more than fit', async () => {
+		const t = setup();
+		for (let i = 0; i < 55; i++) t.chain.pay({ memo: 'signup:' + String(i).padStart(24, '0'), ageMs: (2 + (i % 2 ? 100 - i : i)) * 60 * 60 * 1000 });
+		await t.watch.run();
+		expect(t.mails[0].subject).toMatch(/unmatched payments: 50/);
+		const times = [...t.mails[0].body.matchAll(/\((2026-[^)]+)\)/g)].map((m) => Date.parse(m[1]));
+		expect(times).toHaveLength(50);
+		expect(times).toEqual(times.slice().sort((a, b) => a - b));
+		t.deps.clock += 10 * 60 * 1000;
+		await t.watch.run();
+		expect(t.mails[1].subject).toMatch(/unmatched payments: 5/);
+		const later = [...t.mails[1].body.matchAll(/\((2026-[^)]+)\)/g)].map((m) => Date.parse(m[1]));
+		expect(Math.min(...later)).toBeGreaterThanOrEqual(Math.max(...times));
+	});
+
+	test('caps refunds per digest too', async () => {
+		const t = setup();
+		for (let i = 0; i < 52; i++) t.addClaim({ _id: 'signup:' + String(i).padStart(24, '0'), new_account: 'r' + i, needs_refund: true, status: 'failed' });
+		await t.watch.run();
+		await t.watch.run();
+		expect(t.mails.map((m) => m.subject)).toEqual(['[Actifit signup watch] refunds owed: 50', '[Actifit signup watch] refunds owed: 2']);
+	});
+
+	test('labels the token alert and the all-clear by what happened', async () => {
+		const t = setup();
+		t.chain.tokens = 3;
+		await t.watch.run();
+		t.chain.tokens = 9;
+		await t.watch.run();
+		expect(t.mails.map((m) => m.subject)).toEqual(['[Actifit signup watch] claimed tokens low (3)', '[Actifit signup watch] claimed tokens recovered (9)']);
+	});
+
+	test('mails once when checks keep failing for an hour, and again only after they recovered', async () => {
+		const t = setup();
+		t.chain.failTokens = true;
+		for (let i = 0; i < 5; i++) await t.watch.run();
+		expect(t.mails).toHaveLength(0);
+		await t.watch.run();
+		expect(t.mails[0].subject).toBe('[Actifit signup watch] watcher checks failing');
+		expect(t.mails[0].body).toMatch(/failed 6 runs in a row: tokens/);
+		for (let i = 0; i < 10; i++) await t.watch.run();
+		expect(t.mails).toHaveLength(1);
+		t.chain.failTokens = false;
+		await t.watch.run();
+		t.chain.failTokens = true;
+		for (let i = 0; i < 5; i++) await t.watch.run();
+		expect(t.mails).toHaveLength(1);
+		await t.watch.run();
+		expect(t.mails).toHaveLength(2);
+	});
+
+	test('names failed checks in a digest that goes out anyway', async () => {
+		const t = setup();
+		t.chain.failTokens = true;
+		t.addClaim(paidClaim());
+		await t.watch.run();
+		expect(t.mails[0].body).toMatch(/Checks that failed this run: tokens\./);
+	});
+
+	test('logs a missing report_emails once, not every run', async () => {
+		const t = setup({ report_emails: [] });
+		t.addClaim(paidClaim());
+		await t.watch.run();
+		await t.watch.run();
+		expect(t.logs.filter((l) => /no report_emails/.test(l))).toHaveLength(1);
+	});
+
+	test('a duplicate when marking a payment is fine; any other write error is logged', async () => {
+		const t = setup();
+		t.chain.pay({ memo: MEMO_A });
+		const seen = t.db.collection('signup_watch_seen');
+		const bulk = (codes) => { const e = new Error('bulk'); e.code = codes[0]; e.writeErrors = codes.map((code) => ({ code })); return e; };
+		seen.insertMany = async () => { throw bulk([11000]); };
+		await t.watch.run();
+		expect(t.logs.some((l) => /may repeat/.test(l))).toBe(false);
+		t.chain.pay({ memo: MEMO_B });
+		t.deps.clock += 10 * 60 * 1000;
+		seen.insertMany = async () => { throw bulk([11000, 121]); };
+		await t.watch.run();
+		expect(t.logs.some((l) => /marking Unmatched payments failed \(may repeat\)/.test(l))).toBe(true);
 	});
 });

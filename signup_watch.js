@@ -4,19 +4,26 @@
  *
  * Each run collects:
  *   - refunds owed: claims flagged `needs_refund` (underpaid, extra transfers, or the name
- *     was taken after payment);
+ *     was taken after payment). Reported again whenever the claim is flagged again
+ *     (`refund_flagged_at` changes), since what is owed may have grown;
+ *   - paid but not created: a matched payment whose account still isn't created an hour
+ *     later (no claimed token, node down) and the app hasn't finished it;
  *   - rewards not recorded: created claims with `reward_pending`;
  *   - unmatched payments: signup-memo transfers older than an hour that no claim accounts
  *     for (paid but never submitted, a transfer to a promo memo, a late duplicate);
  *   - claimed account tokens running low on the creator account (on the change, plus an
  *     all-clear when they recover);
- *   - every new signup.
+ *   - every new signup;
+ *   - the watcher's own checks failing for an hour.
  *
  * Every item is reported once. It is marked as reported only after the mail went out, so
  * a mail failure (or no `report_emails`) means it is retried on the next run.
  *
  * Read-only towards users and the chain: it never refunds, pays or changes a claim's
  * status, and adds only its own `watch_*` fields to claims.
+ *
+ * Limits it inherits from the transfer index: transfers below the dust floor, and an 11th
+ * or later transfer on one memo, are not indexed and so are not reported.
  *
  * Load-time safe: every external effect comes in via `deps`.
  */
@@ -27,9 +34,11 @@ const { createTransferIndex } = require('./signup_with_keys');
 
 const HOUR_MS = 60 * 60 * 1000;
 const UNMATCHED_AFTER_MS = HOUR_MS; // give the app time to submit after paying
+const STUCK_AFTER_MS = HOUR_MS;
 const SEEN_TTL_MS = 30 * 24 * HOUR_MS;
 const MAX_PER_KIND = 50; // per digest; the rest go in the next one
 const DEFAULT_MIN_TOKENS = 5;
+const FAILING_RUNS_ALERT = 6; // an hour of failing checks at the default 10-minute cron
 
 const STATE_COL = 'signup_watch_state';
 const SEEN_COL = 'signup_watch_seen';
@@ -39,17 +48,24 @@ function fmtAmount(amount, currency) {
 }
 
 function refundReason(c) {
-	if (c.failure_reason) return c.failure_reason;
-	if (c.extra_transfers && c.extra_transfers.length) return 'extra transfers ' + c.extra_transfers.join(', ');
-	if (c.insufficient_trx_id) return 'underpaid (' + c.insufficient_trx_id + ')';
-	return 'flagged';
+	const parts = [];
+	if (c.failure_reason) parts.push(c.failure_reason);
+	if (c.insufficient_trx_id) parts.push('underpaid in ' + c.insufficient_trx_id);
+	if (Array.isArray(c.extra_transfers) && c.extra_transfers.length) parts.push('extra transfers ' + c.extra_transfers.join(', '));
+	return parts.join('; ') || 'flagged';
 }
+
+const paidText = (c) => (c.payment_trx_id
+	? 'paid ' + fmtAmount(c.verified_amount, c.verified_currency) + ' from @' + c.payment_from + ' in ' + c.payment_trx_id : '');
 
 function createSignupWatch(deps) {
 	const now = deps.now || Date.now;
 	const log = typeof deps.log === 'function' ? deps.log : () => {};
 	let index = null;
 	let running = null;
+	let failingRuns = 0;
+	let failingAlerted = false;
+	let noRecipientsLogged = false;
 
 	const transfers = () => {
 		if (!index) index = createTransferIndex({ hiveCall: (m, p) => deps.hiveCall(m, p), account: deps.getConfig().signup_account, now, log });
@@ -57,34 +73,37 @@ function createSignupWatch(deps) {
 	};
 	const claimsCol = () => deps.getDb().collection('signup_claims');
 	const findClaims = (q) => claimsCol().find(q).sort({ updated_at: 1 }).limit(MAX_PER_KIND).toArray();
-	const markClaims = (ids, field) => ids.length
-		? claimsCol().updateMany({ _id: { $in: ids } }, { $set: { [field]: new Date(now()) } })
-		: null;
 
-	/** One section of the digest: its lines and how to mark them reported. */
-	async function claimSection(title, q, field, line) {
+	/** A digest section over claims, marked by `field`. `markFilter` narrows the mark to what was reported. */
+	async function claimSection(title, q, field, line, markFilter = () => ({})) {
 		const rows = await findClaims(Object.assign({}, q, { [field]: { $exists: false } }));
-		return { title, lines: rows.map(line), mark: () => markClaims(rows.map((c) => c._id), field) };
+		return {
+			title, lines: rows.map(line),
+			mark: async () => {
+				const at = new Date(now());
+				for (const c of rows) await claimsCol().updateOne(Object.assign({ _id: c._id }, markFilter(c)), { $set: { [field]: at } });
+			},
+		};
 	}
 
-	async function createdSection() {
-		return claimSection('New signups', { status: 'created' }, 'watch_created_at', (c) => '@' + c.new_account
-			+ (c.payment_trx_id ? ' paid ' + fmtAmount(c.verified_amount, c.verified_currency) + ' from @' + c.payment_from : ' promo')
-			+ (c.referrer ? ', referrer @' + c.referrer : '')
-			+ ', reward ' + (c.reward_amount || 0) + ' AFIT' + (c.reward_pending ? ' (pending)' : ''));
-	}
+	const createdSection = () => claimSection('New signups', { status: 'created' }, 'watch_created_at', (c) => '@' + c.new_account
+		+ (c.payment_trx_id ? ' ' + paidText(c) : ' promo')
+		+ (c.referrer ? ', referrer @' + c.referrer : '')
+		+ ', reward ' + (c.reward_amount || 0) + ' AFIT' + (c.reward_pending ? ' (pending)' : ''));
 
-	async function refundSection() {
-		return claimSection('Refunds owed', { needs_refund: true }, 'watch_refund_at', (c) => '@' + c.new_account
-			+ ' (' + c.status + ', ' + refundReason(c) + ')'
-			+ (c.payment_trx_id ? ', paid ' + fmtAmount(c.verified_amount, c.verified_currency) + ' from @' + c.payment_from + ' in ' + c.payment_trx_id : '')
-			+ ', memo ' + c._id);
-	}
+	// marked only if not flagged again since the read, so a new flag is never lost
+	const refundSection = () => claimSection('Refunds owed', { needs_refund: true }, 'watch_refund_at', (c) => '@' + c.new_account
+		+ ' (' + c.status + ', ' + refundReason(c) + ')'
+		+ (c.payment_trx_id ? ', ' + paidText(c) : '') + ', memo ' + c._id,
+	(c) => ({ refund_flagged_at: c.refund_flagged_at instanceof Date ? c.refund_flagged_at : { $exists: false } }));
 
-	async function rewardSection() {
-		return claimSection('Rewards not recorded', { status: 'created', reward_pending: true }, 'watch_reward_at', (c) => '@' + c.new_account
-			+ (c.referrer ? ' (referrer @' + c.referrer + ')' : '') + ', memo ' + c._id);
-	}
+	const stuckSection = () => claimSection('Paid, account not created',
+		{ payment_trx_id: { $exists: true }, status: { $in: ['pending', 'processing'] }, updated_at: { $lt: new Date(now() - STUCK_AFTER_MS) } },
+		'watch_stuck_at', (c) => '@' + c.new_account + ' ' + paidText(c)
+			+ ', memo ' + c._id + '. The app retries on its own; refund if it never finishes.');
+
+	const rewardSection = () => claimSection('Rewards not recorded', { status: 'created', reward_pending: true }, 'watch_reward_at',
+		(c) => '@' + c.new_account + (c.referrer ? ' (referrer @' + c.referrer + ')' : '') + ', memo ' + c._id);
 
 	async function unmatchedSection() {
 		if (!deps.getConfig().signup_account) return null;
@@ -102,19 +121,24 @@ function createSignupWatch(deps) {
 		const open = old.filter((t) => !accounted(t)).map((t) => Object.assign({ ref: t.trx_id + '/' + t.memo }, t));
 		if (!open.length) return null;
 		const seen = new Set((await deps.getDb().collection(SEEN_COL).find({ _id: { $in: open.map((t) => t.ref) } }).toArray()).map((d) => d._id));
-		const rows = open.filter((t) => !seen.has(t.ref)).slice(0, MAX_PER_KIND);
+		const rows = open.filter((t) => !seen.has(t.ref)).sort((a, b) => a.timestamp - b.timestamp).slice(0, MAX_PER_KIND);
+		const claimText = (c) => (!c ? ', no claim'
+			: c.status === 'pending' || c.status === 'processing'
+				? ', claim ' + c.status + ' for @' + c.new_account + ': the app can still submit it, check before refunding'
+				: ', claim ' + c.status + ' for @' + c.new_account);
 		return {
 			title: 'Unmatched payments',
 			lines: rows.map((t) => fmtAmount(t.amount, t.currency) + ' from @' + t.from + ' in ' + t.trx_id
-				+ ' (' + t.timestamp.toISOString() + '), memo ' + t.memo
-				+ (claims.has(t.memo) ? ', claim ' + claims.get(t.memo).status + ' for @' + claims.get(t.memo).new_account : ', no claim')),
+				+ ' (' + t.timestamp.toISOString() + '), memo ' + t.memo + claimText(claims.get(t.memo))),
 			mark: async () => {
 				const at = new Date(now());
 				const expires = new Date(now() + SEEN_TTL_MS);
 				try {
 					await deps.getDb().collection(SEEN_COL).insertMany(rows.map((t) => ({ _id: t.ref, at, expires_at: expires })), { ordered: false });
 				} catch (err) {
-					if (!(err && err.code === 11000)) throw err; // another run already marked some
+					// duplicates only mean another run already marked some
+					const errs = err && Array.isArray(err.writeErrors) ? err.writeErrors : [err];
+					if (!errs.every((e) => e && e.code === 11000)) throw err;
 				}
 			},
 		};
@@ -132,7 +156,8 @@ function createSignupWatch(deps) {
 		const state = await deps.getDb().collection(STATE_COL).findOne({ _id: 'tokens' });
 		if (low === !!(state && state.low)) return null;
 		return {
-			title: 'Claimed account tokens',
+			title: low ? 'Claimed tokens low' : 'Claimed tokens recovered',
+			tag: (low ? 'claimed tokens low (' : 'claimed tokens recovered (') + n + ')',
 			lines: [low
 				? '@' + cfg.account + ' has ' + n + ' claimed account token(s), below ' + min + '. Paid signups stop at 0 (no fee fallback).'
 				: '@' + cfg.account + ' is back to ' + n + ' claimed account tokens.'],
@@ -144,7 +169,7 @@ function createSignupWatch(deps) {
 	async function doRun() {
 		const sections = [];
 		const errors = [];
-		for (const [name, fn] of [['refunds', refundSection], ['unmatched', unmatchedSection],
+		for (const [name, fn] of [['refunds', refundSection], ['stuck', stuckSection], ['unmatched', unmatchedSection],
 			['rewards', rewardSection], ['tokens', tokenSection], ['created', createdSection]]) {
 			try {
 				const s = await fn();
@@ -154,17 +179,28 @@ function createSignupWatch(deps) {
 				log('signup watch: ' + name + ' check failed: ' + (err && err.message));
 			}
 		}
+		// checks that keep failing would otherwise go quiet: say so once, after an hour
+		failingRuns = errors.length ? failingRuns + 1 : 0;
+		if (!errors.length) failingAlerted = false;
+		if (failingRuns >= FAILING_RUNS_ALERT && !failingAlerted) {
+			sections.push({ title: 'Watcher checks failing', tag: 'watcher checks failing',
+				lines: ['These checks have failed ' + failingRuns + ' runs in a row: ' + errors.join(', ') + '. See the api log.'],
+				mark: async () => { failingAlerted = true; } });
+		}
 		const summary = { sections: sections.map((s) => s.title + ': ' + s.lines.length), errors, mailed: false };
 		if (!sections.length) return summary;
 
-		const subject = '[Actifit signup watch] ' + sections.map((s) => s.lines.length + ' ' + s.title.toLowerCase()).join(', ');
+		const subject = '[Actifit signup watch] ' + sections.map((s) => s.tag || s.title.toLowerCase() + ': ' + s.lines.length).join(', ');
 		const body = sections.map((s) => s.title + ' (' + s.lines.length + ')\n' + s.lines.map((l) => '- ' + l).join('\n')).join('\n\n')
+			+ (errors.length ? '\n\nChecks that failed this run: ' + errors.join(', ') + '.' : '')
 			+ '\n\nEach item is reported once. Refunds are sent by hand.\n';
 		const to = deps.getConfig().report_emails;
 		if (!to || !to.length) {
-			log('signup watch: no report_emails configured, not delivered: ' + subject);
+			if (!noRecipientsLogged) log('signup watch: no report_emails configured, nothing is delivered (first: ' + subject + ')');
+			noRecipientsLogged = true;
 			return summary;
 		}
+		noRecipientsLogged = false;
 		try {
 			await deps.sendMail(subject, body, to);
 		} catch (err) {
@@ -191,4 +227,4 @@ function createSignupWatch(deps) {
 	return { run };
 }
 
-module.exports = { createSignupWatch, UNMATCHED_AFTER_MS, DEFAULT_MIN_TOKENS };
+module.exports = { createSignupWatch, UNMATCHED_AFTER_MS, STUCK_AFTER_MS, DEFAULT_MIN_TOKENS, FAILING_RUNS_ALERT };

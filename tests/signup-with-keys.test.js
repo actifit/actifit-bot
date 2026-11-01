@@ -459,6 +459,36 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(claimOf(base()).expires_at).toBeUndefined();
 	});
 
+	it('stamps each new refund flag and clears the watcher mark, so the watcher reports it again', async () => {
+		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
+		await submit(base());
+		const first = claimOf(base()).refund_flagged_at;
+		expect(first).toBeInstanceOf(Date);
+		claimOf(base()).watch_refund_at = new Date(svcNow); // the watcher mailed the underpayment
+		later();
+		await submit(base()); // still underpaid: flagged again
+		expect(claimOf(base()).watch_refund_at).toBeUndefined();
+		expect(claimOf(base()).refund_flagged_at.getTime()).toBeGreaterThan(first.getTime());
+		claimOf(base()).watch_refund_at = new Date(svcNow);
+		pay({ memo: memoOf(base()) });
+		createOutcomes.push('username_taken');
+		later();
+		expect((await submit(base())).body.reason).toBe('username_taken'); // now the full payment is owed back too
+		expect(claimOf(base())).toMatchObject({ status: 'failed', needs_refund: true });
+		expect(claimOf(base()).watch_refund_at).toBeUndefined();
+	});
+
+	it('clears the watcher mark when a payment arrives with extra transfers', async () => {
+		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
+		await submit(base());
+		claimOf(base()).watch_refund_at = new Date(svcNow);
+		pay({ memo: memoOf(base()) });
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base()).extra_transfers).toHaveLength(1);
+		expect(claimOf(base()).watch_refund_at).toBeUndefined();
+	});
+
 	it('completes an underpaid claim when a full transfer follows', async () => {
 		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
 		await submit(base());

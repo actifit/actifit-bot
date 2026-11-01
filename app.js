@@ -8780,7 +8780,10 @@ if (process.env.BOT_THREAD == 'SECOND_API' && !(config.signup_watch_enabled === 
 		// local require: keeps the SMTP transport out of boot, as the arena alerts do
 		sendMail: (subject, body, to) => require('./mail').sendPlainMail(subject, body, to),
 	});
-	schedule.scheduleJob(config.signup_watch_cron || '*/10 * * * *', () => signupWatch.run());
+	const signupWatchCron = config.signup_watch_cron || '*/10 * * * *';
+	if (!schedule.scheduleJob(signupWatchCron, () => signupWatch.run())) {
+		utils.log('signup watch NOT scheduled: invalid signup_watch_cron ' + JSON.stringify(signupWatchCron), 'api');
+	}
 }
 
 /* core function for discounted account claims and creation */
