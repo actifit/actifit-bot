@@ -849,27 +849,28 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		_sgPriceCache = { ts: 0, hive: null, hbd: null, failTs: 0 };
 	}
 
-	// Returns the minimum acceptable on-chain amount for the signup currency. The figure is
-	// derived ENTIRELY server-side (our USD cost + a server-sourced price); the client's
-	// steem_invest is never trusted. botHivePrice is app.js's regularly-refreshed hivePrice
-	// global ({hive:{usd}}), used as a fallback so we rarely need the blind floor.
-	async function signupRequiredCrypto (sentCur, botHivePrice) {
+	// The signup price in the payment currency, before any tolerance: what we ask the user to
+	// send. `live` is false when no real price was available and the blind fallback was used;
+	// a quote must not be shown on a guessed price (it could overcharge several times over).
+	async function signupQuoteCrypto (sentCur, botHivePrice) {
 		// Validate the configured cost: a non-numeric value would make requiredCrypto NaN and
 		// silently reject EVERY signup (stuck-verifying); 0/negative would open the gate to dust.
 		const cfgCost = parseFloat(config && config.signupCostUsd);
 		const costUsd = (isFinite(cfgCost) && cfgCost > 0) ? cfgCost : 2.0;
-		const TOLERANCE = 0.10; // absorb price drift (send -> confirm) + the client's 3-dp rounding
 		const isHbd = (sentCur === 'HBD' || sentCur === 'SBD');
 		const prices = await signupUsdPrices();
 		let unit = isHbd ? prices.hbd : prices.hive;
+		let live = !!(unit && unit > 0);
 		// Fallback 1 (HIVE): the bot's own recently-refreshed price (server-side, never the client).
 		if ((!unit || unit <= 0) && !isHbd && botHivePrice && botHivePrice.hive
-			&& isFinite(parseFloat(botHivePrice.hive.usd))) {
+			&& isFinite(parseFloat(botHivePrice.hive.usd)) && parseFloat(botHivePrice.hive.usd) > 0) {
 			unit = parseFloat(botHivePrice.hive.usd);
+			live = true;
 		}
 		// Fallback 2 (HBD): HBD is dollar-pegged; assume ~$1 when no live quote is available.
 		if ((!unit || unit <= 0) && isHbd) {
 			unit = 1.0;
+			live = true;
 		}
 		// Last resort (HIVE): no price anywhere (CoinGecko AND the bot's cached price both down).
 		// Assume a deliberately LOW HIVE price so the requirement stays close to the USD cost
@@ -878,8 +879,19 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		if (!unit || unit <= 0) {
 			const fbHive = parseFloat(config && config.signupFallbackHiveUsd);
 			unit = (isFinite(fbHive) && fbHive > 0) ? fbHive : 0.05;
+			live = false;
 		}
-		return (costUsd / unit) * (1 - TOLERANCE);
+		return { amount: costUsd / unit, live: live };
+	}
+
+	// Returns the minimum acceptable on-chain amount for the signup currency. The figure is
+	// derived ENTIRELY server-side (our USD cost + a server-sourced price); the client's
+	// steem_invest is never trusted. botHivePrice is app.js's regularly-refreshed hivePrice
+	// global ({hive:{usd}}), used as a fallback so we rarely need the blind floor.
+	async function signupRequiredCrypto (sentCur, botHivePrice) {
+		const TOLERANCE = 0.10; // absorb price drift (send -> confirm) + the client's 3-dp rounding
+		const quote = await signupQuoteCrypto(sentCur, botHivePrice);
+		return quote.amount * (1 - TOLERANCE);
 	}
 
 	async function confirmPaymentReceived (req, bchain, botHivePrice) {
@@ -2878,11 +2890,14 @@ const finiteAmount = afitBalance.finiteAmount;
    vestsToHivePower: vestsToHivePower,
    createAccount: createAccount,
    createHiveAccountWithKeys: createHiveAccountWithKeys,
+   // read-only Hive database call on the shared client (signup_with_keys looks up accounts and payments)
+   hiveDatabaseCall: (method, params) => hiveClient.database.call(method, params),
    parseSignupPublicKeys: parseSignupPublicKeys,
    isValidHiveAccountName: isValidHiveAccountName,
    delegateToAccount: delegateToAccount,
    confirmPaymentReceived: confirmPaymentReceived,
    signupRequiredCrypto: signupRequiredCrypto,
+   signupQuoteCrypto: signupQuoteCrypto,
    signupUsdPrices: signupUsdPrices,
    _resetSignupPriceCache: _resetSignupPriceCache,
    confirmSEAFITReceived: confirmSEAFITReceived,

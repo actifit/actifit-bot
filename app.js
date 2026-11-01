@@ -17,6 +17,7 @@ var arenaPools = require('./arena_pools');
 var arenaTier = require('./arena_tier');
 var arenaJobs = require('./arena_jobs');
 var arenaRoutes = require('./arena_routes');
+var signupWithKeys = require('./signup_with_keys');
 var featured = require('./featured');
 const moment = require('moment')
 var crypto = require('crypto');
@@ -239,6 +240,7 @@ client.connect()
 	    // never here: this only warns loudly if they are missing, and adds the TTL index on
 	    // the small request_locks collection. It checks the verified_tx unique index on
 	    // tx_id the same way. Never rejects; the .catch() is belt and braces.
+	    signupWithKeys.ensureSignupIndexes(db, (m) => utils.log(m, 'api')); // signup claims; async, never throws
 	    afitBalance.ensureLedgerIndexes(db, (m) => { console.log(m); try { utils.log(m, 'api'); } catch (_) { /* logging must not throw */ } })
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
@@ -7309,7 +7311,8 @@ const storeSignupTransaction = async function (req){
 	if (typeof req.query.referrer != 'undefined' && req.query.referrer != 'undefined' && req.query.referrer != null){
 		
 		new_transaction['referrer'] = req.query.referrer;
-		new_transaction['referrer_afit_reward'] = parseFloat(req.query.afit_reward * config.referrerBonus);
+		// never NaN, even in this record (see storeReferralReward)
+		new_transaction['referrer_afit_reward'] = utils.finiteAmount(req.query.afit_reward * config.referrerBonus) || 0;
 		
 		//calculate proper referral reward based on user data
 		
@@ -7414,10 +7417,16 @@ const storeReferralReward = async function (req){
 	console.log('reward referrer');
 	//setup new reward transaction for user
 	let refRewarded = false;
+	// a NaN token_count poisons the referrer's whole balance (see storeSignupTransaction)
+	const referralAmount = utils.finiteAmount(req.query.afit_reward * config.referrerBonus);
+	if (referralAmount === null || referralAmount < 0){
+		console.log('referral reward NOT recorded for ' + req.query.referrer + ': amount is not valid');
+		return false;
+	}
 	let new_transaction = {
 		user: req.query.referrer,
 		reward_activity: 'Signup Referral',
-		token_count: parseFloat(req.query.afit_reward * config.referrerBonus),
+		token_count: referralAmount,
 		date: new Date(),
 		referred: req.query.new_account,
 		note: 'Referral reward for signup of user '+req.query.new_account,
@@ -8708,6 +8717,74 @@ app.post('/app/confirmPayment', appSignupRateLimit, async function(req,res){
 	req.body = Object.assign({}, req.body, { confirm_payment_token: config.confirmPaymentToken });
 	return handleConfirmPayment(req, res);
 });
+
+/*
+ * Signup with device-generated keys (signup_with_keys.js). The app sends only public keys.
+ * Off until the `settings` doc {_id: 'signup_with_keys', enabled: true} exists; the old
+ * confirmPayment routes above stay disabled.
+ */
+const signupCostUsd = () => (parseFloat(config.signupCostUsd) > 0 ? parseFloat(config.signupCostUsd) : 2.0);
+signupWithKeys.registerSignupWithKeysRoutes(app, {
+	getDb: () => db,
+	getConfig: () => config,
+	log: (m) => utils.log(m, 'api'),
+	hiveCall: (method, params) => utils.hiveDatabaseCall(method, params),
+	isValidName: utils.isValidHiveAccountName,
+	parseKeys: utils.parseSignupPublicKeys,
+	// fee only from a claimed token: a paid signup never falls back to burning 3 HIVE
+	createAccount: (name, keys) => utils.createHiveAccountWithKeys(name, keys, { allowFee: false }),
+	quoteAmount: (cur) => utils.signupQuoteCrypto(cur, hivePrice),
+	// same 10% tolerance as signupRequiredCrypto, but `live` says whether the price was real
+	requiredAmount: async (cur) => {
+		const q = await utils.signupQuoteCrypto(cur, hivePrice);
+		return { amount: q.amount * 0.9, live: q.live };
+	},
+	// fixed server-side reward for the signup cost (not the amount paid), same ceiling as before
+	paidAfitReward: () => capSignupAfitReward(SIGNUP_AFIT_PER_LOT, { amount: signupCostUsd(), currency: 'HBD' }),
+	// existing promo docs carry no amount: fall back to the server maximum, as the old route allowed
+	promoAfitReward: (promo) => promoSignupAfitReward(promo,
+		parseFloat(config.promoMaxAfitReward) > 0 ? parseFloat(config.promoMaxAfitReward) : PROMO_MAX_AFIT_REWARD_DEFAULT),
+	delegate: (name) => utils.delegateToAccount(name, 10, 'HIVE'),
+	recordSignup: async (s) => {
+		const req = { params: {}, query: {
+			new_account: s.new_account,
+			memo: s.memo,
+			referrer: s.referrer || undefined,
+			email: s.email || undefined,
+			afit_reward: s.afit_reward,
+			confirming_tx: s.confirming_tx,
+			usd_invest: s.promo ? 0 : signupCostUsd(),
+			steem_invest: s.verified_amount,
+			promo_code: s.promo ? s.promo.code : undefined,
+			promo_proceed: !!s.promo,
+			signup_reward: s.signup_reward,
+			referrer_reward: s.referrer_reward,
+		} };
+		const stored = await storeSignupTransaction(req);
+		if (req.query.referrer && (!s.promo || s.referrer_reward)) {
+			await storeReferralReward(req);
+		}
+		return stored;
+	},
+}, { ipOf: clientIpKey });
+
+// Signup watcher (signup_watch.js): one email digest to report_emails for refunds owed,
+// rewards not recorded, unmatched payments, low claimed tokens and new signups.
+// SECOND_API only, so each item is mailed once. Set signup_watch_enabled: false to stop it.
+if (process.env.BOT_THREAD == 'SECOND_API' && !(config.signup_watch_enabled === false || config.signup_watch_enabled === 'false')) {
+	const signupWatch = require('./signup_watch').createSignupWatch({
+		getDb: () => db,
+		getConfig: () => config,
+		log: (m) => utils.log(m, 'api'),
+		hiveCall: (method, params) => utils.hiveDatabaseCall(method, params),
+		// local require: keeps the SMTP transport out of boot, as the arena alerts do
+		sendMail: (subject, body, to) => require('./mail').sendPlainMail(subject, body, to),
+	});
+	const signupWatchCron = config.signup_watch_cron || '*/10 * * * *';
+	if (!schedule.scheduleJob(signupWatchCron, () => signupWatch.run())) {
+		utils.log('signup watch NOT scheduled: invalid signup_watch_cron ' + JSON.stringify(signupWatchCron), 'api');
+	}
+}
 
 /* core function for discounted account claims and creation */
 const claimAndCreateAccount = async function (req){
