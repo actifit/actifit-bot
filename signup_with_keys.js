@@ -606,7 +606,8 @@ function createSignupWithKeys(deps) {
 				const set = {
 					payment_trx_id: payment.trx_id, payment_ref: payment.trx_id + '/' + claim._id, payment_from: payment.from,
 					verified_amount: payment.amount, verified_currency: payment.currency, paid_at: new Date(now()),
-					needs_refund: others.length > 0,
+					// keep an underpayment flag even if that transfer aged out of the index
+					needs_refund: others.length > 0 || !!claim.insufficient_trx_id,
 					extra_transfers: others.map((t) => t.trx_id) };
 				const paid = newRefund ? flagRefund(set) : set;
 				const ok = await guarded(claim, { $set: paid, $unset: Object.assign({ expires_at: '' }, newRefund ? refundUnset(paid) : {}) });

@@ -57,6 +57,13 @@ function refundReason(c) {
 	return parts.join('; ') || 'flagged';
 }
 
+/** Every transfer owed back on a flagged claim; the payment too once the signup failed. */
+function owedTrx(c) {
+	const ids = [c.insufficient_trx_id].concat(Array.isArray(c.extra_transfers) ? c.extra_transfers : []);
+	if (c.status === 'failed') ids.push(c.payment_trx_id);
+	return [...new Set(ids.filter(Boolean))];
+}
+
 const paidText = (c) => (c.payment_trx_id
 	? 'paid ' + fmtAmount(c.verified_amount, c.verified_currency) + ' from @' + c.payment_from + ' in ' + c.payment_trx_id : '');
 
@@ -76,14 +83,17 @@ function createSignupWatch(deps) {
 	const claimsCol = () => deps.getDb().collection('signup_claims');
 	const findClaims = (q) => claimsCol().find(q).sort({ updated_at: 1 }).limit(MAX_PER_KIND).toArray();
 
-	/** A digest section over claims, marked by `field`. `markFilter` narrows the mark to what was reported. */
-	async function claimSection(title, q, field, line, markFilter = () => ({})) {
+	/**
+	 * A digest section over claims, marked by `field`. `markFilter` narrows the mark to what was
+	 * reported; `markSet` adds fields to record with it.
+	 */
+	async function claimSection(title, q, field, line, markFilter = () => ({}), markSet = () => ({})) {
 		const rows = await findClaims(Object.assign({}, q, { [field]: { $exists: false } }));
 		return {
 			title, lines: rows.map(line),
 			mark: async () => {
 				const at = new Date(now());
-				for (const c of rows) await claimsCol().updateOne(Object.assign({ _id: c._id }, markFilter(c)), { $set: { [field]: at } });
+				for (const c of rows) await claimsCol().updateOne(Object.assign({ _id: c._id }, markFilter(c)), { $set: Object.assign({ [field]: at }, markSet(c)) });
 			},
 		};
 	}
@@ -93,11 +103,18 @@ function createSignupWatch(deps) {
 		+ (c.referrer ? ', referrer @' + c.referrer : '')
 		+ ', reward ' + (c.reward_amount || 0) + ' AFIT' + (c.reward_pending ? ' (pending)' : ''));
 
-	// marked only if not flagged again since the read, so a new flag is never lost
-	const refundSection = () => claimSection('Refunds owed', { needs_refund: true }, 'watch_refund_at', (c) => '@' + c.new_account
-		+ ' (' + c.status + ', ' + refundReason(c) + ')'
-		+ (c.payment_trx_id ? ', ' + paidText(c) : '') + ', memo ' + c._id,
-	(c) => ({ refund_flagged_at: c.refund_flagged_at instanceof Date ? c.refund_flagged_at : { $exists: false } }));
+	// marked only if not flagged again since the read, so a new flag is never lost. A claim
+	// flagged again lists everything owed, so name the transfers an earlier mail already had:
+	// refunding one of those twice is the mistake to prevent.
+	const refundSection = () => claimSection('Refunds owed', { needs_refund: true }, 'watch_refund_at', (c) => {
+		const before = owedTrx(c).filter((id) => (c.watch_refund_trx || []).includes(id));
+		return '@' + c.new_account + ' (' + c.status + ', ' + refundReason(c) + ')'
+			+ (c.payment_trx_id ? ', ' + paidText(c) : '') + ', memo ' + c._id
+			+ (before.length ? '. Already reported, check before refunding again: ' + before.join(', ') : '');
+	},
+	(c) => ({ refund_flagged_at: c.refund_flagged_at instanceof Date ? c.refund_flagged_at : { $exists: false } }),
+	// what a claim owes only grows, so the latest list covers every earlier mail
+	(c) => ({ watch_refund_trx: owedTrx(c) }));
 
 	const stuckSection = () => claimSection('Paid, account not created',
 		// paid_at, not updated_at: every re-check by the app bumps updated_at
@@ -196,7 +213,7 @@ function createSignupWatch(deps) {
 		const subject = '[Actifit signup watch] ' + sections.map((s) => s.tag || s.title.toLowerCase() + ': ' + s.lines.length).join(', ');
 		const body = sections.map((s) => s.title + ' (' + s.lines.length + ')\n' + s.lines.map((l) => '- ' + l).join('\n')).join('\n\n')
 			+ (errors.length ? '\n\nChecks that failed this run: ' + errors.join(', ') + '.' : '')
-			+ '\n\nEach item is reported once. Refunds are sent by hand.\n';
+			+ '\n\nEach item is reported once. A refund flagged again lists all it owes and names the transfers already reported. Refunds are sent by hand.\n';
 		const to = deps.getConfig().report_emails;
 		if (!to || !to.length) {
 			if (!noRecipientsLogged) log('signup watch: no report_emails configured, nothing is delivered (first: ' + subject + ')');

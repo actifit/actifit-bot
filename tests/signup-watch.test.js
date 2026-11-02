@@ -163,7 +163,8 @@ describe('signup watch: claims', () => {
 		expect(c.needs_refund).toBe(true);
 		expect(c.watch_refund_at).toBeInstanceOf(Date);
 		expect(Object.keys(c).filter((k) => !Object.keys(paidClaim()).includes(k)).sort())
-			.toEqual(['failure_reason', 'needs_refund', 'updated_at', 'watch_refund_at']);
+			.toEqual(['failure_reason', 'needs_refund', 'updated_at', 'watch_refund_at', 'watch_refund_trx']);
+		expect(c.watch_refund_trx).toEqual(['trx0']); // the payment is owed back on a failed signup
 	});
 
 	test('names underpaid and extra transfers as the refund reason', async () => {
@@ -533,5 +534,46 @@ describe('signup watch: review round 1', () => {
 		seen.insertMany = async () => { throw bulk([11000, 121]); };
 		await t.watch.run();
 		expect(t.logs.some((l) => /marking Unmatched payments failed \(may repeat\)/.test(l))).toBe(true);
+	});
+});
+
+describe('signup watch: review round 3', () => {
+	const flagAgain = (t, id, set) => {
+		const c = t.claims.docs.find((d) => d._id === id);
+		Object.assign(c, set, { refund_flagged_at: new Date(t.deps.clock + 1) });
+		delete c.watch_refund_at; // what signup_with_keys does on every new refund flag
+	};
+
+	test('a refund flagged again names the transfers an earlier mail already had', async () => {
+		const t = setup();
+		t.addClaim({ _id: MEMO_A, new_account: 'under', status: 'pending', needs_refund: true, insufficient_trx_id: 'trxA', refund_flagged_at: new Date(NOW - 1000) });
+		await t.watch.run();
+		expect(t.mails[0].body).not.toMatch(/Already reported/);
+		// a full payment arrives with a second transfer: both transfers are listed as owed
+		flagAgain(t, MEMO_A, { status: 'created', payment_trx_id: 'trxC', payment_from: 'p', verified_amount: 3, verified_currency: 'HIVE',
+			extra_transfers: ['trxA', 'trxB'] });
+		t.deps.clock += 10 * 60 * 1000;
+		await t.watch.run();
+		expect(t.mails).toHaveLength(2);
+		expect(t.mails[1].body).toMatch(/extra transfers trxA, trxB\), paid 3\.000 HIVE from @p in trxC, memo signup:a+\. Already reported, check before refunding again: trxA\n/);
+		expect(t.claims.docs[0].watch_refund_trx).toEqual(['trxA', 'trxB']);
+	});
+
+	test('a paid claim that fails later names its earlier extra as already reported, not the payment', async () => {
+		const t = setup();
+		t.addClaim(paidClaim({ status: 'processing', needs_refund: true, extra_transfers: ['trxE'], refund_flagged_at: new Date(NOW - 1000) }));
+		await t.watch.run();
+		flagAgain(t, MEMO_A, { status: 'failed', failure_reason: 'username_taken' });
+		t.deps.clock += 10 * 60 * 1000;
+		await t.watch.run();
+		expect(t.mails[1].body).toMatch(/Already reported, check before refunding again: trxE\n/);
+		expect(t.claims.docs[0].watch_refund_trx).toEqual(['trxE', 'trx0']);
+	});
+
+	test('the footer says a refund flagged again lists all it owes', async () => {
+		const t = setup();
+		t.addClaim(paidClaim({ needs_refund: true }));
+		await t.watch.run();
+		expect(t.mails[0].body).toMatch(/A refund flagged again lists all it owes and names the transfers already reported\./);
 	});
 });
