@@ -513,12 +513,18 @@ describe('POST /app/signupWithKeys (paid)', () => {
 	it('keeps the refund flag when the underpayment aged out of the index before the full payment', async () => {
 		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
 		await submit(base());
+		const first = claimOf(base()).refund_flagged_at;
+		const mailed = new Date(svcNow);
+		claimOf(base()).watch_refund_at = mailed;
 		later(15 * 24 * 3600 * 1000);
 		pay({ memo: memoOf(base()) });
 		later();
 		expect((await submit(base())).body.reason).toBe('created');
 		expect(claimOf(base()).extra_transfers).toEqual([]);
 		expect(claimOf(base())).toMatchObject({ needs_refund: true });
+		// nothing new is owed: no repeat alert
+		expect(claimOf(base()).refund_flagged_at).toEqual(first);
+		expect(claimOf(base()).watch_refund_at).toEqual(mailed);
 	});
 
 	it('completes an underpaid claim when a full transfer follows', async () => {

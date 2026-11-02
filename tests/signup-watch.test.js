@@ -58,6 +58,10 @@ function makeCollection() {
 			const i = docs.findIndex((x) => matches(x, q));
 			if (i === -1) { if (opts.upsert) docs.push({ ...q, ...u.$set }); return { matchedCount: 0 }; }
 			docs[i] = { ...docs[i], ...u.$set };
+			for (const [k, v] of Object.entries(u.$addToSet || {})) {
+				const add = v && v.$each ? v.$each : [v];
+				docs[i][k] = [...new Set((docs[i][k] || []).concat(add))];
+			}
 			return { matchedCount: 1 };
 		},
 	};
@@ -409,6 +413,8 @@ describe('signup watch: review round 1', () => {
 		await t.watch.run();
 		expect(t.mails).toHaveLength(2);
 		expect(t.mails[1].body).toMatch(/failed, username_taken/);
+		// the first mail named trxU, so the re-report labels it even though its mark missed
+		expect(t.mails[1].body).toMatch(/Already reported, check before refunding again: trxU\n/);
 		await t.watch.run();
 		expect(t.mails).toHaveLength(2);
 	});

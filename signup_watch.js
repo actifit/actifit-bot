@@ -85,15 +85,18 @@ function createSignupWatch(deps) {
 
 	/**
 	 * A digest section over claims, marked by `field`. `markFilter` narrows the mark to what was
-	 * reported; `markSet` adds fields to record with it.
+	 * reported; `markAlways` is an update applied to every mailed row even when that mark misses.
 	 */
-	async function claimSection(title, q, field, line, markFilter = () => ({}), markSet = () => ({})) {
+	async function claimSection(title, q, field, line, markFilter = () => ({}), markAlways = null) {
 		const rows = await findClaims(Object.assign({}, q, { [field]: { $exists: false } }));
 		return {
 			title, lines: rows.map(line),
 			mark: async () => {
 				const at = new Date(now());
-				for (const c of rows) await claimsCol().updateOne(Object.assign({ _id: c._id }, markFilter(c)), { $set: Object.assign({ [field]: at }, markSet(c)) });
+				for (const c of rows) {
+					await claimsCol().updateOne(Object.assign({ _id: c._id }, markFilter(c)), { $set: { [field]: at } });
+					if (markAlways) await claimsCol().updateOne({ _id: c._id }, markAlways(c));
+				}
 			},
 		};
 	}
@@ -113,8 +116,8 @@ function createSignupWatch(deps) {
 			+ (before.length ? '. Already reported, check before refunding again: ' + before.join(', ') : '');
 	},
 	(c) => ({ refund_flagged_at: c.refund_flagged_at instanceof Date ? c.refund_flagged_at : { $exists: false } }),
-	// what a claim owes only grows, so the latest list covers every earlier mail
-	(c) => ({ watch_refund_trx: owedTrx(c) }));
+	// what this mail named counts as reported even if the claim was flagged again meanwhile
+	(c) => ({ $addToSet: { watch_refund_trx: { $each: owedTrx(c) } } }));
 
 	const stuckSection = () => claimSection('Paid, account not created',
 		// paid_at, not updated_at: every re-check by the app bumps updated_at
