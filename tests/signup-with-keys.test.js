@@ -459,34 +459,55 @@ describe('POST /app/signupWithKeys (paid)', () => {
 		expect(claimOf(base()).expires_at).toBeUndefined();
 	});
 
-	it('stamps each new refund flag and clears the watcher mark, so the watcher reports it again', async () => {
+	it('does not re-flag the same underpayment when the app checks again, but flags a failure', async () => {
 		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
 		await submit(base());
 		const first = claimOf(base()).refund_flagged_at;
 		expect(first).toBeInstanceOf(Date);
-		claimOf(base()).watch_refund_at = new Date(svcNow); // the watcher mailed the underpayment
+		const mailed = new Date(svcNow);
+		claimOf(base()).watch_refund_at = mailed; // the watcher mailed the underpayment
 		later();
-		await submit(base()); // still underpaid: flagged again
-		expect(claimOf(base()).watch_refund_at).toBeUndefined();
-		expect(claimOf(base()).refund_flagged_at.getTime()).toBeGreaterThan(first.getTime());
-		claimOf(base()).watch_refund_at = new Date(svcNow);
+		expect((await submit(base())).body.reason).toBe('payment_insufficient'); // same transfer, checked again
+		expect(claimOf(base()).watch_refund_at).toEqual(mailed);
+		expect(claimOf(base()).refund_flagged_at).toEqual(first);
 		pay({ memo: memoOf(base()) });
 		createOutcomes.push('username_taken');
 		later();
 		expect((await submit(base())).body.reason).toBe('username_taken'); // now the full payment is owed back too
 		expect(claimOf(base())).toMatchObject({ status: 'failed', needs_refund: true });
 		expect(claimOf(base()).watch_refund_at).toBeUndefined();
+		expect(claimOf(base()).refund_flagged_at.getTime()).toBeGreaterThan(first.getTime());
 	});
 
-	it('clears the watcher mark when a payment arrives with extra transfers', async () => {
+	it('a top-up after an underpayment keeps the refund flag without a second alert', async () => {
 		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
 		await submit(base());
-		claimOf(base()).watch_refund_at = new Date(svcNow);
+		const first = claimOf(base()).refund_flagged_at;
+		const mailed = new Date(svcNow);
+		claimOf(base()).watch_refund_at = mailed;
 		pay({ memo: memoOf(base()) });
 		later();
 		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base())).toMatchObject({ needs_refund: true });
 		expect(claimOf(base()).extra_transfers).toHaveLength(1);
+		expect(claimOf(base()).paid_at).toBeInstanceOf(Date);
+		// the underpayment was already reported: no new alert for it
+		expect(claimOf(base()).watch_refund_at).toEqual(mailed);
+		expect(claimOf(base()).refund_flagged_at).toEqual(first);
+	});
+
+	it('clears the watcher mark when the payment brings a transfer not yet flagged', async () => {
+		pay({ memo: memoOf(base()), amount: '10.000 HIVE' });
+		await submit(base());
+		const first = claimOf(base()).refund_flagged_at;
+		claimOf(base()).watch_refund_at = new Date(svcNow);
+		pay({ memo: memoOf(base()) });
+		pay({ memo: memoOf(base()) }); // a duplicate full payment, owed back too
+		later();
+		expect((await submit(base())).body.reason).toBe('created');
+		expect(claimOf(base()).extra_transfers).toHaveLength(2);
 		expect(claimOf(base()).watch_refund_at).toBeUndefined();
+		expect(claimOf(base()).refund_flagged_at.getTime()).toBeGreaterThan(first.getTime());
 	});
 
 	it('completes an underpaid claim when a full transfer follows', async () => {

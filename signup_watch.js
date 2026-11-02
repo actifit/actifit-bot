@@ -7,7 +7,7 @@
  *     was taken after payment). Reported again whenever the claim is flagged again
  *     (`refund_flagged_at` changes), since what is owed may have grown;
  *   - paid but not created: a matched payment whose account still isn't created an hour
- *     later (no claimed token, node down) and the app hasn't finished it;
+ *     after the payment was matched (no claimed token, node down, unknown outcome);
  *   - rewards not recorded: created claims with `reward_pending`;
  *   - unmatched payments: signup-memo transfers older than an hour that no claim accounts
  *     for (paid but never submitted, a transfer to a promo memo, a late duplicate);
@@ -50,8 +50,10 @@ function fmtAmount(amount, currency) {
 function refundReason(c) {
 	const parts = [];
 	if (c.failure_reason) parts.push(c.failure_reason);
-	if (c.insufficient_trx_id) parts.push('underpaid in ' + c.insufficient_trx_id);
-	if (Array.isArray(c.extra_transfers) && c.extra_transfers.length) parts.push('extra transfers ' + c.extra_transfers.join(', '));
+	const extras = Array.isArray(c.extra_transfers) ? c.extra_transfers : [];
+	// after a top-up the underpayment is also an extra transfer: name it once
+	if (c.insufficient_trx_id && !extras.includes(c.insufficient_trx_id)) parts.push('underpaid in ' + c.insufficient_trx_id);
+	if (extras.length) parts.push('extra transfers ' + extras.join(', '));
 	return parts.join('; ') || 'flagged';
 }
 
@@ -98,7 +100,8 @@ function createSignupWatch(deps) {
 	(c) => ({ refund_flagged_at: c.refund_flagged_at instanceof Date ? c.refund_flagged_at : { $exists: false } }));
 
 	const stuckSection = () => claimSection('Paid, account not created',
-		{ payment_trx_id: { $exists: true }, status: { $in: ['pending', 'processing'] }, updated_at: { $lt: new Date(now() - STUCK_AFTER_MS) } },
+		// paid_at, not updated_at: every re-check by the app bumps updated_at
+		{ payment_trx_id: { $exists: true }, status: { $in: ['pending', 'processing'] }, paid_at: { $lt: new Date(now() - STUCK_AFTER_MS) } },
 		'watch_stuck_at', (c) => '@' + c.new_account + ' ' + paidText(c)
 			+ ', memo ' + c._id + '. The app retries on its own; refund if it never finishes.');
 

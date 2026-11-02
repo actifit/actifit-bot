@@ -175,6 +175,14 @@ describe('signup watch: claims', () => {
 		expect(t.mails[0].body).toMatch(/@extra \(created, extra transfers trxE\)/);
 	});
 
+	test('names a topped-up underpayment once, as an extra transfer', async () => {
+		const t = setup();
+		t.addClaim(paidClaim({ new_account: 'topped', needs_refund: true, insufficient_trx_id: 'trxU', extra_transfers: ['trxU'] }));
+		await t.watch.run();
+		expect(t.mails[0].body).toMatch(/@topped \(created, extra transfers trxU\)/);
+		expect(t.mails[0].body).not.toMatch(/underpaid in/);
+	});
+
 	test('reports a reward that was not recorded', async () => {
 		const t = setup();
 		t.chain.pay({ memo: MEMO_A });
@@ -424,10 +432,11 @@ describe('signup watch: review round 1', () => {
 		const t = setup();
 		t.chain.pay({ memo: MEMO_A });
 		t.chain.pay({ memo: MEMO_B });
-		t.addClaim(paidClaim({ status: 'pending', updated_at: new Date(NOW - 2 * 60 * 60 * 1000) }));
-		t.addClaim(paidClaim({ _id: MEMO_B, new_account: 'recent', payment_trx_id: 'trx1', status: 'pending', updated_at: new Date(NOW - 30 * 60 * 1000) }));
-		t.addClaim(paidClaim({ _id: 'signup:' + 'c'.repeat(24), new_account: 'done', payment_trx_id: 'trx9', updated_at: new Date(NOW - 5 * 60 * 60 * 1000), watch_created_at: new Date(NOW) }));
-		t.addClaim(paidClaim({ _id: 'signup:' + 'd'.repeat(24), new_account: 'refused', payment_trx_id: 'trx8', status: 'failed', updated_at: new Date(NOW - 5 * 60 * 60 * 1000) }));
+		// paid two hours ago; the app re-checked a minute ago, which must not hide it
+		t.addClaim(paidClaim({ status: 'pending', paid_at: new Date(NOW - 2 * 60 * 60 * 1000), updated_at: new Date(NOW - 60 * 1000) }));
+		t.addClaim(paidClaim({ _id: MEMO_B, new_account: 'recent', payment_trx_id: 'trx1', status: 'pending', paid_at: new Date(NOW - 30 * 60 * 1000), updated_at: new Date(NOW - 5 * 60 * 60 * 1000) }));
+		t.addClaim(paidClaim({ _id: 'signup:' + 'c'.repeat(24), new_account: 'done', payment_trx_id: 'trx9', paid_at: new Date(NOW - 5 * 60 * 60 * 1000), watch_created_at: new Date(NOW) }));
+		t.addClaim(paidClaim({ _id: 'signup:' + 'd'.repeat(24), new_account: 'refused', payment_trx_id: 'trx8', status: 'failed', paid_at: new Date(NOW - 5 * 60 * 60 * 1000) }));
 		await t.watch.run();
 		expect(t.mails[0].subject).toBe('[Actifit signup watch] paid, account not created: 1');
 		expect(t.mails[0].body).toMatch(/@newguy paid 3\.000 HIVE from @payer in trx0, memo signup:a+\. The app retries/);

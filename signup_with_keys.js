@@ -591,7 +591,9 @@ function createSignupWithKeys(deps) {
 			if (m.status === 'insufficient') {
 				// stays open so a full transfer can still complete it; support refunds otherwise
 				log('signup needs refund or top-up: claim ' + claim._id + ' got ' + m.payment.amount + ' ' + m.payment.currency);
-				await release(claim, { insufficient_trx_id: m.payment.trx_id, needs_refund: true });
+				// re-flag only a new underpayment: the app re-checking the same one must not re-alert
+				const known = claim.needs_refund === true && claim.insufficient_trx_id === m.payment.trx_id;
+				await release(claim, known ? {} : { insufficient_trx_id: m.payment.trx_id, needs_refund: true });
 				await claimsCol().updateOne({ _id: claim._id }, { $unset: { expires_at: '' } });
 				return reply('payment_insufficient');
 			}
@@ -599,11 +601,15 @@ function createSignupWithKeys(deps) {
 			const others = transfers().transfersFor(claim._id).filter((t) => t.idx !== payment.idx);
 			if (others.length) log('signup claim ' + claim._id + ' also received ' + others.length + ' other transfer(s); refund them');
 			try {
-				const paid = flagRefund({
+				// the earlier underpayment was flagged already: only another transfer is a new alert
+				const newRefund = others.some((t) => t.trx_id !== claim.insufficient_trx_id);
+				const set = {
 					payment_trx_id: payment.trx_id, payment_ref: payment.trx_id + '/' + claim._id, payment_from: payment.from,
-					verified_amount: payment.amount, verified_currency: payment.currency, needs_refund: others.length > 0,
-					extra_transfers: others.map((t) => t.trx_id) });
-				const ok = await guarded(claim, { $set: paid, $unset: Object.assign({ expires_at: '' }, refundUnset(paid)) });
+					verified_amount: payment.amount, verified_currency: payment.currency, paid_at: new Date(now()),
+					needs_refund: others.length > 0,
+					extra_transfers: others.map((t) => t.trx_id) };
+				const paid = newRefund ? flagRefund(set) : set;
+				const ok = await guarded(claim, { $set: paid, $unset: Object.assign({ expires_at: '' }, newRefund ? refundUnset(paid) : {}) });
 				if (!ok) return pending();
 			} catch (err) {
 				if (err && err.code === 11000) return fail(claim, 'memo_mismatch');
