@@ -264,6 +264,8 @@ function createTransferIndex({ hiveCall, account, now, log, pageSize = HISTORY_P
 	return {
 		refresh,
 		transfersFor: (memo) => (byMemo.get(memo) || []).slice(),
+		// every indexed signup transfer, for the signup watcher
+		all: () => [...byMemo].flatMap(([memo, list]) => list.map((t) => Object.assign({ memo }, t))),
 		_state: () => ({ high, gaps: gaps.slice(), size: seen.size }),
 	};
 }
@@ -410,15 +412,20 @@ function createSignupWithKeys(deps) {
 		return !!(res && res.matchedCount);
 	}
 
+	// A refund flag stamps refund_flagged_at and clears the watcher's mark, so the watcher
+	// reports what is owed now even when an earlier refund on the claim was already mailed.
+	const flagRefund = (set) => (set.needs_refund ? Object.assign({}, set, { refund_flagged_at: new Date(now()) }) : set);
+	const refundUnset = (set) => (set.needs_refund ? { watch_refund_at: '' } : {});
+
 	async function release(claim, set = {}) {
-		await guarded(claim, { $set: Object.assign({ status: 'pending', updated_at: new Date(now()) }, set),
-			$unset: { lease_until: '', lease_token: '' } });
+		await guarded(claim, { $set: Object.assign({ status: 'pending', updated_at: new Date(now()) }, flagRefund(set)),
+			$unset: Object.assign({ lease_until: '', lease_token: '' }, refundUnset(set)) });
 	}
 
 	async function fail(claim, reason, set = {}) {
 		if (set.needs_refund) log('signup needs refund: claim ' + claim._id + ' (' + reason + ')');
-		await guarded(claim, { $set: Object.assign({ status: 'failed', failure_reason: reason, updated_at: new Date(now()) }, set),
-			$unset: { lease_until: '', lease_token: '', expires_at: '' } });
+		await guarded(claim, { $set: Object.assign({ status: 'failed', failure_reason: reason, updated_at: new Date(now()) }, flagRefund(set)),
+			$unset: Object.assign({ lease_until: '', lease_token: '', expires_at: '' }, refundUnset(set)) });
 		return reply(reason);
 	}
 
@@ -584,19 +591,26 @@ function createSignupWithKeys(deps) {
 			if (m.status === 'insufficient') {
 				// stays open so a full transfer can still complete it; support refunds otherwise
 				log('signup needs refund or top-up: claim ' + claim._id + ' got ' + m.payment.amount + ' ' + m.payment.currency);
-				await release(claim, { insufficient_trx_id: m.payment.trx_id, needs_refund: true });
+				// re-flag only a new underpayment: the app re-checking the same one must not re-alert
+				const known = claim.needs_refund === true && claim.insufficient_trx_id === m.payment.trx_id;
+				await release(claim, known ? {} : { insufficient_trx_id: m.payment.trx_id, needs_refund: true });
 				await claimsCol().updateOne({ _id: claim._id }, { $unset: { expires_at: '' } });
 				return reply('payment_insufficient');
 			}
 			payment = m.payment;
-			const others = transfers().transfersFor(claim._id).filter((t) => t.trx_id !== payment.trx_id);
+			const others = transfers().transfersFor(claim._id).filter((t) => t.idx !== payment.idx);
 			if (others.length) log('signup claim ' + claim._id + ' also received ' + others.length + ' other transfer(s); refund them');
 			try {
-				const ok = await guarded(claim, { $set: {
+				// the earlier underpayment was flagged already: only another transfer is a new alert
+				const newRefund = others.some((t) => t.trx_id !== claim.insufficient_trx_id);
+				const set = {
 					payment_trx_id: payment.trx_id, payment_ref: payment.trx_id + '/' + claim._id, payment_from: payment.from,
-					verified_amount: payment.amount, verified_currency: payment.currency, needs_refund: others.length > 0,
-					extra_transfers: others.map((t) => t.trx_id) },
-				$unset: { expires_at: '' } });
+					verified_amount: payment.amount, verified_currency: payment.currency, paid_at: new Date(now()),
+					// keep an underpayment flag even if that transfer aged out of the index
+					needs_refund: others.length > 0 || !!claim.insufficient_trx_id,
+					extra_transfers: others.map((t) => t.trx_id) };
+				const paid = newRefund ? flagRefund(set) : set;
+				const ok = await guarded(claim, { $set: paid, $unset: Object.assign({ expires_at: '' }, newRefund ? refundUnset(paid) : {}) });
 				if (!ok) return pending();
 			} catch (err) {
 				if (err && err.code === 11000) return fail(claim, 'memo_mismatch');
@@ -704,6 +718,11 @@ async function ensureSignupIndexes(db, log = () => {}) {
 		await db.collection('signup_rate_limits').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0, name: 'signup_rate_ttl' });
 	} catch (err) {
 		log('signup index setup failed: ' + (err && err.message));
+	}
+	try {
+		await db.collection('signup_watch_seen').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0, name: 'signup_watch_seen_ttl' });
+	} catch (err) {
+		log('signup watch index setup failed: ' + (err && err.message));
 	}
 }
 
