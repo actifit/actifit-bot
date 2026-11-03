@@ -151,20 +151,30 @@ async function debitAfit(db, user, amount, opts = {}) {
 /**
  * Undo a successful debitAfit: remove its ledger row (if it wrote one) and give the
  * AFIT back. Never throws; logs loudly when a step fails.
+ * Returns which steps worked, so a caller recording a partial failure for manual review
+ * can say exactly what is left to fix (re-crediting a cache that WAS restored would pay
+ * twice; a ledger row that was NOT removed re-charges the user at the next rebuild).
+ * @returns {Promise<{ok:boolean, ledgerRemoved:boolean, restored:boolean}>}
  */
-async function undoDebit(db, user, debit, context) {
-	if (!debit || !debit.ok) return false;
-	let ok = true;
+async function undoDebitDetailed(db, user, debit, context) {
+	if (!debit || !debit.ok) return { ok: false, ledgerRemoved: false, restored: false };
+	let ledgerRemoved = true;
 	if (debit.ledgerId) {
 		try {
 			await db.collection(LEDGER).deleteOne({ _id: debit.ledgerId });
 		} catch (err) {
 			// this orphan row would charge the user at the next daily rebuild
 			logLoud('LEDGER ROW NOT REMOVED (manual fix needed) for ' + user + ' token_transactions _id ' + debit.ledgerId + (context ? ' [' + context + ']' : '') + ' - ' + (err && err.message));
-			ok = false;
+			ledgerRemoved = false;
 		}
 	}
-	return (await restoreAfit(db, user, debit.amount, context)) && ok;
+	const restored = await restoreAfit(db, user, debit.amount, context);
+	return { ok: ledgerRemoved && restored, ledgerRemoved, restored };
+}
+
+/** undoDebitDetailed, as a single true/false (true when both steps worked). */
+async function undoDebit(db, user, debit, context) {
+	return (await undoDebitDetailed(db, user, debit, context)).ok;
 }
 
 /**
@@ -596,6 +606,7 @@ module.exports = {
 	readBalance,
 	debitAfit,
 	undoDebit,
+	undoDebitDetailed,
 	restoreAfit,
 	creditAfit,
 	acquireLock,

@@ -142,11 +142,17 @@ if (process.env.BOT_THREAD == 'MAIN'){
 	});
 	
 	//let's schedule the AFIT to S-E token move event at 10:00 
-	let moveJob = schedule.scheduleJob({hour: 10, minute: 0}, function(){
+	// UTC, like the per-day claim in processAfitMoves
+	let moveJob = schedule.scheduleJob({hour: 10, minute: 0, tz: 'Etc/UTC'}, function(){
 	  console.log('--- Start AFIT to S-E Move ---');
 	  moveAFITToSE(false);//param test
 	});
 	
+	// finish any AFIT move left in flight by a previous process
+	if (!payoutsPaused('afitMove')){
+		connectRewardsDb().then(() => recoverAfitMoveAttempts()).catch((err) => console.log('AFIT move recovery at start failed: ' + (err && err.message)));
+	}
+
 	//schedule the prize event at 00:00 every X days
 	let prizeJob = schedule.scheduleJob({hour: 0, minute: 1}, function(){
 	  console.log('--- Reward Gadget Buy Contest ---');
@@ -763,6 +769,7 @@ async function processAfitMoves(testMode, deps = {}){
 	const pending = [];
 	const summary = { sent: 0, refunded: 0, unresolved: 0, skipped: 0, cancelled: 0 };
 	try{
+		if (!testMode) await recoverAfitMoveAttempts({ hsc: he, hiveClient: chain, sleep, resolveOpts });
 		const limits = afitTransfers.moveLimits(cfg);
 		if (!limits){
 			console.log('error - AFIT move: max_afit_to_se_day / free_movable_afit_day / afitx_afit_move_ratio missing or invalid in config, nothing sent');
@@ -798,6 +805,10 @@ async function processAfitMoves(testMode, deps = {}){
 		const winStart = moment().utc().startOf('date').toDate();
 		const expiryCutoff = moment(winStart).subtract(cfg.afit_powerdown_days || 7, 'days').toDate();
 
+		// one order per user per day, even if older data holds several for one user
+		const movedToday = new Set(poweringDown.filter((e) => e && e.last_move_day === today).map((e) => e.user));
+		const seenUsers = new Set();
+
 		let first = true;
 		for (const entry of poweringDown){
 			if (!entry || typeof entry.user !== 'string') continue;
@@ -814,11 +825,12 @@ async function processAfitMoves(testMode, deps = {}){
 				summary.skipped++;
 				continue;
 			}
-			if (entry.last_move_day === today){
+			if (movedToday.has(entry.user) || seenUsers.has(entry.user)){
 				console.log('AFIT move for ' + entry.user + ' already processed today. Skip');
 				summary.skipped++;
 				continue;
 			}
+			seenUsers.add(entry.user);
 
 			const amount = afitTransfers.afitAmount(entry.daily_afit_transfer);
 			if (amount === null || amount > limits.maxPerDay){
@@ -883,35 +895,68 @@ async function processAfitMoves(testMode, deps = {}){
 				summary.skipped++;
 				continue;
 			}
+			// any failure before the broadcast gives the day back, so the order is retried
+			const releaseClaim = () => db.collection('powering_down_he').updateOne(
+				{ _id: entry._id, last_move_day: today }, { $unset: { last_move_day: '' } }
+			).catch((e) => console.log('could not release AFIT move claim for ' + entry.user + ': ' + (e && e.message)));
 
 			if (!first) await sleep(gapMs);
 			first = false;
 
+			// sign first, so the transaction id is known and recorded before any AFIT is taken
+			let signed;
+			try{
+				signed = await afitTransfers.signTransfer(chain, { account: cfg.account, key: privateKey, to: entry.user, quantity: amount });
+			}catch(err){
+				console.log('error - AFIT move for ' + entry.user + ': could not prepare the transaction - ' + (err && err.message));
+				await releaseClaim();
+				summary.skipped++;
+				continue;
+			}
+			// the attempt row is what lets a later run finish this move if the process stops
+			// before the outcome is known (see recoverAfitMoveAttempts)
+			const attempt = {
+				_id: signed.trxId, trx_id: signed.trxId, expiration: signed.expiration,
+				user: entry.user, amount, order_id: entry._id || null,
+				status: 'in_flight', debited: false, date: new Date(),
+			};
+			try{
+				await db.collection(AFIT_MOVE_ATTEMPTS).insertOne(attempt);
+			}catch(err){
+				console.log('error - AFIT move for ' + entry.user + ': could not record the attempt, nothing sent - ' + (err && err.message));
+				await releaseClaim();
+				summary.skipped++;
+				continue;
+			}
+
 			const moveTrans = {
 				reward_activity: 'Move AFIT to H-E',
 				note: 'User Automated transfer of ' + amount + ' AFIT to H-E',
+				afit_move_trx: signed.trxId,
 				date: new Date(),
 			};
 			const debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
 			if (!debit.ok){
 				console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
+				await setAttempt(signed.trxId, { status: 'not_debited', reason: debit.reason });
 				if (debit.reason === 'insufficient_funds'){
 					await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: your Actifit AFIT balance is below the requested amount. Earn or top up more AFIT and set up the move again.');
 					summary.cancelled++;
 				}else{
+					await releaseClaim();
 					summary.skipped++;
 				}
 				continue;
 			}
 			available -= amount;
+			await setAttempt(signed.trxId, { debited: true, ledger_id: debit.ledgerId || null });
 
-			let signed;
-			try{
-				signed = await afitTransfers.signTransfer(chain, { account: cfg.account, key: privateKey, to: entry.user, quantity: amount });
-			}catch(err){
-				// nothing was broadcast, so giving the AFIT back is safe
-				console.log('error - AFIT move for ' + entry.user + ': could not prepare the transaction - ' + (err && err.message));
-				await refundAfitMove(entry, debit, amount, null, 'prepare_failed', summary);
+			// waiting for the lock can use up the transaction's lifetime; then do not send it
+			if (Date.now() > new Date(signed.expiration + 'Z').getTime() - 15000){
+				console.log('error - AFIT move for ' + entry.user + ': transaction too close to expiry, not sent');
+				const status = await refundAfitMove(entry, debit, amount, signed, 'not_sent', summary);
+				await setAttempt(signed.trxId, { status });
+				if (status === 'refunded') await releaseClaim();
 				available += amount;
 				continue;
 			}
@@ -927,19 +972,10 @@ async function processAfitMoves(testMode, deps = {}){
 			}
 
 			//confirm the outcome in the background; refund only on a confirmed failure
-			pending.push(afitTransfers.resolveTransfer(Object.assign({
-				trxId: signed.trxId, expiration: signed.expiration, to: entry.user,
-				hsc: he, hiveClient: chain, sleep,
-			}, resolveOpts)).catch((err) => ({ outcome: 'unknown', detail: err && err.message })).then(async (r) => {
-				console.log('AFIT move ' + signed.trxId + ' for ' + entry.user + ': ' + r.outcome + (r.hiveStatus ? ' (hive: ' + r.hiveStatus + ')' : ''));
-				if (r.outcome === 'landed'){
-					await deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
-				}else if (r.outcome === 'not_landed' || r.outcome === 'failed_on_engine'){
-					await refundAfitMove(entry, debit, amount, signed, r.outcome, summary);
-				}else{
-					await recordUnresolvedMove(entry, debit, amount, signed, accepted ? 'unverified_after_accept' : 'broadcast_error_unverified', r, summary);
-				}
-			}));
+			pending.push(resolveAndSettle(entry, debit, amount, signed, accepted, { hsc: he, hiveClient: chain, sleep, resolveOpts }, summary)
+				.then(async (outcome) => {
+					if (outcome === 'landed') await deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
+				}));
 		}
 		await Promise.all(pending);
 		console.log('*** AFIT move done: ' + JSON.stringify(summary) + ' ***');
@@ -953,16 +989,108 @@ async function processAfitMoves(testMode, deps = {}){
 	}
 }
 
+const AFIT_MOVE_ATTEMPTS = 'afit_move_attempts';
+// an in-flight attempt older than this belongs to a run that stopped before finishing it
+// (a run settles each of its own attempts within about 6 minutes)
+const AFIT_MOVE_RECOVER_AFTER_MS = 10 * 60 * 1000;
+
+async function setAttempt(trxId, fields){
+	try{
+		await db.collection(AFIT_MOVE_ATTEMPTS).updateOne({ _id: trxId }, { $set: Object.assign({ updated: new Date() }, fields) });
+	}catch(err){
+		console.log('!!! could not update AFIT move attempt ' + trxId + ': ' + (err && err.message));
+	}
+}
+
+// Look up what happened to a broadcast transfer and act on it: refund only when it is
+// confirmed not to have happened, otherwise keep the debit (and record it when unknown).
+// Returns the attempt's final status: 'landed' | 'refunded' | 'unresolved'.
+async function resolveAndSettle(entry, debit, amount, signed, accepted, chainDeps, summary){
+	const r = await afitTransfers.resolveTransfer(Object.assign({
+		trxId: signed.trxId, expiration: signed.expiration, to: entry.user,
+		hsc: chainDeps.hsc, hiveClient: chainDeps.hiveClient, sleep: chainDeps.sleep,
+	}, chainDeps.resolveOpts || {})).catch((err) => ({ outcome: 'unknown', detail: err && err.message }));
+	console.log('AFIT move ' + signed.trxId + ' for ' + entry.user + ': ' + r.outcome + (r.hiveStatus ? ' (hive: ' + r.hiveStatus + ')' : ''));
+	let status;
+	if (r.outcome === 'landed'){
+		status = 'landed';
+	}else if (r.outcome === 'not_landed' || r.outcome === 'failed_on_engine'){
+		status = await refundAfitMove(entry, debit, amount, signed, r.outcome, summary);
+	}else{
+		await recordUnresolvedMove(entry, debit, amount, signed, accepted ? 'unverified_after_accept' : 'broadcast_error_unverified', r, summary);
+		status = 'unresolved';
+	}
+	await setAttempt(signed.trxId, { status, outcome: r.outcome, hive_status: r.hiveStatus || null });
+	return status;
+}
+
+// Finish attempts left in flight by a run that stopped (crash, restart) before their
+// outcome was known. Same rules as a live run: refund only on a confirmed failure. An
+// attempt whose debit never happened needs nothing (the transfer is only sent after it).
+async function recoverAfitMoveAttempts(deps = {}){
+	const chainDeps = {
+		hsc: deps.hsc || hsc,
+		hiveClient: deps.hiveClient || hiveClient,
+		sleep: deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
+		resolveOpts: Object.assign({ attempts: 2 }, deps.resolveOpts || {}),
+	};
+	const summary = { recovered: 0, refunded: 0, unresolved: 0, landed: 0, not_debited: 0 };
+	const cutoff = new Date(Date.now() - AFIT_MOVE_RECOVER_AFTER_MS);
+	let rows = [];
+	try{
+		rows = await db.collection(AFIT_MOVE_ATTEMPTS).find({ status: 'in_flight', date: { $lt: cutoff } }).toArray();
+	}catch(err){
+		console.log('error - AFIT move recovery: could not read attempts - ' + (err && err.message));
+		return summary;
+	}
+	for (const row of rows){
+		// claim the attempt so two recoveries (process start and a run) never settle it twice
+		const claimed = await db.collection(AFIT_MOVE_ATTEMPTS).updateOne(
+			{ _id: row._id, status: 'in_flight' }, { $set: { status: 'recovering', recovering_at: new Date() } }
+		).catch(() => null);
+		if (!claimed || claimed.matchedCount !== 1) continue;
+		summary.recovered++;
+		console.log('AFIT move recovery: settling attempt ' + row.trx_id + ' for ' + row.user);
+		const amount = afitBalance.positiveAmount(row.amount);
+		let ledgerId = row.ledger_id || null;
+		if (!row.debited || !ledgerId){
+			const ledgerRow = await db.collection(afitBalance.LEDGER).findOne({ user: row.user, afit_move_trx: row.trx_id }).catch(() => undefined);
+			if (ledgerRow === undefined){
+				console.log('error - AFIT move recovery: ledger unreadable for ' + row.trx_id + ', left for the next run');
+				await setAttempt(row._id, { status: 'in_flight' });
+				continue;
+			}
+			if (!ledgerRow){
+				await setAttempt(row._id, { status: 'not_debited', reason: 'recovered_without_debit' });
+				summary.not_debited++;
+				continue;
+			}
+			ledgerId = ledgerRow._id || null;
+		}
+		const entry = { user: row.user, _id: row.order_id || null };
+		const debit = { ok: true, amount, ledgerId };
+		const status = await resolveAndSettle(entry, debit, amount, { trxId: row.trx_id, expiration: row.expiration }, false, chainDeps, summary);
+		if (status === 'landed') summary.landed++;
+	}
+	if (rows.length) console.log('*** AFIT move recovery done: ' + JSON.stringify(summary) + ' ***');
+	return summary;
+}
+
 // Give back a move's AFIT once the transfer is confirmed not to have happened.
+// Returns 'refunded', or 'unresolved' (recorded for manual review with what was undone).
 async function refundAfitMove(entry, debit, amount, signed, reason, summary){
-	const undone = await withAfitLock(entry.user, () => afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he')).catch(() => false);
-	if (undone === true){
+	const res = await withAfitLock(entry.user, () => afitBalance.undoDebitDetailed(db, entry.user, debit, 'afit-move-he')).catch((err) => ({ error: err && err.message }));
+	if (res && res.ok === true){
 		console.log('AFIT move refunded for ' + entry.user + ' (' + amount + ' AFIT): ' + reason);
 		if (summary) summary.refunded++;
-		return true;
+		return 'refunded';
 	}
-	await recordUnresolvedMove(entry, debit, amount, signed, 'refund_failed_after_' + reason, null, summary);
-	return false;
+	// say exactly which step is left: re-crediting a balance that WAS restored would pay twice
+	const refund = res && typeof res.restored === 'boolean'
+		? { ledgerRemoved: res.ledgerRemoved, restored: res.restored }
+		: { ledgerRemoved: false, restored: false, error: (res && (res.reason || res.error)) || 'unknown' };
+	await recordUnresolvedMove(entry, debit, amount, signed, 'refund_incomplete_after_' + reason, { refund }, summary);
+	return 'unresolved';
 }
 
 // Leave the debit in place and write the case down for manual review.
@@ -976,6 +1104,7 @@ async function recordUnresolvedMove(entry, debit, amount, signed, reason, resolu
 		expiration: signed ? signed.expiration : null,
 		hive_status: resolution ? resolution.hiveStatus || null : null,
 		detail: resolution && resolution.detail !== undefined ? JSON.stringify(resolution.detail) : null,
+		refund: resolution && resolution.refund ? resolution.refund : null,
 		ledger_id: debit ? debit.ledgerId || null : null,
 		order_id: entry._id || null,
 		status: 'open',
@@ -2161,6 +2290,7 @@ async function claimRewards(){
 module.exports = {
 	moveAFITToSE,
 	processAfitMoves,
+	recoverAfitMoveAttempts,
 	hsc,
 	ssc,
 	deactivateDailyAFITPowerDown,

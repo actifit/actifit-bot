@@ -37,9 +37,10 @@ function createMockCollection(initialData = []) {
       if (idx !== -1) {
         if (update.$set) Object.assign(data[idx], update.$set);
         if (update.$inc) applyInc(data[idx]);
+        if (update.$unset) for (const k of Object.keys(update.$unset)) delete data[idx][k];
         // $setOnInsert alone is a no-op on a match (as in MongoDB)
-        if (!update.$set && !update.$inc && !update.$setOnInsert) Object.assign(data[idx], update);
-        const changed = !!(update.$set || update.$inc || !update.$setOnInsert);
+        if (!update.$set && !update.$inc && !update.$setOnInsert && !update.$unset) Object.assign(data[idx], update);
+        const changed = !!(update.$set || update.$inc || update.$unset || !update.$setOnInsert);
         return Promise.resolve({ matchedCount: 1, modifiedCount: changed ? 1 : 0, upsertedCount: 0 });
       }
       if (opts.upsert) {
