@@ -104,7 +104,7 @@ describe('delegations.processAfitMoves', () => {
   test('the sending balance is spent down across orders in one run', async () => {
     db.collection('user_tokens').__seed([{ _id: 'bob', user: 'bob', tokens: 1000 }]);
     db.collection('powering_down_he').__seed([{ _id: new ObjectId(), user: 'bob', daily_afit_transfer: 100, date: new Date() }]);
-    const c = chain({ actifitBalance: { balance: '150' }, txInfo: async (id) => LANDED('alice') });
+    const c = chain({ actifitBalance: { balance: '150' }, txInfo: async () => LANDED('alice') });
     const out = await run(c);
     expect(c.hiveClient.broadcast.send).toHaveBeenCalledTimes(1);
     expect(out.skipped).toBe(1);
@@ -235,7 +235,7 @@ describe('delegations.processAfitMoves', () => {
   });
 
   describe('recovery of attempts left in flight by a stopped process', () => {
-    const old = () => new Date(Date.now() - 20 * 60000);
+    const old = () => new Date(Date.now() - 30 * 60000);
     const recover = (c) => delegations.recoverAfitMoveAttempts({ hsc: c.hsc, hiveClient: c.hiveClient, sleep: jest.fn(async () => {}), resolveOpts: { now: () => 0 } });
     const seedAttempt = (fields) => db.collection('afit_move_attempts').__seed([Object.assign({
       _id: 'trx1', trx_id: 'trx1', expiration: '2026-11-03T10:01:00', user: 'alice', amount: 100,
@@ -291,7 +291,7 @@ describe('delegations.processAfitMoves', () => {
       const out = await recover(c);
       expect(out).toMatchObject({ unresolved: 1, refunded: 0 });
       expect(balanceOf('alice')).toBe(900);
-      expect(unresolved()[0]).toMatchObject({ user: 'alice', trx_id: 'trx1', reason: 'broadcast_error_unverified' });
+      expect(unresolved()[0]).toMatchObject({ user: 'alice', trx_id: 'trx1', reason: 'recovered_unverified' });
     });
 
     test('recent in-flight attempts are left alone, and an attempt is settled only once', async () => {
@@ -301,6 +301,39 @@ describe('delegations.processAfitMoves', () => {
       await expect(recover(c)).resolves.toMatchObject({ recovered: 0 });
       db.collection('afit_move_attempts').__data()[0].date = old();
       await Promise.all([recover(c), recover(c)]);
+      expect(balanceOf('alice')).toBe(1000);
+    });
+
+    test('a refund whose status write was lost is not paid again by recovery', async () => {
+      const c = chain({ send: async () => { throw new Error('timeout'); }, status: async () => ({ status: 'expired_irreversible' }) });
+      const attempts = db.collection('afit_move_attempts');
+      const realUpdate = attempts.updateOne.getMockImplementation();
+      attempts.updateOne.mockImplementation((q, u, o) => (u && u.$set && u.$set.status === 'refunded'
+        ? Promise.reject(new Error('write failed')) : realUpdate(q, u, o)));
+      await run(c);
+      expect(balanceOf('alice')).toBe(1000); // refunded once
+      expect(attempts.__data()[0]).toMatchObject({ status: 'in_flight', debited: true });
+      attempts.updateOne.mockImplementation(realUpdate);
+      attempts.__data()[0].date = old();
+      const out = await recover(c);
+      expect(out).toMatchObject({ recovered: 1 });
+      expect(balanceOf('alice')).toBe(1000); // not restored a second time
+      expect(attempts.__data()[0].status).toBe('refunded');
+    });
+
+    test('attempts stuck in recovery are reported', async () => {
+      seedAttempt({ status: 'recovering', recovering_at: new Date(Date.now() - 60 * 60000) });
+      db.collection('afit_move_attempts').__seed([{ _id: 'trx2', trx_id: 'trx2', user: 'bob', amount: 5, status: 'recovering', recovering_at: new Date() }]);
+      const prev = require('../utils').getConfig().report_emails;
+      require('../utils').getConfig().report_emails = 'ops@example.com';
+      try {
+        const out = await recover(chain());
+        expect(out.stuck).toBe(1);
+        expect(mail.sendPlainMail).toHaveBeenCalledWith('AFIT move attempts need manual review', expect.stringContaining('trx1'), 'ops@example.com');
+        expect(mail.sendPlainMail.mock.calls[0][1]).not.toContain('trx2');
+      } finally {
+        require('../utils').getConfig().report_emails = prev;
+      }
       expect(balanceOf('alice')).toBe(1000);
     });
 

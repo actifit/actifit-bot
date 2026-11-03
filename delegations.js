@@ -935,7 +935,16 @@ async function processAfitMoves(testMode, deps = {}){
 				afit_move_trx: signed.trxId,
 				date: new Date(),
 			};
-			const debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
+			let debit;
+			try{
+				debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
+			}catch(err){
+				// only this user is skipped; the attempt row stays in flight for recovery to check
+				console.log('error - AFIT move for ' + entry.user + ': debit failed - ' + (err && err.message));
+				await releaseClaim();
+				summary.skipped++;
+				continue;
+			}
 			if (!debit.ok){
 				console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
 				await setAttempt(signed.trxId, { status: 'not_debited', reason: debit.reason });
@@ -972,7 +981,7 @@ async function processAfitMoves(testMode, deps = {}){
 			}
 
 			//confirm the outcome in the background; refund only on a confirmed failure
-			pending.push(resolveAndSettle(entry, debit, amount, signed, accepted, { hsc: he, hiveClient: chain, sleep, resolveOpts }, summary)
+			pending.push(resolveAndSettle(entry, debit, amount, signed, accepted ? 'unverified_after_accept' : 'broadcast_error_unverified', { hsc: he, hiveClient: chain, sleep, resolveOpts }, summary)
 				.then(async (outcome) => {
 					if (outcome === 'landed') await deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
 				}));
@@ -991,8 +1000,11 @@ async function processAfitMoves(testMode, deps = {}){
 
 const AFIT_MOVE_ATTEMPTS = 'afit_move_attempts';
 // an in-flight attempt older than this belongs to a run that stopped before finishing it
-// (a run settles each of its own attempts within about 6 minutes)
-const AFIT_MOVE_RECOVER_AFTER_MS = 10 * 60 * 1000;
+// (a run settles each of its own attempts within about 9.5 minutes in the worst case:
+// up to 80s to expiry plus 8 polls 30s apart, each lookup up to 15s + 15s)
+const AFIT_MOVE_RECOVER_AFTER_MS = 20 * 60 * 1000;
+// a 'recovering' row older than this belongs to a recovery that stopped part-way
+const AFIT_MOVE_RECOVERING_STUCK_MS = 30 * 60 * 1000;
 
 async function setAttempt(trxId, fields){
 	try{
@@ -1005,7 +1017,7 @@ async function setAttempt(trxId, fields){
 // Look up what happened to a broadcast transfer and act on it: refund only when it is
 // confirmed not to have happened, otherwise keep the debit (and record it when unknown).
 // Returns the attempt's final status: 'landed' | 'refunded' | 'unresolved'.
-async function resolveAndSettle(entry, debit, amount, signed, accepted, chainDeps, summary){
+async function resolveAndSettle(entry, debit, amount, signed, unknownReason, chainDeps, summary){
 	const r = await afitTransfers.resolveTransfer(Object.assign({
 		trxId: signed.trxId, expiration: signed.expiration, to: entry.user,
 		hsc: chainDeps.hsc, hiveClient: chainDeps.hiveClient, sleep: chainDeps.sleep,
@@ -1017,7 +1029,7 @@ async function resolveAndSettle(entry, debit, amount, signed, accepted, chainDep
 	}else if (r.outcome === 'not_landed' || r.outcome === 'failed_on_engine'){
 		status = await refundAfitMove(entry, debit, amount, signed, r.outcome, summary);
 	}else{
-		await recordUnresolvedMove(entry, debit, amount, signed, accepted ? 'unverified_after_accept' : 'broadcast_error_unverified', r, summary);
+		await recordUnresolvedMove(entry, debit, amount, signed, unknownReason, r, summary);
 		status = 'unresolved';
 	}
 	await setAttempt(signed.trxId, { status, outcome: r.outcome, hive_status: r.hiveStatus || null });
@@ -1036,6 +1048,19 @@ async function recoverAfitMoveAttempts(deps = {}){
 	};
 	const summary = { recovered: 0, refunded: 0, unresolved: 0, landed: 0, not_debited: 0 };
 	const cutoff = new Date(Date.now() - AFIT_MOVE_RECOVER_AFTER_MS);
+	// a recovery that stopped part-way leaves rows in 'recovering': not retried
+	// automatically, but reported every run until someone settles them by hand
+	try{
+		const stuck = await db.collection(AFIT_MOVE_ATTEMPTS).find({ status: 'recovering', recovering_at: { $lt: new Date(Date.now() - AFIT_MOVE_RECOVERING_STUCK_MS) } }).toArray();
+		if (stuck.length){
+			summary.stuck = stuck.length;
+			const list = stuck.map((r) => ({ trx_id: r.trx_id, user: r.user, amount: r.amount, recovering_at: r.recovering_at }));
+			console.log('!!! AFIT MOVE ATTEMPTS STUCK IN RECOVERY (manual review needed): ' + JSON.stringify(list));
+			if (config.report_emails) mail.sendPlainMail('AFIT move attempts need manual review', JSON.stringify(list), config.report_emails).catch(() => {});
+		}
+	}catch(err){
+		console.log('error - AFIT move recovery: could not check stuck attempts - ' + (err && err.message));
+	}
 	let rows = [];
 	try{
 		rows = await db.collection(AFIT_MOVE_ATTEMPTS).find({ status: 'in_flight', date: { $lt: cutoff } }).toArray();
@@ -1069,7 +1094,7 @@ async function recoverAfitMoveAttempts(deps = {}){
 		}
 		const entry = { user: row.user, _id: row.order_id || null };
 		const debit = { ok: true, amount, ledgerId };
-		const status = await resolveAndSettle(entry, debit, amount, { trxId: row.trx_id, expiration: row.expiration }, false, chainDeps, summary);
+		const status = await resolveAndSettle(entry, debit, amount, { trxId: row.trx_id, expiration: row.expiration }, 'recovered_unverified', chainDeps, summary);
 		if (status === 'landed') summary.landed++;
 	}
 	if (rows.length) console.log('*** AFIT move recovery done: ' + JSON.stringify(summary) + ' ***');
@@ -1079,7 +1104,13 @@ async function recoverAfitMoveAttempts(deps = {}){
 // Give back a move's AFIT once the transfer is confirmed not to have happened.
 // Returns 'refunded', or 'unresolved' (recorded for manual review with what was undone).
 async function refundAfitMove(entry, debit, amount, signed, reason, summary){
-	const res = await withAfitLock(entry.user, () => afitBalance.undoDebitDetailed(db, entry.user, debit, 'afit-move-he')).catch((err) => ({ error: err && err.message }));
+	// onlyIfLedgerRemoved: when an earlier refund of this move already removed the ledger
+	// row (and only its status write was lost), it is not restored a second time
+	const res = await withAfitLock(entry.user, () => afitBalance.undoDebitDetailed(db, entry.user, debit, 'afit-move-he', { onlyIfLedgerRemoved: true })).catch((err) => ({ error: err && err.message }));
+	if (res && res.ok === true && res.alreadyUndone){
+		console.log('AFIT move for ' + entry.user + ' (' + amount + ' AFIT) was already refunded: ' + reason);
+		return 'refunded';
+	}
 	if (res && res.ok === true){
 		console.log('AFIT move refunded for ' + entry.user + ' (' + amount + ' AFIT): ' + reason);
 		if (summary) summary.refunded++;

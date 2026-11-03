@@ -24,8 +24,10 @@ function createMockCollection(initialData = []) {
       return createCursor(results);
     }),
     insertOne: jest.fn((doc) => {
+      // like the real driver, an insert without _id gets one (on the document itself)
+      if (doc._id === undefined) doc._id = new ObjectId();
       data.push(doc);
-      return Promise.resolve({ insertedId: doc._id || new ObjectId() });
+      return Promise.resolve({ insertedId: doc._id });
     }),
     insertMany: jest.fn((docs) => {
       data.push(...docs);
