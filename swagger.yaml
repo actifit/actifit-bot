@@ -4682,7 +4682,7 @@ paths:
   /initiateAFITMoveSE:
     get:
       summary: Initiate AFIT move to Hive-Engine (Power Down)
-      description: Initiates the process of moving AFIT tokens to Hive-Engine (power down). Authorised by the login session; currently disabled (503).
+      description: Records a standing daily order to move AFIT tokens to Hive-Engine (power down); the daily job sends it. Authorised by the login session (the user is the session's account). Amount: positive, at most 3 decimals, within max_afit_to_se_day.
       parameters:
         - in: query
           name: user
@@ -4707,7 +4707,7 @@ paths:
   /tipAccount:
     get:
       summary: Tip AFIT to another account
-      description: Allows a user to send AFIT tokens as a tip to another user. Authorised by the login session; currently disabled (503).
+      description: Sends AFIT tokens as a tip to another existing Hive account (not yourself). Authorised by the login session (the sender is the session's account). Amount: positive, at most 3 decimals, within the daily tip cap.
       parameters:
         - in: query
           name: user

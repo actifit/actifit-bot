@@ -8,6 +8,7 @@ const { createFetchUserDataHandler } = require('./fetch_user_data');
 const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
+const afitTransfers = require('./afit_transfers');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -6097,259 +6098,40 @@ app.post('/cancelAFITMoveSE', modActionRateLimit, checkHdrs, keyRotationGate, as
 	}
 });
 
-/* function handles the processing of AFIT power down and moving tokens to S-E */
+/* records the logged-in user's standing daily order to move AFIT to Hive-Engine
+ * (afit_transfers.initiateAfitMove; the daily delegations job does the moving) */
 app.post('/initiateAFITMoveSE', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
-	return securityDisabled(res, '/initiateAFITMoveSE');
-	if (!req.body.amount) {
-		//make sure all params are sent
-		res.send({'error':'generic error'});
-	}else{
-		let user = req.user._id;
-		let amount = parseFloat(req.body.amount);
-		
-		
-		//check first if user is banned, as he wont be able to move funds
-		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
-		if (is_banned){
-			res.send({'error': 'You cannot move AFIT as your account is banned'});
-			return;
-		}
-		
-		//check if amount is numeric
-		if (isNaN(amount)){
-			res.send({'error': 'Amount sent is non numeric'});
-			return;
-		}
-		
-		if (amount > config.max_afit_to_se_day){
-			res.send({'error': 'You cannot transfer more than ' + config.max_afit_to_se_day + ' AFIT / day'});
-			return;
-		}
-		
-		//confirm proper AFIT token balance. Test against target amount to be sent
-		let user_info = await grabUserTokensFunc (user);
-		console.log(user_info);
-		let cur_sender_token_count = parseFloat(user_info.tokens);
-		
-		if (cur_sender_token_count < amount){
-			res.send({'error': 'Account does not have enough AFIT funds'});
-			return;
-		}
-		let tot_afitx_bal = 0;
-		let afitx_se_balance = 0;
-		let afitx_he_balance = 0;
-		//confirm amount within AFITX conditions
-		let bal = 0;
-		try{
-			bal = await ssc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' });
-		}catch(innEr){
-			console.log(innEr);
-		}
-		let bal_he = await hsc.findOne('tokens', 'balances', { account: user, symbol: 'AFITX' }); /*.catch((err)=>{
-				console.log(err)
-				if (err.message.includes('timeout')){
-					switchHENode();
-				}
-			});;*/
-		
-		if (bal){
-			afitx_se_balance = parseFloat(bal.balance);
-		}
-		if (bal_he){
-			afitx_he_balance = parseFloat(bal_he.balance);
-		}
-		tot_afitx_bal = afitx_se_balance + afitx_he_balance;
-		/*if (bal || bal_he){
-			
-		}else{
-			res.send({'error': 'Unable to fetch AFITX Funds. Try again later.'});
-			return;
-		}*/
-		
-		//conditions only apply if he is requesting more than 300 AFIT move
-		if (amount > config.free_movable_afit_day ){
-			//make sure user has at least 0.1 AFITX to move tokens 
-			if (tot_afitx_bal < 0.1){
-				res.send({'error': 'You do not have enough AFITX to move AFIT tokens over.'});
-				return;
-			}
-			  //console.log(amount_to_powerdown);
-			  //console.log(this.afitx_se_balance);
-			  //calculate amount that can be transferred daily
-			if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > tot_afitx_bal){
-				res.send({'error': 'You do not have enough AFITX to move '+amount+ ' AFIT'});
-				return;
-			}
-		}
-		
-		//register transaction for upcoming powering down cycle
-		
-		//query to see if user is already powering down
-		let tokenPowerDownQuery = {
-			user: user,
-		}
-		//store the transaction to the user's profile
-		let tokenPowerDownTrans = {
-			user: user,
-			daily_afit_transfer: amount,
-			min_afitx: Math.max(0, (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio),
-			date: new Date(),
-		}
-		
-		try {
-			console.log(tokenPowerDownTrans);
-			
-			// Use updateOne and $set for modern drivers
-			let transaction = await db.collection('powering_down_he').updateOne(
-				tokenPowerDownQuery, 
-				{ $set: tokenPowerDownTrans }, 
-				{ upsert: true }
-			);
-			
-			console.log('success inserting power down data');
-		} catch (err) {
-			console.error(err); // This will show you the specific "update is not a function" error
-			res.send({'error': 'Error performing power down. DB storing issue'});
-			return;
-		}
-		/*
-		try{
-			console.log(tokenPowerDownTrans);
-			let transaction = await db.collection('powering_down_he').update(tokenPowerDownQuery, tokenPowerDownTrans, { upsert: true });
-			console.log('success inserting power down data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error performing power down. DB storing issue'});
-			return;
-		}*/
-		
-		res.send({'status': 'Success', trx: tokenPowerDownTrans});
+	try{
+		const out = await afitTransfers.initiateAfitMove({
+			db, config, hsc, ssc,
+			grabUserTokens: (user) => grabUserTokensFunc(user),
+		}, req.user._id, req.body);
+		res.send(out);
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'generic error'});
 	}
 })
 
-/* function handles the processing of a buy order */
+/* sends AFIT from the logged-in user to another user (afit_transfers.tipAccount) */
 app.post('/tipAccount', checkHdrs, modActionRateLimit, keyRotationGate, async function(req, res){
-	return securityDisabled(res, '/tipAccount');
-	if (!req.body.targetUser || !req.body.amount) {
-		//make sure all params are sent
-		res.send({'error':'generic error'});
-	}else{
-		let user = req.user._id;
-		let targetUser = req.body.targetUser.replace('@','');
-		let amount = parseFloat(req.body.amount);
-		let note = req.body.note;
-		
-		//check first if user is banned, as he wont be able to tip
-		let is_banned = await db.collection('banned_accounts').findOne({user: user, ban_status:"active"});
-		if (is_banned){
-			res.send({'error': 'You cannot tip AFIT as your account is banned'});
-			return;
-		}
-		
-		//check first if targetUuser is banned, as he wont be able to tip
-		is_banned = await db.collection('banned_accounts').findOne({user: targetUser, ban_status:"active"});
-		if (is_banned){
-			res.send({'error': 'You cannot tip AFIT to a banned account'});
-			return;
-		}
-		
-		// the amount must be a real, positive number (parseFloat above lets NaN/negatives through)
-		amount = afitBalance.positiveAmount(amount);
-		if (amount === null){
-			res.send({'error': 'generic error'});
-			return;
-		}
-
-		//confirm proper AFIT token balance. Test against target amount to be sent
-		let user_info = await grabUserTokensFunc (user);
-		console.log(user_info);
-		let cur_sender_token_count = parseFloat(user_info.tokens);
-
-		if (cur_sender_token_count < amount){
-			res.send({'error': 'Account does not have enough AFIT funds'});
-			return;
-		}
-
-		// the daily tip cap is checked inside the sender's lock below, so concurrent tips
-		// cannot all pass it against the same day's total
-		const maxPerDay = parseFloat(config.max_allowed_tips_per_day);
-
-		//perform transaction, decrease sender amount
-		let noteVal = user + ' tipped ' + targetUser + ' ' + amount + ' AFIT';
-		if (note!=""){
-			noteVal = note;
-		}
-
-		let tipTrans = {
-			reward_activity: 'Send Tip',
-			recipient: targetUser,
-			tip_amount: amount,
-			note: noteVal,
-			date: new Date(),
-		}
-
-		//perform transaction, increase recipient amount
-		let tipReceiptTrans = {
-			reward_activity: 'Receive Tip',
-			sender: user,
-			tip_amount: amount,
-			note: note,
-			date: new Date(),
-		}
-
-		// Sender: take the AFIT atomically, only while the balance still covers it, then the
-		// ledger row (afitBalance.debitAfit). Recipient: ledger row, then an atomic $inc
-		// (creditAfit). If the credit fails the sender's debit is undone. Both writes used to
-		// be read-check-replaceOne, which let concurrent tips spend one balance twice and
-		// overwrite any credit that landed in between.
-		const tip = await withAfitLock(user, async () => {
-			//check how much the user has tipped today
-			let totalTipAmount = parseFloat(await tippedToday({ query: { user }, params: {} }, res));
-			if (!(totalTipAmount < maxPerDay)){
-				return { capError: 'User cannot tip more today. Max tips per day is set at '+config.max_allowed_tips_per_day + ' AFIT' };
-			}
-			if (totalTipAmount + amount > maxPerDay){
-				return { capError: 'Tip amount exceeds daily limit (' + config.max_allowed_tips_per_day + ') by '+ ((totalTipAmount + amount) - maxPerDay) + ' AFIT. Try a smaller amount.' };
-			}
-			const debit = await afitBalance.debitAfit(db, user, amount, { ledgerRow: tipTrans, context: 'tip-sender' });
-			if (!debit.ok) return { debit };
-			const doCredit = () => afitBalance.creditAfit(db, targetUser, amount, tipReceiptTrans, { context: 'tip-recipient' });
-			const credit = targetUser === user ? { value: await doCredit() } : await withAfitLock(targetUser, doCredit);
-			if (credit.busy || !credit.value.ok){
-				await afitBalance.undoDebit(db, user, debit, 'tip-sender');
-				return { debit, failed: true };
-			}
-			return { debit, credit: credit.value };
-		});
-		if (tip.busy){
-			res.send({'error': AFIT_BUSY_ERROR});
-			return;
-		}
-		if (tip.value.capError){
-			res.send({'error': tip.value.capError});
-			return;
-		}
-		if (!tip.value.debit.ok){
-			res.send({'error': tip.value.debit.reason === 'insufficient_funds' ? 'Account does not have enough AFIT funds' : 'Error performing tip action. DB storing issue'});
-			return;
-		}
-		if (tip.value.failed){
-			res.send({'error': 'Error performing tip action. DB storing issue'});
-			return;
-		}
-		// always numbers: fall back to reading the balance if the helper could not return it
-		let new_token_count = tip.value.debit.balance;
-		if (typeof new_token_count !== 'number') new_token_count = await afitBalance.readBalance(db, user).catch(() => 0);
-		let upd_token_count = tip.value.credit.balance;
-		if (typeof upd_token_count !== 'number') upd_token_count = await afitBalance.readBalance(db, targetUser).catch(() => 0);
-		console.log('new_sender_token_count: ' + new_token_count + ' upd_target_token_count: ' + upd_token_count);
-
-		//also notify user of AFIT payment
-		utils.sendNotification(db, targetUser, user, 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" from '+user+' with note '+note, 'https://actifit.io/'+targetUser+'/wallet');
-		//also send out notification to the recipient about tipped amount
-		utils.sendNotification(db, targetUser, user, 'tip_notification', 'payment', 'User ' + user + ' has sent you '+ amount +' AFIT', 'https://actifit.io/'+user);
-
-		res.send({'status': 'Success', 'tipAmount': amount,'senderTokenCount': new_token_count, 'recipientTokenCount': upd_token_count});
+	try{
+		const out = await afitTransfers.tipAccount({
+			db, config, withAfitLock,
+			busyError: AFIT_BUSY_ERROR,
+			tippedToday: (user) => tippedToday({ query: { user }, params: {} }, res),
+			accountExists: async (name) => {
+				const acct = await utils.getAccountData(name, 'HIVE');
+				if (!acct || !acct.HIVE) return null;
+				return acct.HIVE.name === name;
+			},
+			isValidName: utils.isValidHiveAccountName,
+			notify: utils.sendNotification,
+		}, req.user._id, req.body);
+		res.send(out);
+	}catch(err){
+		console.log(err);
+		res.send({'error': 'generic error'});
 	}
 })
 

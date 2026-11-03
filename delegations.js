@@ -3,6 +3,7 @@ const _ = require('lodash')
 const moment = require('moment')
 const utils = require('./utils')
 const afitBalance = require('./afit_balance')
+const afitTransfers = require('./afit_transfers')
 const mail = require('./mail')
 
 const config = utils.getConfig()
@@ -78,13 +79,14 @@ console.log(process.env.BOT_THREAD);
 let schedule = require('node-schedule')
 
 // Each scheduled job has its own switch. true = paused. Change one and redeploy.
-// The jobs that move value off Actifit (AFIT move to Hive-Engine, BSC bridge, gadget
-// prize transfers) stay paused until each one has its own fixes.
+// The BSC bridge and gadget prize transfers move value off Actifit and stay paused until
+// each one has its own fixes. The AFIT move to Hive-Engine is back on (re-enabled after
+// security review; see processAfitMoves).
 // A job name that is not listed here counts as paused.
 // Skipped under the test runner so tests still exercise the functions.
 const JOB_PAUSED = {
 	delegatorRewards: false,
-	afitMove: true,
+	afitMove: false,
 	gadgetPrize: true,
 	bscBridge: true,
 };
@@ -716,258 +718,278 @@ async function updateUserCount(entry){
 	}
 }
 
+// Daily AFIT move to Hive-Engine (scheduled at 10:00 UTC on the MAIN thread).
 async function moveAFITToSE(testMode){
 	if (payoutsPaused('afitMove')) return;
 	console.log('*** process moving AFIT to SE ***');
-	
-	let mongo_conn = config.mongo_uri
-	if (config.testing){
-		mongo_conn = config.mongo_local
+	try{
+		await connectRewardsDb();
+	}catch(err){
+		console.log('error - AFIT move: could not connect to the database, nothing sent: ' + (err && err.message));
+		return;
 	}
-	// Use connect method to connect to the server
-	
-	const client = new MongoClient(mongo_conn);
-	
-	// Use connect method to connect to the server
-	client.connect()
-	.then(async client => {
-		console.log('Connected successfully to server: ')
+	return processAfitMoves(testMode);
+}
 
-		db = client.db(dbName)
-		// Get the documents collection
-		let poweringDown = await db.collection('powering_down_he').find().toArray();
-		//console.log (poweringDown)
-		
-		//sign key properly to function with dhive requirement
-		let privateKey = dhive.PrivateKey.fromString(
-			//config.token_dist_pkey
-			config.active_key
-		);
-		
-		let delay = 0;
-		
-		//let's fetch banned accounts, to ensure they dont receive an airdrop
-		let banned_users = await db.collection('banned_accounts').find({ban_status:"active"}).toArray();
-		
-		//grab actifit current AFIT balance
-			
-		let afit_av_bal = await hsc.findOne('tokens', 'balances', { account: 'actifit', symbol: 'AFIT' });
-		console.log('AFIT balance on actifit:')
-		console.log(afit_av_bal);
-		//loop through entries, and send over AFIT
-		poweringDown.forEach(async function(entry){
+let afitMoveRunning = false;
 
-			//expire stale requests (older than the powerdown window) WITHOUT moving funds,
-			//so month-old leftovers get cleaned up instead of lingering / moving indefinitely
-			let winStart = moment().utc().startOf('date').toDate();
-			let expiryCutoff = moment(winStart).subtract(config.afit_powerdown_days || 7, 'days').format();
-			if (moment(new Date(entry.date)).format() < expiryCutoff){
+// One run of the AFIT move over every standing order in powering_down_he, against the
+// module db. Chain clients and timings can be replaced (tests).
+//
+// Money safety:
+//   - the run is refused when a limit from config, the signing key or the sending
+//     account's own Hive-Engine AFIT balance cannot be read (fail closed);
+//   - each order is claimed for the day (last_move_day) before anything is debited, so
+//     the same order is never sent twice on one day, even by overlapping runs;
+//   - the user's AFIT is debited atomically BEFORE the transfer is broadcast; the
+//     transaction is signed first so its id is known, and after the broadcast its outcome
+//     is looked up on Hive / Hive-Engine. The debit is undone ONLY when the transfer is
+//     confirmed not to have happened; when that cannot be determined the debit stays and
+//     the case is written to afit_move_unresolved for manual review.
+async function processAfitMoves(testMode, deps = {}){
+	const cfg = deps.config || config;
+	const he = deps.hsc || hsc;
+	const se = deps.ssc === undefined ? ssc : deps.ssc;
+	const chain = deps.hiveClient || hiveClient;
+	const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+	const gapMs = Number.isFinite(deps.gapMs) ? deps.gapMs : 4500;
+	const resolveOpts = deps.resolveOpts || {};
+
+	if (afitMoveRunning){
+		console.log('error - AFIT move: a previous run is still in progress, skipping');
+		return { skipped: 'running' };
+	}
+	afitMoveRunning = true;
+	const pending = [];
+	const summary = { sent: 0, refunded: 0, unresolved: 0, skipped: 0, cancelled: 0 };
+	try{
+		const limits = afitTransfers.moveLimits(cfg);
+		if (!limits){
+			console.log('error - AFIT move: max_afit_to_se_day / free_movable_afit_day / afitx_afit_move_ratio missing or invalid in config, nothing sent');
+			return { skipped: 'config' };
+		}
+		let privateKey = null;
+		if (!testMode){
+			try{
+				privateKey = dhive.PrivateKey.fromString(cfg.active_key);
+			}catch(err){
+				console.log('error - AFIT move: signing key missing or invalid, nothing sent');
+				return { skipped: 'key' };
+			}
+		}
+
+		// the sending account's own Hive-Engine AFIT: without a readable balance, send nothing
+		let available = null;
+		try{
+			const bal = await afitTransfers.withTimeout(he.findOne('tokens', 'balances', { account: cfg.account, symbol: 'AFIT' }), 15000, 'H-E AFIT balance');
+			available = bal ? afitBalance.finiteAmount(bal.balance) : null;
+		}catch(err){
+			console.log(err);
+		}
+		if (available === null){
+			console.log('error - AFIT move: could not read the H-E AFIT balance of ' + cfg.account + ', nothing sent');
+			return { skipped: 'balance' };
+		}
+		console.log('AFIT balance on ' + cfg.account + ': ' + available);
+
+		const poweringDown = await db.collection('powering_down_he').find().toArray();
+		const banned = new Set((await db.collection('banned_accounts').find({ban_status:"active"}).toArray()).map((b) => b.user));
+		const today = moment().utc().format('YYYY-MM-DD');
+		const winStart = moment().utc().startOf('date').toDate();
+		const expiryCutoff = moment(winStart).subtract(cfg.afit_powerdown_days || 7, 'days').toDate();
+
+		let first = true;
+		for (const entry of poweringDown){
+			if (!entry || typeof entry.user !== 'string') continue;
+
+			//expire stale requests (older than the powerdown window) WITHOUT moving funds
+			if (!(new Date(entry.date) >= expiryCutoff)){
 				console.log('expiring stale AFIT power down request for ' + entry.user + ' (dated ' + entry.date + ')');
 				await cancelDailyAFITPowerDown(entry, testMode, null);
-				return;
+				summary.cancelled++;
+				continue;
+			}
+			if (banned.has(entry.user)){
+				console.log('user ' + entry.user + ' is banned. Skip');
+				summary.skipped++;
+				continue;
+			}
+			if (entry.last_move_day === today){
+				console.log('AFIT move for ' + entry.user + ' already processed today. Skip');
+				summary.skipped++;
+				continue;
 			}
 
-			//let's make sure user is not banned
-			let user_banned = false;
-			for (let n = 0; n < banned_users.length; n++) {
-				if (entry.user == banned_users[n].user){
-					//console.log('User '+entry.user+' is banned, skipping' );
-					user_banned = true;
-					break;
+			const amount = afitTransfers.afitAmount(entry.daily_afit_transfer);
+			if (amount === null || amount > limits.maxPerDay){
+				await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of AFIT to Hive-Engine was cancelled: the amount is not valid (the maximum is ' + limits.maxPerDay + ' AFIT/day). Please set up the move again.');
+				summary.cancelled++;
+				continue;
+			}
+
+			//the user must still hold enough AFITX for amounts above the free allowance
+			if (amount > limits.freePerDay){
+				const afitx = await afitTransfers.fetchAfitxBalance(entry.user, { hsc: he, ssc: se });
+				if (!afitx.heOk){
+					// a lookup failure is not the user's fault: retry tomorrow, keep the order
+					console.log('error - AFIT move for ' + entry.user + ' skipped today: AFITX balance unavailable');
+					summary.skipped++;
+					continue;
+				}
+				if (afitTransfers.afitxShortfall(amount, afitx.total, limits)){
+					const needed = afitTransfers.afitxRequired(amount, limits);
+					await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: moving that ' +
+						'amount requires at least ' + Math.max(0.1, needed).toFixed(3) + ' AFITX, but you only hold ' +
+						afitx.total + ' AFITX. Top up your AFITX and set up the move again.');
+					summary.cancelled++;
+					continue;
 				}
 			}
-			/*
-			if (entry.user!='mcfarhat'){
-				user_banned = true;
-			}*/
-			if (!user_banned){
-				
-				//let's make sure user still has proper AFITX amount
-				let userHasProperFunds = true;
-				let afitx_tot_bal = 0;
-				let afitx_se_balance = 0;
-				let afitx_he_balance = 0;
-				try{
-					let bal = await ssc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-					if (bal){
-						afitx_se_balance = bal.balance;
-					}else{
-						console.log('error - Unable to fetch S-E AFITX Funds for '+entry.user+'  or funds are zero.');
-						//return;
-					}
-				}catch(err){
-					console.log(err);
-				}
-				try{
-					let bal = await hsc.findOne('tokens', 'balances', { account: entry.user, symbol: 'AFITX' });
-					if (bal){
-						afitx_he_balance = bal.balance;
-					}else{
-						console.log('error - Unable to fetch H-E AFITX Funds for '+entry.user+' or funds are zero.');
-						//return;
-					}
-				}catch(err){
-					console.log(err);
-				}
-				
-				afitx_tot_bal = parseFloat(afitx_se_balance) + parseFloat(afitx_he_balance);
-				let amount = parseFloat(entry.daily_afit_transfer);
-				if (amount > config.free_movable_afit_day ){
-					//make sure user has at least 0.1 AFITX to move tokens
-					if (afitx_tot_bal < 0.1){
-						userHasProperFunds = false;
-					}
-					  //console.log(amount_to_powerdown);
-					  //console.log(this.afitx_se_balance);
-					  //calculate amount that can be transferred daily
-					if ((amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio > afitx_tot_bal){
-						userHasProperFunds = false;
-					}
-					
-				}
-				
-				//make sure user has enough funds to send to SE
-				
-				let user = await db.collection('user_tokens').findOne({_id: entry.user});
-				console.log(user);
-				//fixing token amount display for 3 digits
-				if (typeof user!= "undefined" && user!=null){
-					if (typeof user.tokens!= "undefined"){
-						user.tokens = user.tokens.toFixed(3)
-					}else{
-						userHasProperFunds = false;
-					}
-				}else{
-					userHasProperFunds = false;
-				}
-				let cur_user_token_count = 0;
-				try{
-					cur_user_token_count = parseFloat(user.tokens);
-					if (cur_user_token_count < amount){
-						userHasProperFunds = false;
-					}
-					
-					//also check if actifit account has enough funds to send out
-					if (afit_av_bal < amount){
-						userHasProperFunds = false;
-					}
-				}catch(err){
-					userHasProperFunds = false;
-				}
-				
-				console.log('entry.user:'+entry.user+ ' afit bal:' + cur_user_token_count + ' bal:'+afitx_tot_bal+' userHasProperFunds:'+userHasProperFunds);
-				if (userHasProperFunds){
-					//deduct from actifit balance
-					afit_av_bal -= amount;
-					setTimeout(async function(){
-										
-						try{
-							
-							/*setTimeout(async function(){
-								
-								
-							}, 1);*/
-						
-							console.log(entry);
-											
-							let dedc_amount = parseFloat(entry.daily_afit_transfer);
-							
-							//perform transaction, decrease sender amount
-							let moveTrans = {
-								user: entry.user,
-								reward_activity: 'Move AFIT to H-E',
-								token_count: -dedc_amount,
-								note: 'User Automated transfer of ' + entry.daily_afit_transfer + ' AFIT to H-E',
-								date: new Date(),
-							}
-							
-							console.log(moveTrans);
-							//update our DB: take the AFIT atomically, only while the cached balance
-							//still covers it (the funds check above is only a read), and write the
-							//ledger row. Done BEFORE the broadcast; undone if the broadcast fails.
-							let debit = null;
-							if (!testMode){
-								debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, dedc_amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
-								if (!debit.ok){
-									console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
-									if (debit.reason === 'insufficient_funds'){
-										await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + entry.daily_afit_transfer + ' AFIT to Hive-Engine was cancelled: your Actifit AFIT balance is below the requested amount. Earn or top up more AFIT and set up the move again.');
-									}
-									return;
-								}
-							}
-							console.log('success inserting move AFIT data');
-							
-							let json_data = {
-								contractName: 'tokens',
-								contractAction: 'transfer',
-								contractPayload: {
-									symbol: 'AFIT',
-									to: entry.user,
-									quantity: ''+entry.daily_afit_transfer,//needs to be string
-									memo: ''
-								}
-							}
-							
-							//broadcast to BC
-							console.log('broadcast to BC');
-							if (!testMode){
-								hiveClient.broadcast.json({
-									required_auths: [config.account],
-									required_posting_auths: [],
-									id: 'ssc-mainnet-hive',//ssc-mainnet1
-									json: JSON.stringify(json_data),
-								}, privateKey).then(
-									result => {
-										console.log(result)
-										//the balance was already lowered by the debit above
-										deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
-										},
-									error => {
-										console.error(error)
-										//roll back: remove the ledger row and give the AFIT back, as there
-										//was an issue sending to blockchain
-										withAfitLock(entry.user, () => afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he')).catch((e) => console.log(e));
-										deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
-										}
-								)
-							}
-							//deactivateDailyAFITPowerDown(entry, testMode);
-						
-						}catch(err){
-							console.log(err);
-							console.log('error - Error inserting move AFIT data. DB storing issue');
-							return;
-						}
-					
-					}, delay+=4500);
-				}else{
-					console.log('error - user does not have enough funds');
-					//work out which balance fell short so we can tell the user precisely
-					let cancelMsg;
-					let neededAfitx = (amount - config.free_movable_afit_day) / config.afitx_afit_move_ratio;
-					if (amount > config.free_movable_afit_day && neededAfitx > afitx_tot_bal){
-						cancelMsg = 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: moving that ' +
-							'amount requires at least ' + neededAfitx.toFixed(3) + ' AFITX, but you only hold ' +
-							afitx_tot_bal + ' AFITX. Top up your AFITX and set up the move again.';
-					}else{
-						cancelMsg = 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: your Actifit ' +
-							'AFIT balance (' + cur_user_token_count + ') is below the requested ' + amount +
-							' AFIT/day. Earn or top up more AFIT and set up the move again.';
-					}
-					//notify the user and remove the request so it stops retrying daily
-					await cancelDailyAFITPowerDown(entry, testMode, cancelMsg);
-					return;
-				}
-			}else{
-				console.log('user ' + entry.user + ' is banned. Skip');
-				await deactivateDailyAFITPowerDown(entry, testMode);
+
+			//make sure the user has enough Actifit AFIT (the debit below re-checks atomically)
+			const cur = await afitBalance.readBalance(db, entry.user).catch(() => null);
+			if (cur === null){
+				console.log('error - AFIT move for ' + entry.user + ' skipped today: balance unavailable');
+				summary.skipped++;
+				continue;
 			}
-			//check if user has this request for over a week, and cancel it accordingly
-			
-		});
-	  
-	})
+			if (cur < amount){
+				await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: your Actifit ' +
+					'AFIT balance (' + cur + ') is below the requested ' + amount +
+					' AFIT/day. Earn or top up more AFIT and set up the move again.');
+				summary.cancelled++;
+				continue;
+			}
+
+			//the sending account must still cover it
+			if (available < amount){
+				console.log('error - AFIT move for ' + entry.user + ' skipped: ' + cfg.account + ' H-E balance ' + available + ' below ' + amount);
+				summary.skipped++;
+				continue;
+			}
+
+			if (testMode){
+				console.log('[test] would move ' + amount + ' AFIT to H-E for ' + entry.user);
+				continue;
+			}
+
+			//claim the order for today; only the run that claims it may send it
+			const claim = await db.collection('powering_down_he').updateOne(
+				{ _id: entry._id, last_move_day: { $ne: today } },
+				{ $set: { last_move_day: today } }
+			);
+			if (!claim || claim.matchedCount !== 1){
+				console.log('AFIT move for ' + entry.user + ' already claimed today. Skip');
+				summary.skipped++;
+				continue;
+			}
+
+			if (!first) await sleep(gapMs);
+			first = false;
+
+			const moveTrans = {
+				reward_activity: 'Move AFIT to H-E',
+				note: 'User Automated transfer of ' + amount + ' AFIT to H-E',
+				date: new Date(),
+			};
+			const debit = await withAfitLock(entry.user, () => afitBalance.debitAfit(db, entry.user, amount, { ledgerRow: moveTrans, context: 'afit-move-he' }));
+			if (!debit.ok){
+				console.log('error - AFIT move for ' + entry.user + ' not started: ' + debit.reason);
+				if (debit.reason === 'insufficient_funds'){
+					await cancelDailyAFITPowerDown(entry, testMode, 'Your daily move of ' + amount + ' AFIT to Hive-Engine was cancelled: your Actifit AFIT balance is below the requested amount. Earn or top up more AFIT and set up the move again.');
+					summary.cancelled++;
+				}else{
+					summary.skipped++;
+				}
+				continue;
+			}
+			available -= amount;
+
+			let signed;
+			try{
+				signed = await afitTransfers.signTransfer(chain, { account: cfg.account, key: privateKey, to: entry.user, quantity: amount });
+			}catch(err){
+				// nothing was broadcast, so giving the AFIT back is safe
+				console.log('error - AFIT move for ' + entry.user + ': could not prepare the transaction - ' + (err && err.message));
+				await refundAfitMove(entry, debit, amount, null, 'prepare_failed', summary);
+				available += amount;
+				continue;
+			}
+
+			console.log('broadcast AFIT move ' + signed.trxId + ' for ' + entry.user + ' (' + amount + ' AFIT)');
+			let accepted = false;
+			try{
+				await chain.broadcast.send(signed.signed);
+				accepted = true;
+				summary.sent++;
+			}catch(err){
+				console.log('error - AFIT move broadcast error for ' + entry.user + ' trx ' + signed.trxId + ': ' + (err && err.message) + ' - checking whether it landed before any refund');
+			}
+
+			//confirm the outcome in the background; refund only on a confirmed failure
+			pending.push(afitTransfers.resolveTransfer(Object.assign({
+				trxId: signed.trxId, expiration: signed.expiration, to: entry.user,
+				hsc: he, hiveClient: chain, sleep,
+			}, resolveOpts)).catch((err) => ({ outcome: 'unknown', detail: err && err.message })).then(async (r) => {
+				console.log('AFIT move ' + signed.trxId + ' for ' + entry.user + ': ' + r.outcome + (r.hiveStatus ? ' (hive: ' + r.hiveStatus + ')' : ''));
+				if (r.outcome === 'landed'){
+					await deactivateDailyAFITPowerDown(entry, testMode).catch((e) => console.log(e));
+				}else if (r.outcome === 'not_landed' || r.outcome === 'failed_on_engine'){
+					await refundAfitMove(entry, debit, amount, signed, r.outcome, summary);
+				}else{
+					await recordUnresolvedMove(entry, debit, amount, signed, accepted ? 'unverified_after_accept' : 'broadcast_error_unverified', r, summary);
+				}
+			}));
+		}
+		await Promise.all(pending);
+		console.log('*** AFIT move done: ' + JSON.stringify(summary) + ' ***');
+		return summary;
+	}catch(err){
+		console.log('error - AFIT move run failed: ' + (err && err.message));
+		await Promise.all(pending).catch(() => {});
+		return Object.assign({ error: err && err.message }, summary);
+	}finally{
+		afitMoveRunning = false;
+	}
+}
+
+// Give back a move's AFIT once the transfer is confirmed not to have happened.
+async function refundAfitMove(entry, debit, amount, signed, reason, summary){
+	const undone = await withAfitLock(entry.user, () => afitBalance.undoDebit(db, entry.user, debit, 'afit-move-he')).catch(() => false);
+	if (undone === true){
+		console.log('AFIT move refunded for ' + entry.user + ' (' + amount + ' AFIT): ' + reason);
+		if (summary) summary.refunded++;
+		return true;
+	}
+	await recordUnresolvedMove(entry, debit, amount, signed, 'refund_failed_after_' + reason, null, summary);
+	return false;
+}
+
+// Leave the debit in place and write the case down for manual review.
+async function recordUnresolvedMove(entry, debit, amount, signed, reason, resolution, summary){
+	if (summary) summary.unresolved++;
+	const row = {
+		user: entry.user,
+		amount,
+		reason,
+		trx_id: signed ? signed.trxId : null,
+		expiration: signed ? signed.expiration : null,
+		hive_status: resolution ? resolution.hiveStatus || null : null,
+		detail: resolution && resolution.detail !== undefined ? JSON.stringify(resolution.detail) : null,
+		ledger_id: debit ? debit.ledgerId || null : null,
+		order_id: entry._id || null,
+		status: 'open',
+		date: new Date(),
+	};
+	console.log('!!! AFIT MOVE UNRESOLVED (manual review needed): ' + JSON.stringify(row));
+	try{
+		await db.collection('afit_move_unresolved').insertOne(row);
+	}catch(err){
+		console.log('!!! could not record unresolved AFIT move: ' + (err && err.message));
+	}
+	try{
+		if (config.report_emails) mail.sendPlainMail('AFIT move needs manual review', JSON.stringify(row), config.report_emails).catch(() => {});
+	}catch(_){ /* alerting must not throw */ }
 }
 
 
@@ -2138,6 +2160,9 @@ async function claimRewards(){
 // module can be required in tests without launching the scheduler/pipeline.
 module.exports = {
 	moveAFITToSE,
+	processAfitMoves,
+	hsc,
+	ssc,
 	deactivateDailyAFITPowerDown,
 	cancelDailyAFITPowerDown,
 	updateUserCount,
