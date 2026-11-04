@@ -1656,6 +1656,7 @@ async function loadExchAfitPrice(){
 		exchangeAfitPrice.afitSteemLastPrice = parseFloat(afitSEPrice[0].lastPrice);
 		exchangeAfitPrice.afitHiveLastPrice = afitHivePrice;
 		exchangeAfitPrice.afitHiveMarketPrice = afitHiveMarketPrice;
+		exchangeAfitPrice.afitHiveMarketUsdPrice = afitHiveMarketPrice * hivePrice.hive.usd;
 		
 		exchangeAfitPrice.lastMedianPrice = (exchangeAfitPrice.afitSteemLastUsdPrice + exchangeAfitPrice.afitHiveLastUsdPrice)/2;
 		exchangeAfitPrice.lastUpdated = new Date();
@@ -7036,7 +7037,8 @@ app.get('/curAFITPrice', async function(req, res) {
 	//let curAFITPrice = await db.collection('afit_price').find().sort({'date': -1}).limit(1).next();
 	let curAFITPrice = {
 		_id: 1,
-		unit_price_usd: exchangeAfitPrice.afitHiveLastUsdPrice,
+		//market price, for showing what AFIT is worth (wallet values); pricing uses the floored one
+		unit_price_usd: exchangeAfitPrice.afitHiveMarketUsdPrice,
 		date: exchangeAfitPrice.lastUpdated
 	}
 	console.log('curAfitPrice:'+curAFITPrice.unit_price_usd);
