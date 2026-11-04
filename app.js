@@ -9,6 +9,7 @@ const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
 const afitTransfers = require('./afit_transfers');
+const { flooredAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -1632,23 +1633,29 @@ async function loadExchAfitPrice(){
 		console.log(hivePrice);
 		//json.hive.usd
 		
+		//AFIT/HIVE price used for pricing (gadgets, signup cap, the site): market last price,
+		//but never below the floor, so one dust sale cannot make HIVE gadget buys nearly free
+		const afitHiveMarketPrice = parseFloat(afitHEPrice[0].lastPrice);
+		const afitHivePrice = flooredAfitHivePrice(afitHiveMarketPrice);
+
 		//set prior hive value for reference and reuse if needed
 		if (exchangeAfitPrice.afitHiveLastPrice){
 			priorExchangeAfitHivePrice = exchangeAfitPrice.afitHiveLastPrice;
 		}else{
-			exchangeAfitPrice.afitHiveLastPrice = parseFloat(afitHEPrice[0].lastPrice);
+			exchangeAfitPrice.afitHiveLastPrice = afitHivePrice;
 		}
-		
-		
-		
+
+
+
 		exchangeAfitPrice.afitSEPrice = afitSEPrice;
 		exchangeAfitPrice.afitHEPrice = afitHEPrice;
-		
+
 		exchangeAfitPrice.afitSteemLastUsdPrice = parseFloat(afitSEPrice[0].lastPrice) * steemPrice.steem.usd;
-		exchangeAfitPrice.afitHiveLastUsdPrice = parseFloat(afitHEPrice[0].lastPrice) * hivePrice.hive.usd;
-		
+		exchangeAfitPrice.afitHiveLastUsdPrice = afitHivePrice * hivePrice.hive.usd;
+
 		exchangeAfitPrice.afitSteemLastPrice = parseFloat(afitSEPrice[0].lastPrice);
-		exchangeAfitPrice.afitHiveLastPrice = parseFloat(afitHEPrice[0].lastPrice);
+		exchangeAfitPrice.afitHiveLastPrice = afitHivePrice;
+		exchangeAfitPrice.afitHiveMarketPrice = afitHiveMarketPrice;
 		
 		exchangeAfitPrice.lastMedianPrice = (exchangeAfitPrice.afitSteemLastUsdPrice + exchangeAfitPrice.afitHiveLastUsdPrice)/2;
 		exchangeAfitPrice.lastUpdated = new Date();
