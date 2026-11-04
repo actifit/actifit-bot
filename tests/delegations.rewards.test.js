@@ -13,10 +13,11 @@ describe('delegations - per-job pause switches', () => {
 	const prevEnv = process.env.NODE_ENV;
 	afterEach(() => { process.env.NODE_ENV = prevEnv; });
 
-	test('only delegator rewards run; value-moving jobs and unknown names stay paused', () => {
+	test('delegator rewards and the AFIT move run; the other value-moving jobs and unknown names stay paused', () => {
 		process.env.NODE_ENV = 'production';
 		expect(d.payoutsPaused('delegatorRewards')).toBe(false);
-		for (const job of ['afitMove', 'gadgetPrize', 'bscBridge', 'someNewJob']) {
+		expect(d.payoutsPaused('afitMove')).toBe(false);
+		for (const job of ['gadgetPrize', 'bscBridge', 'someNewJob']) {
 			expect(d.payoutsPaused(job)).toBe(true);
 		}
 	});

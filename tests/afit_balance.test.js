@@ -8,6 +8,49 @@
 
 const afit = require('../afit_balance');
 
+describe('undoDebitDetailed (no database)', () => {
+	const mk = ({ deleteFails = false, incFails = false } = {}) => ({ collection: () => ({
+		deleteOne: async () => { if (deleteFails) throw new Error('delete failed'); return { deletedCount: 1 }; },
+		updateOne: async () => { if (incFails) throw new Error('inc failed'); return { matchedCount: 1 }; },
+	}) });
+	const debit = { ok: true, amount: 10, ledgerId: 'L1' };
+	let spy;
+	beforeEach(() => { spy = jest.spyOn(console, 'log').mockImplementation(() => {}); });
+	afterEach(() => spy.mockRestore());
+
+	test('reports both steps', async () => {
+		await expect(afit.undoDebitDetailed(mk(), 'u', debit)).resolves.toEqual({ ok: true, ledgerRemoved: true, restored: true });
+		await expect(afit.undoDebit(mk(), 'u', debit)).resolves.toBe(true);
+	});
+	test('ledger row not removed but balance restored is reported as such', async () => {
+		await expect(afit.undoDebitDetailed(mk({ deleteFails: true }), 'u', debit)).resolves.toEqual({ ok: false, ledgerRemoved: false, restored: true });
+		await expect(afit.undoDebit(mk({ deleteFails: true }), 'u', debit)).resolves.toBe(false);
+	});
+	test('balance not restored', async () => {
+		await expect(afit.undoDebitDetailed(mk({ incFails: true }), 'u', debit)).resolves.toEqual({ ok: false, ledgerRemoved: true, restored: false });
+	});
+	test('onlyIfLedgerRemoved: a ledger row that is already gone is not restored again', async () => {
+		let incs = 0;
+		const db = { collection: () => ({
+			deleteOne: async () => ({ deletedCount: 0 }),
+			updateOne: async () => { incs++; return { matchedCount: 1 }; },
+		}) };
+		await expect(afit.undoDebitDetailed(db, 'u', debit, 'x', { onlyIfLedgerRemoved: true }))
+			.resolves.toEqual({ ok: true, alreadyUndone: true, ledgerRemoved: false, restored: false });
+		expect(incs).toBe(0);
+		// without the option (other callers) the balance is still restored
+		await expect(afit.undoDebitDetailed(db, 'u', debit)).resolves.toMatchObject({ ok: true, restored: true });
+		expect(incs).toBe(1);
+	});
+	test('onlyIfLedgerRemoved without a ledger row refuses', async () => {
+		await expect(afit.undoDebitDetailed(mk(), 'u', { ok: true, amount: 10 }, 'x', { onlyIfLedgerRemoved: true }))
+			.resolves.toEqual({ ok: false, ledgerRemoved: false, restored: false });
+	});
+	test('nothing to undo', async () => {
+		await expect(afit.undoDebitDetailed(mk(), 'u', { ok: false })).resolves.toEqual({ ok: false, ledgerRemoved: false, restored: false });
+	});
+});
+
 describe('rebuildCachedBalances with an unreadable ledger sum (no database)', () => {
 	test('counts it as failed, logs it, and writes nothing', async () => {
 		const writes = [];
@@ -129,7 +172,7 @@ describe('amount rules (no database)', () => {
 	test('debitAfit allowNegative (admin claw-back) skips the balance floor', async () => {
 		const calls = [];
 		const db = { collection: () => ({
-			updateOne: (f, u) => { calls.push(f); return Promise.resolve({ matchedCount: 1 }); },
+			updateOne: (f) => { calls.push(f); return Promise.resolve({ matchedCount: 1 }); },
 			findOne: () => Promise.resolve({ tokens: -5 }),
 		}) };
 		await expect(afit.debitAfit(db, 'alice', 10, { allowNegative: true })).resolves.toMatchObject({ ok: true, balance: -5 });

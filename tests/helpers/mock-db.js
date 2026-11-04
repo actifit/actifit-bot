@@ -24,8 +24,10 @@ function createMockCollection(initialData = []) {
       return createCursor(results);
     }),
     insertOne: jest.fn((doc) => {
+      // like the real driver, an insert without _id gets one (on the document itself)
+      if (doc._id === undefined) doc._id = new ObjectId();
       data.push(doc);
-      return Promise.resolve({ insertedId: doc._id || new ObjectId() });
+      return Promise.resolve({ insertedId: doc._id });
     }),
     insertMany: jest.fn((docs) => {
       data.push(...docs);
@@ -37,9 +39,10 @@ function createMockCollection(initialData = []) {
       if (idx !== -1) {
         if (update.$set) Object.assign(data[idx], update.$set);
         if (update.$inc) applyInc(data[idx]);
+        if (update.$unset) for (const k of Object.keys(update.$unset)) delete data[idx][k];
         // $setOnInsert alone is a no-op on a match (as in MongoDB)
-        if (!update.$set && !update.$inc && !update.$setOnInsert) Object.assign(data[idx], update);
-        const changed = !!(update.$set || update.$inc || !update.$setOnInsert);
+        if (!update.$set && !update.$inc && !update.$setOnInsert && !update.$unset) Object.assign(data[idx], update);
+        const changed = !!(update.$set || update.$inc || update.$unset || !update.$setOnInsert);
         return Promise.resolve({ matchedCount: 1, modifiedCount: changed ? 1 : 0, upsertedCount: 0 });
       }
       if (opts.upsert) {
