@@ -479,7 +479,6 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	}
 	
 	
-	//function handles fetching tip transactions
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser, bchain) {
 		getConfig();

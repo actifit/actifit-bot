@@ -1293,10 +1293,6 @@ components:
         tip_balance: { type: 'number', format: 'float', example: 50.0 }
         # Add other fields like last_updated
       required: [user, tip_balance]
-    VerifyTipTransactionsResponse:
-      type: object
-      description: Outcome of tip transaction verification. Refine with actual fields.
-      example: { "processed_count": 5, "new_tips": [] }
     AFITSEBulkConfirmationResponse:
       type: object
       properties:
@@ -5906,19 +5902,6 @@ paths:
                 $ref: '#/components/schemas/AFITSEBulkConfirmationResponse'
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
-  /verifyTipTransactions:
-    get:
-      summary: Verify pending tip transactions
-      description: (ADMIN ONLY) Verifies and processes pending tip transactions.
-      responses:
-        '200':
-          description: Tip transactions verified.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/VerifyTipTransactionsResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
   /availableTipBalance:
     get:
       summary: Get user's available tip balance
@@ -5937,21 +5920,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/TipBalance'
         '400': { description: 'Missing user query parameter.', content: { 'application/json': { schema: { type: 'object', example: {} } } } }
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /updateTipBalances:
-    get:
-      summary: Update user tip balances
-      description: (ADMIN ONLY) Recalculates and updates all user tip balances.
-      responses:
-        '200':
-          description: Tip balances updated.
-          content:
-            application/json:
-              schema:
-                type: object
-                description: Outcome of tip balance update. Refine with actual fields.
-                example: { "status": "success", "updatedUsers": 5 }
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /confirmAFITSEReceipt:
