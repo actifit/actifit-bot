@@ -9,7 +9,7 @@ const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
 const afitTransfers = require('./afit_transfers');
-const { flooredAfitHivePrice } = require('./afit_price_floor');
+const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
 var arena = require('./arena');
 var arenaApi = require('./arena_api');
@@ -1633,10 +1633,11 @@ async function loadExchAfitPrice(){
 		console.log(hivePrice);
 		//json.hive.usd
 		
-		//AFIT/HIVE price used for pricing (gadgets, signup cap, the site): market last price,
-		//but never below the floor, so one dust sale cannot make HIVE gadget buys nearly free
+		//AFIT/HIVE price used for pricing (gadgets, signup cap, the site): the highest of the floor,
+		//the market last price and the cheapest sell offer, so one dust sale cannot make HIVE
+		//gadget buys cheaper than buying the AFIT on the market
 		const afitHiveMarketPrice = parseFloat(afitHEPrice[0].lastPrice);
-		const afitHivePrice = flooredAfitHivePrice(afitHiveMarketPrice);
+		const afitHivePrice = pricingAfitHivePrice(afitHEPrice[0]);
 
 		//set prior hive value for reference and reuse if needed
 		if (exchangeAfitPrice.afitHiveLastPrice){
