@@ -7357,12 +7357,6 @@ app.get('/confirmAFITSEBulk', async function(req,res){
 	}
 })
 
-//function handles fetching recent tip transactions
-app.get('/verifyTipTransactions', async function (req, res){
-	let outcome = await utils.verifyTipTransactions(db);
-	res.send(outcome);
-})
-
 app.get('/availableTipBalance', async function (req, res){
 	if (!req.query || !req.query.user){
 		res.send({})
@@ -7370,12 +7364,6 @@ app.get('/availableTipBalance', async function (req, res){
 	}
 	let dt = await db.collection('tip_balance').findOne({user: req.query.user});
 	res.send(dt);
-})
-
-//function handles updating user tip balances
-app.get('/updateTipBalances', async function (req, res){
-	let outcome = await utils.updateTipBalances(db);
-	res.send(outcome);
 })
 
 //function handles the process of confirming AFIT S-E receipt into proper account, and increases AFIT amount held in power mode
