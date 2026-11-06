@@ -30,8 +30,8 @@ function flooredAfitHivePrice(marketPrice) {
 /*
  * The AFIT/HIVE price for pricing things (gadgets, signup cap): the highest of the floor,
  * the last price, and the cheapest sell offer (capped). Paying in HIVE then costs about what
- * buying the AFIT on the market would. The cheapest offer is hard to fake: lowering it means
- * offering AFIT cheaply to anyone, who can buy it all.
+ * buying the AFIT on the market would. The cheapest offer has no depth behind it, so a tiny
+ * cheap offer can still pull this down, but never below the floor.
  */
 function pricingAfitHivePrice(metrics) {
 	const m = metrics || {};
