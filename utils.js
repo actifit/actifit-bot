@@ -479,100 +479,6 @@ async function fetchOneAccount(chainLnk, account_name, label){
 	}
 	
 	
-	//function handles fetching tip transactions
-	async function verifyTipTransactions(db){
-		let url = new URL(config.hive_engine_tip_trans_his);
-		//connect with our service to confirm AFIT received to proper wallet
-		try{
-			let he_connector = await fetch(url, { signal: AbortSignal.timeout(15000) });
-			let trx_entries = await he_connector.json();
-			
-			for (const entry of trx_entries){
-			//trx_entries.forEach(async function (entry){
-				let quant = parseFloat(entry.quantity);
-				let user = entry.from
-				//if this is a send transaction, need to decrease balance
-				if (entry.from == config.tip_account){
-					quant = -1 * quant;
-					//validate this is a proper tipping transaction
-					if (entry.memo != null){
-						user = entry.memo;
-					}
-				}
-				if (entry.symbol != 'AFIT' ){
-					//skip as currently we only support AFIT tipping
-					continue;
-				}
-				//query to see if entry already stored
-				let tokenTransQuery = {
-					user: user,
-					timestamp: entry.timestamp,
-					operation: "tokens_transfer",
-					symbol: entry.symbol,
-					quantity: quant
-				}
-				//store the transaction to the user's profile
-				let newTokenTrans = {
-					user: user,
-					timestamp: entry.timestamp,
-					operation: "tokens_transfer",
-					symbol: entry.symbol,
-					quantity: quant
-				}
-				try{
-					//console.log(newTokenTrans);
-					//insert the query ensuring we do not write it twice
-					let transaction = await db.collection('tip_transfers').update(tokenTransQuery, newTokenTrans, { upsert: true });
-					let trans_res = transaction.result;
-					//console.log(trans_res);
-					
-					//transaction inserted
-					//if (trans_res.upserted){
-					//	console.log('success');
-					//}
-					
-				}catch(erra){
-					console.log(erra);
-				}
-			};
-			return "{success: true}";
-					
-			//let match_trx;
-		}catch(err){
-			console.log(err);
-			return "{success: false, err:"+err+"}";
-		}
-	}
-	
-	async function updateTipBalances (db){
-	
-		try{
-			//group all token transactions per user, and sum them to generate new total count
-			let query = await db.collection('tip_transfers').aggregate([
-				{ $group: { _id: "$user", tip_balance: { $sum: "$quantity" } } },
-				{ $sort: { tokens: -1 } },
-				{ $project: { 
-					 _id: "$_id",
-					 user: "$_id",
-					 tip_balance: "$tip_balance",
-					 }
-				 }
-				])
-		
-			let user_tokens = await query.toArray();
-			//remove old token count per user
-			await db.collection('tip_balance').deleteMany({});
-			//insert new count per user
-			await db.collection('tip_balance').insertOne(user_tokens);
-			console.log('---- Updating User Tip Balances Complete ----');
-			return "{success: true}";
-		}catch(err){
-			console.log('>>save data error:'+err.message);
-			return "{success:false, err: "+err+"}";
-		}
-		
-	}
-	
 	//function handles confirming if AFIT from SE were received
 	async function confirmSEAFITReceived (targetUser, bchain) {
 		getConfig();
@@ -2925,8 +2831,6 @@ const finiteAmount = afitBalance.finiteAmount;
    sendFirebaseNotification: sendFirebaseNotification,
    purchaseRealProd: purchaseRealProd,
    calcScoreExtended: calcScoreExtended,
-   verifyTipTransactions: verifyTipTransactions,
-   updateTipBalances: updateTipBalances,
    fetchPendingRewards: fetchPendingRewards,
    findVerifyTrx: findVerifyTrx,
    rewardCap: rewardCap,
