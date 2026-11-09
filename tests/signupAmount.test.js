@@ -147,9 +147,9 @@ describe('signupRequiredCrypto — live CoinGecko price', () => {
     expect(1.227).toBeLessThan(req); // the old underpriced quote is now an underpayment
   });
 
-  test('still prices HBD exactly at $1.00', async () => {
-    coingeckoReturns(HIVE_PRICE, 1.0);
-    const quote = await utils.signupQuoteCrypto('HBD', null);
+  test('caps the SBD alias the same way', async () => {
+    coingeckoReturns(HIVE_PRICE, 1.63);
+    const quote = await utils.signupQuoteCrypto('SBD', null);
     expect(quote.amount).toBeCloseTo(2, 5);
   });
 
