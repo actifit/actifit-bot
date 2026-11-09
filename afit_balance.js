@@ -264,7 +264,7 @@ async function creditRewardOnce(db, user, amount, ledgerRow, dedupe, context, op
 		return { recorded: false, credited: false };
 	};
 	if (amount === 0) return { recorded: true, credited: false };
-	if (positiveAmount(amount) === null) return fail('invalid_amount');
+	if (!validUser(user) || positiveAmount(amount) === null) return fail('invalid_amount');
 
 	let lock;
 	try {
@@ -275,7 +275,8 @@ async function creditRewardOnce(db, user, amount, ledgerRow, dedupe, context, op
 	}
 	if (!lock) {
 		try {
-			const row = Object.assign({ date: new Date() }, ledgerRow, { user, token_count: positiveAmount(amount) });
+			const row = Object.assign({}, ledgerRow, { user, token_count: positiveAmount(amount) });
+			if (!row.date) row.date = new Date();
 			const r = await db.collection(LEDGER).updateOne(dedupe, { $setOnInsert: row }, { upsert: true });
 			const credited = !!(r && r.upsertedCount === 1);
 			if (credited) logLoud('AFIT lock busy for ' + user + ': ' + amount + ' AFIT [' + context + '] recorded, cached balance updates at the next rebuild');

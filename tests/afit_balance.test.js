@@ -330,6 +330,16 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		expect(await rows({ user: 'neg' })).toHaveLength(0);
 	});
 
+	test('creditRewardOnce: a negative reward is refused on the busy-lock path too', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const lock = await afit.acquireAfitLock(db, 'negbusy');
+		await expect(afit.creditRewardOnce(db, 'negbusy', -5, {}, { user: 'negbusy', reward_activity: 'Signup Reward' }, 't', { waitMs: 0 }))
+			.resolves.toEqual({ recorded: false, credited: false });
+		await lock.release();
+		spy.mockRestore();
+		expect(await rows({ user: 'negbusy' })).toHaveLength(0);
+	});
+
 	test('creditRewardOnce: waits for a held AFIT lock, then credits', async () => {
 		const lock = await afit.acquireAfitLock(db, 'waiter');
 		const key = { user: 'waiter', reward_activity: 'Signup Referral', referred: 'x' };
