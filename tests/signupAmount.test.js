@@ -135,6 +135,30 @@ describe('signupRequiredCrypto — live CoinGecko price', () => {
     expect(req).toBeLessThan(2); // must not demand a full 2 HBD for a $2 signup
   });
 
+  test('caps HBD at its $1 peg when CoinGecko quotes it higher', async () => {
+    // 2026-11-09: CoinGecko read HBD at $1.63 (one thin Upbit pair) -> a $2 signup asked
+    // only 1.227 HBD. Hive's own market had HBD at ~$0.99.
+    coingeckoReturns(HIVE_PRICE, 1.63);
+    const quote = await utils.signupQuoteCrypto('HBD', null);
+    expect(quote.amount).toBeCloseTo(2, 5);
+    expect(quote.live).toBe(true);
+    const req = await utils.signupRequiredCrypto('HBD', null);
+    expect(req).toBeCloseTo(1.8, 5);
+    expect(1.227).toBeLessThan(req); // the old underpriced quote is now an underpayment
+  });
+
+  test('still prices HBD exactly at $1.00', async () => {
+    coingeckoReturns(HIVE_PRICE, 1.0);
+    const quote = await utils.signupQuoteCrypto('HBD', null);
+    expect(quote.amount).toBeCloseTo(2, 5);
+  });
+
+  test('the HBD cap does not touch HIVE pricing', async () => {
+    coingeckoReturns(1.63, 1.63);
+    const quote = await utils.signupQuoteCrypto('HIVE', null);
+    expect(quote.amount).toBeCloseTo(2 / 1.63, 5);
+  });
+
   test('scales with a configured signupCostUsd', async () => {
     coingeckoReturns(HIVE_PRICE, HBD_PRICE);
     cfg.signupCostUsd = 3;

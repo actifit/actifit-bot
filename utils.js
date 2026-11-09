@@ -767,6 +767,10 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		const prices = await signupUsdPrices();
 		let unit = isHbd ? prices.hbd : prices.hive;
 		let live = !!(unit && unit > 0);
+		// Never value HBD above its $1 peg. CoinGecko's HBD price can come from one thin
+		// exchange pair (Upbit HBD/BTC read $1.63 on 2026-11-09 while Hive's own market was
+		// ~$0.99), which priced a $2 signup at 1.227 HBD. Below $1 we still use the quote.
+		if (isHbd && unit > 1) unit = 1.0;
 		// Fallback 1 (HIVE): the bot's own recently-refreshed price (server-side, never the client).
 		if ((!unit || unit <= 0) && !isHbd && botHivePrice && botHivePrice.hive
 			&& isFinite(parseFloat(botHivePrice.hive.usd)) && parseFloat(botHivePrice.hive.usd) > 0) {
