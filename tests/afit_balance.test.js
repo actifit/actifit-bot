@@ -181,6 +181,17 @@ describe('amount rules (no database)', () => {
 	});
 });
 
+describe('creditRewardOnce (no database)', () => {
+	test('a failed ledger write is reported as not recorded', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const db = { collection: () => ({ updateOne: async () => { throw new Error('db down'); } }) };
+		await expect(afit.creditRewardOnce(db, 'u', 100, {}, { user: 'u', reward_activity: 'Signup Reward' }, 't'))
+			.resolves.toEqual({ recorded: false, credited: false });
+		expect(spy.mock.calls.join(' ')).toMatch(/reward NOT recorded for u 100 AFIT \[t\] - ledger_failed db down/);
+		spy.mockRestore();
+	});
+});
+
 const MONGO_URI = process.env.MONGO_TEST_URI;
 (MONGO_URI ? describe : describe.skip)('against a real MongoDB', () => {
 	const { MongoClient } = require('mongodb');
@@ -281,6 +292,83 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		// a later repeat is a duplicate too
 		await expect(afit.creditAfit(db, 'fred', 25, row, { dedupe: { user: 'fred', se_trx_ref: 'trx-1' } })).resolves.toMatchObject({ duplicate: true });
 		expect(await balance('fred')).toBe(26);
+	});
+
+	test('creditRewardOnce: a signup reward shows in the cached balance at once, and only once', async () => {
+		// sometester2 (2026-11-09): the ledger had the 100 AFIT Signup Reward, the balance read 0
+		const key = { user: 'newbie', reward_activity: 'Signup Reward' };
+		const row = { reward_activity: 'Signup Reward', note: 'Successful Signup' };
+		await expect(afit.creditRewardOnce(db, 'newbie', 100, row, key, 'signup-reward')).resolves.toEqual({ recorded: true, credited: true });
+		expect(await balance('newbie')).toBe(100);
+		await expect(afit.creditRewardOnce(db, 'newbie', 100, row, key, 'signup-reward')).resolves.toEqual({ recorded: true, credited: false });
+		expect(await balance('newbie')).toBe(100);
+		expect(await rows(key)).toHaveLength(1);
+	});
+
+	test('creditRewardOnce: a reward already in the ledger (written the old way) is not credited again', async () => {
+		await db.collection('token_transactions').insertOne({ user: 'oldie', reward_activity: 'Signup Reward', token_count: 100 });
+		await db.collection('user_tokens').insertOne({ _id: 'oldie', user: 'oldie', tokens: 100 });
+		const key = { user: 'oldie', reward_activity: 'Signup Reward' };
+		await expect(afit.creditRewardOnce(db, 'oldie', 100, {}, key, 't')).resolves.toEqual({ recorded: true, credited: false });
+		expect(await balance('oldie')).toBe(100);
+	});
+
+	test('creditRewardOnce: a referral reward is keyed per referred account', async () => {
+		await db.collection('user_tokens').insertOne({ _id: 'ref', user: 'ref', tokens: 7 });
+		const key = (n) => ({ user: 'ref', reward_activity: 'Signup Referral', referred: n });
+		await afit.creditRewardOnce(db, 'ref', 20, { referred: 'a1' }, key('a1'), 't');
+		await afit.creditRewardOnce(db, 'ref', 20, { referred: 'a1' }, key('a1'), 't');
+		await afit.creditRewardOnce(db, 'ref', 20, { referred: 'a2' }, key('a2'), 't');
+		expect(await balance('ref')).toBe(47);
+		expect(await rows({ user: 'ref' })).toHaveLength(2);
+	});
+
+	test('creditRewardOnce: a negative reward is refused, not reported as recorded', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		await expect(afit.creditRewardOnce(db, 'neg', -5, {}, { user: 'neg', reward_activity: 'Signup Reward' }, 't')).resolves.toEqual({ recorded: false, credited: false });
+		spy.mockRestore();
+		expect(await rows({ user: 'neg' })).toHaveLength(0);
+	});
+
+	test('creditRewardOnce: a negative reward is refused on the busy-lock path too', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const lock = await afit.acquireAfitLock(db, 'negbusy');
+		await expect(afit.creditRewardOnce(db, 'negbusy', -5, {}, { user: 'negbusy', reward_activity: 'Signup Reward' }, 't', { waitMs: 0 }))
+			.resolves.toEqual({ recorded: false, credited: false });
+		await lock.release();
+		spy.mockRestore();
+		expect(await rows({ user: 'negbusy' })).toHaveLength(0);
+	});
+
+	test('creditRewardOnce: waits for a held AFIT lock, then credits', async () => {
+		const lock = await afit.acquireAfitLock(db, 'waiter');
+		const key = { user: 'waiter', reward_activity: 'Signup Referral', referred: 'x' };
+		const p = afit.creditRewardOnce(db, 'waiter', 20, {}, key, 't', { waitMs: 5000 });
+		await new Promise((r) => setTimeout(r, 300));
+		expect(await rows(key)).toHaveLength(0); // nothing written while the lock is held
+		await lock.release();
+		await expect(p).resolves.toEqual({ recorded: true, credited: true });
+		expect(await balance('waiter')).toBe(20);
+	});
+
+	test('creditRewardOnce: a lock that stays busy still records the reward in the ledger', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const lock = await afit.acquireAfitLock(db, 'busy');
+		await db.collection('user_tokens').insertOne({ _id: 'busy', user: 'busy', tokens: 5 });
+		const key = { user: 'busy', reward_activity: 'Signup Referral', referred: 'y' };
+		await expect(afit.creditRewardOnce(db, 'busy', 20, {}, key, 't', { waitMs: 0 })).resolves.toEqual({ recorded: true, credited: true });
+		await lock.release();
+		spy.mockRestore();
+		const r = await rows(key);
+		expect(r).toHaveLength(1);
+		expect(r[0].token_count).toBe(20);
+		expect(await balance('busy')).toBe(5); // the cache is left to the rebuild, never double counted
+	});
+
+	test('creditRewardOnce: a zero reward writes nothing', async () => {
+		await expect(afit.creditRewardOnce(db, 'zed', 0, {}, { user: 'zed', reward_activity: 'Signup Reward' }, 't')).resolves.toEqual({ recorded: true, credited: false });
+		expect(await rows({ user: 'zed' })).toHaveLength(0);
+		expect(await balance('zed')).toBeNull();
 	});
 
 	test('the deposit index rejects a second row for one trx, and ignores rows without one', async () => {

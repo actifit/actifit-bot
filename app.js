@@ -7178,25 +7178,12 @@ const storeSignupTransaction = async function (req){
 			note: 'Successful Signup',
 		}
 		
-		//make sure we're not double rewarding user
-		query = { 
-			user: req.query.new_account,
-			reward_activity: 'Signup Reward',
-		};
-				
-		try{
-		  // awaited: un-awaited, a failed write was an unhandled rejection (process exit) and
-		  // the user was told about a reward that was never recorded
-		  let transaction = await db.collection('token_transactions')
-				.replaceOne(query, new_transaction, { upsert: true });
-		  result = true;
-		  
-		  //also notify user of AFIT payment
-		  utils.sendNotification(db, req.query.new_account, 'actifit', 'receive_afit', 'payment', 'You received "' + signupAfitReward + ' AFIT" for signing up with Actifit', 'https://actifit.io/'+req.query.new_account+'/wallet');
-		  
-		}catch(e){
-		  console.log(e);
-		  result = false;
+		// once per account; also raises the cached balance, so the reward shows at once
+		const reward = await afitBalance.creditRewardOnce(db, req.query.new_account, signupAfitReward, new_transaction,
+			{ user: req.query.new_account, reward_activity: 'Signup Reward' }, 'signup-reward');
+		result = reward.recorded;
+		if (reward.credited) {
+			utils.sendNotification(db, req.query.new_account, 'actifit', 'receive_afit', 'payment', 'You received "' + signupAfitReward + ' AFIT" for signing up with Actifit', 'https://actifit.io/'+req.query.new_account+'/wallet');
 		}
 		console.log(result);
 	}
@@ -7224,23 +7211,12 @@ const storeReferralReward = async function (req){
 		note: 'Referral reward for signup of user '+req.query.new_account,
 	}
 	
-	//make sure we're not double rewarding user
-	let query = { 
-		user: req.query.referrer,
-		reward_activity: 'Signup Referral',
-		referred: req.query.new_account,
-	};
-	
-	try{
-		let transaction = await db.collection('token_transactions')
-			.replaceOne(query, new_transaction, { upsert: true });
-		refRewarded = true;
-		
-		//also notify user of AFIT payment
-		utils.sendNotification(db, req.query.referrer, 'actifit', 'receive_afit', 'payment', 'You received "' + req.query.afit_reward * config.referrerBonus + ' AFIT" for referring '+req.query.new_account+' to Actifit', 'https://actifit.io/'+req.query.referrer+'/wallet');
-		  
-	}catch(e){
-	  console.log(e);
+	// once per referred account; also raises the referrer's cached balance at once
+	const reward = await afitBalance.creditRewardOnce(db, req.query.referrer, referralAmount, new_transaction,
+		{ user: req.query.referrer, reward_activity: 'Signup Referral', referred: req.query.new_account }, 'signup-referral');
+	refRewarded = reward.recorded;
+	if (reward.credited) {
+		utils.sendNotification(db, req.query.referrer, 'actifit', 'receive_afit', 'payment', 'You received "' + referralAmount + ' AFIT" for referring '+req.query.new_account+' to Actifit', 'https://actifit.io/'+req.query.referrer+'/wallet');
 	}
 	
 	console.log('success');
