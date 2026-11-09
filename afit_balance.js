@@ -248,16 +248,50 @@ async function creditAfit(db, user, amount, ledgerRow, opts = {}) {
  * daily rebuild. A repeat is not an error (the reward is already there), and a zero amount
  * writes nothing.
  *
+ * Runs under the per-user AFIT lock, like every other balance writer: a rebuild landing
+ * between the ledger row and the $inc would otherwise count the reward twice. If the lock
+ * stays busy, the reward still goes into the ledger (and so into the next rebuild) but the
+ * cached balance is not raised - never lose a reward over a lock.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.waitMs=30000]  how long to wait for the lock
  * @returns {Promise<{recorded: boolean, credited: boolean}>} recorded: the reward is in the
  *          ledger (now or before); credited: this call added it.
  */
-async function creditRewardOnce(db, user, amount, ledgerRow, dedupe, context) {
+async function creditRewardOnce(db, user, amount, ledgerRow, dedupe, context, opts = {}) {
+	const fail = (reason) => {
+		logLoud('reward NOT recorded for ' + user + ' ' + amount + ' AFIT [' + context + '] - ' + reason);
+		return { recorded: false, credited: false };
+	};
 	if (amount === 0) return { recorded: true, credited: false };
-	const r = await creditAfit(db, user, amount, ledgerRow, { dedupe, context });
-	if (r.ok) return { recorded: true, credited: true };
-	if (r.duplicate) return { recorded: true, credited: false };
-	logLoud('reward NOT recorded for ' + user + ' ' + amount + ' AFIT [' + context + '] - ' + r.reason + (r.error ? ' ' + r.error.message : ''));
-	return { recorded: false, credited: false };
+	if (positiveAmount(amount) === null) return fail('invalid_amount');
+
+	let lock;
+	try {
+		lock = await acquireAfitLock(db, user, { waitMs: Number.isFinite(opts.waitMs) ? opts.waitMs : 30000 });
+	} catch (err) {
+		lock = null;
+		logLoud('AFIT lock failed for ' + user + ' [' + context + '] - ' + (err && err.message));
+	}
+	if (!lock) {
+		try {
+			const row = Object.assign({ date: new Date() }, ledgerRow, { user, token_count: positiveAmount(amount) });
+			const r = await db.collection(LEDGER).updateOne(dedupe, { $setOnInsert: row }, { upsert: true });
+			const credited = !!(r && r.upsertedCount === 1);
+			if (credited) logLoud('AFIT lock busy for ' + user + ': ' + amount + ' AFIT [' + context + '] recorded, cached balance updates at the next rebuild');
+			return { recorded: true, credited };
+		} catch (err) {
+			return fail('ledger_failed ' + (err && err.message));
+		}
+	}
+	try {
+		const r = await creditAfit(db, user, amount, ledgerRow, { dedupe, context });
+		if (r.ok) return { recorded: true, credited: true };
+		if (r.duplicate) return { recorded: true, credited: false };
+		return fail(r.reason + (r.error ? ' ' + r.error.message : ''));
+	} finally {
+		await lock.release();
+	}
 }
 
 /**

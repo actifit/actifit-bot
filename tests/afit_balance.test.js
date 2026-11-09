@@ -323,6 +323,38 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		expect(await rows({ user: 'ref' })).toHaveLength(2);
 	});
 
+	test('creditRewardOnce: a negative reward is refused, not reported as recorded', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		await expect(afit.creditRewardOnce(db, 'neg', -5, {}, { user: 'neg', reward_activity: 'Signup Reward' }, 't')).resolves.toEqual({ recorded: false, credited: false });
+		spy.mockRestore();
+		expect(await rows({ user: 'neg' })).toHaveLength(0);
+	});
+
+	test('creditRewardOnce: waits for a held AFIT lock, then credits', async () => {
+		const lock = await afit.acquireAfitLock(db, 'waiter');
+		const key = { user: 'waiter', reward_activity: 'Signup Referral', referred: 'x' };
+		const p = afit.creditRewardOnce(db, 'waiter', 20, {}, key, 't', { waitMs: 5000 });
+		await new Promise((r) => setTimeout(r, 300));
+		expect(await rows(key)).toHaveLength(0); // nothing written while the lock is held
+		await lock.release();
+		await expect(p).resolves.toEqual({ recorded: true, credited: true });
+		expect(await balance('waiter')).toBe(20);
+	});
+
+	test('creditRewardOnce: a lock that stays busy still records the reward in the ledger', async () => {
+		const spy = jest.spyOn(console, 'log').mockImplementation(() => {});
+		const lock = await afit.acquireAfitLock(db, 'busy');
+		await db.collection('user_tokens').insertOne({ _id: 'busy', user: 'busy', tokens: 5 });
+		const key = { user: 'busy', reward_activity: 'Signup Referral', referred: 'y' };
+		await expect(afit.creditRewardOnce(db, 'busy', 20, {}, key, 't', { waitMs: 0 })).resolves.toEqual({ recorded: true, credited: true });
+		await lock.release();
+		spy.mockRestore();
+		const r = await rows(key);
+		expect(r).toHaveLength(1);
+		expect(r[0].token_count).toBe(20);
+		expect(await balance('busy')).toBe(5); // the cache is left to the rebuild, never double counted
+	});
+
 	test('creditRewardOnce: a zero reward writes nothing', async () => {
 		await expect(afit.creditRewardOnce(db, 'zed', 0, {}, { user: 'zed', reward_activity: 'Signup Reward' }, 't')).resolves.toEqual({ recorded: true, credited: false });
 		expect(await rows({ user: 'zed' })).toHaveLength(0);
