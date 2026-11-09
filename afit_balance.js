@@ -243,6 +243,24 @@ async function creditAfit(db, user, amount, ledgerRow, opts = {}) {
 }
 
 /**
+ * Give a one-time reward (signup, referral) once per `dedupe` key, so it shows in the cached
+ * balance at once. These used to write only the ledger row, and the user saw 0 AFIT until the
+ * daily rebuild. A repeat is not an error (the reward is already there), and a zero amount
+ * writes nothing.
+ *
+ * @returns {Promise<{recorded: boolean, credited: boolean}>} recorded: the reward is in the
+ *          ledger (now or before); credited: this call added it.
+ */
+async function creditRewardOnce(db, user, amount, ledgerRow, dedupe, context) {
+	if (amount === 0) return { recorded: true, credited: false };
+	const r = await creditAfit(db, user, amount, ledgerRow, { dedupe, context });
+	if (r.ok) return { recorded: true, credited: true };
+	if (r.duplicate) return { recorded: true, credited: false };
+	logLoud('reward NOT recorded for ' + user + ' ' + amount + ' AFIT [' + context + '] - ' + r.reason + (r.error ? ' ' + r.error.message : ''));
+	return { recorded: false, credited: false };
+}
+
+/**
  * One holder at a time per key: insertOne on a fixed _id is atomic, so a second
  * concurrent caller gets a duplicate-key error. A lock older than LOCK_STALE_MS is
  * from a crashed request and is replaced. `owner` stops a request that outlived the
@@ -619,6 +637,7 @@ module.exports = {
 	undoDebitDetailed,
 	restoreAfit,
 	creditAfit,
+	creditRewardOnce,
 	acquireLock,
 	acquireAfitLock,
 	depositQuantity,
