@@ -222,7 +222,10 @@ async function blurtCallWithFailover(run, label){
 
 // Fetch one account, tolerating a node that stalls, errors, or (like a desynced node)
 // answers 200 OK with result: null. Returns the account object, or null.
-async function fetchOneAccount(chainLnk, account_name, label){
+// `outcome`, when passed, gets `failed = true` if no node gave a usable answer, so a caller can
+// tell "the account does not exist" (null, failed false) from "the lookup failed" (null, failed true).
+async function fetchOneAccount(chainLnk, account_name, label, outcome){
+	const markFailed = () => { if (outcome) outcome.failed = true; };
 	// Hive keeps its original single-shot behaviour: hive-js already has working
 	// alternative_api_endpoints wired up at module load, so a second layer here would
 	// only multiply retries.
@@ -239,6 +242,7 @@ async function fetchOneAccount(chainLnk, account_name, label){
 			return null;
 		}catch(err){
 			console.log(label + ': account lookup failed for ' + account_name + ' - ' + (err && err.message ? err.message : err));
+			markFailed();
 			return null;
 		}
 	}
@@ -274,8 +278,11 @@ async function fetchOneAccount(chainLnk, account_name, label){
 		// Loud on purpose. Silence here would be the same undiagnosable failure this
 		// change exists to end - config-example.json ships without these keys.
 		console.log(label + ': no usable Blurt endpoint configured (check blurt_node / alt_blurt_nodes) - cannot look up ' + account_name);
+		markFailed();
 		return null;
 	}
+	// a node that answered without the account is a real "no account"; only errors on every node are a failure
+	let anyNodeAnswered = false;
 
 	for (const endpoint of endpoints){
 		const via = ' @' + endpoint;
@@ -293,22 +300,33 @@ async function fetchOneAccount(chainLnk, account_name, label){
 				label + ' getAccounts(' + account_name + ')' + via
 			);
 			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
+			if (Array.isArray(account_res)) anyNodeAnswered = true;
 			console.log(label + ': node returned no account data for ' + account_name + via);
 		}catch(err){
 			console.log(label + ': account lookup failed for ' + account_name + via + ' - ' + (err && err.message ? err.message : err));
 		}
 	}
+	if (!anyNodeAnswered) markFailed();
 	return null;
 }
 
- async function getAccountData(account_name, bchain){
+ // opts.markErrors: report a failed lookup as {error: true} instead of null, so a client can tell
+ // "no account on this chain" from "the chain's nodes are down". Off by default: existing callers
+ // (website, iOS, older Android builds) only know null-or-account.
+ async function getAccountData(account_name, bchain, opts){
+	const markErrors = !!(opts && opts.markErrors);
+	const lookup = async (chainLnk, label) => {
+		const outcome = {};
+		const acct = await fetchOneAccount(chainLnk, account_name, label, outcome);
+		return (acct === null && outcome.failed && markErrors) ? { error: true } : acct;
+	};
 	let account = {};
 	if (!bchain || bchain == ''){
-		account['HIVE'] = await fetchOneAccount(hive, account_name, 'getAccountData HIVE');
-		account['BLURT'] = await fetchOneAccount(blurt, account_name, 'getAccountData BLURT');
+		account['HIVE'] = await lookup(hive, 'getAccountData HIVE');
+		account['BLURT'] = await lookup(blurt, 'getAccountData BLURT');
 	}else{
 		let chainLnk = await setProperNode(bchain);
-		account[bchain] = await fetchOneAccount(chainLnk, account_name, 'getAccountData ' + bchain);
+		account[bchain] = await lookup(chainLnk, 'getAccountData ' + bchain);
 	}
 	return account;
  }
