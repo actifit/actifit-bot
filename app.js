@@ -2281,7 +2281,7 @@ app.get('/getAccountData', async function (req, res){
 		res.send({})
 		return;
 	}
-	let outc = await utils.getAccountData(req.query.user, req.query.bchain);
+	let outc = await utils.getAccountData(req.query.user, req.query.bchain, { markErrors: req.query.markErrors == '1' });
 	res.send(outc);
 })
 
