@@ -237,7 +237,8 @@ async function fetchOneAccount(chainLnk, account_name, label, outcome){
 				label + ' getAccounts(' + account_name + ')'
 			);
 			if (Array.isArray(account_res) && account_res.length && account_res[0]) return account_res[0];
-			// a broken/desynced node can answer 200 OK with result: null
+			// a broken/desynced node can answer 200 OK with result: null - a failure, not "no account"
+			if (!Array.isArray(account_res)) markFailed();
 			console.log(label + ': node returned no account data for ' + account_name);
 			return null;
 		}catch(err){

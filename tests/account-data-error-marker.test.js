@@ -7,6 +7,7 @@
  */
 
 const blurt = require('@blurtfoundation/blurtjs');
+const hive = require('@hiveio/hive-js');
 const utils = require('../utils');
 
 const config = utils.getConfig();
@@ -72,5 +73,38 @@ describe('getAccountData error marker (Blurt)', () => {
     stubBlurt(() => [ACCT]);
     const out = await utils.getAccountData('someuser', 'BLURT', { markErrors: true });
     expect(out.BLURT).toEqual(ACCT);
+  });
+
+  test('every node answering result: null (desynced) is a failure, not "no account"', async () => {
+    stubBlurt(() => null);
+    const out = await utils.getAccountData('someuser', 'BLURT', { markErrors: true });
+    expect(out.BLURT).toEqual({ error: true });
+  });
+
+  test('one desynced node and one "no account" answer: null', async () => {
+    stubBlurt((url) => (url.startsWith(NODES[0]) ? null : []));
+    const out = await utils.getAccountData('someuser', 'BLURT', { markErrors: true });
+    expect(out.BLURT).toBeNull();
+  });
+});
+
+describe('getAccountData error marker (Hive)', () => {
+  afterEach(() => jest.restoreAllMocks());
+  beforeEach(() => jest.spyOn(console, 'log').mockImplementation(() => {}));
+
+  test('a failing Hive lookup gives {error: true} with markErrors, null without', async () => {
+    jest.spyOn(hive.api, 'getAccountsAsync').mockRejectedValue(new Error('503'));
+    expect((await utils.getAccountData('someuser', 'HIVE', { markErrors: true })).HIVE).toEqual({ error: true });
+    expect((await utils.getAccountData('someuser', 'HIVE')).HIVE).toBeNull();
+  });
+
+  test('a Hive node answering result: null is a failure', async () => {
+    jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue(null);
+    expect((await utils.getAccountData('someuser', 'HIVE', { markErrors: true })).HIVE).toEqual({ error: true });
+  });
+
+  test('a Hive "no account" answer stays null', async () => {
+    jest.spyOn(hive.api, 'getAccountsAsync').mockResolvedValue([]);
+    expect((await utils.getAccountData('someuser', 'HIVE', { markErrors: true })).HIVE).toBeNull();
   });
 });
