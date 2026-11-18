@@ -1223,7 +1223,7 @@ app.get('/adRewardIntent', checkHdrs, async function (req, res) {
 	try{
 		const out = await adReward.createIntent(db, req.query.user, req.query.tier);
 		if (out.error) return res.send({status: 'error', error: out.error});
-		return res.send({status: 'success', id: out.id});
+		return res.send({status: 'success', id: out.id, amount: out.amount});
 	}catch(err){
 		console.log('adRewardIntent', err && err.message ? err.message : err);
 		return res.send({status: 'error'});

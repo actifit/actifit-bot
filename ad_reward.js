@@ -54,8 +54,9 @@ async function rewardedToday(db, user, tier, nowMs) {
 }
 
 /**
- * Store a one-time reward intent and return its id.
- * @returns {Promise<{id}|{error: 'bad_tier'|'already_claimed'}>}
+ * Store a one-time reward intent and return its id and amount (the app shows the amount
+ * once the ad has been watched).
+ * @returns {Promise<{id, amount}|{error: 'bad_tier'|'already_claimed'}>}
  */
 async function createIntent(db, user, tier, now = Date.now) {
 	tier = parseInt(tier, 10);
@@ -66,15 +67,16 @@ async function createIntent(db, user, tier, now = Date.now) {
 	}
 	if (await rewardedToday(db, user, tier, now())) return { error: 'already_claimed' };
 	const id = crypto.randomBytes(16).toString('hex');
+	const amount = rewardAmount(tier);
 	await db.collection('ad_reward_intents').insertOne({
 		_id: id,
 		user,
 		tier,
-		amount: rewardAmount(tier),
+		amount,
 		expires_at: new Date(now() + INTENT_TTL_MS),
 		created_at: new Date(now()),
 	});
-	return { id };
+	return { id, amount };
 }
 
 /**

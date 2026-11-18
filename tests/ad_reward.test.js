@@ -67,10 +67,10 @@ describe('parseV1', () => {
 describe('intents', () => {
 	test('an intent pays once: the second consume finds nothing', async () => {
 		const db = fakeDb();
-		const { id } = await ar.createIntent(db, 'alice', '3', at(T0));
+		const { id, amount } = await ar.createIntent(db, 'alice', '3', at(T0));
 		expect(id).toMatch(/^[0-9a-f]{32}$/);
 		const doc = await ar.consumeIntent(db, id, at(T0 + 1000));
-		expect(doc).toMatchObject({ user: 'alice', tier: 3 });
+		expect(doc).toMatchObject({ user: 'alice', tier: 3, amount });
 		expect(doc.amount).toBeGreaterThanOrEqual(0.01);
 		expect(doc.amount).toBeLessThanOrEqual(7);
 		expect(await ar.consumeIntent(db, id, at(T0 + 2000))).toBeNull();
