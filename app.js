@@ -8,6 +8,7 @@ const { createFetchUserDataHandler } = require('./fetch_user_data');
 const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
+const adReward = require('./ad_reward');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -1114,6 +1115,39 @@ app.get('/ssv-verify',
   },
   async (req, res, next) => {
     // SSV Valid
+	// v1: "r1_<id>", a one-time intent from /adRewardIntent (no user/tier/amount sent to AdMob)
+	const intentId = req.query ? adReward.parseV1(req.query.custom_data) : null;
+	if (intentId){
+		const intent = await adReward.consumeIntent(db, intentId);
+		if (!intent){
+			return res.send({'error': 'Unknown or expired reward'});
+		}
+		if (rewardBanList!=null && rewardBanList.includes(intent.user)){
+			return res.send({'error': 'Account banned from rewards'});
+		}
+		if (await adReward.rewardedToday(db, intent.user, intent.tier, Date.now())){
+			return res.send({'error': 'Account already rewarded today for this tier'});
+		}
+		try{
+			await db.collection('token_transactions').insertOne({
+				user: intent.user,
+				reward_activity: 'Ad Reward',
+				token_count: intent.amount,
+				note: 'Rewarded '+intent.amount+ ' AFIT in app gadget prize for tier '+intent.tier,
+				tier: String(intent.tier),
+				custom_data: req.query.custom_data,
+				ad_network: req.query.ad_network,
+				ad_unit: req.query.ad_unit,
+				transaction_id: req.query.transaction_id,
+				date: new Date(),
+			});
+			utils.sendNotification(db, intent.user, 'actifit', 'receive_afit', 'payment', 'You received "' + intent.amount + ' AFIT" via actifit app gadget prize in tier '+intent.tier, 'https://actifit.io/'+intent.user+'/wallet');
+		}catch(err){
+			console.log(err);
+			return res.send({'error': 'Error performing buy action. DB storing issue'});
+		}
+		return res.send({status:'success'});
+	}
 	if (req.query && req.query.custom_data){
 		let data = req.query.custom_data.split('_');
 		console.log(data);
@@ -1175,6 +1209,26 @@ app.get('/ssv-verify',
 	//console.log('double success');
 	res.send({status:'success'});
   });
+
+// One-time id for a rewarded ad (see ad_reward.js). Follows /ssv-verify: paused while ad
+// rewards are disabled, so the app can tell the user instead of showing an unpaid ad.
+app.get('/adRewardIntent', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/adRewardIntent');
+	if (!req.query.user || req.query.user !== req.user._id) {
+		return res.send({status: 'error'});
+	}
+	if (rewardBanList!=null && rewardBanList.includes(req.query.user)){
+		return res.send({status: 'error', error: 'banned'});
+	}
+	try{
+		const out = await adReward.createIntent(db, req.query.user, req.query.tier);
+		if (out.error) return res.send({status: 'error', error: out.error});
+		return res.send({status: 'success', id: out.id});
+	}catch(err){
+		console.log('adRewardIntent', err && err.message ? err.message : err);
+		return res.send({status: 'error'});
+	}
+});
 
 app.get('/getDailyDelegationPool/', async function(req, res){
 	
