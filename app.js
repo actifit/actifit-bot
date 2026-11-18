@@ -1116,37 +1116,16 @@ app.get('/ssv-verify',
   async (req, res, next) => {
     // SSV Valid
 	// v1: "r1_<id>", a one-time intent from /adRewardIntent (no user/tier/amount sent to AdMob)
-	const intentId = req.query ? adReward.parseV1(req.query.custom_data) : null;
-	if (intentId){
-		const intent = await adReward.consumeIntent(db, intentId);
-		if (!intent){
-			return res.send({'error': 'Unknown or expired reward'});
-		}
-		if (rewardBanList!=null && rewardBanList.includes(intent.user)){
-			return res.send({'error': 'Account banned from rewards'});
-		}
-		if (await adReward.rewardedToday(db, intent.user, intent.tier, Date.now())){
-			return res.send({'error': 'Account already rewarded today for this tier'});
-		}
+	if (req.query && adReward.parseV1(req.query.custom_data)){
 		try{
-			await db.collection('token_transactions').insertOne({
-				user: intent.user,
-				reward_activity: 'Ad Reward',
-				token_count: intent.amount,
-				note: 'Rewarded '+intent.amount+ ' AFIT in app gadget prize for tier '+intent.tier,
-				tier: String(intent.tier),
-				custom_data: req.query.custom_data,
-				ad_network: req.query.ad_network,
-				ad_unit: req.query.ad_unit,
-				transaction_id: req.query.transaction_id,
-				date: new Date(),
-			});
-			utils.sendNotification(db, intent.user, 'actifit', 'receive_afit', 'payment', 'You received "' + intent.amount + ' AFIT" via actifit app gadget prize in tier '+intent.tier, 'https://actifit.io/'+intent.user+'/wallet');
+			const out = await adReward.payIntent(db, req.query,
+				(user) => rewardBanList!=null && rewardBanList.includes(user),
+				(user, amount, tier) => utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" via actifit app gadget prize in tier '+tier, 'https://actifit.io/'+user+'/wallet'));
+			return res.send(out.error ? {'error': out.error} : {status:'success'});
 		}catch(err){
-			console.log(err);
-			return res.send({'error': 'Error performing buy action. DB storing issue'});
+			console.log('ssv-verify v1', err && err.message ? err.message : err);
+			return res.send({'error': 'Error performing action'});
 		}
-		return res.send({status:'success'});
 	}
 	if (req.query && req.query.custom_data){
 		let data = req.query.custom_data.split('_');
@@ -1160,12 +1139,18 @@ app.get('/ssv-verify',
 			res.send({'error': 'Account banned from rewards'});
 			return;
 		}
+		// the legacy amount comes from the client: tier 1-4 only, capped at the tier maximum
+		const legacyAmount = adReward.capLegacyAmount(data[2], data[1]);
+		if (legacyAmount === null){
+			res.send({'error': 'Error performing action'});
+			return;
+		}
 		//send out AFIT reward to our user
 		let recordTrans = {
 			user: data[0],
 			reward_activity: 'Ad Reward',
-			token_count: parseFloat(data[1]),
-			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+			token_count: legacyAmount,
+			note: 'Rewarded '+legacyAmount+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
 			tier: data[2],
 			custom_data: req.query.custom_data,
 			ad_network: req.query.ad_network,
@@ -1195,7 +1180,7 @@ app.get('/ssv-verify',
 			let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 			
 			//also notify user of AFIT payment
-			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + data[1] + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
+			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + legacyAmount + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
 			
 			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
 			console.log('success inserting post data');
@@ -1223,7 +1208,7 @@ app.get('/adRewardIntent', checkHdrs, async function (req, res) {
 	try{
 		const out = await adReward.createIntent(db, req.query.user, req.query.tier);
 		if (out.error) return res.send({status: 'error', error: out.error});
-		return res.send({status: 'success', id: out.id, amount: out.amount});
+		return res.send({status: 'success', id: out.id});
 	}catch(err){
 		console.log('adRewardIntent', err && err.message ? err.message : err);
 		return res.send({status: 'error'});
