@@ -1,5 +1,5 @@
 /**
- * ad_reward.js: v1 rewarded-ad intents ("r1_<id>" SSV custom data).
+ * ad_reward.js: AdMob SSV callbacks and v1 rewarded-ad intents ("r1_<id>" custom data).
  * In-memory stand-in for the collections; real MongoDB runs when MONGO_TEST_URI is set.
  */
 
@@ -9,13 +9,12 @@ function fakeDb(opts = {}) {
 	const { bareDocs = false } = opts;
 	const intents = new Map();
 	const tx = [];
-	const claims = [];
-	const seen = new Set();
+	const seen = new Map();
 	const matchesTx = (d, q) => d.user === q.user && d.reward_activity === q.reward_activity
 		&& d.tier === q.tier && d.date >= q.date.$gte;
-	const sameClaim = (a, b) => a.user === b.user && a.tier === b.tier && a.day === b.day;
+	const dup = () => { const e = new Error('dup'); e.code = 11000; return e; };
 	return {
-		intents, tx, claims, seen, opts,
+		intents, tx, seen, opts,
 		collection(name) {
 			if (name === 'ad_reward_intents') return {
 				createIndex: async () => 'ok',
@@ -31,25 +30,26 @@ function fakeDb(opts = {}) {
 					return bareDocs ? hit : { value: hit };
 				},
 			};
-			if (name === 'ad_reward_claims') return {
-				createIndex: async () => 'ok',
-				insertOne: async (doc) => {
-					if (claims.some((c) => sameClaim(c, doc))) { const e = new Error('dup'); e.code = 11000; throw e; }
-					claims.push(doc); return {};
-				},
-				deleteOne: async (q) => { const i = claims.findIndex((c) => sameClaim(c, q)); if (i >= 0) claims.splice(i, 1); return {}; },
-			};
 			if (name === 'token_transactions') return {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
-				insertOne: async (doc) => { if (opts.failTxInsert) throw new Error('write failed'); tx.push(doc); return {}; },
+				insertOne: async (doc) => {
+					if (opts.failTxInsert) throw new Error('write failed');
+					if (doc._id && tx.some((d) => d._id === doc._id)) throw dup();
+					tx.push(doc);
+					// the write was applied, but the driver reports a failure (socket timeout)
+					if (opts.appliedThenFail) { opts.appliedThenFail = false; throw new Error('socket timeout'); }
+					return {};
+				},
 			};
 			if (name === 'ad_ssv_transactions') return {
 				createIndex: async () => 'ok',
 				insertOne: async (doc) => {
-					if (seen.has(doc._id)) { const e = new Error('dup'); e.code = 11000; throw e; }
-					seen.add(doc._id); return {};
+					if (seen.has(doc._id)) throw dup();
+					seen.set(doc._id, Object.assign({}, doc)); return {};
 				},
+				findOne: async (q) => seen.get(q._id) || null,
+				updateOne: async (q, u) => { if (seen.has(q._id)) Object.assign(seen.get(q._id), u.$set); return {}; },
 				deleteOne: async (q) => { seen.delete(q._id); return {}; },
 			};
 			throw new Error('unexpected collection ' + name);
@@ -181,7 +181,7 @@ describe('payIntent', () => {
 		expect(db.tx).toHaveLength(1);
 	});
 
-	test('two intents for one tier and day pay once (database claim marker)', async () => {
+	test('two intents for one tier and day pay once (the ledger row id is per user, tier and day)', async () => {
 		const db = fakeDb();
 		const a = await ar.createIntent(db, 'alice', 1, at(T0));
 		// a second id slipped in before the first was replaced
@@ -206,7 +206,7 @@ describe('payIntent', () => {
 		const log = jest.spyOn(console, 'log').mockImplementation(() => {});
 		const { id } = await ar.createIntent(db, 'alice', 2, at(T0));
 		await expect(ar.payIntent(db, q(id), notBanned, () => {}, at(T0))).rejects.toThrow('write failed');
-		expect(db.claims).toHaveLength(0);
+		expect(db.tx).toHaveLength(0);
 		expect(db.intents.has(id)).toBe(true);
 		expect(log).toHaveBeenCalledWith('ad reward NOT paid', id, 'alice', 2, 't1', 'write failed');
 		log.mockRestore();
@@ -274,9 +274,19 @@ describe('checkCallback (AdMob SSV shape)', () => {
 		expect(ar.checkCallback(good({ custom_data: 'signature_1_1_x' }), UNITS, NOW).ok).toBe(false);
 	});
 
-	test('refuses unknown and bracketed keys', () => {
+	test('refuses bracketed keys; accepts a new signed parameter (Google may add one)', () => {
 		const s = good().replace('&reward_amount=', '&custom_data[a]=1&reward_amount=');
 		expect(ar.checkCallback(s, UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good().replace('&reward_amount=', '&new_param=1&reward_amount='), UNITS, NOW).ok).toBe(true);
+	});
+
+	test('AdMob omits custom_data and user_id when unset; + is a space', () => {
+		const s = good().replace(/&custom_data=[^&]*/, '').replace(/&user_id=[^&]*/, '');
+		const r = ar.checkCallback(s, UNITS, NOW);
+		expect(r.ok).toBe(true);
+		expect(r.params.custom_data).toBeUndefined();
+		const plus = ar.checkCallback(good().replace(/custom_data=[^&]*/, 'custom_data=alice_1_1_10K+steps'), UNITS, NOW);
+		expect(plus.params.custom_data).toBe('alice_1_1_10K steps');
 	});
 
 	test('refuses stale and future timestamps, and a missing transaction id', () => {
@@ -292,12 +302,16 @@ describe('checkCallback (AdMob SSV shape)', () => {
 	});
 });
 
-describe('firstSeen (replay guard)', () => {
-	test('a transaction id is accepted once', async () => {
+describe('takeTransaction (replay guard)', () => {
+	test('new once; busy while the first copy is still being paid; done afterwards', async () => {
 		const db = fakeDb();
-		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(true);
-		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(false);
-		expect(await ar.firstSeen(db, 'tx2', T0)).toBe(true);
+		expect(await ar.takeTransaction(db, 'tx1', T0)).toBe('new');
+		expect(await ar.takeTransaction(db, 'tx1', T0 + 1000)).toBe('busy');
+		expect(await ar.takeTransaction(db, 'tx2', T0)).toBe('new');
+		// a crashed request does not block the id forever
+		expect(await ar.takeTransaction(db, 'tx1', T0 + 61000)).toBe('done');
+		db.seen.get('tx2').status = 'done';
+		expect(await ar.takeTransaction(db, 'tx2', T0 + 1000)).toBe('done');
 	});
 });
 
@@ -371,7 +385,7 @@ describe('handleCallback (the whole /ssv-verify route, real signatures)', () => 
 			.toEqual(['Account already rewarded today for this tier', 'success']);
 		expect(db.tx).toHaveLength(1);
 		expect(db.tx[0].token_count).toBe(10);
-		expect((await run(db, callback('Bad_1_1_x'))).body).toEqual({ error: 'Error performing action' });
+		expect((await run(db, callback('b@d_1_1_x'))).body).toEqual({ error: 'Error performing action' });
 		expect((await run(db, callback('alice_5abc_2_x'))).body).toEqual({ error: 'Error performing action' });
 	});
 
@@ -410,10 +424,61 @@ describe('handleCallback (the whole /ssv-verify route, real signatures)', () => 
 		expect(fetches).toBe(2);
 	});
 
-	test('keys unreachable at the first callback: refused (AdMob retries), never paid', async () => {
+	test('keys unreachable: 503 so AdMob retries, and a retry seconds later is paid', async () => {
 		const db = fakeDb();
 		const failing = async () => { throw new Error('offline'); };
-		expect((await run(db, callback('alice_1_1_x'), { fetchKeys: failing })).status).toBe(400);
+		const raw = callback('alice_1_1_x');
+		expect(await run(db, raw, { fetchKeys: failing })).toEqual({ status: 503, body: 'Try again' });
 		expect(db.tx).toHaveLength(0);
+		expect((await run(db, raw, { now: at(T0 + 4000) })).body).toEqual({ status: 'success' });
+	});
+
+	test('one unreadable key does not drop the others', async () => {
+		const db = fakeDb();
+		const mixed = async () => ({ keys: [{ keyId: 1, pem: 'garbage' }, { keyId: 3335741209, pem: PEM }] });
+		expect((await run(db, callback('alice_1_1_x'), { fetchKeys: mixed })).body).toEqual({ status: 'success' });
+	});
+
+	test('keys older than 24 h keep verifying while a background refresh runs', async () => {
+		const db = fakeDb();
+		await run(db, callback('alice_1_1_x'));
+		let release;
+		const slow = () => new Promise((r) => { release = () => r({ keys: [{ keyId: 3335741209, pem: PEM }] }); });
+		const later = T0 + 25 * 3600e3;
+		const out = await run(db, callback('bob_1_1_x', { ts: later - 1000 }), { now: at(later), fetchKeys: slow });
+		expect(out.body).toEqual({ status: 'success' });
+		release();
+	});
+
+	test('a retry while the first copy is still being paid gets 503, not "duplicate"', async () => {
+		const db = fakeDb();
+		const raw = callback('alice_1_1_x');
+		await run(db, raw);
+		const tx = raw.match(/transaction_id=([^&]+)/)[1];
+		db.seen.get(tx).status = 'processing';
+		expect(await run(db, raw)).toEqual({ status: 503, body: 'Try again' });
+	});
+
+	test('a write that failed but was applied is not paid twice on the retry', async () => {
+		const db = fakeDb({ appliedThenFail: true });
+		const raw = callback('alice_3_2_x');
+		expect((await run(db, raw)).status).toBe(500);
+		expect((await run(db, raw)).body).toEqual({ error: 'Account already rewarded today for this tier' });
+		expect(db.tx).toHaveLength(1);
+	});
+
+	test('legacy: an iOS name with capitals is paid to the lowercase account', async () => {
+		const db = fakeDb();
+		expect((await run(db, callback('Alice_1_1_x'))).body).toEqual({ status: 'success' });
+		expect(db.tx[0]).toMatchObject({ user: 'alice', _id: ar.rewardRowId('alice', 1, T0) });
+	});
+
+	test('a restored intent stays usable for the retry even if it was about to expire', async () => {
+		const db = fakeDb({ failTxInsert: true });
+		const { id } = await ar.createIntent(db, 'alice', 4, at(T0 - 29 * 60e3));
+		const raw = callback('r1_' + id);
+		expect((await run(db, raw)).status).toBe(500);
+		db.opts.failTxInsert = false;
+		expect((await run(db, raw, { now: at(T0 + 2 * 60e3) })).body).toEqual({ status: 'success' });
 	});
 });
