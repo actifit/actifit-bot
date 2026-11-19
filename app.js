@@ -8,6 +8,7 @@ const { createFetchUserDataHandler } = require('./fetch_user_data');
 const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
+const adReward = require('./ad_reward');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -1114,6 +1115,18 @@ app.get('/ssv-verify',
   },
   async (req, res, next) => {
     // SSV Valid
+	// v1: "r1_<id>", a one-time intent from /adRewardIntent (no user/tier/amount sent to AdMob)
+	if (req.query && adReward.parseV1(req.query.custom_data)){
+		try{
+			const out = await adReward.payIntent(db, req.query,
+				(user) => rewardBanList!=null && rewardBanList.includes(user),
+				(user, amount, tier) => utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" via actifit app gadget prize in tier '+tier, 'https://actifit.io/'+user+'/wallet'));
+			return res.send(out.error ? {'error': out.error} : {status:'success'});
+		}catch(err){
+			console.log('ssv-verify v1', err && err.message ? err.message : err);
+			return res.send({'error': 'Error performing action'});
+		}
+	}
 	if (req.query && req.query.custom_data){
 		let data = req.query.custom_data.split('_');
 		console.log(data);
@@ -1126,12 +1139,18 @@ app.get('/ssv-verify',
 			res.send({'error': 'Account banned from rewards'});
 			return;
 		}
+		// the legacy amount comes from the client: tier 1-4 only, capped at the tier maximum
+		const legacyAmount = adReward.capLegacyAmount(data[2], data[1]);
+		if (legacyAmount === null){
+			res.send({'error': 'Error performing action'});
+			return;
+		}
 		//send out AFIT reward to our user
 		let recordTrans = {
 			user: data[0],
 			reward_activity: 'Ad Reward',
-			token_count: parseFloat(data[1]),
-			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+			token_count: legacyAmount,
+			note: 'Rewarded '+legacyAmount+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
 			tier: data[2],
 			custom_data: req.query.custom_data,
 			ad_network: req.query.ad_network,
@@ -1161,7 +1180,7 @@ app.get('/ssv-verify',
 			let transaction = await db.collection('token_transactions').insertOne(recordTrans);
 			
 			//also notify user of AFIT payment
-			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + data[1] + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
+			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + legacyAmount + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
 			
 			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
 			console.log('success inserting post data');
@@ -1175,6 +1194,26 @@ app.get('/ssv-verify',
 	//console.log('double success');
 	res.send({status:'success'});
   });
+
+// One-time id for a rewarded ad (see ad_reward.js). Follows /ssv-verify: paused while ad
+// rewards are disabled, so the app can tell the user instead of showing an unpaid ad.
+app.get('/adRewardIntent', checkHdrs, async function (req, res) {
+	return securityDisabled(res, '/adRewardIntent');
+	if (!req.query.user || req.query.user !== req.user._id) {
+		return res.send({status: 'error'});
+	}
+	if (rewardBanList!=null && rewardBanList.includes(req.query.user)){
+		return res.send({status: 'error', error: 'banned'});
+	}
+	try{
+		const out = await adReward.createIntent(db, req.query.user, req.query.tier);
+		if (out.error) return res.send({status: 'error', error: out.error});
+		return res.send({status: 'success', id: out.id});
+	}catch(err){
+		console.log('adRewardIntent', err && err.message ? err.message : err);
+		return res.send({status: 'error'});
+	}
+});
 
 app.get('/getDailyDelegationPool/', async function(req, res){
 	
