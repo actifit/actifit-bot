@@ -9,6 +9,7 @@ const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
 const adReward = require('./ad_reward');
+const threespeakUpload = require('./threespeak_upload');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -5496,6 +5497,31 @@ async function performAddFriendTrx(req){
 		return ({status: 'error'});
 	}
 }
+
+/* 3Speak uploads (embed service): a short-lived upload token for the logged-in user. The
+ * 3Speak API key stays here; the app uploads the file straight to 3Speak with the token. */
+app.post('/video/uploadToken', checkHdrs, async function (req, res) {
+	try {
+		const out = await threespeakUpload.issueUploadToken(db, req.user._id, {
+			apiKey: config.threespeak_embed_api_key,
+			short: req.body && (req.body.short === true || req.body.short === 'true'),
+		});
+		res.status(out.status).send(out.body);
+	} catch (err) {
+		console.log('video/uploadToken: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not start the upload, please try again' });
+	}
+});
+
+/* the logged-in user's recent 3Speak uploads, newest first */
+app.get('/video/myUploads', checkHdrs, async function (req, res) {
+	try {
+		res.send({ uploads: await threespeakUpload.listUploads(db, req.user._id) });
+	} catch (err) {
+		console.log('video/myUploads: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not load your videos' });
+	}
+});
 
 /* end point for keeping track of user uploaded vids */
 //test sample: https://studio.3speak.tv/mobile/api/video/@hispapro/efqxuxlv
