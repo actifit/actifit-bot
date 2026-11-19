@@ -33,6 +33,7 @@ function fakeDb(opts = {}) {
 			if (name === 'token_transactions') return {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
+				findOne: async (q) => tx.find((d) => d.user === q.user) || null,
 				insertOne: async (doc) => {
 					if (opts.failTxInsert) throw new Error('write failed');
 					if (doc._id && tx.some((d) => d._id === doc._id)) throw dup();
@@ -43,7 +44,10 @@ function fakeDb(opts = {}) {
 				},
 			};
 			if (name === 'user_tokens') return {
-				findOne: async (q) => (KNOWN.has(q._id) ? { _id: q._id } : null),
+				findOne: async (q) => {
+					if (opts.failKnownLookup) { opts.failKnownLookup = false; throw new Error('read failed'); }
+					return KNOWN.has(q._id) ? { _id: q._id } : null;
+				},
 			};
 			if (name === 'ad_ssv_transactions') return {
 				createIndex: async () => 'ok',
@@ -475,6 +479,25 @@ describe('handleCallback (the whole /ssv-verify route, real signatures)', () => 
 		const db = fakeDb();
 		expect((await run(db, callback('stranger_1_1_x'))).body).toEqual({ error: 'Unknown account' });
 		expect(db.tx).toHaveLength(0);
+	});
+
+	test('legacy: an account with ledger rows but no balance row yet is known', async () => {
+		const db = fakeDb();
+		db.tx.push({ _id: 'x', user: 'newbie', reward_activity: 'Signup', tier: '', date: new Date(T0 - 1000) });
+		expect((await run(db, callback('newbie_1_1_x'))).body).toEqual({ status: 'success' });
+	});
+
+	test('legacy: a failed account lookup answers 500 and the retry is paid', async () => {
+		const db = fakeDb({ failKnownLookup: true });
+		const raw = callback('alice_1_3_x');
+		expect((await run(db, raw)).status).toBe(500);
+		expect((await run(db, raw)).body).toEqual({ status: 'success' });
+	});
+
+	test('legacy: after the cut-off even an unknown account gets the update message', async () => {
+		const db = fakeDb();
+		expect((await run(db, callback('stranger_1_1_x'), { legacyUntil: new Date(T0).toISOString() })).body)
+			.toEqual({ error: 'Please update the app to claim rewards' });
 	});
 
 	test('legacy: switched off from the configured date, v1 unaffected', async () => {

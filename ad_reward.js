@@ -255,10 +255,27 @@ async function payIntent(db, ssv, banned, notify, now = Date.now) {
 // a Hive account name; the legacy format names the user without any proof
 const HIVE_USER_RE = /^[a-z][a-z0-9.-]{2,15}$/;
 
-/** Is `legacyUntil` (config.ad_legacy_until, a date) set and already past? */
+/**
+ * Is `legacyUntil` (config.ad_legacy_until, an ISO date such as "2027-01-01T00:00:00Z")
+ * set and already past? An unreadable value leaves the format on, loudly.
+ */
 function legacyRetired(legacyUntil, nowMs) {
-	const until = legacyUntil ? Date.parse(legacyUntil) : NaN;
-	return !isNaN(until) && nowMs >= until;
+	if (!legacyUntil) return false;
+	const until = Date.parse(String(legacyUntil));
+	if (isNaN(until)) {
+		console.log('ad_legacy_until is not a date, legacy ad rewards stay on: ' + legacyUntil);
+		return false;
+	}
+	return nowMs >= until;
+}
+
+/**
+ * Has Actifit seen this account before: a balance row, or any AFIT ledger row (a first
+ * reward today is in the ledger before the nightly balance rebuild writes user_tokens)?
+ */
+async function knownAccount(db, user) {
+	if (await db.collection('user_tokens').findOne({ _id: user }, { projection: { _id: 1 } })) return true;
+	return !!(await db.collection('token_transactions').findOne({ user }, { projection: { _id: 1 } }));
 }
 
 /**
@@ -276,9 +293,7 @@ async function payLegacy(db, ssv, banned, notify, nowMs = Date.now(), legacyUnti
 	if (banned(user)) return { error: 'Account banned from rewards' };
 	const amount = capLegacyAmount(data[2], data[1]);
 	if (amount === null) return { error: 'Error performing action' };
-	if (!(await db.collection('user_tokens').findOne({ _id: user }, { projection: { _id: 1 } }))) {
-		return { error: 'Unknown account' };
-	}
+	if (!(await knownAccount(db, user))) return { error: 'Unknown account' };
 	try {
 		return await payReward(db, {
 			user, tier: data[2], amount, ssv,
@@ -386,7 +401,11 @@ async function handleCallback(db, rawQuery, { adUnits, banned, notify, now = Dat
 	try {
 		out = { status: 'success' };
 		if (parseV1(ssv.custom_data)) out = await payIntent(db, ssv, banned, notify, now);
-		else if (ssv.custom_data) out = await payLegacy(db, ssv, banned, notify, now(), legacyUntil);
+		else if (ssv.custom_data) {
+			out = await payLegacy(db, ssv, banned, notify, now(), legacyUntil);
+			// counted before ad_legacy_until is chosen: how many real users would be refused
+			if (out.error) console.log('ssv-verify legacy refused: ' + out.error + ' | ' + ssv.custom_data + ' | ' + ssv.transaction_id);
+		}
 	} catch (err) {
 		await db.collection('ad_ssv_transactions').deleteOne({ _id: ssv.transaction_id }).catch(() => {});
 		return { status: 500, body: 'Try again' };
