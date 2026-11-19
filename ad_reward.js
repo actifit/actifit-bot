@@ -29,15 +29,82 @@ let indexesReady = null;
 
 function ensureIndexes(db) {
 	if (!indexesReady) {
-		indexesReady = Promise.all([
+		indexesReady = Promise.resolve().then(() => Promise.all([
 			db.collection('ad_reward_intents').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
 			db.collection('ad_reward_intents').createIndex({ user: 1, tier: 1 }),
+			db.collection('ad_ssv_transactions').createIndex({ expires_at: 1 }, { expireAfterSeconds: 0 }),
 			// one v1 payment per user, tier and UTC day, enforced by the database
 			db.collection('ad_reward_claims').createIndex({ user: 1, tier: 1, day: 1 }, { unique: true }),
 			db.collection('token_transactions').createIndex({ user: 1, reward_activity: 1, tier: 1, date: -1 }),
-		]).catch((err) => { indexesReady = null; console.log('ad_reward indexes: ' + (err && err.message ? err.message : err)); });
+		])).catch((err) => { indexesReady = null; console.log('ad_reward indexes: ' + (err && err.message ? err.message : err)); });
 	}
 	return indexesReady;
+}
+
+// The parameters AdMob sends, in the order it sends them; signature and key_id come last
+// and everything before "&signature=" is what Google signed.
+const SSV_KEYS = new Set(['ad_network', 'ad_unit', 'custom_data', 'reward_amount', 'reward_item',
+	'timestamp', 'transaction_id', 'user_id', 'signature', 'key_id']);
+const SSV_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SSV_MAX_SKEW_MS = 5 * 60 * 1000;
+
+/** "ca-app-pub-1/2345" and "2345" name the same ad unit. */
+function adUnitId(v) {
+	return String(v).split('/').pop().trim();
+}
+
+/**
+ * Checks the shape of an AdMob SSV callback before its signature is trusted. Google signs
+ * every AdMob app's callbacks with the same keys, so a valid signature alone only proves
+ * that SOME app showed SOME ad: the ad unit must be ours. And express-admob-ssv verifies
+ * only the text before the first "signature", so nothing may follow the signature and
+ * key_id, and no parameter may repeat (Express turns a repeated parameter into an array,
+ * the first copy signed and the second not).
+ *
+ * @param rawQuery the query string exactly as received, without the "?"
+ * @param adUnits our rewarded ad unit ids (config.admob_ad_units); empty refuses everything
+ * @returns {{ok: true, params: Object}|{ok: false, error: string}}
+ */
+function checkCallback(rawQuery, adUnits, nowMs = Date.now()) {
+	const fail = (error) => ({ ok: false, error });
+	const units = new Set((Array.isArray(adUnits) ? adUnits : []).map(adUnitId).filter(Boolean));
+	if (!units.size) return fail('ad units not configured');
+	if (typeof rawQuery !== 'string') return fail('bad query');
+	const sig = rawQuery.indexOf('&signature=');
+	// the signed part must not contain "signature", or the library would verify only a prefix
+	if (sig < 0 || rawQuery.slice(0, sig).includes('signature')) return fail('bad signature position');
+	if (!/^&signature=[^&]+&key_id=[0-9]+$/.test(rawQuery.slice(sig))) return fail('parameters after the signature');
+	const params = {};
+	for (const pair of rawQuery.split('&')) {
+		const eq = pair.indexOf('=');
+		const key = eq < 0 ? pair : pair.slice(0, eq);
+		if (!SSV_KEYS.has(key) || Object.prototype.hasOwnProperty.call(params, key)) return fail('unexpected or repeated parameter');
+		let value;
+		try { value = decodeURIComponent((eq < 0 ? '' : pair.slice(eq + 1)).replace(/\+/g, ' ')); } catch (e) { return fail('bad encoding'); }
+		params[key] = value;
+	}
+	if (!params.ad_unit || !units.has(adUnitId(params.ad_unit))) return fail('not our ad unit');
+	if (!params.transaction_id) return fail('no transaction id');
+	const ts = Number(params.timestamp);
+	if (!(ts > nowMs - SSV_MAX_AGE_MS && ts < nowMs + SSV_MAX_SKEW_MS)) return fail('stale or future timestamp');
+	return { ok: true, params };
+}
+
+/**
+ * Records an AdMob transaction id; false when it was seen before (a replayed callback).
+ * Kept a little longer than SSV_MAX_AGE_MS, after which the timestamp check refuses it.
+ */
+async function firstSeen(db, transactionId, nowMs = Date.now()) {
+	ensureIndexes(db);
+	try {
+		await db.collection('ad_ssv_transactions').insertOne({
+			_id: transactionId, expires_at: new Date(nowMs + 2 * SSV_MAX_AGE_MS),
+		});
+		return true;
+	} catch (err) {
+		if (err && err.code === 11000) return false;
+		throw err;
+	}
 }
 
 /** Random amount for `tier`, floored to 3 decimals and never below the tier minimum. */
@@ -157,5 +224,5 @@ async function payIntent(db, query, banned, notify, now = Date.now) {
 }
 
 module.exports = {
-	TIERS, INTENT_TTL_MS, rewardAmount, capLegacyAmount, parseV1, rewardedToday, createIntent, consumeIntent, payIntent,
+	TIERS, INTENT_TTL_MS, checkCallback, firstSeen, rewardAmount, capLegacyAmount, parseV1, rewardedToday, createIntent, consumeIntent, payIntent,
 };

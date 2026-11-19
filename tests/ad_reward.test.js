@@ -9,6 +9,7 @@ function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
 	const intents = new Map();
 	const tx = [];
 	const claims = [];
+	const seen = new Set();
 	const matchesTx = (d, q) => d.user === q.user && d.reward_activity === q.reward_activity
 		&& d.tier === q.tier && d.date >= q.date.$gte;
 	const sameClaim = (a, b) => a.user === b.user && a.tier === b.tier && a.day === b.day;
@@ -41,6 +42,13 @@ function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
 				insertOne: async (doc) => { if (failTxInsert) throw new Error('write failed'); tx.push(doc); return {}; },
+			};
+			if (name === 'ad_ssv_transactions') return {
+				createIndex: async () => 'ok',
+				insertOne: async (doc) => {
+					if (seen.has(doc._id)) { const e = new Error('dup'); e.code = 11000; throw e; }
+					seen.add(doc._id); return {};
+				},
 			};
 			throw new Error('unexpected collection ' + name);
 		},
@@ -216,5 +224,76 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		const { id } = await ar.createIntent(db, 'alice', 4);
 		const results = await Promise.all([1, 2, 3, 4, 5].map(() => ar.consumeIntent(db, id)));
 		expect(results.filter(Boolean)).toHaveLength(1);
+	});
+});
+
+describe('checkCallback (AdMob SSV shape)', () => {
+	const UNITS = ['ca-app-pub-123/5550001'];
+	const NOW = T0;
+	const good = (over = {}) => {
+		const p = Object.assign({
+			ad_network: '5450213213286189855', ad_unit: '5550001', custom_data: 'r1_' + 'a'.repeat(32),
+			reward_amount: '1', reward_item: 'gift', timestamp: String(NOW - 1000), transaction_id: 'abc123',
+			user_id: '', signature: 'MEUCIQ-sig', key_id: '3335741209',
+		}, over);
+		return Object.keys(p).map((k) => k + '=' + encodeURIComponent(p[k])).join('&');
+	};
+
+	test('accepts a callback from our ad unit, both id forms', () => {
+		const r = ar.checkCallback(good(), UNITS, NOW);
+		expect(r.ok).toBe(true);
+		expect(r.params.custom_data).toBe('r1_' + 'a'.repeat(32));
+		expect(ar.checkCallback(good({ ad_unit: 'ca-app-pub-123/5550001' }), ['5550001'], NOW).ok).toBe(true);
+	});
+
+	test('refuses another app ad unit (Google signs every app with the same keys)', () => {
+		expect(ar.checkCallback(good({ ad_unit: '9990001' }), UNITS, NOW)).toEqual({ ok: false, error: 'not our ad unit' });
+	});
+
+	test('fails closed when no ad units are configured', () => {
+		expect(ar.checkCallback(good(), undefined, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good(), [], NOW).ok).toBe(false);
+	});
+
+	test('refuses anything after signature and key_id (the library does not verify it)', () => {
+		expect(ar.checkCallback(good() + '&ad_unit=5550001', UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good() + '&x=1', UNITS, NOW).ok).toBe(false);
+	});
+
+	test('refuses a repeated parameter (Express would make it an array)', () => {
+		const s = good().replace('&reward_amount=', '&ad_unit=5550001&reward_amount=');
+		expect(ar.checkCallback(s, UNITS, NOW).ok).toBe(false);
+	});
+
+	test('refuses "signature" inside the signed part (the library would verify a prefix)', () => {
+		const s = good({ ad_unit: '9990001' }).replace('&reward_amount=', '&signaturex=1&ad_unit=5550001&reward_amount=');
+		expect(ar.checkCallback(s, UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good({ custom_data: 'signature_1_1_x' }), UNITS, NOW).ok).toBe(false);
+	});
+
+	test('refuses unknown and bracketed keys', () => {
+		const s = good().replace('&reward_amount=', '&custom_data[a]=1&reward_amount=');
+		expect(ar.checkCallback(s, UNITS, NOW).ok).toBe(false);
+	});
+
+	test('refuses stale and future timestamps, and a missing transaction id', () => {
+		expect(ar.checkCallback(good({ timestamp: String(NOW - 25 * 3600e3) }), UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good({ timestamp: String(NOW + 10 * 60e3) }), UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good({ timestamp: 'x' }), UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(good({ transaction_id: '' }), UNITS, NOW).ok).toBe(false);
+	});
+
+	test('refuses a query with no signature', () => {
+		expect(ar.checkCallback('ad_unit=5550001&custom_data=x', UNITS, NOW).ok).toBe(false);
+		expect(ar.checkCallback(undefined, UNITS, NOW).ok).toBe(false);
+	});
+});
+
+describe('firstSeen (replay guard)', () => {
+	test('a transaction id is accepted once', async () => {
+		const db = fakeDb();
+		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(true);
+		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(false);
+		expect(await ar.firstSeen(db, 'tx2', T0)).toBe(true);
 	});
 });

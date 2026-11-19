@@ -1100,25 +1100,36 @@ app.get('/adRewardsReview/', async function (req, res) {
 app.get('/ssv-verify',
   async (req, res, next) => {
 	return securityDisabled(res, '/ssv-verify');
-    try {
-      const url = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
-      await verifyAdMobSSV(url, true); // true for throwing errors
-	  console.log('success');
-    }
-    catch(error) {
-      // Do something
-      // or log somethings
-	  console.log('ssv-verify', error);
-      return res.status(400).end(error.message);
-    }
-    next();
+	// shape first (our ad unit, nothing unsigned, fresh), then Google's signature, then replay
+	const q = req.originalUrl.indexOf('?');
+	const rawQuery = q >= 0 ? req.originalUrl.slice(q + 1) : '';
+	const shape = adReward.checkCallback(rawQuery, config.admob_ad_units);
+	if (!shape.ok){
+		console.log('ssv-verify refused: ' + shape.error);
+		return res.status(400).end('Invalid callback');
+	}
+	try {
+		// the library reads only the query string; the host is not part of what Google signs
+		await verifyAdMobSSV(new URL('https://ssv.invalid/?' + rawQuery), true);
+		if (!(await adReward.firstSeen(db, shape.params.transaction_id))){
+			console.log('ssv-verify replayed transaction ' + shape.params.transaction_id);
+			return res.send({'error': 'Duplicate callback'});
+		}
+	}
+	catch(error) {
+		console.log('ssv-verify', error && error.message ? error.message : error);
+		return res.status(400).end('Invalid callback');
+	}
+	// only the signed values from here on, never req.query
+	req.ssv = shape.params;
+	next();
   },
   async (req, res, next) => {
-    // SSV Valid
+	const ssv = req.ssv;
 	// v1: "r1_<id>", a one-time intent from /adRewardIntent (no user/tier/amount sent to AdMob)
-	if (req.query && adReward.parseV1(req.query.custom_data)){
+	if (adReward.parseV1(ssv.custom_data)){
 		try{
-			const out = await adReward.payIntent(db, req.query,
+			const out = await adReward.payIntent(db, ssv,
 				(user) => rewardBanList!=null && rewardBanList.includes(user),
 				(user, amount, tier) => utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" via actifit app gadget prize in tier '+tier, 'https://actifit.io/'+user+'/wallet'));
 			return res.send(out.error ? {'error': out.error} : {status:'success'});
@@ -1127,10 +1138,9 @@ app.get('/ssv-verify',
 			return res.send({'error': 'Error performing action'});
 		}
 	}
-	if (req.query && req.query.custom_data){
-		let data = req.query.custom_data.split('_');
-		console.log(data);
-		console.log('storing successful ad reward');
+	if (ssv.custom_data){
+		// legacy "user_amount_tier_label" (iOS and older Android builds)
+		let data = ssv.custom_data.split('_');
 		if (data.length < 4 || isNaN(data[1])){
 			res.send({'error': 'Error performing action'});
 			return;
@@ -1145,53 +1155,31 @@ app.get('/ssv-verify',
 			res.send({'error': 'Error performing action'});
 			return;
 		}
-		//send out AFIT reward to our user
-		let recordTrans = {
-			user: data[0],
-			reward_activity: 'Ad Reward',
-			token_count: legacyAmount,
-			note: 'Rewarded '+legacyAmount+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
-			tier: data[2],
-			custom_data: req.query.custom_data,
-			ad_network: req.query.ad_network,
-			ad_unit: req.query.ad_unit,
-			transaction_id: req.query.transaction_id,
-			date: new Date(),
-		}
-		let startDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		console.log(startDate);
-		let matchQuery = {
-							user: data[0], 
-							tier: data[2], 
-							date: {
-								$gte: new Date(startDate)
-							}
-						}
-		console.log(matchQuery);
-		//check if user already has more than 1 entry for today for this same tier, if so disregard this new reward
-		let existingReward = await db.collection('token_transactions').find(matchQuery).toArray();
-		console.log(existingReward);
-		if (existingReward!=null && existingReward.length > 1){
-			res.send({'error': 'Account already rewarded today for this tier'});
-			return;
-		}
 		try{
-			console.log(recordTrans);
-			let transaction = await db.collection('token_transactions').insertOne(recordTrans);
-			
-			//also notify user of AFIT payment
+			// one reward per user, tier and UTC day, the same rule as v1 (this allowed two)
+			if (await adReward.rewardedToday(db, data[0], data[2], Date.now())){
+				res.send({'error': 'Account already rewarded today for this tier'});
+				return;
+			}
+			await db.collection('token_transactions').insertOne({
+				user: data[0],
+				reward_activity: 'Ad Reward',
+				token_count: legacyAmount,
+				note: 'Rewarded '+legacyAmount+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
+				tier: data[2],
+				custom_data: ssv.custom_data,
+				ad_network: ssv.ad_network,
+				ad_unit: ssv.ad_unit,
+				transaction_id: ssv.transaction_id,
+				date: new Date(),
+			});
 			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + legacyAmount + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
-			
-			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
-			console.log('success inserting post data');
 		}catch(err){
-			console.log(err);
+			console.log('ssv-verify legacy', err && err.message ? err.message : err);
 			res.send({'error': 'Error performing buy action. DB storing issue'});
 			return;
 		}
 	}
-	//
-	//console.log('double success');
 	res.send({status:'success'});
   });
 
