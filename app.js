@@ -249,6 +249,7 @@ client.connect()
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
+	    threespeakUpload.ensureUploadIndexes(db); // 3Speak upload tokens per user
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -5500,7 +5501,7 @@ async function performAddFriendTrx(req){
 
 /* 3Speak uploads (embed service): a short-lived upload token for the logged-in user. The
  * 3Speak API key stays here; the app uploads the file straight to 3Speak with the token. */
-app.post('/video/uploadToken', checkHdrs, async function (req, res) {
+app.post('/video/uploadToken', checkHdrs, keyRotationGate, async function (req, res) {
 	try {
 		const out = await threespeakUpload.issueUploadToken(db, req.user._id, {
 			apiKey: config.threespeak_embed_api_key,

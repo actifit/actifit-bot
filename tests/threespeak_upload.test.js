@@ -6,15 +6,27 @@ const tu = require('../threespeak_upload');
 
 function fakeDb() {
 	const rows = [];
+	let seq = 0;
 	return {
 		rows,
 		collection(name) {
 			if (name !== tu.COLLECTION) throw new Error('unexpected collection ' + name);
 			return {
 				countDocuments: async (q) => rows.filter((r) => r.user === q.user && r.created >= q.created.$gte).length,
-				insertOne: async (doc) => { rows.push(doc); return {}; },
+				insertOne: async (doc) => {
+					const _id = ++seq;
+					rows.push({ ...doc, _id });
+					await new Promise((r) => setImmediate(r)); // let parallel requests interleave
+					return { insertedId: _id };
+				},
+				deleteOne: async (q) => {
+					const i = rows.findIndex((r) => r._id === q._id);
+					if (i >= 0) rows.splice(i, 1);
+					return {};
+				},
+				updateOne: async (q, u) => { Object.assign(rows.find((r) => r._id === q._id), u.$set); return {}; },
 				find: (q) => {
-					let out = rows.filter((r) => r.user === q.user);
+					let out = rows.filter((r) => r.user === q.user && (!q.permlink || r.permlink !== undefined));
 					const cur = {
 						sort: () => { out = out.slice().sort((a, b) => b.created - a.created); return cur; },
 						limit: (n) => { out = out.slice(0, n); return cur; },
@@ -94,6 +106,25 @@ describe('issueUploadToken', () => {
 		expect((await tu.issueUploadToken(db, 'bob', { apiKey: 'K', fetchImpl: f, now: () => T0 + 100 })).status).toBe(200);
 		const nextDay = T0 + 24 * 60 * 60 * 1000 + 50;
 		expect((await tu.issueUploadToken(db, 'alice', { apiKey: 'K', fetchImpl: f, now: () => nextDay })).status).toBe(200);
+	});
+
+	test('parallel requests cannot get past the daily limit', async () => {
+		const db = fakeDb();
+		const slowFetch = async (url, opts) => {
+			await new Promise((r) => setTimeout(r, 5));
+			return okFetch()(url, opts);
+		};
+		const outs = await Promise.all(Array.from({ length: 40 }, () =>
+			tu.issueUploadToken(db, 'alice', { apiKey: 'K', fetchImpl: slowFetch, now: () => T0 })));
+		expect(outs.filter((o) => o.status === 200).length).toBeLessThanOrEqual(tu.DAILY_LIMIT);
+		expect(outs.filter((o) => o.status === 200).length).toBeGreaterThan(0);
+		expect(db.rows.length).toBeLessThanOrEqual(tu.DAILY_LIMIT);
+	});
+
+	test('a token that 3Speak did not issue is not listed', async () => {
+		const db = fakeDb();
+		db.rows.push({ _id: 999, user: 'alice', created: new Date(T0) }); // reserved, never filled
+		expect(await tu.listUploads(db, 'alice')).toEqual([]);
 	});
 
 	test('3Speak errors answer 502, record nothing, and do not count against the limit', async () => {
