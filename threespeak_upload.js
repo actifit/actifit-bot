@@ -23,6 +23,9 @@ const FETCH_TIMEOUT_MS = 15000;
 const COLLECTION = 'threespeak_uploads';
 const LINK_WINDOW_MS = 3 * DAY_MS; // stop looking for a report post after this
 const LINK_BATCH = 50;
+const RECHECK_MS = 5 * 60 * 1000;      // a video whose report isn't posted yet
+const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000; // after 3Speak refuses, 10 min doubling up to this
+const HIVE_TIMEOUT_MS = 15000;
 
 /** Asks 3Speak for an upload token. Returns the parsed body, or throws with .status set. */
 async function fetchToken(apiKey, owner, short, fetchImpl = fetch) {
@@ -108,7 +111,8 @@ async function linkToPost(apiKey, permlink, post, fetchImpl = fetch) {
 		}),
 		signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
 	});
-	if (!res.ok) {
+	// 409: already linked (e.g. our record update failed after an earlier success)
+	if (!res.ok && res.status !== 409) {
 		let detail = '';
 		try { detail = String((await res.json()).error || '').slice(0, 200); } catch (e) { /* not JSON */ }
 		const err = new Error('3Speak link failed: HTTP ' + res.status + (detail ? ' ' + detail : ''));
@@ -117,32 +121,58 @@ async function linkToPost(apiKey, permlink, post, fetchImpl = fetch) {
 	}
 }
 
+function withTimeout(promise, ms) {
+	let timer;
+	const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('timed out')), ms); });
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 /**
  * Links each recent, not yet linked upload whose report post exists. `getContent(author,
  * permlink)` reads Hive (condenser get_content; a missing post comes back with an empty
- * author). Uploads never used in a report are simply skipped until they age out.
+ * author). Each checked upload gets a nextCheck time and goes to the back of the queue, so
+ * uploads never used in a report cannot crowd out the rest; 3Speak refusals back off.
  * Returns { checked, linked, failed }.
  */
-async function linkPendingUploads(db, { apiKey, getContent, fetchImpl, now = Date.now } = {}) {
+async function linkPendingUploads(db, { apiKey, getContent, fetchImpl, now = Date.now, hiveTimeoutMs = HIVE_TIMEOUT_MS } = {}) {
 	const out = { checked: 0, linked: 0, failed: 0 };
 	if (!apiKey) return out;
 	const col = db.collection(COLLECTION);
+	const t = now();
 	const rows = await col.find(
-		{ permlink: { $exists: true }, linked: { $exists: false }, created: { $gte: new Date(now() - LINK_WINDOW_MS) } },
-		{ projection: { user: 1, permlink: 1 } },
-	).sort({ created: -1 }).limit(LINK_BATCH).toArray();
+		{
+			permlink: { $exists: true }, linked: { $exists: false }, created: { $gte: new Date(t - LINK_WINDOW_MS) },
+			$or: [{ nextCheck: { $exists: false } }, { nextCheck: { $lte: new Date(t) } }],
+		},
+		{ projection: { user: 1, permlink: 1, linkFailures: 1 } },
+	).sort({ nextCheck: 1 }).limit(LINK_BATCH).toArray();
+	const later = (row, ms) => col.updateOne({ _id: row._id }, { $set: { nextCheck: new Date(t + ms) } }).catch(() => {});
 	for (const row of rows) {
 		out.checked++;
+		let post;
 		try {
-			const post = await getContent(row.user, row.permlink);
-			// the post must be the uploader's own, at the video's permlink
-			if (!post || post.author !== row.user || post.permlink !== row.permlink) continue;
+			post = await withTimeout(getContent(row.user, row.permlink), hiveTimeoutMs);
+		} catch (err) {
+			out.failed++;
+			console.log('3speak link ' + row.user + '/' + row.permlink + ': hive ' + err.message);
+			await later(row, RECHECK_MS);
+			continue;
+		}
+		// the post must be the uploader's own, at the video's permlink
+		if (!post || post.author !== row.user || post.permlink !== row.permlink) {
+			await later(row, RECHECK_MS);
+			continue;
+		}
+		try {
 			await linkToPost(apiKey, row.permlink, post, fetchImpl);
-			await col.updateOne({ _id: row._id }, { $set: { linked: new Date(now()) } });
+			await col.updateOne({ _id: row._id }, { $set: { linked: new Date(t) } });
 			out.linked++;
 		} catch (err) {
 			out.failed++;
-			console.log('3speak link ' + row.user + '/' + row.permlink + ': ' + err.message);
+			const failures = (row.linkFailures || 0) + 1;
+			console.log('3speak link ' + row.user + '/' + row.permlink + ' (attempt ' + failures + '): ' + err.message);
+			const wait = Math.min(2 * RECHECK_MS * 2 ** (failures - 1), MAX_BACKOFF_MS);
+			await col.updateOne({ _id: row._id }, { $set: { linkFailures: failures, nextCheck: new Date(t + wait) } }).catch(() => {});
 		}
 	}
 	return out;

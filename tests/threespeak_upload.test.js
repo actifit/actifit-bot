@@ -172,9 +172,12 @@ describe('linkPendingUploads', () => {
 			rows,
 			collection: () => ({
 				find: (q) => {
-					let out = rows.filter((r) => r.permlink !== undefined && r.linked === undefined && r.created >= q.created.$gte);
+					const at = q.$or[1].nextCheck.$lte;
+					let out = rows.filter((r) => r.permlink !== undefined && r.linked === undefined
+						&& r.created >= q.created.$gte && (r.nextCheck === undefined || r.nextCheck <= at));
 					const cur = {
-						sort: () => { out = out.slice().sort((a, b) => b.created - a.created); return cur; },
+						// Mongo sorts a missing field first
+						sort: (spec) => { const [k, dir] = Object.entries(spec)[0]; out = out.slice().sort((a, b) => dir * ((a[k] || 0) - (b[k] || 0))); return cur; },
 						limit: (n) => { out = out.slice(0, n); return cur; },
 						toArray: async () => out,
 					};
@@ -234,6 +237,52 @@ describe('linkPendingUploads', () => {
 		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => T0 });
 		expect(out).toEqual({ checked: 2, linked: 1, failed: 1 });
 		expect(db.rows[1].linked).toBeInstanceOf(Date);
+	});
+
+	test('uploads never used in a report cannot starve an older one that was posted', async () => {
+		const rows = [];
+		for (let i = 0; i < 60; i++) rows.push({ _id: i, user: 'u' + i, permlink: 'n' + i, created: new Date(T0 - i * 1000) });
+		rows.push({ _id: 99, user: 'alice', permlink: 'old', created: new Date(T0 - 2 * 24 * 3600 * 1000) });
+		const db = linkDb(rows);
+		const calls = [];
+		const getContent = async (a, p) => (a === 'alice' ? post(a, p) : empty);
+		let t = T0;
+		for (let run = 0; run < 3 && !db.rows[60].linked; run++, t += 5 * 60000) {
+			await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => t });
+		}
+		expect(db.rows[60].linked).toBeInstanceOf(Date);
+		expect(calls.map((c) => c.url)).toEqual(['https://embed2.3speak.tv/video/old/hive']);
+	});
+
+	test('"already linked" (409) counts as linked', async () => {
+		const db = linkDb([{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) }]);
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent: async (a, p) => post(a, p), fetchImpl: linkFetch([], 409), now: () => T0 });
+		expect(out.linked).toBe(1);
+		expect(db.rows[0].linked).toBeInstanceOf(Date);
+	});
+
+	test('3Speak refusals back off instead of retrying every run', async () => {
+		const db = linkDb([{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) }]);
+		const calls = [];
+		const getContent = async (a, p) => post(a, p);
+		for (let m = 0; m <= 6 * 60; m += 5) {
+			await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls, 400), now: () => T0 + m * 60000 });
+		}
+		// 6 hours of 5-minute runs: tries at 0, 10, 30, 70, 150, 310 minutes
+		expect(calls).toHaveLength(6);
+		expect(db.rows[0].linkFailures).toBe(6);
+		expect(db.rows[0].linked).toBeUndefined();
+	});
+
+	test('a Hive read that never answers times out and the run moves on', async () => {
+		const db = linkDb([
+			{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) },
+			{ _id: 2, user: 'bob', permlink: 'p2', created: new Date(T0 - 1000) },
+		]);
+		const getContent = (a, p) => (a === 'alice' ? new Promise(() => {}) : Promise.resolve(post(a, p)));
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch([]), now: () => T0, hiveTimeoutMs: 20 });
+		expect(out).toEqual({ checked: 2, linked: 1, failed: 1 });
+		expect(db.rows[0].nextCheck).toEqual(new Date(T0 + 5 * 60000));
 	});
 
 	test('never links someone else\'s post, old uploads, or without a key', async () => {
