@@ -56,10 +56,9 @@ function adUnitId(v) {
 /**
  * Checks the shape of an AdMob SSV callback before its signature is trusted. Google signs
  * every AdMob app's callbacks with the same keys, so a valid signature alone only proves
- * that SOME app showed SOME ad: the ad unit must be ours. And express-admob-ssv verifies
- * only the text before the first "signature", so nothing may follow the signature and
- * key_id, and no parameter may repeat (Express turns a repeated parameter into an array,
- * the first copy signed and the second not).
+ * that SOME app showed SOME ad: the ad unit must be ours. Google signs the text before
+ * "&signature=", so nothing may follow the signature and key_id, and no parameter may
+ * repeat (Express turns a repeated parameter into an array, one copy signed and one not).
  *
  * @param rawQuery the query string exactly as received, without the "?"
  * @param adUnits our rewarded ad unit ids (config.admob_ad_units); empty refuses everything
@@ -78,7 +77,7 @@ function checkCallback(rawQuery, adUnits, nowMs = Date.now()) {
 	for (const pair of rawQuery.split('&')) {
 		const eq = pair.indexOf('=');
 		const key = eq < 0 ? pair : pair.slice(0, eq);
-		if (!SSV_KEYS.has(key) || Object.prototype.hasOwnProperty.call(params, key)) return fail('unexpected or repeated parameter');
+		if (!SSV_KEYS.has(key) || Object.prototype.hasOwnProperty.call(params, key)) return fail('unexpected or repeated parameter: ' + key.slice(0, 40));
 		let value;
 		try { value = decodeURIComponent((eq < 0 ? '' : pair.slice(eq + 1)).replace(/\+/g, ' ')); } catch (e) { return fail('bad encoding'); }
 		params[key] = value;
@@ -180,49 +179,178 @@ async function consumeIntent(db, id, now = Date.now) {
 	return doc || null;
 }
 
+const ALREADY = { error: 'Account already rewarded today for this tier' };
+
 /**
- * Pays a verified v1 SSV callback. `query` is the AdMob callback query, `banned(user)` the
- * ban-list check, `notify(user, amount, tier)` the user notification.
- * @returns {Promise<{status: 'success', user, amount}|{error: string}>}
+ * Pays `amount` AFIT once per user, tier and UTC day, for either format. The unique claim
+ * row is the guard, so two callbacks arriving together (v1 or legacy) cannot both pay.
+ * On a database failure nothing is paid, the day's slot is freed and the error is thrown,
+ * so the caller can let AdMob retry.
  */
-async function payIntent(db, query, banned, notify, now = Date.now) {
-	const intent = await consumeIntent(db, parseV1(query.custom_data), now);
-	if (!intent) return { error: 'Unknown or expired reward' };
-	if (banned(intent.user)) return { error: 'Account banned from rewards' };
-	if (await rewardedToday(db, intent.user, intent.tier, now())) {
-		return { error: 'Account already rewarded today for this tier' };
-	}
-	const claim = { user: intent.user, tier: intent.tier, day: utcDay(now()) };
+async function payReward(db, { user, tier, amount, note, ssv, extra }, notify, nowMs) {
+	ensureIndexes(db);
+	if (await rewardedToday(db, user, tier, nowMs)) return ALREADY;
+	const claim = { user, tier: Number(tier), day: utcDay(nowMs) };
 	try {
-		await db.collection('ad_reward_claims').insertOne(Object.assign({ intent: intent._id }, claim));
+		await db.collection('ad_reward_claims').insertOne(Object.assign({}, extra, claim));
 	} catch (err) {
-		if (err && err.code === 11000) return { error: 'Account already rewarded today for this tier' };
+		if (err && err.code === 11000) return ALREADY;
 		throw err;
 	}
-	const amount = rewardAmount(intent.tier);
 	try {
 		await db.collection('token_transactions').insertOne({
-			user: intent.user,
+			user,
 			reward_activity: 'Ad Reward',
 			token_count: amount,
-			note: 'Rewarded ' + amount + ' AFIT in app gadget prize for tier ' + intent.tier,
-			tier: String(intent.tier),
-			custom_data: query.custom_data,
-			ad_network: query.ad_network,
-			ad_unit: query.ad_unit,
-			transaction_id: query.transaction_id,
-			date: new Date(now()),
+			note,
+			tier: String(tier),
+			custom_data: ssv.custom_data,
+			ad_network: ssv.ad_network,
+			ad_unit: ssv.ad_unit,
+			transaction_id: ssv.transaction_id,
+			date: new Date(nowMs),
 		});
 	} catch (err) {
-		// the ad was watched but not paid: free the day's slot and leave a trace to fix by hand
-		console.log('ad reward NOT paid', intent._id, intent.user, intent.tier, amount, err && err.message ? err.message : err);
 		await db.collection('ad_reward_claims').deleteOne(claim).catch(() => {});
-		return { error: 'Error performing buy action. DB storing issue' };
+		throw err;
 	}
-	notify(intent.user, amount, intent.tier);
-	return { status: 'success', user: intent.user, amount };
+	notify(user, amount, tier);
+	return { status: 'success', user, amount };
+}
+
+/**
+ * Pays a verified v1 callback (`ssv` = its signed values). `banned(user)` is the ban-list
+ * check, `notify(user, amount, tier)` the user notification. Throws on a database failure,
+ * after putting the intent back so AdMob's retry can still pay it.
+ * @returns {Promise<{status: 'success', user, amount}|{error: string}>}
+ */
+async function payIntent(db, ssv, banned, notify, now = Date.now) {
+	const intent = await consumeIntent(db, parseV1(ssv.custom_data), now);
+	if (!intent) return { error: 'Unknown or expired reward' };
+	if (banned(intent.user)) return { error: 'Account banned from rewards' };
+	const amount = rewardAmount(intent.tier);
+	try {
+		return await payReward(db, {
+			user: intent.user, tier: intent.tier, amount, ssv, extra: { intent: intent._id },
+			note: 'Rewarded ' + amount + ' AFIT in app gadget prize for tier ' + intent.tier,
+		}, notify, now());
+	} catch (err) {
+		console.log('ad reward NOT paid', intent._id, intent.user, intent.tier, ssv.transaction_id, err && err.message ? err.message : err);
+		await db.collection('ad_reward_intents').insertOne(intent).catch(() => {});
+		throw err;
+	}
+}
+
+// a Hive account name; the legacy format names the user without any proof
+const HIVE_USER_RE = /^[a-z][a-z0-9.-]{2,15}$/;
+
+/**
+ * Pays a verified legacy "user_amount_tier_label" callback (iOS, older Android). The amount
+ * comes from the client, capped at the tier maximum. Throws on a database failure.
+ */
+async function payLegacy(db, ssv, banned, notify, nowMs = Date.now()) {
+	const data = ssv.custom_data.split('_');
+	if (data.length < 4 || !HIVE_USER_RE.test(data[0]) || isNaN(data[1])) return { error: 'Error performing action' };
+	if (banned(data[0])) return { error: 'Account banned from rewards' };
+	const amount = capLegacyAmount(data[2], data[1]);
+	if (amount === null) return { error: 'Error performing action' };
+	try {
+		return await payReward(db, {
+			user: data[0], tier: data[2], amount, ssv,
+			note: 'Rewarded ' + amount + ' AFIT in app gadget prize for tier ' + data[2] + ' ' + data[3],
+		}, notify, nowMs);
+	} catch (err) {
+		console.log('ad reward NOT paid (legacy)', data[0], data[2], amount, ssv.transaction_id, err && err.message ? err.message : err);
+		throw err;
+	}
+}
+
+// Google's SSV verifier keys, cached: fetching them on every callback would let anyone who
+// sends well-formed junk make us hammer gstatic (and fail real callbacks if it throttles us).
+const KEYS_URL = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
+const KEYS_TTL_MS = 24 * 60 * 60 * 1000;
+const KEYS_REFETCH_MS = 60 * 1000;
+let keyCache = { keys: new Map(), fetchedAt: 0, triedAt: -Infinity, pending: null };
+
+async function fetchVerifierKeys() {
+	const res = await fetch(KEYS_URL);
+	if (!res.ok) throw new Error('verifier keys HTTP ' + res.status);
+	return res.json();
+}
+
+async function verifierKey(keyId, nowMs, fetchKeys) {
+	if (nowMs - keyCache.fetchedAt < KEYS_TTL_MS && keyCache.keys.has(keyId)) return keyCache.keys.get(keyId);
+	// stale, or a key id we do not know (Google rotates keys): refetch, at most once a minute
+	if (!keyCache.pending && nowMs - keyCache.triedAt >= KEYS_REFETCH_MS) {
+		keyCache.triedAt = nowMs;
+		keyCache.pending = Promise.resolve().then(fetchKeys).then((body) => {
+			const keys = new Map();
+			for (const k of (body && Array.isArray(body.keys) ? body.keys : [])) {
+				keys.set(String(k.keyId), crypto.createPublicKey(k.pem));
+			}
+			if (keys.size) {
+				keyCache.keys = keys;
+				keyCache.fetchedAt = nowMs;
+			}
+		}).catch((err) => console.log('admob verifier keys: ' + (err && err.message ? err.message : err)))
+			.then(() => { keyCache.pending = null; });
+	}
+	if (keyCache.pending) await keyCache.pending;
+	// a stale key still verifies while gstatic is unreachable
+	return keyCache.keys.get(keyId) || null;
+}
+
+/**
+ * Shape check, then Google's signature over the raw bytes received (never a re-serialized
+ * URL, which could differ from what Google signed).
+ */
+async function verifyCallback(rawQuery, adUnits, { now = Date.now(), fetchKeys = fetchVerifierKeys } = {}) {
+	const shape = checkCallback(rawQuery, adUnits, now);
+	if (!shape.ok) return shape;
+	const key = await verifierKey(shape.params.key_id, now, fetchKeys);
+	if (!key) return { ok: false, error: 'unknown key_id ' + shape.params.key_id };
+	const signed = rawQuery.slice(0, rawQuery.indexOf('&signature='));
+	let good = false;
+	try {
+		good = crypto.verify('sha256', Buffer.from(signed, 'utf8'), key, Buffer.from(shape.params.signature, 'base64url'));
+	} catch (e) {
+		good = false;
+	}
+	return good ? shape : { ok: false, error: 'bad signature' };
+}
+
+/**
+ * The whole /ssv-verify callback: verify, refuse replays, pay. A database failure answers
+ * 500 and forgets the transaction id, so AdMob's retry is paid instead of refused.
+ * @returns {Promise<{status: number, body: Object|string}>}
+ */
+async function handleCallback(db, rawQuery, { adUnits, banned, notify, now = Date.now, fetchKeys } = {}) {
+	const checked = await verifyCallback(rawQuery, adUnits, { now: now(), fetchKeys });
+	if (!checked.ok) {
+		console.log('ssv-verify refused: ' + checked.error);
+		return { status: 400, body: 'Invalid callback' };
+	}
+	const ssv = checked.params;
+	if (!(await firstSeen(db, ssv.transaction_id, now()))) {
+		console.log('ssv-verify replayed transaction ' + ssv.transaction_id);
+		return { status: 200, body: { error: 'Duplicate callback' } };
+	}
+	try {
+		let out = { status: 'success' };
+		if (parseV1(ssv.custom_data)) out = await payIntent(db, ssv, banned, notify, now);
+		else if (ssv.custom_data) out = await payLegacy(db, ssv, banned, notify, now());
+		return { status: 200, body: out.error ? { error: out.error } : { status: 'success' } };
+	} catch (err) {
+		await db.collection('ad_ssv_transactions').deleteOne({ _id: ssv.transaction_id }).catch(() => {});
+		return { status: 500, body: 'Try again' };
+	}
+}
+
+function resetKeyCacheForTests() {
+	keyCache = { keys: new Map(), fetchedAt: 0, triedAt: -Infinity, pending: null };
 }
 
 module.exports = {
-	TIERS, INTENT_TTL_MS, checkCallback, firstSeen, rewardAmount, capLegacyAmount, parseV1, rewardedToday, createIntent, consumeIntent, payIntent,
+	TIERS, INTENT_TTL_MS, checkCallback, firstSeen, verifyCallback, handleCallback, rewardAmount, capLegacyAmount, parseV1,
+	rewardedToday, createIntent, consumeIntent, payIntent, payLegacy, resetKeyCacheForTests,
 };

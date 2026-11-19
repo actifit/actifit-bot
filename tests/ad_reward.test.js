@@ -5,7 +5,8 @@
 
 const ar = require('../ad_reward');
 
-function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
+function fakeDb(opts = {}) {
+	const { bareDocs = false } = opts;
 	const intents = new Map();
 	const tx = [];
 	const claims = [];
@@ -14,7 +15,7 @@ function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
 		&& d.tier === q.tier && d.date >= q.date.$gte;
 	const sameClaim = (a, b) => a.user === b.user && a.tier === b.tier && a.day === b.day;
 	return {
-		intents, tx, claims,
+		intents, tx, claims, seen, opts,
 		collection(name) {
 			if (name === 'ad_reward_intents') return {
 				createIndex: async () => 'ok',
@@ -41,7 +42,7 @@ function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
 			if (name === 'token_transactions') return {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
-				insertOne: async (doc) => { if (failTxInsert) throw new Error('write failed'); tx.push(doc); return {}; },
+				insertOne: async (doc) => { if (opts.failTxInsert) throw new Error('write failed'); tx.push(doc); return {}; },
 			};
 			if (name === 'ad_ssv_transactions') return {
 				createIndex: async () => 'ok',
@@ -49,6 +50,7 @@ function fakeDb({ failTxInsert = false, bareDocs = false } = {}) {
 					if (seen.has(doc._id)) { const e = new Error('dup'); e.code = 11000; throw e; }
 					seen.add(doc._id); return {};
 				},
+				deleteOne: async (q) => { seen.delete(q._id); return {}; },
 			};
 			throw new Error('unexpected collection ' + name);
 		},
@@ -199,13 +201,14 @@ describe('payIntent', () => {
 		expect(db.tx).toHaveLength(0);
 	});
 
-	test('a failed payment write frees the day slot and reports the error', async () => {
+	test('a failed payment write frees the day slot, puts the intent back and throws', async () => {
 		const db = fakeDb({ failTxInsert: true });
 		const log = jest.spyOn(console, 'log').mockImplementation(() => {});
 		const { id } = await ar.createIntent(db, 'alice', 2, at(T0));
-		expect(await ar.payIntent(db, q(id), notBanned, () => {}, at(T0))).toEqual({ error: 'Error performing buy action. DB storing issue' });
+		await expect(ar.payIntent(db, q(id), notBanned, () => {}, at(T0))).rejects.toThrow('write failed');
 		expect(db.claims).toHaveLength(0);
-		expect(log).toHaveBeenCalledWith('ad reward NOT paid', id, 'alice', 2, expect.any(Number), 'write failed');
+		expect(db.intents.has(id)).toBe(true);
+		expect(log).toHaveBeenCalledWith('ad reward NOT paid', id, 'alice', 2, 't1', 'write failed');
 		log.mockRestore();
 	});
 });
@@ -295,5 +298,122 @@ describe('firstSeen (replay guard)', () => {
 		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(true);
 		expect(await ar.firstSeen(db, 'tx1', T0)).toBe(false);
 		expect(await ar.firstSeen(db, 'tx2', T0)).toBe(true);
+	});
+});
+
+describe('handleCallback (the whole /ssv-verify route, real signatures)', () => {
+	const crypto = require('crypto');
+	const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+	const PEM = publicKey.export({ type: 'spki', format: 'pem' });
+	const UNIT = '5550001';
+	let fetches;
+	const fetchKeys = async () => { fetches++; return { keys: [{ keyId: 3335741209, pem: PEM }] }; };
+	let txSeq = 0;
+
+	// a callback as AdMob sends it: alphabetical, signature over everything before it
+	function callback(customData, { key = privateKey, unit = UNIT, ts = T0 - 1000, tx } = {}) {
+		const p = { ad_network: '5450213213286189855', ad_unit: unit, custom_data: customData, reward_amount: '1',
+			reward_item: 'gift', timestamp: String(ts), transaction_id: tx || 'tx' + (++txSeq), user_id: '' };
+		const signed = Object.keys(p).map((k) => k + '=' + encodeURIComponent(p[k])).join('&');
+		const sig = crypto.sign('sha256', Buffer.from(signed), key).toString('base64url');
+		return signed + '&signature=' + sig + '&key_id=3335741209';
+	}
+	const run = (db, raw, extra = {}) => ar.handleCallback(db, raw, Object.assign({
+		adUnits: [UNIT], banned: notBanned, notify: () => {}, now: at(T0), fetchKeys,
+	}, extra));
+
+	let log;
+	beforeEach(() => {
+		ar.resetKeyCacheForTests();
+		fetches = 0;
+		log = jest.spyOn(console, 'log').mockImplementation(() => {});
+	});
+	afterEach(() => log.mockRestore());
+
+	test('a genuine v1 callback pays; the same callback again is a duplicate', async () => {
+		const db = fakeDb();
+		const { id } = await ar.createIntent(db, 'alice', 3, at(T0));
+		const raw = callback('r1_' + id);
+		expect(await run(db, raw)).toEqual({ status: 200, body: { status: 'success' } });
+		expect(db.tx).toHaveLength(1);
+		expect(await run(db, raw)).toEqual({ status: 200, body: { error: 'Duplicate callback' } });
+		expect(db.tx).toHaveLength(1);
+	});
+
+	test('a percent-encoded value verifies over the raw bytes', async () => {
+		const db = fakeDb();
+		const raw = callback('alice_2.5_1_10K steps/day');
+		expect(raw).toContain('10K%20steps%2Fday');
+		expect(await run(db, raw)).toEqual({ status: 200, body: { status: 'success' } });
+		expect(db.tx[0]).toMatchObject({ user: 'alice', token_count: 2.5, custom_data: 'alice_2.5_1_10K steps/day' });
+	});
+
+	test('a changed signed value, a foreign key and an unknown key id are refused', async () => {
+		const db = fakeDb();
+		const raw = callback('alice_3_1_x');
+		expect((await run(db, raw.replace('alice_3_1_x', 'mallory_3_1_x'))).status).toBe(400);
+		const other = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+		expect((await run(db, callback('alice_3_1_x', { key: other }))).status).toBe(400);
+		expect((await run(db, raw.replace('key_id=3335741209', 'key_id=1')))).toEqual({ status: 400, body: 'Invalid callback' });
+		expect(db.tx).toHaveLength(0);
+	});
+
+	test('another app ad unit is refused even with a valid signature', async () => {
+		const db = fakeDb();
+		expect((await run(db, callback('alice_3_1_x', { unit: '9990001' }))).status).toBe(400);
+		expect(db.tx).toHaveLength(0);
+	});
+
+	test('legacy: capped, once per tier and day even when two arrive together, not a non-Hive name', async () => {
+		const db = fakeDb();
+		const outs = await Promise.all([run(db, callback('alice_99_4_x')), run(db, callback('alice_99_4_x'))]);
+		expect(outs.map((o) => o.body.status || o.body.error).sort())
+			.toEqual(['Account already rewarded today for this tier', 'success']);
+		expect(db.tx).toHaveLength(1);
+		expect(db.tx[0].token_count).toBe(10);
+		expect((await run(db, callback('Bad_1_1_x'))).body).toEqual({ error: 'Error performing action' });
+		expect((await run(db, callback('alice_5abc_2_x'))).body).toEqual({ error: 'Error performing action' });
+	});
+
+	test('legacy and v1 for the same tier and day pay once', async () => {
+		const db = fakeDb();
+		const { id } = await ar.createIntent(db, 'alice', 2, at(T0));
+		const outs = await Promise.all([run(db, callback('r1_' + id)), run(db, callback('alice_1_2_x'))]);
+		expect(outs.filter((o) => o.body.status === 'success')).toHaveLength(1);
+		expect(db.tx).toHaveLength(1);
+	});
+
+	test('a database failure answers 500 and AdMob retry of the same callback is paid', async () => {
+		const db = fakeDb({ failTxInsert: true });
+		const { id } = await ar.createIntent(db, 'alice', 4, at(T0));
+		const raw = callback('r1_' + id);
+		expect(await run(db, raw)).toEqual({ status: 500, body: 'Try again' });
+		expect(db.tx).toHaveLength(0);
+		db.opts.failTxInsert = false;
+		expect(await run(db, raw)).toEqual({ status: 200, body: { status: 'success' } });
+		expect(db.tx).toHaveLength(1);
+		// legacy too
+		db.opts.failTxInsert = true;
+		const legacy = callback('bob_1_1_x');
+		expect((await run(db, legacy)).status).toBe(500);
+		db.opts.failTxInsert = false;
+		expect((await run(db, legacy)).body).toEqual({ status: 'success' });
+	});
+
+	test('Google keys are fetched once, not per callback; an unknown key id refetches at most once a minute', async () => {
+		const db = fakeDb();
+		await Promise.all([run(db, callback('alice_1_1_x')), run(db, callback('bob_1_1_x')), run(db, callback('carol_1_1_x'))]);
+		expect(fetches).toBe(1);
+		const bad = callback('dave_1_1_x').replace('key_id=3335741209', 'key_id=7');
+		await run(db, bad, { now: at(T0 + 61000) });
+		await run(db, bad, { now: at(T0 + 62000) });
+		expect(fetches).toBe(2);
+	});
+
+	test('keys unreachable at the first callback: refused (AdMob retries), never paid', async () => {
+		const db = fakeDb();
+		const failing = async () => { throw new Error('offline'); };
+		expect((await run(db, callback('alice_1_1_x'), { fetchKeys: failing })).status).toBe(400);
+		expect(db.tx).toHaveLength(0);
 	});
 });
