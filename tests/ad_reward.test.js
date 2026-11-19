@@ -42,6 +42,9 @@ function fakeDb(opts = {}) {
 					return {};
 				},
 			};
+			if (name === 'user_tokens') return {
+				findOne: async (q) => (KNOWN.has(q._id) ? { _id: q._id } : null),
+			};
 			if (name === 'ad_ssv_transactions') return {
 				createIndex: async () => 'ok',
 				insertOne: async (doc) => {
@@ -57,6 +60,7 @@ function fakeDb(opts = {}) {
 	};
 }
 
+const KNOWN = new Set(['alice', 'bob', 'carol', 'dave']);
 const T0 = Date.UTC(2026, 10, 18, 12, 0, 0);
 const at = (ms) => () => ms;
 const notBanned = () => false;
@@ -465,6 +469,24 @@ describe('handleCallback (the whole /ssv-verify route, real signatures)', () => 
 		expect((await run(db, raw)).status).toBe(500);
 		expect((await run(db, raw)).body).toEqual({ error: 'Account already rewarded today for this tier' });
 		expect(db.tx).toHaveLength(1);
+	});
+
+	test('legacy: only accounts Actifit already knows are paid', async () => {
+		const db = fakeDb();
+		expect((await run(db, callback('stranger_1_1_x'))).body).toEqual({ error: 'Unknown account' });
+		expect(db.tx).toHaveLength(0);
+	});
+
+	test('legacy: switched off from the configured date, v1 unaffected', async () => {
+		const db = fakeDb();
+		const until = new Date(T0).toISOString();
+		expect((await run(db, callback('alice_1_1_x'), { legacyUntil: until })).body)
+			.toEqual({ error: 'Please update the app to claim rewards' });
+		expect((await run(db, callback('alice_1_1_x'), { legacyUntil: new Date(T0 + 1).toISOString() })).body)
+			.toEqual({ status: 'success' });
+		const { id } = await ar.createIntent(db, 'bob', 1, at(T0));
+		expect((await run(db, callback('r1_' + id), { legacyUntil: until })).body).toEqual({ status: 'success' });
+		expect((await run(db, callback('carol_1_1_x'), { legacyUntil: 'not a date' })).body).toEqual({ status: 'success' });
 	});
 
 	test('legacy: an iOS name with capitals is paid to the lowercase account', async () => {

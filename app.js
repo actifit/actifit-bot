@@ -1103,6 +1103,7 @@ app.get('/ssv-verify', async (req, res) => {
 	try {
 		const out = await adReward.handleCallback(db, q >= 0 ? req.originalUrl.slice(q + 1) : '', {
 			adUnits: config.admob_ad_units,
+			legacyUntil: config.ad_legacy_until,
 			banned: (user) => rewardBanList!=null && rewardBanList.includes(user),
 			notify: (user, amount, tier) => utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" via actifit app gadget prize in tier '+tier, 'https://actifit.io/'+user+'/wallet'),
 		});

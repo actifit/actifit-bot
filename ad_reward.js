@@ -255,17 +255,30 @@ async function payIntent(db, ssv, banned, notify, now = Date.now) {
 // a Hive account name; the legacy format names the user without any proof
 const HIVE_USER_RE = /^[a-z][a-z0-9.-]{2,15}$/;
 
+/** Is `legacyUntil` (config.ad_legacy_until, a date) set and already past? */
+function legacyRetired(legacyUntil, nowMs) {
+	const until = legacyUntil ? Date.parse(legacyUntil) : NaN;
+	return !isNaN(until) && nowMs >= until;
+}
+
 /**
- * Pays a verified legacy "user_amount_tier_label" callback (iOS, older Android). The amount
- * comes from the client, capped at the tier maximum. Throws on a database failure.
+ * Pays a verified legacy "user_amount_tier_label" callback (iOS, older Android). The format
+ * names the user without proof, so only accounts Actifit already knows (a user_tokens
+ * row, i.e. they have earned AFIT before) are paid, and the format can be switched off
+ * with a date. The amount comes from the client, capped at the tier maximum. Throws on a
+ * database failure.
  */
-async function payLegacy(db, ssv, banned, notify, nowMs = Date.now()) {
+async function payLegacy(db, ssv, banned, notify, nowMs = Date.now(), legacyUntil) {
+	if (legacyRetired(legacyUntil, nowMs)) return { error: 'Please update the app to claim rewards' };
 	const data = ssv.custom_data.split('_');
 	const user = (data[0] || '').toLowerCase();
 	if (data.length < 4 || !HIVE_USER_RE.test(user) || isNaN(data[1])) return { error: 'Error performing action' };
 	if (banned(user)) return { error: 'Account banned from rewards' };
 	const amount = capLegacyAmount(data[2], data[1]);
 	if (amount === null) return { error: 'Error performing action' };
+	if (!(await db.collection('user_tokens').findOne({ _id: user }, { projection: { _id: 1 } }))) {
+		return { error: 'Unknown account' };
+	}
 	try {
 		return await payReward(db, {
 			user, tier: data[2], amount, ssv,
@@ -355,7 +368,7 @@ async function verifyCallback(rawQuery, adUnits, { now = Date.now(), fetchKeys =
  * instead of refused. Final outcomes, paid or not, answer 200 so AdMob stops retrying.
  * @returns {Promise<{status: number, body: Object|string}>}
  */
-async function handleCallback(db, rawQuery, { adUnits, banned, notify, now = Date.now, fetchKeys } = {}) {
+async function handleCallback(db, rawQuery, { adUnits, banned, notify, now = Date.now, fetchKeys, legacyUntil } = {}) {
 	const checked = await verifyCallback(rawQuery, adUnits, { now: now(), fetchKeys });
 	if (!checked.ok) {
 		// all public values (no secrets in an SSV callback); enough to diagnose a config mismatch
@@ -373,7 +386,7 @@ async function handleCallback(db, rawQuery, { adUnits, banned, notify, now = Dat
 	try {
 		out = { status: 'success' };
 		if (parseV1(ssv.custom_data)) out = await payIntent(db, ssv, banned, notify, now);
-		else if (ssv.custom_data) out = await payLegacy(db, ssv, banned, notify, now());
+		else if (ssv.custom_data) out = await payLegacy(db, ssv, banned, notify, now(), legacyUntil);
 	} catch (err) {
 		await db.collection('ad_ssv_transactions').deleteOne({ _id: ssv.transaction_id }).catch(() => {});
 		return { status: 500, body: 'Try again' };

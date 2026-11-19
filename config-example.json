@@ -58,5 +58,6 @@
   "smtp_usr": "SMTP USER NAME",
   "smtp_from": "'FROM NANE' <from@email.fun>",
   "smtp_key": "smtp_key_or_password",
-  "admob_ad_units": ["ca-app-pub-XXXX/ANDROID_REWARDED_UNIT", "ca-app-pub-XXXX/IOS_REWARDED_UNIT"]
+  "admob_ad_units": ["ca-app-pub-XXXX/ANDROID_REWARDED_UNIT", "ca-app-pub-XXXX/IOS_REWARDED_UNIT"],
+  "ad_legacy_until": ""
 }
