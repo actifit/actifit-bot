@@ -9,6 +9,7 @@ const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
 const adReward = require('./ad_reward');
+const threespeakUpload = require('./threespeak_upload');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -248,6 +249,7 @@ client.connect()
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
+	    threespeakUpload.ensureUploadIndexes(db); // 3Speak upload tokens per user
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -382,8 +384,32 @@ if (process.env.NODE_ENV !== 'test') {
     //only run cleanup on secondary thread to avoid duplication of effort and collision
     if (process.env.BOT_THREAD == 'SECOND_API'){
       disableUserLogin();
+      start3SpeakLinker();
     }
   });
+}
+
+// Links uploaded videos to their report posts on 3Speak (mandatory, or the video never
+// shows in 3Speak's feeds). SECOND_API only, so each video is linked once.
+function start3SpeakLinker(){
+	if (!config.threespeak_embed_api_key) return;
+	let running = false;
+	const run = async () => {
+		if (running) return;
+		running = true;
+		try {
+			const out = await threespeakUpload.linkPendingUploads(db, {
+				apiKey: config.threespeak_embed_api_key,
+				getContent: (author, permlink) => utils.hive.api.getContentAsync(author, permlink),
+			});
+			if (out.linked || out.failed) console.log('3speak linker: ' + JSON.stringify(out));
+		} catch (err) {
+			console.log('3speak linker: ' + err.message);
+		} finally {
+			running = false;
+		}
+	};
+	setInterval(run, 5 * 60000);
 }
 
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
@@ -5496,6 +5522,31 @@ async function performAddFriendTrx(req){
 		return ({status: 'error'});
 	}
 }
+
+/* 3Speak uploads (embed service): a short-lived upload token for the logged-in user. The
+ * 3Speak API key stays here; the app uploads the file straight to 3Speak with the token. */
+app.post('/video/uploadToken', checkHdrs, keyRotationGate, async function (req, res) {
+	try {
+		const out = await threespeakUpload.issueUploadToken(db, req.user._id, {
+			apiKey: config.threespeak_embed_api_key,
+			short: req.body && (req.body.short === true || req.body.short === 'true'),
+		});
+		res.status(out.status).send(out.body);
+	} catch (err) {
+		console.log('video/uploadToken: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not start the upload, please try again' });
+	}
+});
+
+/* the logged-in user's recent 3Speak uploads, newest first */
+app.get('/video/myUploads', checkHdrs, async function (req, res) {
+	try {
+		res.send({ uploads: await threespeakUpload.listUploads(db, req.user._id) });
+	} catch (err) {
+		console.log('video/myUploads: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not load your videos' });
+	}
+});
 
 /* end point for keeping track of user uploaded vids */
 //test sample: https://studio.3speak.tv/mobile/api/video/@hispapro/efqxuxlv
