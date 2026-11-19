@@ -1098,7 +1098,6 @@ app.get('/adRewardsReview/', async function (req, res) {
 
 // AdMob rewarded-ad server-side verification; see adReward.handleCallback
 app.get('/ssv-verify', async (req, res) => {
-	return securityDisabled(res, '/ssv-verify');
 	const q = req.originalUrl.indexOf('?');
 	try {
 		const out = await adReward.handleCallback(db, q >= 0 ? req.originalUrl.slice(q + 1) : '', {
@@ -1117,7 +1116,6 @@ app.get('/ssv-verify', async (req, res) => {
 // One-time id for a rewarded ad (see ad_reward.js). Follows /ssv-verify: paused while ad
 // rewards are disabled, so the app can tell the user instead of showing an unpaid ad.
 app.get('/adRewardIntent', checkHdrs, async function (req, res) {
-	return securityDisabled(res, '/adRewardIntent');
 	if (!req.query.user || req.query.user !== req.user._id) {
 		return res.send({status: 'error'});
 	}
