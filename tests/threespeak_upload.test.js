@@ -49,7 +49,7 @@ function okFetch(calls = []) {
 			ok: true, status: 200,
 			json: async () => ({
 				token: 'tok-' + calls.length,
-				upload_url: 'https://embed.3speak.tv/uploads',
+				upload_url: 'https://embed2.3speak.tv/uploads',
 				permlink: 'p' + calls.length,
 				embed_url: 'https://play.3speak.tv/embed?v=' + body.owner + '/p' + calls.length,
 				expires_at: '2026-11-19T12:10:00.000Z',
@@ -68,10 +68,10 @@ describe('issueUploadToken', () => {
 		const out = await tu.issueUploadToken(db, 'alice', { apiKey: 'KEY', fetchImpl: okFetch(calls), now: () => T0 });
 		expect(out.status).toBe(200);
 		expect(out.body).toEqual({
-			token: 'tok-1', upload_url: 'https://embed.3speak.tv/uploads', permlink: 'p1',
+			token: 'tok-1', upload_url: 'https://embed2.3speak.tv/uploads', permlink: 'p1',
 			embed_url: 'https://play.3speak.tv/embed?v=alice/p1', expires_at: '2026-11-19T12:10:00.000Z',
 		});
-		expect(calls[0].url).toBe('https://embed.3speak.tv/uploads/token');
+		expect(calls[0].url).toBe('https://embed2.3speak.tv/uploads/token');
 		expect(calls[0].opts.headers['X-API-Key']).toBe('KEY');
 		expect(JSON.parse(calls[0].opts.body)).toEqual({ owner: 'alice', frontend_app: 'actifit', short: false, ttl: 600 });
 		expect(db.rows).toHaveLength(1);
@@ -149,7 +149,7 @@ describe('issueUploadToken', () => {
 		const f = async () => ({ ok: true, status: 200, json: async () => ({ token: 't', permlink: 'zz' }) });
 		const out = await tu.issueUploadToken(fakeDb(), 'carol', { apiKey: 'K', fetchImpl: f, now: () => T0 });
 		expect(out.body.embed_url).toBe('https://play.3speak.tv/embed?v=carol/zz');
-		expect(out.body.upload_url).toBe('https://embed.3speak.tv/uploads');
+		expect(out.body.upload_url).toBe('https://embed2.3speak.tv/uploads');
 	});
 });
 
@@ -163,5 +163,92 @@ describe('listUploads', () => {
 		const list = await tu.listUploads(db, 'alice');
 		expect(list.map((r) => r.permlink)).toEqual(['p3', 'p1']);
 		expect(list[0]).not.toHaveProperty('user');
+	});
+});
+
+describe('linkPendingUploads', () => {
+	function linkDb(rows) {
+		return {
+			rows,
+			collection: () => ({
+				find: (q) => {
+					let out = rows.filter((r) => r.permlink !== undefined && r.linked === undefined && r.created >= q.created.$gte);
+					const cur = {
+						sort: () => { out = out.slice().sort((a, b) => b.created - a.created); return cur; },
+						limit: (n) => { out = out.slice(0, n); return cur; },
+						toArray: async () => out,
+					};
+					return cur;
+				},
+				updateOne: async (q, u) => { Object.assign(rows.find((r) => r._id === q._id), u.$set); return {}; },
+			}),
+		};
+	}
+	const post = (author, permlink) => ({
+		author, permlink, title: 'My run', body: 'https://play.3speak.tv/embed?v=' + author + '/' + permlink,
+		json_metadata: JSON.stringify({ tags: ['hive-193552', 'actifit', 7] }),
+	});
+	const empty = { author: '', permlink: '' }; // condenser get_content for a missing post
+	const linkFetch = (calls, status = 200) => async (url, opts) => {
+		calls.push({ url, opts });
+		return { ok: status < 300, status, json: async () => (status < 300 ? { success: true } : { error: 'nope' }) };
+	};
+
+	test('links an upload once its report post is on chain, and only once', async () => {
+		const db = linkDb([
+			{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0 - 60000) },
+			{ _id: 2, user: 'bob', permlink: 'p2', created: new Date(T0 - 60000) }, // not posted yet
+		]);
+		const calls = [];
+		const getContent = async (a, p) => (a === 'alice' ? post(a, p) : empty);
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => T0 });
+		expect(out).toEqual({ checked: 2, linked: 1, failed: 0 });
+		expect(calls).toHaveLength(1);
+		expect(calls[0].url).toBe('https://embed2.3speak.tv/video/p1/hive');
+		expect(calls[0].opts.headers['X-API-Key']).toBe('sk_k');
+		const body = JSON.parse(calls[0].opts.body);
+		expect(body).toMatchObject({ hive_author: 'alice', hive_permlink: 'p1', hive_title: 'My run', hive_tags: ['hive-193552', 'actifit'] });
+		expect(db.rows[0].linked).toBeInstanceOf(Date);
+		expect(db.rows[1].linked).toBeUndefined();
+
+		const again = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => T0 });
+		expect(again.linked).toBe(0);
+		expect(calls).toHaveLength(1);
+	});
+
+	test('a 3Speak failure leaves the upload unlinked so the next run retries it', async () => {
+		const db = linkDb([{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) }]);
+		const calls = [];
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent: async (a, p) => post(a, p), fetchImpl: linkFetch(calls, 503), now: () => T0 });
+		expect(out).toEqual({ checked: 1, linked: 0, failed: 1 });
+		expect(db.rows[0].linked).toBeUndefined();
+	});
+
+	test('a Hive read error is counted and does not stop the other uploads', async () => {
+		const db = linkDb([
+			{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) },
+			{ _id: 2, user: 'bob', permlink: 'p2', created: new Date(T0 - 1000) },
+		]);
+		const calls = [];
+		const getContent = async (a, p) => { if (a === 'alice') throw new Error('node down'); return post(a, p); };
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => T0 });
+		expect(out).toEqual({ checked: 2, linked: 1, failed: 1 });
+		expect(db.rows[1].linked).toBeInstanceOf(Date);
+	});
+
+	test('never links someone else\'s post, old uploads, or without a key', async () => {
+		const db = linkDb([
+			{ _id: 1, user: 'alice', permlink: 'p1', created: new Date(T0) },
+			{ _id: 2, user: 'carol', permlink: 'p3', created: new Date(T0 - 4 * 24 * 3600 * 1000) }, // past the window
+		]);
+		const calls = [];
+		const seen = [];
+		const getContent = async (a, p) => { seen.push(a); return post('mallory', p); };
+		const out = await tu.linkPendingUploads(db, { apiKey: 'sk_k', getContent, fetchImpl: linkFetch(calls), now: () => T0 });
+		expect(out.linked).toBe(0);
+		expect(seen).toEqual(['alice']);
+		expect(calls).toHaveLength(0);
+		const none = await tu.linkPendingUploads(db, { getContent, fetchImpl: linkFetch(calls), now: () => T0 });
+		expect(none).toEqual({ checked: 0, linked: 0, failed: 0 });
 	});
 });

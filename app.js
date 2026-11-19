@@ -384,8 +384,32 @@ if (process.env.NODE_ENV !== 'test') {
     //only run cleanup on secondary thread to avoid duplication of effort and collision
     if (process.env.BOT_THREAD == 'SECOND_API'){
       disableUserLogin();
+      start3SpeakLinker();
     }
   });
+}
+
+// Links uploaded videos to their report posts on 3Speak (mandatory, or the video never
+// shows in 3Speak's feeds). SECOND_API only, so each video is linked once.
+function start3SpeakLinker(){
+	if (!config.threespeak_embed_api_key) return;
+	let running = false;
+	const run = async () => {
+		if (running) return;
+		running = true;
+		try {
+			const out = await threespeakUpload.linkPendingUploads(db, {
+				apiKey: config.threespeak_embed_api_key,
+				getContent: (author, permlink) => utils.hive.api.getContentAsync(author, permlink),
+			});
+			if (out.linked || out.failed) console.log('3speak linker: ' + JSON.stringify(out));
+		} catch (err) {
+			console.log('3speak linker: ' + err.message);
+		} finally {
+			running = false;
+		}
+	};
+	setInterval(run, 5 * 60000);
 }
 
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
