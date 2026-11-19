@@ -8,6 +8,8 @@ const { createFetchUserDataHandler } = require('./fetch_user_data');
 const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
+const adReward = require('./ad_reward');
+const threespeakUpload = require('./threespeak_upload');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -247,6 +249,7 @@ client.connect()
 	      .catch(() => { /* never rejects; see afit_balance.ensureLedgerIndexes */ });
 	    arenaJobs.ensureArenaJobIndexes(db); // {author,date} on verified_posts (aggregation hot path)
 	    featured.ensureFeaturedIndexes(db); // Actifitter of the Month (Trello #110)
+	    threespeakUpload.ensureUploadIndexes(db); // 3Speak upload tokens per user
 	  } catch (e) {
 	    utils.log(e, 'api');
 	  }
@@ -381,8 +384,32 @@ if (process.env.NODE_ENV !== 'test') {
     //only run cleanup on secondary thread to avoid duplication of effort and collision
     if (process.env.BOT_THREAD == 'SECOND_API'){
       disableUserLogin();
+      start3SpeakLinker();
     }
   });
+}
+
+// Links uploaded videos to their report posts on 3Speak (mandatory, or the video never
+// shows in 3Speak's feeds). SECOND_API only, so each video is linked once.
+function start3SpeakLinker(){
+	if (!config.threespeak_embed_api_key) return;
+	let running = false;
+	const run = async () => {
+		if (running) return;
+		running = true;
+		try {
+			const out = await threespeakUpload.linkPendingUploads(db, {
+				apiKey: config.threespeak_embed_api_key,
+				getContent: (author, permlink) => utils.hive.api.getContentAsync(author, permlink),
+			});
+			if (out.linked || out.failed) console.log('3speak linker: ' + JSON.stringify(out));
+		} catch (err) {
+			console.log('3speak linker: ' + err.message);
+		} finally {
+			running = false;
+		}
+	};
+	setInterval(run, 5 * 60000);
 }
 
 ////CORS IS NOW HANDLED AT LEVEL OF NGINX
@@ -855,7 +882,6 @@ app.delete('/workouts/:workoutId', checkHdrs, async function (req, res) {
 /***************** end of workouts API *****************/
 /*******************************************************/
 
-const {methods: {verify: verifyAdMobSSV}} = require('express-admob-ssv');
 
 /*
 
@@ -1096,85 +1122,41 @@ app.get('/adRewardsReview/', async function (req, res) {
 /*http://localhost:3120/ssv-verify?ad_network=54...55&ad_unit=12345678&reward_amount=10&reward_item=coins&timestamp=150777823&custom_data=mcfarhat_1_1_free&transaction_id=12...DEF&user_id=1234567&signature=ME...Z1c&key_id=1234567
 */
 
-app.get('/ssv-verify',
-  async (req, res, next) => {
-	return securityDisabled(res, '/ssv-verify');
-    try {
-      const url = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
-      await verifyAdMobSSV(url, true); // true for throwing errors
-	  console.log('success');
-    }
-    catch(error) {
-      // Do something
-      // or log somethings
-	  console.log('ssv-verify', error);
-      return res.status(400).end(error.message);
-    }
-    next();
-  },
-  async (req, res, next) => {
-    // SSV Valid
-	if (req.query && req.query.custom_data){
-		let data = req.query.custom_data.split('_');
-		console.log(data);
-		console.log('storing successful ad reward');
-		if (data.length < 4 || isNaN(data[1])){
-			res.send({'error': 'Error performing action'});
-			return;
-		}
-		if (rewardBanList!=null && rewardBanList.includes(data[0])){
-			res.send({'error': 'Account banned from rewards'});
-			return;
-		}
-		//send out AFIT reward to our user
-		let recordTrans = {
-			user: data[0],
-			reward_activity: 'Ad Reward',
-			token_count: parseFloat(data[1]),
-			note: 'Rewarded '+data[1]+ ' AFIT in app gadget prize for tier '+data[2] + ' ' + data[3],
-			tier: data[2],
-			custom_data: req.query.custom_data,
-			ad_network: req.query.ad_network,
-			ad_unit: req.query.ad_unit,
-			transaction_id: req.query.transaction_id,
-			date: new Date(),
-		}
-		let startDate = moment(moment(req.query.date).utc().startOf('date').toDate()).format('YYYY-MM-DD');
-		console.log(startDate);
-		let matchQuery = {
-							user: data[0], 
-							tier: data[2], 
-							date: {
-								$gte: new Date(startDate)
-							}
-						}
-		console.log(matchQuery);
-		//check if user already has more than 1 entry for today for this same tier, if so disregard this new reward
-		let existingReward = await db.collection('token_transactions').find(matchQuery).toArray();
-		console.log(existingReward);
-		if (existingReward!=null && existingReward.length > 1){
-			res.send({'error': 'Account already rewarded today for this tier'});
-			return;
-		}
-		try{
-			console.log(recordTrans);
-			let transaction = await db.collection('token_transactions').insertOne(recordTrans);
-			
-			//also notify user of AFIT payment
-			utils.sendNotification(db, data[0], 'actifit', 'receive_afit', 'payment', 'You received "' + data[1] + ' AFIT" via actifit app gadget prize in tier '+data[2], 'https://actifit.io/'+data[0]+'/wallet');
-			
-			//let transaction = await db.collection('token_transactions').update(matchQuery, recordTrans, { upsert: true });
-			console.log('success inserting post data');
-		}catch(err){
-			console.log(err);
-			res.send({'error': 'Error performing buy action. DB storing issue'});
-			return;
-		}
+// AdMob rewarded-ad server-side verification; see adReward.handleCallback
+app.get('/ssv-verify', async (req, res) => {
+	const q = req.originalUrl.indexOf('?');
+	try {
+		const out = await adReward.handleCallback(db, q >= 0 ? req.originalUrl.slice(q + 1) : '', {
+			adUnits: config.admob_ad_units,
+			legacyUntil: config.ad_legacy_until,
+			banned: (user) => rewardBanList!=null && rewardBanList.includes(user),
+			notify: (user, amount, tier) => utils.sendNotification(db, user, 'actifit', 'receive_afit', 'payment', 'You received "' + amount + ' AFIT" via actifit app gadget prize in tier '+tier, 'https://actifit.io/'+user+'/wallet'),
+		});
+		return typeof out.body === 'string' ? res.status(out.status).end(out.body) : res.status(out.status).send(out.body);
+	} catch (err) {
+		console.log('ssv-verify', err && err.message ? err.message : err);
+		return res.status(500).end('Try again');
 	}
-	//
-	//console.log('double success');
-	res.send({status:'success'});
-  });
+});
+
+// One-time id for a rewarded ad (see ad_reward.js). Follows /ssv-verify: paused while ad
+// rewards are disabled, so the app can tell the user instead of showing an unpaid ad.
+app.get('/adRewardIntent', checkHdrs, async function (req, res) {
+	if (!req.query.user || req.query.user !== req.user._id) {
+		return res.send({status: 'error'});
+	}
+	if (rewardBanList!=null && rewardBanList.includes(req.query.user)){
+		return res.send({status: 'error', error: 'banned'});
+	}
+	try{
+		const out = await adReward.createIntent(db, req.query.user, req.query.tier);
+		if (out.error) return res.send({status: 'error', error: out.error});
+		return res.send({status: 'success', id: out.id});
+	}catch(err){
+		console.log('adRewardIntent', err && err.message ? err.message : err);
+		return res.send({status: 'error'});
+	}
+});
 
 app.get('/getDailyDelegationPool/', async function(req, res){
 	
@@ -5540,6 +5522,31 @@ async function performAddFriendTrx(req){
 		return ({status: 'error'});
 	}
 }
+
+/* 3Speak uploads (embed service): a short-lived upload token for the logged-in user. The
+ * 3Speak API key stays here; the app uploads the file straight to 3Speak with the token. */
+app.post('/video/uploadToken', checkHdrs, keyRotationGate, async function (req, res) {
+	try {
+		const out = await threespeakUpload.issueUploadToken(db, req.user._id, {
+			apiKey: config.threespeak_embed_api_key,
+			short: req.body && (req.body.short === true || req.body.short === 'true'),
+		});
+		res.status(out.status).send(out.body);
+	} catch (err) {
+		console.log('video/uploadToken: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not start the upload, please try again' });
+	}
+});
+
+/* the logged-in user's recent 3Speak uploads, newest first */
+app.get('/video/myUploads', checkHdrs, async function (req, res) {
+	try {
+		res.send({ uploads: await threespeakUpload.listUploads(db, req.user._id) });
+	} catch (err) {
+		console.log('video/myUploads: ' + (err && err.message));
+		res.status(500).send({ error: 'Could not load your videos' });
+	}
+});
 
 /* end point for keeping track of user uploaded vids */
 //test sample: https://studio.3speak.tv/mobile/api/video/@hispapro/efqxuxlv
