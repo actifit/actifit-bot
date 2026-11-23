@@ -1158,6 +1158,20 @@ app.get('/adRewardIntent', checkHdrs, async function (req, res) {
 	}
 });
 
+// Today's paid ad rewards per tier ({ "2": 3.141 }), so the app can show the amount: it is
+// picked only when AdMob confirms the view, after the ad has closed.
+app.get('/adRewardsToday', checkHdrs, async function (req, res) {
+	if (!req.query.user || req.query.user !== req.user._id) {
+		return res.send({status: 'error'});
+	}
+	try{
+		return res.send({status: 'success', rewards: await adReward.rewardsToday(db, req.query.user)});
+	}catch(err){
+		console.log('adRewardsToday', err && err.message ? err.message : err);
+		return res.send({status: 'error'});
+	}
+});
+
 app.get('/getDailyDelegationPool/', async function(req, res){
 	
 //app.get('/afitDailyDelegatorRewards', async function (req, res){

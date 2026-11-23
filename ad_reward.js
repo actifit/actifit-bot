@@ -160,6 +160,24 @@ async function rewardedToday(db, user, tier, nowMs) {
 }
 
 /**
+ * Today's (UTC) paid ad rewards for `user`, as { tier: amount }. The amount is only picked
+ * when AdMob confirms the view, after the ad has closed, so the app asks here to show the
+ * user what they earned. Rows with an unknown tier or a non-numeric amount are skipped.
+ */
+async function rewardsToday(db, user, nowMs = Date.now()) {
+	const rows = await db.collection('token_transactions').find({
+		user, reward_activity: 'Ad Reward', date: { $gte: new Date(utcDay(nowMs) + 'T00:00:00Z') },
+	}, { projection: { _id: 0, tier: 1, token_count: 1 } }).toArray();
+	const out = {};
+	for (const r of rows) {
+		const tier = parseInt(r.tier, 10);
+		const amount = parseFloat(r.token_count);
+		if (TIERS[tier] && Number.isFinite(amount)) out[tier] = amount;
+	}
+	return out;
+}
+
+/**
  * Store a one-time reward intent and return its id. A new intent replaces the user's open
  * intents for that tier, so stored intents stay bounded.
  * @returns {Promise<{id}|{error: 'bad_tier'|'already_claimed'}>}
@@ -420,5 +438,5 @@ function resetKeyCacheForTests() {
 
 module.exports = {
 	TIERS, INTENT_TTL_MS, checkCallback, takeTransaction, verifyCallback, handleCallback, rewardAmount, capLegacyAmount,
-	parseV1, rewardRowId, rewardedToday, createIntent, consumeIntent, payIntent, payLegacy, resetKeyCacheForTests,
+	parseV1, rewardRowId, rewardedToday, rewardsToday, createIntent, consumeIntent, payIntent, payLegacy, resetKeyCacheForTests,
 };

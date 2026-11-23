@@ -33,6 +33,10 @@ function fakeDb(opts = {}) {
 			if (name === 'token_transactions') return {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
+				find: (q) => ({
+					toArray: async () => tx.filter((d) => d.user === q.user
+						&& d.reward_activity === q.reward_activity && d.date >= q.date.$gte),
+				}),
 				findOne: async (q) => tx.find((d) => d.user === q.user) || null,
 				insertOne: async (doc) => {
 					if (opts.failTxInsert) throw new Error('write failed');
@@ -235,6 +239,38 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 		const { id } = await ar.createIntent(db, 'alice', 4);
 		const results = await Promise.all([1, 2, 3, 4, 5].map(() => ar.consumeIntent(db, id)));
 		expect(results.filter(Boolean)).toHaveLength(1);
+	});
+});
+
+describe('rewardsToday', () => {
+	const NOW = Date.parse('2026-11-23T15:00:00Z');
+	const row = (over) => Object.assign({ user: 'alice', reward_activity: 'Ad Reward', tier: '2',
+		token_count: 3.141, date: new Date(NOW - 3600 * 1000) }, over);
+
+	test('maps each tier paid today (UTC) to its amount', async () => {
+		const db = fakeDb();
+		db.tx.push(row(), row({ tier: '4', token_count: '9.5' }));
+		expect(await ar.rewardsToday(db, 'alice', NOW)).toEqual({ 2: 3.141, 4: 9.5 });
+	});
+
+	test('leaves out yesterday, other users, other activities and bad rows', async () => {
+		const db = fakeDb();
+		db.tx.push(
+			row({ date: new Date(Date.parse('2026-11-22T23:59:00Z')) }),
+			row({ user: 'bob' }),
+			row({ reward_activity: 'Post', tier: '3' }),
+			row({ tier: '9' }),
+			row({ tier: '1', token_count: 'abc' }),
+		);
+		expect(await ar.rewardsToday(db, 'alice', NOW)).toEqual({});
+	});
+
+	test('a reward paid through payIntent shows up', async () => {
+		const db = fakeDb();
+		const { id } = await ar.createIntent(db, 'alice', 3, () => NOW);
+		const ssv = { custom_data: 'r1_' + id, transaction_id: 't1', ad_network: 'n', ad_unit: 'u' };
+		const out = await ar.payIntent(db, ssv, () => false, () => {}, () => NOW);
+		expect(await ar.rewardsToday(db, 'alice', NOW)).toEqual({ 3: out.amount });
 	});
 });
 
