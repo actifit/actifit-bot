@@ -33,10 +33,7 @@ function fakeDb(opts = {}) {
 			if (name === 'token_transactions') return {
 				createIndex: async () => 'ok',
 				countDocuments: async (q) => tx.filter((d) => matchesTx(d, q)).length,
-				find: (q) => ({
-					toArray: async () => tx.filter((d) => d.user === q.user
-						&& d.reward_activity === q.reward_activity && d.date >= q.date.$gte),
-				}),
+				find: (q) => ({ toArray: async () => tx.filter((d) => q._id.$in.includes(d._id)) }),
 				findOne: async (q) => tx.find((d) => d.user === q.user) || null,
 				insertOne: async (doc) => {
 					if (opts.failTxInsert) throw new Error('write failed');
@@ -244,8 +241,11 @@ const MONGO_URI = process.env.MONGO_TEST_URI;
 
 describe('rewardsToday', () => {
 	const NOW = Date.parse('2026-11-23T15:00:00Z');
-	const row = (over) => Object.assign({ user: 'alice', reward_activity: 'Ad Reward', tier: '2',
-		token_count: 3.141, date: new Date(NOW - 3600 * 1000) }, over);
+	const row = (over, user = 'alice', at = NOW) => {
+		const r = Object.assign({ user, reward_activity: 'Ad Reward', tier: '2', token_count: 3.141, date: new Date(at) }, over);
+		r._id = ar.rewardRowId(user, r.tier, at);
+		return r;
+	};
 
 	test('maps each tier paid today (UTC) to its amount', async () => {
 		const db = fakeDb();
@@ -253,12 +253,12 @@ describe('rewardsToday', () => {
 		expect(await ar.rewardsToday(db, 'alice', NOW)).toEqual({ 2: 3.141, 4: 9.5 });
 	});
 
-	test('leaves out yesterday, other users, other activities and bad rows', async () => {
+	test('leaves out yesterday, other users, other rows and bad amounts', async () => {
 		const db = fakeDb();
 		db.tx.push(
-			row({ date: new Date(Date.parse('2026-11-22T23:59:00Z')) }),
-			row({ user: 'bob' }),
-			row({ reward_activity: 'Post', tier: '3' }),
+			row({}, 'alice', Date.parse('2026-11-22T23:59:00Z')),
+			row({}, 'bob'),
+			{ _id: 'some-other-row', user: 'alice', reward_activity: 'Post', tier: '3', token_count: 5, date: new Date(NOW) },
 			row({ tier: '9' }),
 			row({ tier: '1', token_count: 'abc' }),
 		);

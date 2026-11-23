@@ -162,12 +162,15 @@ async function rewardedToday(db, user, tier, nowMs) {
 /**
  * Today's (UTC) paid ad rewards for `user`, as { tier: amount }. The amount is only picked
  * when AdMob confirms the view, after the ad has closed, so the app asks here to show the
- * user what they earned. Rows with an unknown tier or a non-numeric amount are skipped.
+ * user what they earned. Looked up by the rows' derived _id, so the app's polling never
+ * scans the ledger. Rows with a non-numeric amount are skipped.
  */
 async function rewardsToday(db, user, nowMs = Date.now()) {
-	const rows = await db.collection('token_transactions').find({
-		user, reward_activity: 'Ad Reward', date: { $gte: new Date(utcDay(nowMs) + 'T00:00:00Z') },
-	}, { projection: { _id: 0, tier: 1, token_count: 1 } }).toArray();
+	const ids = Object.keys(TIERS).map((tier) => rewardRowId(user, tier, nowMs));
+	const rows = await db.collection('token_transactions').find(
+		{ _id: { $in: ids } },
+		{ projection: { _id: 0, tier: 1, token_count: 1 } },
+	).toArray();
 	const out = {};
 	for (const r of rows) {
 		const tier = parseInt(r.tier, 10);
