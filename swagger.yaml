@@ -716,18 +716,6 @@ components:
               status: { type: 'string', example: 'pending' }
             required: [initiator, target, status, date]
       required: [sent_pending, received_pending]
-    UserAddedVidResponse:
-      type: object
-      properties:
-        status: { type: 'string', example: 'success' }
-        details: { type: 'string', nullable: true }
-      required: [status]
-    UserVidNotifierResponse:
-      type: object
-      properties:
-        status: { type: 'string', example: 'success' }
-        error: { type: 'string', nullable: true }
-      required: [status]
     AddFriendSuccess:
       type: object
       properties:
