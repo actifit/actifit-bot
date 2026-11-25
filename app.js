@@ -10,6 +10,7 @@ const sessionToken = require('./session_token');
 const afitBalance = require('./afit_balance');
 const adReward = require('./ad_reward');
 const threespeakUpload = require('./threespeak_upload');
+const aiProxy = require('./ai_proxy');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -209,6 +210,8 @@ client.connect()
 	  //disableUserLogin();
 
 	  // Challenge Engine (Trello #171): ensure the arena collection indexes.
+	  aiProxy.ensureIndexes(db).catch((e) => console.log('ai_proxy indexes: ' + e.message));
+
 	  try {
 	    arena.ensureArenaIndexes(db);
 	    arenaStandings.ensureStandingsIndexes(db);
@@ -5562,88 +5565,44 @@ app.get('/video/myUploads', checkHdrs, async function (req, res) {
 	}
 });
 
-/* end point for keeping track of user uploaded vids */
-//test sample: https://studio.3speak.tv/mobile/api/video/@hispapro/efqxuxlv
-//https://usermedia.actifit.io/LQCJQI4JR6Z3GGVZ4444AMKIIL6BF
-app.get('/userAddedVid/:user/:vid/?:status', async function (req, res){
-	let query = {
-		user: req.params.user,
-		vid: req.params.vid
+/* Gemini for the apps (ai_proxy.js): the key stays here, never in an app build. Each route
+ * builds its own prompt; the account's session and daily quota gate every call. */
+const aiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+let aiService = null;
+function ai() {
+	if (!aiService) {
+		aiService = aiProxy.createAi({
+			db,
+			apiKey: config.gemini_api_key,
+			model: config.gemini_model || undefined,
+			enabled: config.ai_enabled,
+			limits: config.ai_limits || {},
+			getContent: (author, permlink) => utils.hive.api.getContentAsync(author, permlink),
+		});
 	}
-	let vidMonitor = {
-		user: req.params.user,
-		vid: req.params.vid,
-		status: req.params.status?req.params.status:'new',
-		date: new Date(),
+	return aiService;
+}
+function aiRoute(name, handler) {
+	return async function (req, res) {
+		try {
+			const out = await handler(req);
+			res.status(out.status).send(out.body);
+		} catch (err) {
+			console.log('ai/' + name + ': ' + (err && err.message));
+			res.status(500).send({ error: 'failed', message: 'The AI assistant could not answer, please try again' });
+		}
 	};
-	
-	try{
-		let result = await db.collection('user_submitted_vid').replaceOne(query, vidMonitor, {upsert : true });
-		//let setgs = await db.collection('user_settings')
-		res.send ({status: 'success'});
-	}catch(err){
-		res.send ({status: 'error', details: err});
-	}
-})
+}
+app.post('/ai/chat', aiRateLimit, checkHdrs, aiRoute('chat', (req) => ai().chat(req.user._id, req.body && req.body.history)));
+app.post('/ai/workoutPlan', aiRateLimit, checkHdrs, aiRoute('workoutPlan', (req) => ai().workout(req.user._id, req.body && req.body.request)));
+app.post('/ai/translate', aiRateLimit, checkHdrs, aiRoute('translate', (req) => ai().translate(req.user._id, req.body && req.body.author, req.body && req.body.permlink)));
 
-app.get('/userVidNotifier', async function (req, res){
-	try{
-		//remove vid links older than 7 days
-		let userVidsList = await db.collection('user_submitted_vid').find().toArray();
-		let count = userVidsList.length;
-		//loop through existing vids, if any had a status modified, send notification
-		const thspkurl = 'https://studio.3speak.tv/mobile/api/video/@_USER_/_VID_';
-		let userVidsFinalArray = [];
-		let today = new Date();
-		
-		let minDays = 7;
-		if (req.query && req.query.threshold && !isNaN(req.query.threshold)){
-			minDays = req.query.threshold;
-		}		
-	
-		for (let i=0;i<count;i++){
-			//remove prior vids with status adjusted
-			let vid_date = new Date(userVidsList[i].date);
-			let dates_diff = today.getTime() - vid_date.getTime();
-			let diff_in_days = Math.ceil(dates_diff / (1000 * 3600 * 24));
-
-			//console.log(delg[i].min_delegation_time); 
-			console.log(diff_in_days);
-			
-			if (diff_in_days > minDays){
-				//remove (skip) this entry
-				continue;
-			}
-			if ( userVidsList[i].status=='new'){
-				//check if vid has been updated
-				let vidQuery = await fetch(thspkurl.replace('_USER_',userVidsList[i].user).replace('_VID_', userVidsList[i].vid));
-				console.log(vidQuery);
-				let res = await vidQuery.json();
-				console.log(res);
-				if (res){
-					if (res.video_status == 'publish_manual'){// || res.video_status == 'published'){
-						//notify user of status change
-						utils.sendNotification(db, userVidsList[i].user, 'threespeak', 'video_status', 'post', 'Your recently uploaded video is now ready to be published! ', 'https://actifit.io/'+userVidsList[i].user);
-						continue;
-					}
-				//}else{
-				//keep track of old vids
-				userVidsFinalArray.push(userVidsList[i]);
-				}
-			}
-		}
-		//cleanup old db
-		await db.collection('user_submitted_vid').deleteMany({});
-		if (userVidsFinalArray.length > 0){
-			await db.collection('user_submitted_vid').insertOneMany(userVidsFinalArray);
-		}
-		res.send({status:'success'});
-	}catch(err){
-		console.log(err);
-		res.send({error:err});
-	}
-	
-})
+/* Retired: these tracked uploads on 3Speak's old studio service, which no longer answers.
+ * Uploads now go through the embed service (/video/uploadToken), and the site no longer
+ * registers videos here. 410 tells any leftover caller (an old app, a cron job) to stop. */
+const videoTrackingRetired = (req, res) => res.status(410).send({ error: 'This endpoint has been retired' });
+app.get('/userAddedVid/:user/:vid/:status?', videoTrackingRetired);
+app.get('/userVidNotifier', videoTrackingRetired);
 
 /* end point for adding user's friend */
 app.get('/addFriendHiveKeychain/:userA/:userB/:blockNo/:trxID/:bchain', keyRotationGateByUserA, async function (req, res) {

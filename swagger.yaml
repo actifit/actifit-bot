@@ -716,18 +716,6 @@ components:
               status: { type: 'string', example: 'pending' }
             required: [initiator, target, status, date]
       required: [sent_pending, received_pending]
-    UserAddedVidResponse:
-      type: object
-      properties:
-        status: { type: 'string', example: 'success' }
-        details: { type: 'string', nullable: true }
-      required: [status]
-    UserVidNotifierResponse:
-      type: object
-      properties:
-        status: { type: 'string', example: 'success' }
-        error: { type: 'string', nullable: true }
-      required: [status]
     AddFriendSuccess:
       type: object
       properties:
@@ -3891,54 +3879,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserFriendRequestsResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /userAddedVid/{user}/{vid}/{status?}:
-    get:
-      summary: Track user uploaded video status
-      description: Stores or updates the status of a user's uploaded video.
-      parameters:
-        - in: path
-          name: user
-          schema: { type: 'string', example: 'actifit-user' }
-          required: true
-          description: The username who uploaded the video.
-        - in: path
-          name: vid
-          schema: { type: 'string', example: 'efqxuxlv' }
-          required: true
-          description: The video ID.
-        - in: path
-          name: status
-          schema: { type: 'string', example: 'new', enum: ['new', 'processing', 'published'] }
-          required: false
-          description: The status of the video (defaults to 'new').
-      responses:
-        '200':
-          description: Video status tracked successfully.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserAddedVidResponse'
-        '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
-
-  /userVidNotifier:
-    get:
-      summary: Process and notify on user video status updates
-      description: (ADMIN ONLY) Scans for status updates on user-submitted videos and sends notifications.
-      parameters:
-        - in: query
-          name: threshold
-          schema: { type: 'integer', example: 7 }
-          required: false
-          description: Number of days to keep video links before cleanup (default 7).
-      responses:
-        '200':
-          description: Video status notifications processed.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserVidNotifierResponse'
         '500': { description: 'Internal server error.', content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
 
   /addFriendHiveKeychain/{userA}/{userB}/{blockNo}/{trxID}/{bchain}:
