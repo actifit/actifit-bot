@@ -19,10 +19,15 @@ const MAX_DAY_STEPS = 100000;
 // a report's own activity date is trusted only if it is at most this many days before the
 // day the server received it (yesterday's report is normal); otherwise the receive day counts
 const MAX_DAY_SKEW = 2;
-// Explorer: only the first few types of a report count, and a type counts once it shows up
-// in reports on this many different days, so one report listing 20 types earns nothing
+// Explorer, all by the server's receive time (the client controls dates and type names):
+// only the first few types of a report count, at most a few NEW types count per day, and a
+// type counts once it shows up again at least a day later. 20 types take a week or more.
 const MAX_TYPES_PER_REPORT = 3;
-const TYPE_MIN_DAYS = 2;
+const MAX_NEW_TYPES_PER_DAY = 3;
+const TYPE_REPEAT_MS = 24 * 3600 * 1000;
+// a limited edition counts a report day only this long after the last counted one, so two
+// reports either side of midnight UTC are one day
+const LIMITED_DAY_GAP_MS = 20 * 3600 * 1000;
 // Arena badges only count challenges run by Actifit or a moderator: anyone can create a
 // friendly challenge and fill it with their own accounts
 const ARENA_TIERS = ['official', 'community'];
@@ -43,7 +48,7 @@ const FAMILIES = [
 	{ id: 'director', name: 'Director', stat: 'videoReports', unit: 'video reports', tiers: [1, 10, 50],
 		desc: 'Add a 3Speak video to your reports.' },
 	{ id: 'explorer', name: 'Explorer', stat: 'activityTypes', unit: 'activity types', tiers: [5, 10, 20],
-		desc: 'Try different activity types: each counts once you report it on 2 different days.' },
+		desc: 'Try different activity types: each counts once you report it again on a later day.' },
 	{ id: 'contender', name: 'Contender', stat: 'arenaJoined', unit: 'Arena challenges joined', tiers: [1, 10, 50],
 		desc: 'Join official or community Arena challenges.' },
 	{ id: 'podium', name: 'Podium', stat: 'arenaPodiums', unit: 'top-3 finishes', tiers: [1, 5, 20],
@@ -132,17 +137,23 @@ function longestStreak(days) {
 /** Report-based stats from `user`'s verified_posts documents (pure, for tests). */
 function reportStats(posts, now = Date.now(), user = null) {
 	const daySteps = new Map();
-	const typeDays = new Map();
+	const typeSeen = new Map();
+	const newTypesPerDay = new Map();
+	let lastRushAt = -Infinity;
+	let rushDays = 0;
 	let videoReports = 0;
 	let charityReports = 0;
-	const rushDays = new Set();
 	const rush = LIMITED[0];
 	const rushFrom = Date.parse(rush.from);
 	const rushUntil = Math.min(Date.parse(rush.until), now);
-	for (const p of posts) {
+	// oldest first: Explorer and the limited edition depend on the order reports arrived in
+	const ordered = posts.filter((p) => Number.isFinite(new Date(p.date).getTime()))
+		.sort((x, y) => new Date(x.date) - new Date(y.date));
+	for (const p of ordered) {
 		const md = p.json_metadata || {};
 		const day = reportDay(p);
-		if (!day) continue;
+		const at = new Date(p.date).getTime();
+		const receivedDay = utcDay(at);
 		let steps = parseInt(one(md.step_count), 10);
 		steps = Number.isFinite(steps) && steps > 0 ? Math.min(steps, MAX_DAY_STEPS) : 0;
 		// one report day counts once: keep its biggest report
@@ -150,16 +161,23 @@ function reportStats(posts, now = Date.now(), user = null) {
 		const names = [...new Set(String(one(md.activity_type) || '').split(',')
 			.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_TYPES_PER_REPORT);
 		for (const name of names) {
-			if (!typeDays.has(name)) typeDays.set(name, new Set());
-			typeDays.get(name).add(day);
+			const seen = typeSeen.get(name);
+			if (seen) {
+				seen.last = at;
+			} else if ((newTypesPerDay.get(receivedDay) || 0) < MAX_NEW_TYPES_PER_DAY) {
+				newTypesPerDay.set(receivedDay, (newTypesPerDay.get(receivedDay) || 0) + 1);
+				typeSeen.set(name, { first: at, last: at });
+			}
 		}
 		const v = md.video;
 		// only the user's own video counts
 		if (v && typeof v === 'object' && v.info && v.info.permlink && (!user || v.info.author === user)) videoReports++;
 		if (one(md.charity)) charityReports++;
-		// the limited window counts the days the server received reports: no backdating into it
-		const at = new Date(p.date).getTime();
-		if (at >= rushFrom && at <= rushUntil) rushDays.add(utcDay(at));
+		// the limited window counts by receive time: no backdating into it
+		if (at >= rushFrom && at <= rushUntil && at - lastRushAt >= LIMITED_DAY_GAP_MS) {
+			rushDays++;
+			lastRushAt = at;
+		}
 	}
 	let lifetimeSteps = 0;
 	let bestDay = 0;
@@ -170,9 +188,9 @@ function reportStats(posts, now = Date.now(), user = null) {
 	return {
 		longestStreak: longestStreak([...daySteps.keys()]),
 		lifetimeSteps, bestDay,
-		activityTypes: [...typeDays.values()].filter((days) => days.size >= TYPE_MIN_DAYS).length,
+		activityTypes: [...typeSeen.values()].filter((t) => t.last - t.first >= TYPE_REPEAT_MS).length,
 		videoReports, charityReports,
-		endorphinReports: rushDays.size,
+		endorphinReports: rushDays,
 	};
 }
 

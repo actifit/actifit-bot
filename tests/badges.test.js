@@ -94,15 +94,53 @@ describe('reportStats', () => {
 		expect(s.lifetimeSteps).toBe(100000);
 	});
 
-	test('activity types count once seen on 2 different days, at most 3 per report', () => {
+	test('a type counts once reported again a day later; at most 3 per report', () => {
 		const s = b.reportStats([
 			post('20261101', { activity_type: ['Walking, Running, Cycling, Yoga, Hiking'] }),
 			post('20261102', { activity_type: ['running,Cycling ,  ,walking, yoga'] }),
 			post('20261103', { activity_type: 'Yoga' }),
 			post('20261104', { activity_type: ['Yoga'] }),
 		], NOW);
-		// walking, running, cycling on 2 days each; yoga on 2 days (03, 04); hiking was 5th in a report
+		// walking, running, cycling: 24 h apart; yoga: first seen 11-03 (11-02 was its 4th slot), again 11-04
 		expect(s.activityTypes).toBe(4);
+	});
+
+	test('the same type twice within a day does not count yet', () => {
+		const s = b.reportStats([
+			post('20261101', { activity_type: ['Walking'] }, '2026-11-01T01:00:00Z'),
+			post('20261101', { activity_type: ['Walking'] }, '2026-11-01T23:00:00Z'),
+		], NOW);
+		expect(s.activityTypes).toBe(0);
+	});
+
+	test('a 70-minute sitting with made-up dates and types earns no Explorer tier', () => {
+		// round-2 scenario: 14 reports alternating two dates, 3 made-up types each
+		const posts = [];
+		for (let i = 0; i < 14; i++) {
+			const types = [0, 1, 2].map((k) => 'fake' + (((i >> 1) * 3 + k) % 21)).join(',');
+			posts.push(post(i % 2 ? '20261124' : '20261123', { activity_type: [types] },
+				new Date(Date.parse('2026-11-24T10:00:00Z') + i * 5 * 60000).toISOString()));
+		}
+		expect(b.reportStats(posts, NOW).activityTypes).toBe(0);
+	});
+
+	test('only 3 new types count per day, so 20 types take a week or more', () => {
+		const posts = [];
+		for (let d = 0; d < 8; d++) {
+			const day = '202611' + String(d + 1).padStart(2, '0');
+			// every day lists 3 new types and repeats 3 older ones
+			const fresh = [0, 1, 2].map((k) => 't' + (d * 3 + k));
+			posts.push(post(day, { activity_type: [fresh.join(',')] }));
+			if (d > 0) posts.push(post(day, { activity_type: [[0, 1, 2].map((k) => 't' + ((d - 1) * 3 + k)).join(',')] },
+				new Date(dayMs(day, 20)).toISOString()));
+		}
+		// types from days 1..7 were repeated a day later; day 8's are not confirmed yet
+		expect(b.reportStats(posts, NOW).activityTypes).toBe(21);
+		const quick = [post('20261101', { activity_type: ['a,b,c'] }), post('20261101', { activity_type: ['d,e,f'] },
+			'2026-11-01T13:00:00Z'), post('20261102', { activity_type: ['a,b,c'] }), post('20261102', { activity_type: ['d,e,f'] },
+			'2026-11-02T13:00:00Z')];
+		// d,e,f were the 4th-6th new types on 11-01, so they only start counting on 11-02
+		expect(b.reportStats(quick, NOW).activityTypes).toBe(3);
 	});
 
 	test('one report listing 20 types earns nothing', () => {
@@ -131,6 +169,15 @@ describe('reportStats', () => {
 			post('20261125', {}, '2026-11-20T10:00:00Z'),
 			// arrived after "now"
 			post('20261215', {}, '2026-12-15T10:00:00Z'),
+		], NOW);
+		expect(s.endorphinReports).toBe(2);
+	});
+
+	test('reports either side of midnight UTC are one day for the limited edition', () => {
+		const s = b.reportStats([
+			post('20261125', {}, '2026-11-25T23:55:00Z'),
+			post('20261126', {}, '2026-11-26T00:05:00Z'),
+			post('20261126', {}, '2026-11-26T21:00:00Z'),
 		], NOW);
 		expect(s.endorphinReports).toBe(2);
 	});
