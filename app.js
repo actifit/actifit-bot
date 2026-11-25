@@ -10,6 +10,7 @@ const sessionToken = require('./session_token');
 const afitBalance = require('./afit_balance');
 const adReward = require('./ad_reward');
 const threespeakUpload = require('./threespeak_upload');
+const aiProxy = require('./ai_proxy');
 const afitTransfers = require('./afit_transfers');
 const { pricingAfitHivePrice } = require('./afit_price_floor');
 // Challenge Engine (Arena) — load-safe modules (no config/Firebase at require).
@@ -209,6 +210,8 @@ client.connect()
 	  //disableUserLogin();
 
 	  // Challenge Engine (Trello #171): ensure the arena collection indexes.
+	  aiProxy.ensureIndexes(db).catch((e) => console.log('ai_proxy indexes: ' + e.message));
+
 	  try {
 	    arena.ensureArenaIndexes(db);
 	    arenaStandings.ensureStandingsIndexes(db);
@@ -5561,6 +5564,38 @@ app.get('/video/myUploads', checkHdrs, async function (req, res) {
 		res.status(500).send({ error: 'Could not load your videos' });
 	}
 });
+
+/* Gemini for the apps (ai_proxy.js): the key stays here, never in an app build. Each route
+ * builds its own prompt; the account's session and daily quota gate every call. */
+const aiRateLimit = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, keyGenerator: clientIpKey });
+let aiService = null;
+function ai() {
+	if (!aiService) {
+		aiService = aiProxy.createAi({
+			db,
+			apiKey: config.gemini_api_key,
+			model: config.gemini_model || undefined,
+			enabled: config.ai_enabled,
+			limits: config.ai_limits || {},
+			getContent: (author, permlink) => utils.hive.api.getContentAsync(author, permlink),
+		});
+	}
+	return aiService;
+}
+function aiRoute(name, handler) {
+	return async function (req, res) {
+		try {
+			const out = await handler(req);
+			res.status(out.status).send(out.body);
+		} catch (err) {
+			console.log('ai/' + name + ': ' + (err && err.message));
+			res.status(500).send({ error: 'failed', message: 'The AI assistant could not answer, please try again' });
+		}
+	};
+}
+app.post('/ai/chat', aiRateLimit, checkHdrs, aiRoute('chat', (req) => ai().chat(req.user._id, req.body && req.body.history)));
+app.post('/ai/workoutPlan', aiRateLimit, checkHdrs, aiRoute('workoutPlan', (req) => ai().workout(req.user._id, req.body && req.body.request)));
+app.post('/ai/translate', aiRateLimit, checkHdrs, aiRoute('translate', (req) => ai().translate(req.user._id, req.body && req.body.author, req.body && req.body.permlink)));
 
 /* Retired: these tracked uploads on 3Speak's old studio service, which no longer answers.
  * Uploads now go through the embed service (/video/uploadToken), and the site no longer
