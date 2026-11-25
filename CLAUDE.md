@@ -51,6 +51,16 @@ phishing vector, and the inbox is readable without login). On by default inside
 config.json and `pm2 restart app` (never `pm2 delete` + start by hand — that drops
 `BOT_THREAD` and stops settlement).
 
+## Gemini (AI) — the key lives only here
+
+`ai_proxy.js` serves the apps' AI features (`/ai/chat`, `/ai/workoutPlan`,
+`/ai/translate`) with `config.gemini_api_key`. Google suspended the Gemini project
+twice after keys built into the Android app were harvested from the APK, so:
+**never ship a Gemini (or any billable) key in an app or client bundle.** Routes
+build their own prompts (no generic relay), need a session, and count against
+`ai_limits` (per account per UTC day, plus a global cap). `ai_enabled: false`
+switches them off. Never log prompts or answers (health data).
+
 ## Conventions
 
 - Use `git -C <path>` (not `cd && git`).
