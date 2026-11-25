@@ -50,7 +50,7 @@ beforeAll((done) => {
 	app = require('../../app');
 	express.application.listen = listen;
 	origSetTimeout(done, 300);
-});
+}, 60000); // loading app.js takes ~18s on a slow machine
 beforeEach(() => { global.fetch = jest.fn(async () => ({ json: async () => [] })); });
 afterAll(() => { global.fetch = realFetch; });
 

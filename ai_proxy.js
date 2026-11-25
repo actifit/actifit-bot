@@ -25,9 +25,14 @@ const TRANSLATIONS = 'ai_translations';
 
 // per account per UTC day, and for all accounts together
 const DEFAULT_LIMITS = { chat: 40, workout: 5, translate: 60, global: 3000 };
-const TIMEOUT_MS = { chat: 60000, workout: 110000, translate: 60000 };
-const MAX_TOKENS = { chat: 1024, workout: 4096, translate: 8192 };
+// one deadline per request, retries included: Cloudflare drops the app's request at ~100s
+const DEADLINE_MS = 85000;
+// thinking is off (THINKING), so these caps are all answer text
+const MAX_TOKENS = { chat: 1024, workout: 4096, translate: 16384 };
+// 2.5-flash counts thinking against maxOutputTokens; none of these tasks needs it
+const THINKING = { thinkingBudget: 0 };
 const RETRY_DELAYS_MS = [1500, 3000]; // Gemini's 503 "model overloaded" usually clears fast
+const TRANSLATIONS_TTL_S = 90 * 24 * 3600;
 
 const MAX_TURNS = 30;
 const MAX_TURN_CHARS = 4000;
@@ -37,7 +42,8 @@ const MAX_LIMITATION_CHARS = 500;
 const MAX_POST_CHARS = 20000;
 
 const HIVE_USER = /^[a-z][a-z0-9.-]{2,15}$/;
-const PERMLINK = /^[a-z0-9][a-z0-9-]{0,255}$/;
+// Hive itself only bounds a permlink's length; it is passed to get_content as a parameter
+const PERMLINK = /^[^\s/]{1,256}$/;
 
 const CHAT_INSTRUCTION = 'You are the writing assistant inside the Actifit app, where people '
 	+ 'post daily fitness activity reports to the Hive blockchain. Help the user write, improve, '
@@ -123,23 +129,32 @@ function workoutPrompt(r) {
 		+ 'Ensure that all string values for name, sets, reps, duration, and days should be wrapped in double quotes.';
 }
 
-/** Gemini's reply as text; throws an Error whose .code is a key of ERRORS. */
+/**
+ * Gemini's reply as text; throws an Error whose .code is a key of ERRORS. Google answered,
+ * so the call is billed (.billed): the quota slot is kept.
+ */
 function replyText(body) {
-	const err = (code) => Object.assign(new Error(code), { code });
+	const err = (code) => Object.assign(new Error(code), { code, billed: true });
 	if (!body || typeof body !== 'object') throw err('failed');
 	if (body.promptFeedback && body.promptFeedback.blockReason) throw err('blocked');
 	const c = Array.isArray(body.candidates) ? body.candidates[0] : null;
 	if (!c) throw err('failed');
 	if (['SAFETY', 'PROHIBITED_CONTENT', 'BLOCKLIST', 'SPII'].includes(c.finishReason)) throw err('blocked');
+	// a cut-off answer (half a workout JSON, half a translation) is not an answer
+	if (c.finishReason && c.finishReason !== 'STOP') throw err('failed');
 	const parts = (c.content && Array.isArray(c.content.parts)) ? c.content.parts : [];
 	const text = parts.filter((p) => p && !p.thought && typeof p.text === 'string').map((p) => p.text).join('').trim();
 	if (!text) throw err('failed');
 	return text;
 }
 
-/** One generateContent call, retried on 503/429; throws an Error whose .code is a key of ERRORS. */
-async function generate({ apiKey, model, kind, request, fetchImpl = fetch, sleep }) {
+/**
+ * One generateContent call, retried on 503/429 within one deadline. Throws an Error whose
+ * .code is a key of ERRORS and whose .billed says whether Google may have done paid work.
+ */
+async function generate({ apiKey, model, request, fetchImpl = fetch, sleep }) {
 	const wait = sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+	const signal = AbortSignal.timeout(DEADLINE_MS);
 	for (let attempt = 0; ; attempt++) {
 		let res;
 		try {
@@ -147,10 +162,12 @@ async function generate({ apiKey, model, kind, request, fetchImpl = fetch, sleep
 				method: 'POST',
 				headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
 				body: JSON.stringify(request),
-				signal: AbortSignal.timeout(TIMEOUT_MS[kind]),
+				signal,
 			});
 		} catch (e) {
-			throw Object.assign(new Error('Gemini request failed: ' + e.message), { code: 'failed' });
+			// a timeout may still be generating (and billing) at Google; a refused connection is not
+			const timedOut = signal.aborted || (e && (e.name === 'TimeoutError' || e.name === 'AbortError'));
+			throw Object.assign(new Error('Gemini request failed: ' + e.message), { code: 'failed', billed: timedOut });
 		}
 		if ((res.status === 503 || res.status === 429) && attempt < RETRY_DELAYS_MS.length) {
 			await wait(RETRY_DELAYS_MS[attempt]);
@@ -162,7 +179,8 @@ async function generate({ apiKey, model, kind, request, fetchImpl = fetch, sleep
 			const code = res.status === 503 || res.status === 429 ? 'busy' : 'failed';
 			// the status and Google's error status only: the message can echo the prompt
 			const why = body && body.error && body.error.status ? ' ' + String(body.error.status).slice(0, 60) : '';
-			throw Object.assign(new Error('Gemini HTTP ' + res.status + why), { code });
+			// an error status means Google refused or failed the call: nothing was generated
+			throw Object.assign(new Error('Gemini HTTP ' + res.status + why), { code, billed: false });
 		}
 		return replyText(body);
 	}
@@ -180,17 +198,22 @@ async function reserve(db, user, kind, limits, now) {
 	const caps = [limits[kind], limits.global];
 	const taken = [];
 	const release = () => Promise.all(taken.map((_id) => col.updateOne({ _id }, { $inc: { count: -1 } }).catch(() => {})));
-	for (let i = 0; i < ids.length; i++) {
-		const doc = await col.findOneAndUpdate(
-			{ _id: ids[i] },
-			{ $inc: { count: 1 }, $setOnInsert: { expires } },
-			{ upsert: true, returnDocument: 'after', includeResultMetadata: false },
-		);
-		taken.push(ids[i]);
-		if (!doc || doc.count > caps[i]) {
-			await release();
-			return null;
+	try {
+		for (let i = 0; i < ids.length; i++) {
+			const doc = await col.findOneAndUpdate(
+				{ _id: ids[i] },
+				{ $inc: { count: 1 }, $setOnInsert: { expires } },
+				{ upsert: true, returnDocument: 'after', includeResultMetadata: false },
+			);
+			taken.push(ids[i]);
+			if (!doc || doc.count > caps[i]) {
+				await release();
+				return null;
+			}
 		}
+	} catch (e) {
+		await release();
+		throw e;
 	}
 	return release;
 }
@@ -203,9 +226,11 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		const release = await reserve(db, user, kind, lim, now());
 		if (!release) return { error: fail('quota') };
 		try {
-			return { text: await generate({ apiKey, model, kind, request, fetchImpl, sleep }) };
+			return { text: await generate({ apiKey, model, request, fetchImpl, sleep }) };
 		} catch (e) {
-			if (e.code !== 'blocked') await release(); // a refused prompt still counts
+			// only a call Google surely did not bill gives its slot back: otherwise a user could
+			// make the model fail (or time out) on purpose and use it without limit
+			if (!e.billed) await release();
 			console.log('ai ' + kind + ': ' + e.message);
 			return { error: fail(e.code || 'failed') };
 		}
@@ -219,7 +244,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		const out = await run(user, 'chat', {
 			systemInstruction: { parts: [{ text: CHAT_INSTRUCTION }] },
 			contents,
-			generationConfig: { maxOutputTokens: MAX_TOKENS.chat },
+			generationConfig: { maxOutputTokens: MAX_TOKENS.chat, thinkingConfig: THINKING },
 		});
 		return out.error || ok(out.text);
 	}
@@ -230,7 +255,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		if (!prompt) return fail('invalid');
 		const out = await run(user, 'workout', {
 			contents: [{ role: 'user', parts: [{ text: prompt }] }],
-			generationConfig: { maxOutputTokens: MAX_TOKENS.workout, responseMimeType: 'application/json' },
+			generationConfig: { maxOutputTokens: MAX_TOKENS.workout, responseMimeType: 'application/json', thinkingConfig: THINKING },
 		});
 		return out.error || ok(out.text);
 	}
@@ -257,7 +282,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		const out = await run(user, 'translate', {
 			systemInstruction: { parts: [{ text: TRANSLATE_INSTRUCTION }] },
 			contents: [{ role: 'user', parts: [{ text: post.body }] }],
-			generationConfig: { maxOutputTokens: MAX_TOKENS.translate },
+			generationConfig: { maxOutputTokens: MAX_TOKENS.translate, thinkingConfig: THINKING },
 		});
 		if (out.error) return out.error;
 		await col.updateOne({ _id }, { $set: { hash, text: out.text, updated: new Date(now()) } }, { upsert: true })
@@ -268,9 +293,10 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 	return { chat, workout, translate };
 }
 
-/** TTL clean-up of the daily counters. Safe to call on every start. */
+/** TTL clean-up of the daily counters and old translations. Safe to call on every start. */
 async function ensureIndexes(db) {
 	await db.collection(USAGE).createIndex({ expires: 1 }, { expireAfterSeconds: 0 });
+	await db.collection(TRANSLATIONS).createIndex({ updated: 1 }, { expireAfterSeconds: TRANSLATIONS_TTL_S });
 }
 
 module.exports = { createAi, ensureIndexes, replyText };

@@ -171,7 +171,8 @@ describe('translation takes a post, not text', () => {
 
 	test.each([
 		['a bad author', 'Bob!', 'p', 'invalid'],
-		['a bad permlink', 'bob', '../x', 'invalid'],
+		['a bad permlink', 'bob', 'a/b', 'invalid'],
+		['an empty permlink', 'bob', '', 'invalid'],
 		['a non-string permlink', 'bob', { $gt: '' }, 'invalid'],
 	])('rejects %s', async (_, author, permlink, code) => {
 		const { svc, fetchImpl } = make();
@@ -238,6 +239,45 @@ describe('quotas', () => {
 		expect(usage()).toBe(1);
 	});
 
+	test('a billed call that comes back empty or cut off keeps its slot (no free retries)', async () => {
+		const db = fakeDb();
+		const usage = () => db.collection('ai_usage').rows.get('alice:chat:2026-11-25').count;
+		const empty = make({ db, fetchImpl: fakeFetch([{ status: 200, body: { candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] } }]) }).svc;
+		expect((await empty.chat('alice', [{ role: 'user', text: 'hi' }])).body.error).toBe('failed');
+		const cut = make({ db, fetchImpl: fakeFetch([{ status: 200, body: { candidates: [{ content: { parts: [{ text: '{"workoutPl' }] }, finishReason: 'MAX_TOKENS' }] } }]) }).svc;
+		expect((await cut.chat('alice', [{ role: 'user', text: 'hi' }])).body.error).toBe('failed');
+		expect(usage()).toBe(2);
+		expect(db.collection('ai_usage').rows.get('global:2026-11-25').count).toBe(2);
+	});
+
+	test('a timed-out call keeps its slot; a refused connection gives it back', async () => {
+		const db = fakeDb();
+		const usage = () => db.collection('ai_usage').rows.get('alice:chat:2026-11-25').count;
+		const timeout = Object.assign(new Error('timed out'), { name: 'TimeoutError' });
+		await make({ db, fetchImpl: fakeFetch([timeout]) }).svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(usage()).toBe(1);
+		await make({ db, fetchImpl: fakeFetch([new Error('ECONNREFUSED')]) }).svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(usage()).toBe(1);
+	});
+
+	test('a cut-off translation is not cached', async () => {
+		const { svc, fetchImpl } = make({ fetchImpl: fakeFetch([
+			{ status: 200, body: { candidates: [{ content: { parts: [{ text: 'Hello wor' }] }, finishReason: 'MAX_TOKENS' }] } },
+			{ status: 200, body: answer('Hello world') },
+		]) });
+		expect((await svc.translate('alice', 'bob', 'p')).body.error).toBe('failed');
+		expect((await svc.translate('alice', 'bob', 'p')).body).toEqual({ status: 'success', text: 'Hello world' });
+		expect(fetchImpl.calls).toHaveLength(2);
+	});
+
+	test('every route turns thinking off, so the output cap is all answer', async () => {
+		const { svc, fetchImpl } = make();
+		await svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		await svc.workout('alice', WORKOUT);
+		await svc.translate('alice', 'bob', 'p');
+		expect(fetchImpl.calls.map((c) => c.body.generationConfig.thinkingConfig)).toEqual([{ thinkingBudget: 0 }, { thinkingBudget: 0 }, { thinkingBudget: 0 }]);
+	});
+
 	test('a cached translation costs no quota', async () => {
 		const { svc } = make({ limits: { translate: 1 } });
 		await svc.translate('alice', 'bob', 'p');
@@ -274,5 +314,6 @@ describe('talking to Gemini', () => {
 		expect(() => ai.replyText({ candidates: [{ finishReason: 'SAFETY' }] })).toThrow('blocked');
 		expect(() => ai.replyText({ candidates: [] })).toThrow('failed');
 		expect(() => ai.replyText({ candidates: [{ content: { parts: [] } }] })).toThrow('failed');
+		expect(() => ai.replyText({ candidates: [{ content: { parts: [{ text: 'half' }] }, finishReason: 'MAX_TOKENS' }] })).toThrow('failed');
 	});
 });
