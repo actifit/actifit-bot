@@ -173,13 +173,14 @@ describe('reportStats', () => {
 		expect(s.endorphinReports).toBe(2);
 	});
 
-	test('reports either side of midnight UTC are one day for the limited edition', () => {
-		const s = b.reportStats([
-			post('20261125', {}, '2026-11-25T23:55:00Z'),
-			post('20261126', {}, '2026-11-26T00:05:00Z'),
-			post('20261126', {}, '2026-11-26T21:00:00Z'),
-		], NOW);
-		expect(s.endorphinReports).toBe(2);
+	test('a daily poster at changing times keeps every day for the limited edition', () => {
+		// round 3: one report a day alternating 22:00 and 08:00 UTC must count all 20 days
+		const posts = [];
+		for (let i = 0; i < 20; i++) {
+			const ms = Date.parse('2026-11-22T00:00:00Z') + i * 86400000 + (i % 2 ? 8 : 22) * 3600000;
+			posts.push(post(new Date(ms).toISOString().slice(0, 10).replace(/-/g, ''), {}, new Date(ms).toISOString()));
+		}
+		expect(b.reportStats(posts, Date.parse('2026-12-20T00:00:00Z')).endorphinReports).toBe(20);
 	});
 
 	test('20 reports sent in one sitting are one day for the limited edition', () => {
@@ -188,6 +189,16 @@ describe('reportStats', () => {
 			posts.push(post('202611' + String(i).padStart(2, '0'), {}, '2026-11-25T10:0' + (i % 10) + ':00Z'));
 		}
 		expect(b.reportStats(posts, NOW).endorphinReports).toBe(1);
+	});
+
+	test('a report with a null or missing receive time is skipped, not a crash', () => {
+		const s = b.reportStats([
+			{ date: null, json_metadata: { activityDate: ['20261101'], step_count: ['5000'] } },
+			{ date: 0, json_metadata: { activityDate: ['20261101'], step_count: ['5000'] } },
+			{ json_metadata: { step_count: ['5000'] } },
+			post('20261102'),
+		], NOW);
+		expect(s).toMatchObject({ longestStreak: 1, lifetimeSteps: 6000 });
 	});
 });
 

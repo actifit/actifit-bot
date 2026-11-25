@@ -21,13 +21,10 @@ const MAX_DAY_STEPS = 100000;
 const MAX_DAY_SKEW = 2;
 // Explorer, all by the server's receive time (the client controls dates and type names):
 // only the first few types of a report count, at most a few NEW types count per day, and a
-// type counts once it shows up again at least a day later. 20 types take a week or more.
+// type counts once it shows up again at least a day later. 20 types take 6+ days of posting.
 const MAX_TYPES_PER_REPORT = 3;
 const MAX_NEW_TYPES_PER_DAY = 3;
 const TYPE_REPEAT_MS = 24 * 3600 * 1000;
-// a limited edition counts a report day only this long after the last counted one, so two
-// reports either side of midnight UTC are one day
-const LIMITED_DAY_GAP_MS = 20 * 3600 * 1000;
 // Arena badges only count challenges run by Actifit or a moderator: anyone can create a
 // friendly challenge and fill it with their own accounts
 const ARENA_TIERS = ['official', 'community'];
@@ -139,20 +136,19 @@ function reportStats(posts, now = Date.now(), user = null) {
 	const daySteps = new Map();
 	const typeSeen = new Map();
 	const newTypesPerDay = new Map();
-	let lastRushAt = -Infinity;
-	let rushDays = 0;
+	const rushDays = new Set();
 	let videoReports = 0;
 	let charityReports = 0;
 	const rush = LIMITED[0];
 	const rushFrom = Date.parse(rush.from);
 	const rushUntil = Math.min(Date.parse(rush.until), now);
-	// oldest first: Explorer and the limited edition depend on the order reports arrived in
-	const ordered = posts.filter((p) => Number.isFinite(new Date(p.date).getTime()))
-		.sort((x, y) => new Date(x.date) - new Date(y.date));
-	for (const p of ordered) {
+	// oldest first (Explorer depends on the order reports arrived in); a report without a
+	// usable receive time is skipped
+	const ordered = posts.map((p) => ({ p, day: reportDay(p), at: p.date ? new Date(p.date).getTime() : NaN }))
+		.filter((r) => r.day && Number.isFinite(r.at))
+		.sort((x, y) => x.at - y.at);
+	for (const { p, day, at } of ordered) {
 		const md = p.json_metadata || {};
-		const day = reportDay(p);
-		const at = new Date(p.date).getTime();
 		const receivedDay = utcDay(at);
 		let steps = parseInt(one(md.step_count), 10);
 		steps = Number.isFinite(steps) && steps > 0 ? Math.min(steps, MAX_DAY_STEPS) : 0;
@@ -173,11 +169,8 @@ function reportStats(posts, now = Date.now(), user = null) {
 		// only the user's own video counts
 		if (v && typeof v === 'object' && v.info && v.info.permlink && (!user || v.info.author === user)) videoReports++;
 		if (one(md.charity)) charityReports++;
-		// the limited window counts by receive time: no backdating into it
-		if (at >= rushFrom && at <= rushUntil && at - lastRushAt >= LIMITED_DAY_GAP_MS) {
-			rushDays++;
-			lastRushAt = at;
-		}
+		// the limited window counts the UTC days reports were received: no backdating into it
+		if (at >= rushFrom && at <= rushUntil) rushDays.add(receivedDay);
 	}
 	let lifetimeSteps = 0;
 	let bestDay = 0;
@@ -190,7 +183,7 @@ function reportStats(posts, now = Date.now(), user = null) {
 		lifetimeSteps, bestDay,
 		activityTypes: [...typeSeen.values()].filter((t) => t.last - t.first >= TYPE_REPEAT_MS).length,
 		videoReports, charityReports,
-		endorphinReports: rushDays,
+		endorphinReports: rushDays.size,
 	};
 }
 
