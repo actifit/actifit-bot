@@ -273,4 +273,4 @@ async function ensureIndexes(db) {
 	await db.collection(USAGE).createIndex({ expires: 1 }, { expireAfterSeconds: 0 });
 }
 
-module.exports = { createAi, ensureIndexes, chatContents, workoutPrompt, replyText, DEFAULT_LIMITS };
+module.exports = { createAi, ensureIndexes, replyText };
