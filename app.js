@@ -5823,9 +5823,11 @@ app.get('/badgeCatalog', function (req, res) {
 	res.send(badges.catalog());
 });
 
-app.get('/badgeProgress/:user', async function (req, res) {
+app.get('/badgeProgress/:user', arenaReadRateLimit, async function (req, res) {
+	const user = String(req.params.user || '');
+	// a Hive account name: anything else would only churn the stats cache
+	if (!/^[a-z][a-z0-9.-]{2,15}$/.test(user)) return res.send({status: 'error'});
 	try{
-		const user = String(req.params.user || '');
 		const [stats, claimed] = await Promise.all([badges.userStats(db, user), badges.claimedSet(db, user)]);
 		res.send(Object.assign({ status: 'success', user }, badges.progress(stats, claimed)));
 	}catch(err){
@@ -5849,7 +5851,7 @@ app.get('/claimBadge/', checkHdrs, async function (req, res) {
 		if (badges.parseBadge(req.query.badge)) {
 			try{
 				const [stats, claimed] = await Promise.all([
-					badges.userStats(db, req.query.user), badges.claimedSet(db, req.query.user)]);
+					badges.userStats(db, req.query.user, Date.now(), { fresh: true }), badges.claimedSet(db, req.query.user)]);
 				const verdict = badges.canClaim(req.query.badge, stats, claimed);
 				if (!verdict.ok) return res.send({status: 'error', reason: verdict.reason});
 				await db.collection('user_badges').insertOne({

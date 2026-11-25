@@ -16,9 +16,20 @@
 
 // steps above this in one report are treated as this much (sanity cap, cosmetic badges only)
 const MAX_DAY_STEPS = 100000;
-// Arena podiums and wins only count in public challenges with at least this many finishers,
-// so two friends can't farm them in a private 1v1
+// a report's own activity date is trusted only if it is at most this many days before the
+// day the server received it (yesterday's report is normal); otherwise the receive day counts
+const MAX_DAY_SKEW = 2;
+// Explorer: only the first few types of a report count, and a type counts once it shows up
+// in reports on this many different days, so one report listing 20 types earns nothing
+const MAX_TYPES_PER_REPORT = 3;
+const TYPE_MIN_DAYS = 2;
+// Arena badges only count challenges run by Actifit or a moderator: anyone can create a
+// friendly challenge and fill it with their own accounts
+const ARENA_TIERS = ['official', 'community'];
+// podiums and wins also need this many finishers who actually scored
 const MIN_ARENA_FIELD = 5;
+// a limited edition can still be claimed this long after its window closes
+const CLAIM_GRACE_MS = 7 * 24 * 3600 * 1000;
 const STATS_TTL_MS = 10 * 60 * 1000;
 const STATS_CACHE_MAX = 5000;
 
@@ -32,13 +43,14 @@ const FAMILIES = [
 	{ id: 'director', name: 'Director', stat: 'videoReports', unit: 'video reports', tiers: [1, 10, 50],
 		desc: 'Add a 3Speak video to your reports.' },
 	{ id: 'explorer', name: 'Explorer', stat: 'activityTypes', unit: 'activity types', tiers: [5, 10, 20],
-		desc: 'Try different activity types in your reports.' },
+		desc: 'Try different activity types: each counts once you report it on 2 different days.' },
 	{ id: 'contender', name: 'Contender', stat: 'arenaJoined', unit: 'Arena challenges joined', tiers: [1, 10, 50],
-		desc: 'Join public Arena challenges.' },
+		desc: 'Join official or community Arena challenges.' },
 	{ id: 'podium', name: 'Podium', stat: 'arenaPodiums', unit: 'top-3 finishes', tiers: [1, 5, 20],
-		desc: 'Finish in the top 3 of a public Arena challenge with at least ' + MIN_ARENA_FIELD + ' finishers.' },
+		desc: 'Finish in the top 3 of an official or community Arena challenge with at least '
+			+ MIN_ARENA_FIELD + ' active finishers.' },
 	{ id: 'champion', name: 'Champion', stat: 'arenaWins', unit: 'Arena wins', tiers: [1, 10],
-		desc: 'Win a public Arena challenge with at least ' + MIN_ARENA_FIELD + ' finishers.' },
+		desc: 'Win an official or community Arena challenge with at least ' + MIN_ARENA_FIELD + ' active finishers.' },
 	{ id: 'big_heart', name: 'Big Heart', stat: 'charityReports', unit: 'charity reports', tiers: [1, 10, 50],
 		desc: 'Send your report rewards to charity.' },
 ];
@@ -46,7 +58,8 @@ const FAMILIES = [
 const LIMITED = [
 	{ id: 'endorphin_rush', name: 'Endorphin Rush', stat: 'endorphinReports', unit: 'report days', target: 20,
 		from: '2026-11-21T00:00:00Z', until: '2026-12-31T23:59:59Z',
-		desc: 'Limited edition: post reports on 20 different days before the end of 2026.' },
+		desc: 'Limited edition: post reports on 20 different days before the end of 2026.'
+			+ ' Claimable until a week after.' },
 ];
 
 const TIER_NAMES = ['bronze', 'silver', 'gold', 'platinum', 'diamond'];
@@ -63,6 +76,7 @@ function catalog() {
 		})),
 		limited: LIMITED.map((l) => ({
 			id: l.id, badge: l.id, name: l.name, desc: l.desc, unit: l.unit, target: l.target, from: l.from, until: l.until,
+			claim_until: new Date(Date.parse(l.until) + CLAIM_GRACE_MS).toISOString(),
 			art: '/img/badges/' + l.id + '.png',
 		})),
 	};
@@ -70,17 +84,37 @@ function catalog() {
 
 const one = (v) => (Array.isArray(v) ? v[0] : v);
 
-/** The report's day as YYYYMMDD: the app's activity date, else the day the server got it (UTC). */
-function reportDay(post) {
-	const md = post.json_metadata || {};
-	const d = String(one(md.activityDate) || '');
-	if (/^\d{8}$/.test(d)) return d;
-	const at = post.date ? new Date(post.date) : null;
-	return at && !isNaN(at) ? at.toISOString().slice(0, 10).replace(/-/g, '') : null;
-}
-
 function dayIndex(yyyymmdd) {
 	return Date.UTC(+yyyymmdd.slice(0, 4), +yyyymmdd.slice(4, 6) - 1, +yyyymmdd.slice(6, 8)) / 86400000;
+}
+
+function utcDay(ms) {
+	return new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/** A real calendar date as YYYYMMDD ("20261399" or "2026-11-01" are not). */
+function validDay(d) {
+	if (!/^\d{8}$/.test(d)) return false;
+	const ms = dayIndex(d) * 86400000;
+	return Number.isFinite(ms) && utcDay(ms) === d;
+}
+
+/**
+ * The report's day as YYYYMMDD. The app's activity date (the user's local day) is used when
+ * it is a real date from the day after the receive day (time zones ahead of UTC) to
+ * MAX_DAY_SKEW days before it (yesterday's report is normal); otherwise the day the server
+ * received the report (UTC). Null without a receive time.
+ */
+function reportDay(post) {
+	const at = post.date ? new Date(post.date).getTime() : NaN;
+	if (!Number.isFinite(at)) return null;
+	const received = utcDay(at);
+	const d = String(one((post.json_metadata || {}).activityDate) || '');
+	if (validDay(d)) {
+		const gap = dayIndex(received) - dayIndex(d);
+		if (gap >= -1 && gap <= MAX_DAY_SKEW) return d;
+	}
+	return received;
 }
 
 /** Longest run of consecutive days in a set of YYYYMMDD strings. */
@@ -95,10 +129,10 @@ function longestStreak(days) {
 	return best;
 }
 
-/** Report-based stats from a user's verified_posts documents (pure, for tests). */
-function reportStats(posts, now = Date.now()) {
+/** Report-based stats from `user`'s verified_posts documents (pure, for tests). */
+function reportStats(posts, now = Date.now(), user = null) {
 	const daySteps = new Map();
-	const types = new Set();
+	const typeDays = new Map();
 	let videoReports = 0;
 	let charityReports = 0;
 	const rushDays = new Set();
@@ -113,16 +147,19 @@ function reportStats(posts, now = Date.now()) {
 		steps = Number.isFinite(steps) && steps > 0 ? Math.min(steps, MAX_DAY_STEPS) : 0;
 		// one report day counts once: keep its biggest report
 		daySteps.set(day, Math.max(daySteps.get(day) || 0, steps));
-		for (const t of String(one(md.activity_type) || '').split(',')) {
-			const name = t.trim().toLowerCase();
-			if (name) types.add(name);
+		const names = [...new Set(String(one(md.activity_type) || '').split(',')
+			.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, MAX_TYPES_PER_REPORT);
+		for (const name of names) {
+			if (!typeDays.has(name)) typeDays.set(name, new Set());
+			typeDays.get(name).add(day);
 		}
 		const v = md.video;
-		if (v && typeof v === 'object' && v.info && v.info.permlink) videoReports++;
+		// only the user's own video counts
+		if (v && typeof v === 'object' && v.info && v.info.permlink && (!user || v.info.author === user)) videoReports++;
 		if (one(md.charity)) charityReports++;
-		// the limited window uses the server's receive time, so reports can't be backdated
-		const at = p.date ? new Date(p.date).getTime() : NaN;
-		if (at >= rushFrom && at <= rushUntil) rushDays.add(day);
+		// the limited window counts the days the server received reports: no backdating into it
+		const at = new Date(p.date).getTime();
+		if (at >= rushFrom && at <= rushUntil) rushDays.add(utcDay(at));
 	}
 	let lifetimeSteps = 0;
 	let bestDay = 0;
@@ -132,38 +169,46 @@ function reportStats(posts, now = Date.now()) {
 	}
 	return {
 		longestStreak: longestStreak([...daySteps.keys()]),
-		lifetimeSteps, bestDay, activityTypes: types.size, videoReports, charityReports,
+		lifetimeSteps, bestDay,
+		activityTypes: [...typeDays.values()].filter((days) => days.size >= TYPE_MIN_DAYS).length,
+		videoReports, charityReports,
 		endorphinReports: rushDays.size,
 	};
 }
 
-/** Arena stats from the user's participations and their challenges (pure, for tests). */
+const arenaCounts = (ch) => !!ch && ARENA_TIERS.includes(ch.origin_tier) && ch.state !== 'cancelled';
+
+/** A settled top-3 finish with a real score: the only results podiums and wins can use. */
+const scoredPodium = (p) => p.state === 'settled' && !!p.result && Number(p.result.rank) >= 1
+	&& Number(p.result.rank) <= 3 && Number(p.result.score_verified) > 0;
+
+/**
+ * Arena stats from the user's participations and their challenges (pure, for tests).
+ * finishersById: settled participants with a score above 0, per challenge.
+ */
 function arenaStats(participations, challengesById, finishersById) {
 	let arenaJoined = 0;
 	let arenaPodiums = 0;
 	let arenaWins = 0;
 	for (const p of participations) {
-		const ch = challengesById.get(p.challenge_id);
-		if (!ch || ch.visibility !== 'public' || p.state === 'left') continue;
+		if (!arenaCounts(challengesById.get(p.challenge_id)) || p.state === 'left') continue;
 		arenaJoined++;
-		if (p.state !== 'settled' || !p.result || (finishersById.get(p.challenge_id) || 0) < MIN_ARENA_FIELD) continue;
-		const rank = Number(p.result.rank);
-		if (rank >= 1 && rank <= 3) arenaPodiums++;
-		if (rank === 1) arenaWins++;
+		if (!scoredPodium(p) || (finishersById.get(p.challenge_id) || 0) < MIN_ARENA_FIELD) continue;
+		arenaPodiums++;
+		if (Number(p.result.rank) === 1) arenaWins++;
 	}
 	return { arenaJoined, arenaPodiums, arenaWins };
 }
 
 const cache = new Map();
+const inFlight = new Map();
 
-/** Every stat the rules need for `user`, cached for 10 minutes. */
-async function userStats(db, user, now = Date.now()) {
-	const hit = cache.get(user);
-	if (hit && now - hit.at < STATS_TTL_MS) return hit.stats;
+async function computeStats(db, user, now) {
 	const posts = await db.collection('verified_posts').find({ author: user }, {
 		projection: {
 			_id: 0, date: 1, 'json_metadata.step_count': 1, 'json_metadata.activity_type': 1,
-			'json_metadata.activityDate': 1, 'json_metadata.video': 1, 'json_metadata.charity': 1,
+			'json_metadata.activityDate': 1, 'json_metadata.video.info.author': 1,
+			'json_metadata.video.info.permlink': 1, 'json_metadata.charity': 1,
 		},
 	}).toArray();
 	const participations = await db.collection('challenge_participants').find({ entity: user }, {
@@ -174,19 +219,39 @@ async function userStats(db, user, now = Date.now()) {
 	const finishersById = new Map();
 	if (ids.length) {
 		const chs = await db.collection('challenges').find({ id: { $in: ids } }, {
-			projection: { _id: 0, id: 1, visibility: 1 },
+			projection: { _id: 0, id: 1, origin_tier: 1, state: 1 },
 		}).toArray();
 		for (const c of chs) challengesById.set(c.id, c);
-		const counts = await db.collection('challenge_participants').aggregate([
-			{ $match: { challenge_id: { $in: ids }, state: 'settled' } },
-			{ $group: { _id: '$challenge_id', n: { $sum: 1 } } },
-		]).toArray();
-		for (const c of counts) finishersById.set(c._id, c.n);
+		// field sizes only where they can matter: the user's own scored top-3 finishes
+		const podiumIds = [...new Set(participations.filter((p) => scoredPodium(p)
+			&& arenaCounts(challengesById.get(p.challenge_id))).map((p) => p.challenge_id))];
+		if (podiumIds.length) {
+			const counts = await db.collection('challenge_participants').aggregate([
+				{ $match: { challenge_id: { $in: podiumIds }, state: 'settled', 'result.score_verified': { $gt: 0 } } },
+				{ $group: { _id: '$challenge_id', n: { $sum: 1 } } },
+			]).toArray();
+			for (const c of counts) finishersById.set(c._id, c.n);
+		}
 	}
-	const stats = Object.assign(reportStats(posts, now), arenaStats(participations, challengesById, finishersById));
-	if (cache.size >= STATS_CACHE_MAX) cache.delete(cache.keys().next().value);
-	cache.set(user, { at: now, stats });
-	return stats;
+	return Object.assign(reportStats(posts, now, user), arenaStats(participations, challengesById, finishersById));
+}
+
+/**
+ * Every stat the rules need for `user`, cached for 10 minutes; parallel calls for one user
+ * share one read. `fresh` skips the cache (a claim must see the latest reports).
+ */
+async function userStats(db, user, now = Date.now(), { fresh = false } = {}) {
+	const hit = cache.get(user);
+	if (!fresh && hit && now - hit.at < STATS_TTL_MS) return hit.stats;
+	if (inFlight.has(user)) return inFlight.get(user);
+	const job = computeStats(db, user, now).then((stats) => {
+		cache.delete(user);
+		if (cache.size >= STATS_CACHE_MAX) cache.delete(cache.keys().next().value);
+		cache.set(user, { at: now, stats });
+		return stats;
+	}).finally(() => inFlight.delete(user));
+	inFlight.set(user, job);
+	return job;
 }
 
 /** { family, level } for a tiered badge id, { limited } for a limited one, else null. */
@@ -213,7 +278,7 @@ function canClaim(badge, stats, claimed, now = Date.now()) {
 	if (!b) return { known: false };
 	if (claimed.has(badge)) return { known: true, ok: false, reason: 'already_claimed' };
 	if (b.limited) {
-		if (now < Date.parse(b.limited.from) || now > Date.parse(b.limited.until)) {
+		if (now < Date.parse(b.limited.from) || now > Date.parse(b.limited.until) + CLAIM_GRACE_MS) {
 			return { known: true, ok: false, reason: 'closed' };
 		}
 		return stats[b.limited.stat] >= b.limited.target ? { known: true, ok: true }
@@ -240,10 +305,12 @@ function progress(stats, claimed, now = Date.now()) {
 			};
 		}),
 		limited: LIMITED.map((l) => {
-			const open = now >= Date.parse(l.from) && now <= Date.parse(l.until);
+			const from = Date.parse(l.from);
+			const open = now >= from && now <= Date.parse(l.until);
+			const claimOpen = now >= from && now <= Date.parse(l.until) + CLAIM_GRACE_MS;
 			return {
 				id: l.id, value: stats[l.stat], target: l.target, open, claimed: claimed.has(l.id),
-				claimable: open && !claimed.has(l.id) && stats[l.stat] >= l.target,
+				claimable: claimOpen && !claimed.has(l.id) && stats[l.stat] >= l.target,
 			};
 		}),
 	};
@@ -268,11 +335,12 @@ function ensureIndexes(db) {
 
 function resetForTests() {
 	cache.clear();
+	inFlight.clear();
 	indexReady = null;
 }
 
 module.exports = {
-	FAMILIES, LIMITED, MAX_DAY_STEPS, MIN_ARENA_FIELD,
-	catalog, reportDay, longestStreak, reportStats, arenaStats, userStats, parseBadge, canClaim, progress,
+	FAMILIES, LIMITED, MAX_DAY_STEPS, MIN_ARENA_FIELD, CLAIM_GRACE_MS,
+	catalog, reportDay, validDay, longestStreak, reportStats, arenaStats, userStats, parseBadge, canClaim, progress,
 	claimedSet, ensureIndexes, resetForTests,
 };
