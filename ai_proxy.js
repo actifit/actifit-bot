@@ -30,22 +30,28 @@ const DEFAULT_LIMITS = { chat: 40, workout: 5, translate: 60, global: 3000 };
 const DEADLINE_MS = 85000;
 // answer text; thinking tokens count against maxOutputTokens too, so thinkingFor adds its share
 const MAX_TOKENS = { chat: 1024, workout: 4096, translate: 16384 };
-// 2.5-flash counts thinking against maxOutputTokens; none of these tasks needs it
 /**
- * The least thinking each model family allows, and the room it needs on top of the answer.
- * 2.5 turns it off with a budget of 0; Gemini 3 takes a level instead (a budget there is a
- * 400), and only Flash-Lite goes down to "minimal".
+ * The least thinking each model allows, and the room it needs on top of the answer (unused
+ * room costs nothing). 2.0 has no thinking (any thinkingConfig is a 400); 2.5 Flash turns it
+ * off with a budget of 0, 2.5 Pro cannot go below 128; Gemini 3 takes a level, not a budget.
+ * Flash-Lite (3 and later: 2.5 is caught above) goes down to "minimal"; other models to "low".
  */
 function thinkingFor(model) {
+	if (/^gemini-2\.0/.test(model)) return { config: null, extra: 0 };
+	if (/^gemini-2\.5-pro/.test(model)) return { config: { thinkingBudget: 128 }, extra: 1024 };
 	if (/^gemini-2\./.test(model)) return { config: { thinkingBudget: 0 }, extra: 0 };
 	if (/flash-lite/.test(model)) return { config: { thinkingLevel: 'minimal' }, extra: 1024 };
-	return { config: { thinkingLevel: 'low' }, extra: 4096 };
+	return { config: { thinkingLevel: 'low' }, extra: 8192 };
 }
 const generationConfig = (model, kind, more) => {
 	const t = thinkingFor(model);
-	return Object.assign({ maxOutputTokens: MAX_TOKENS[kind] + t.extra }, more, { thinkingConfig: t.config });
+	const out = Object.assign({ maxOutputTokens: MAX_TOKENS[kind] + t.extra }, more);
+	if (t.config) out.thinkingConfig = t.config;
+	return out;
 };
-const RETRY_DELAYS_MS = [1500, 3000]; // Gemini's 503 "model overloaded" usually clears fast
+// Gemini's 503 "model overloaded" and a passing 500 INTERNAL usually clear fast; none is billed
+const RETRY_DELAYS_MS = [1500, 3000];
+const RETRY_STATUSES = [500, 503, 429];
 const TRANSLATIONS_TTL_S = 90 * 24 * 3600;
 
 const MAX_TURNS = 30;
@@ -184,7 +190,7 @@ async function generate({ apiKey, model, request, fetchImpl = fetch, sleep }) {
 			const timedOut = signal.aborted || (e && (e.name === 'TimeoutError' || e.name === 'AbortError'));
 			throw Object.assign(new Error('Gemini request failed: ' + e.message), { code: 'failed', billed: timedOut });
 		}
-		if ((res.status === 503 || res.status === 429) && attempt < RETRY_DELAYS_MS.length) {
+		if (RETRY_STATUSES.includes(res.status) && attempt < RETRY_DELAYS_MS.length) {
 			await wait(RETRY_DELAYS_MS[attempt]);
 			continue;
 		}
@@ -234,6 +240,7 @@ async function reserve(db, user, kind, limits, now) {
 }
 
 function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = {}, getContent, fetchImpl, sleep, now = Date.now }) {
+	model = String(model).replace(/^models\//, ''); // the name as the URL and thinkingFor expect it
 	const lim = Object.assign({}, DEFAULT_LIMITS, limits);
 	const on = () => enabled !== false && !!apiKey;
 

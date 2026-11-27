@@ -62,8 +62,8 @@ build their own prompts (no generic relay), need a session, and count against
 switches them off. Never log prompts or answers (health data).
 `gemini_model` must be one the key's project may use: Google limits retired models (2.5)
 to projects that used them before, and a new key gets `404 NOT_FOUND` (logged as
-`ai chat: Gemini HTTP 404 NOT_FOUND`). Gemini 3 takes `thinkingLevel`, not `thinkingBudget`
-(`thinkingFor`). Errors use 500, never 502/504: Cloudflare swaps those for its own page.
+`ai chat: Gemini HTTP 404 NOT_FOUND`). The thinking setting differs by model family
+(`thinkingFor`: 2.0 none, 2.5 a budget, Gemini 3 a level). Errors use 500, never 502/504: Cloudflare swaps those for its own page.
 
 ## Conventions
 

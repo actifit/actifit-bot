@@ -293,10 +293,29 @@ describe('quotas', () => {
 		expect(ai.thinkingFor('gemini-2.5-flash')).toEqual({ config: { thinkingBudget: 0 }, extra: 0 });
 		expect(ai.thinkingFor('gemini-3.5-flash-lite').config).toEqual({ thinkingLevel: 'minimal' });
 		expect(ai.thinkingFor('gemini-3.8-flash').config).toEqual({ thinkingLevel: 'low' });
+		expect(ai.thinkingFor('gemini-flash-latest').config).toEqual({ thinkingLevel: 'low' });
+		expect(ai.thinkingFor('gemini-2.0-flash').config).toBeNull(); // no thinking: any thinkingConfig is a 400
+		expect(ai.thinkingFor('gemini-2.5-pro').config).toEqual({ thinkingBudget: 128 }); // cannot be turned off
 		const { svc, fetchImpl } = make({ model: 'gemini-3.8-flash' });
 		await svc.chat('alice', [{ role: 'user', text: 'hi' }]);
 		expect(fetchImpl.calls[0].url).toMatch(/models\/gemini-3\.8-flash:generateContent$/);
-		expect(fetchImpl.calls[0].body.generationConfig.maxOutputTokens).toBe(1024 + 4096);
+		expect(fetchImpl.calls[0].body.generationConfig.maxOutputTokens).toBe(1024 + 8192);
+	});
+
+	test('a model without thinking gets no thinkingConfig, and a "models/" prefix is dropped', async () => {
+		const old = make({ model: 'gemini-2.0-flash' });
+		await old.svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(old.fetchImpl.calls[0].body.generationConfig).not.toHaveProperty('thinkingConfig');
+		const prefixed = make({ model: 'models/gemini-2.5-flash' });
+		await prefixed.svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(prefixed.fetchImpl.calls[0].url).toMatch(/\/models\/gemini-2\.5-flash:generateContent$/);
+		expect(prefixed.fetchImpl.calls[0].body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+	});
+
+	test('a passing 500 INTERNAL from Google is retried', async () => {
+		const { svc, fetchImpl } = make({ fetchImpl: fakeFetch([{ status: 500, body: {} }, { status: 200, body: answer('ok') }]) });
+		expect((await svc.chat('alice', [{ role: 'user', text: 'hi' }])).body).toEqual({ status: 'success', text: 'ok' });
+		expect(fetchImpl.calls).toHaveLength(2);
 	});
 
 	test('a cached translation costs no quota', async () => {
