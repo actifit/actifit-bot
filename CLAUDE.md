@@ -60,6 +60,10 @@ twice after keys built into the Android app were harvested from the APK, so:
 build their own prompts (no generic relay), need a session, and count against
 `ai_limits` (per account per UTC day, plus a global cap). `ai_enabled: false`
 switches them off. Never log prompts or answers (health data).
+`gemini_model` must be one the key's project may use: Google limits retired models (2.5)
+to projects that used them before, and a new key gets `404 NOT_FOUND` (logged as
+`ai chat: Gemini HTTP 404 NOT_FOUND`). The thinking setting differs by model family
+(`thinkingFor`: 2.0 none, 2.5 a budget, Gemini 3 a level). Errors use 500, never 502/504: Cloudflare swaps those for its own page.
 
 ## Conventions
 

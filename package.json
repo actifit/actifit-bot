@@ -1,6 +1,6 @@
 {
   "name": "actifit-curation-bot",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "actifit curation bot",
   "main": "app.js",
   "dependencies": {
