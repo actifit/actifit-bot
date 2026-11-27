@@ -9,6 +9,7 @@ const sessionToken = require('./session_token');
 // Atomic off-chain AFIT balance writes + the shared per-user AFIT lock (load-time safe).
 const afitBalance = require('./afit_balance');
 const adReward = require('./ad_reward');
+const badges = require('./badges');
 const threespeakUpload = require('./threespeak_upload');
 const aiProxy = require('./ai_proxy');
 const afitTransfers = require('./afit_transfers');
@@ -5852,11 +5853,55 @@ app.get('/luckyWinnerList/', async function (req, res) {
 });
 
 /* claim this badge and store it for this user */
+/* first-wave badge catalog (names, tiers, art) and a user's progress; see badges.js */
+app.get('/badgeCatalog', function (req, res) {
+	res.send(badges.catalog());
+});
+
+app.get('/badgeProgress/:user', arenaReadRateLimit, async function (req, res) {
+	const user = String(req.params.user || '');
+	// a Hive account name: anything else would only churn the stats cache
+	if (!/^[a-z][a-z0-9.-]{2,15}$/.test(user)) return res.send({status: 'error'});
+	try{
+		const [stats, claimed] = await Promise.all([badges.userStats(db, user), badges.claimedSet(db, user)]);
+		res.send(Object.assign({ status: 'success', user }, badges.progress(stats, claimed)));
+	}catch(err){
+		console.log('badgeProgress', err && err.message ? err.message : err);
+		res.send({status: 'error'});
+	}
+});
+
 app.get('/claimBadge/', checkHdrs, async function (req, res) {
 	if (!req.query.user || req.query.user !== req.user._id) {
 		return res.send({status: 'error'});
 	}
-	if (req.query.user && req.query.badge){
+	if (req.query.user && typeof req.query.badge === 'string'){
+		badges.ensureIndexes(db);
+		// a badge is held once: a repeat claim (double tap, retry) is answered as done
+		const held = await db.collection('user_badges').findOne({user: req.query.user, badge: req.query.badge});
+		if (held) {
+			return res.send({status: 'success', user: req.query.user, badge: req.query.badge, already: true});
+		}
+		// first-wave badges: rules in badges.js, checked on the server
+		if (badges.parseBadge(req.query.badge)) {
+			try{
+				const [stats, claimed] = await Promise.all([
+					badges.userStats(db, req.query.user, Date.now(), { fresh: true }), badges.claimedSet(db, req.query.user)]);
+				const verdict = badges.canClaim(req.query.badge, stats, claimed);
+				if (!verdict.ok) return res.send({status: 'error', reason: verdict.reason});
+				await db.collection('user_badges').insertOne({
+					user: req.query.user, badge: req.query.badge, date_claimed: new Date(),
+				});
+				return res.send({status: 'success', user: req.query.user, badge: req.query.badge});
+			}catch(err){
+				// a duplicate key here means a parallel claim won: same outcome
+				if (err && err.code === 11000) {
+					return res.send({status: 'success', user: req.query.user, badge: req.query.badge, already: true});
+				}
+				console.log('claimBadge', err && err.message ? err.message : err);
+				return res.send({status: 'error'});
+			}
+		}
 		const iso_badge = 'iso';
 		const rew_activity_badge = 'rewarded_activity_lev_';
 		const doubledup_badge = 'doubledup_badge';
