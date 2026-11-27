@@ -217,6 +217,9 @@ client.connect()
 	    arenaStandings.ensureStandingsIndexes(db);
 	    arenaMerits.ensureMeritsIndexes(db);
 	    arenaPools.ensurePoolsIndexes(db);
+	    // routine_completions (Trello #186): the unique per-day key makes check-ins
+	    // idempotent under concurrency. Not awaited, so .catch() is load-bearing.
+	    require('./arena_verify').ensureCompletionIndexes(db).catch((e) => { try { utils.log('ensureCompletionIndexes failed: ' + (e && e.message), 'arena'); } catch (_) { /* logging must not throw */ } });
 	    // Not awaited, so .catch() is load-bearing (see the ensureAfitIndexes note below):
 	    // an index-build rejection must not become an unhandled rejection and a crash loop.
 	    arenaApi.ensureEventsIndexes(db).catch((e) => { try { utils.log('ensureEventsIndexes failed: ' + (e && e.message), 'arena'); } catch (_) { /* logging must not throw */ } });

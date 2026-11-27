@@ -282,6 +282,11 @@ async function resolveDueChallenges(db, opts = {}) {
 				} else {
 					prizes = arenaRewards.prizesForStandings(ch, standings);
 				}
+				// A SELF-REPORTED metric (routine_completion check-ins) never pays AFIT,
+				// whatever its schedule or pool says — backstop to the ingest rejection in
+				// arena.validateArenaOp. Any funded pool is then refunded in full by the normal
+				// unpaid-refund path. Badges below are still granted.
+				if (arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) prizes = [];
 				// Award the creator-defined badge(s) to the finishers named by the
 				// challenge's badge_rule (winner / top3 / all) — the step that turns a
 				// badge-only contest's rewards.badges into an actual grant at settlement.

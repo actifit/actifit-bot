@@ -34,6 +34,8 @@
 // (arena_write) applies, so ingest and prediction can never drift. Load-time
 // safe (requires nothing).
 const arenaTier = require('./arena_tier');
+// Load-time safe (requires nothing): used only for isSelfReportedMetric.
+const arenaVerify = require('./arena_verify');
 
 // ---- on-chain op namespace + names (§3.10) -------------------------------
 
@@ -233,6 +235,13 @@ function validateArenaOp(op) {
 			// I6 — outcome decided by verified effort/goal, never chance.
 			if (!SCORING_RULES.includes(scoring.rule)) {
 				errors.push(`challenge_create: scoring.rule "${scoring.rule}" not allowed (invariant I6)`);
+			}
+			// A SELF-REPORTED metric (honor-system check-ins, e.g. routine_completion)
+			// is not a root of trust, so it may never carry an AFIT prize: a creator-
+			// funded pool would be drainable by false check-ins. Badges/Merits only
+			// until a verified completion source exists (Trello #184 Phase C).
+			if (arenaVerify.isSelfReportedMetric(scoring.metric) && op.rewards && Number(op.rewards.afit) > 0) {
+				errors.push(`challenge_create: scoring.metric "${scoring.metric}" is self-reported and may not carry an AFIT prize`);
 			}
 			// Optional badge award rule (who earns a named badge at settlement).
 			if (op.badge_rule !== undefined && !BADGE_RULES.includes(op.badge_rule)) {
