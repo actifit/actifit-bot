@@ -348,9 +348,9 @@ describe('arena_verify.longestStreak', () => {
 describe('arena_verify.recordCompletion (#186)', () => {
   test('first check-in of a UTC day creates; a repeat the same day is a no-op', async () => {
     const db = createMockDb();
-    const a = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', at: '2026-08-03T07:00:00Z' });
-    const b = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', at: '2026-08-03T22:00:00Z' });
-    const c = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', at: '2026-08-04T07:00:00Z' });
+    const a = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T07:00:00Z' });
+    const b = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T22:00:00Z' });
+    const c = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-04T07:00:00Z' });
     expect(a).toEqual({ ok: true, created: true, day: '2026-08-03' });
     expect(b).toEqual({ ok: true, created: false, day: '2026-08-03' });
     expect(c).toEqual({ ok: true, created: true, day: '2026-08-04' });
@@ -360,22 +360,44 @@ describe('arena_verify.recordCompletion (#186)', () => {
   test('a concurrent duplicate (unique-index E11000) reports "already done", not an error', async () => {
     const db = createMockDb();
     db.collection('routine_completions').updateOne = jest.fn(() => Promise.reject(Object.assign(new Error('dup'), { code: 11000 })));
-    expect(await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', at: '2026-08-03T07:00:00Z' }))
+    expect(await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T07:00:00Z' }))
       .toEqual({ ok: true, created: false, day: '2026-08-03' });
   });
 
   test('other DB errors propagate', async () => {
     const db = createMockDb();
     db.collection('routine_completions').updateOne = jest.fn(() => Promise.reject(new Error('mongo down')));
-    await expect(verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice' })).rejects.toThrow('mongo down');
+    await expect(verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: { start: '2000-01-01T00:00:00Z', end: '2100-01-01T00:00:00Z' } })).rejects.toThrow('mongo down');
   });
 
   test('rejects missing challengeId / entity and an invalid date', async () => {
     const db = createMockDb();
     expect((await verify.recordCompletion(db, { entity: 'alice' })).ok).toBe(false);
     expect((await verify.recordCompletion(db, { challengeId: 'ch_m' })).ok).toBe(false);
-    expect((await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', at: 'not-a-date' })).ok).toBe(false);
+    expect((await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: 'not-a-date' })).ok).toBe(false);
     expect((await verify.recordCompletion(db)).ok).toBe(false);
+  });
+
+  test('review: rejects a missing window and any check-in outside [start, end) — no backfilling', async () => {
+    const db = createMockDb();
+    const rec = (at, window = WINDOW) => verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window, at });
+    expect(await rec('2026-08-03T07:00:00Z', null)).toMatchObject({ ok: false, reason: expect.stringMatching(/window/) });
+    expect(await rec('2026-07-31T23:59:59Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // before start
+    expect(await rec('2099-01-01T00:00:00Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // future
+    expect(await rec('1999-01-01T00:00:00Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // past
+    expect(await rec('2026-08-31T23:59:59Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // == end (exclusive)
+    expect(await rec('2026-08-01T00:00:00Z')).toMatchObject({ ok: true, created: true }); // == start (inclusive)
+    expect(await db.collection('routine_completions').find({}).toArray()).toHaveLength(1);
+  });
+
+  test('review: a pre-window check-in cannot claim the first (partial) day — the in-window one counts', async () => {
+    const db = createMockDb();
+    const noonWindow = { start: '2026-08-01T12:00:00Z', end: '2026-08-08T12:00:00Z' };
+    const early = await verify.recordCompletion(db, { challengeId: 'ch_n', entity: 'alice', window: noonWindow, at: '2026-08-01T08:00:00Z' });
+    const ontime = await verify.recordCompletion(db, { challengeId: 'ch_n', entity: 'alice', window: noonWindow, at: '2026-08-01T13:00:00Z' });
+    expect(early.ok).toBe(false);
+    expect(ontime).toMatchObject({ ok: true, created: true, day: '2026-08-01' });
+    expect(await verify.fetchRoutineCompletions(db, 'ch_n', 'alice', noonWindow)).toHaveLength(1);
   });
 
   test('ensureCompletionIndexes creates the unique per-day key', async () => {

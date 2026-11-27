@@ -865,11 +865,21 @@ async function autoEnrollRecurrences(db, opts = {}) {
 			// applied to user rosters; a squad series is carried unpruned but still capped.
 			const isUserRoster = (target.participants_kind || 'user') === 'user';
 			const since = new Date(nowMs - lookbackDays * DAY_MS);
+			// A self-reported routine series proves activity by a recent CHECK-IN on any
+			// series challenge, not a step post (its players may never post steps).
+			const routineSeries = arenaVerify.isSelfReportedMetric(target.scoring && target.scoring.metric);
+			const completionsC = db.collection(arenaVerify.COLLECTIONS.ROUTINE_COMPLETIONS);
 			const active = [];
 			for (const entity of candidates) {
 				if (!isUserRoster) { active.push({ entity, at: 0 }); continue; }
-				// Most recent report inside the lookback: proves activity AND gives the
-				// recency key the cap ranks on. Served by {author:1, date:1}.
+				// Most recent activity inside the lookback: proves activity AND gives the
+				// recency key the cap ranks on. Served by {author:1, date:1} for posts.
+				if (routineSeries) {
+					const recent = await completionsC.find({ challenge_id: { $in: [...seriesIds] }, entity, at: { $gte: since } })
+						.sort({ at: -1 }).limit(1).toArray();
+					if (recent.length) active.push({ entity, at: Date.parse(recent[0].at) || 0 });
+					continue;
+				}
 				const recent = await verifiedC.find({ author: entity, date: { $gte: since } })
 					.sort({ date: -1 }).limit(1).toArray();
 				if (recent.length) active.push({ entity, at: Date.parse(recent[0].date) || 0 });

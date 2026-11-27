@@ -127,7 +127,9 @@ function nextDayKey(day) {
 	return new Date(Date.parse(`${day}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
 }
 
-/** Longest run of consecutive UTC calendar days with a positive value. Pure. */
+/** Longest run of consecutive UTC calendar days with a positive value. Pure.
+ *  Expects `per_day` sorted ascending with one entry per day, as
+ *  computeWindowScore produces it. */
 function longestStreak(per_day) {
 	let best = 0;
 	let run = 0;
@@ -279,16 +281,25 @@ async function fetchRoutineCompletions(db, challengeId, entity, window) {
  * calls that day are no-ops. Concurrent duplicates are settled by the unique index
  * (ensureCompletionIndexes) — a duplicate-key error is reported as "already done".
  *
+ * The check-in must fall inside the challenge window [start, end). Rejecting an
+ * out-of-window `at` stops backfilling past/future days, and guarantees the row
+ * kept for a day (the first one) is an in-window one that the scorer will count.
+ *
  * NOT an authorization check: the caller (check-in route, #187) must verify the
  * signer, that the entity is an active participant, and that the challenge is
- * live and uses the routine_completion metric before calling this.
+ * live and uses the routine_completion metric before calling this. The caller
+ * must also leave `at` unset (server time): never forward a client timestamp.
+ * `at` exists for tests and replays only.
  * @returns {Promise<{ok:boolean, created?:boolean, day?:string, reason?:string}>}
  */
-async function recordCompletion(db, { challengeId, entity, at } = {}) {
+async function recordCompletion(db, { challengeId, entity, window, at } = {}) {
 	if (typeof challengeId !== 'string' || !challengeId) return { ok: false, reason: 'missing challengeId' };
 	if (typeof entity !== 'string' || !entity) return { ok: false, reason: 'missing entity' };
+	if (!hasValidWindow(window)) return { ok: false, reason: 'missing or invalid challenge window' };
 	const when = at ? new Date(at) : new Date();
 	if (Number.isNaN(when.getTime())) return { ok: false, reason: 'invalid at' };
+	const t = when.getTime();
+	if (t < Date.parse(window.start) || t >= Date.parse(window.end)) return { ok: false, reason: 'outside challenge window' };
 	const day = toDayKey(when);
 	try {
 		const res = await db.collection(COLLECTIONS.ROUTINE_COMPLETIONS).updateOne(
@@ -305,7 +316,7 @@ async function recordCompletion(db, { challengeId, entity, at } = {}) {
 
 /** Indexes for routine_completions: the unique per-day key is what makes
  *  recordCompletion safe under concurrent check-ins. */
-function ensureCompletionIndexes(db) {
+async function ensureCompletionIndexes(db) {
 	const c = db.collection(COLLECTIONS.ROUTINE_COMPLETIONS);
 	return Promise.all([
 		c.createIndex({ challenge_id: 1, entity: 1, day: 1 }, { unique: true }),

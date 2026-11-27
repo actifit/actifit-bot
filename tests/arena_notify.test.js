@@ -224,3 +224,37 @@ describe('resolution sends results notifications', () => {
 		expect(res.failed).toBe(0);
 	});
 });
+
+// Review of PR #189: a routine_completion challenge decides "done today" from a
+// check-in for THAT challenge, not from a step post, and says "check in".
+describe('arena_notify.notifyClosingSoon — routine_completion (#186)', () => {
+	test('reminds who has not CHECKED IN today; a step post does not count', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'mob', state: 'open', title: 'Mobility', origin_tier: 'official', visibility: 'public',
+			  scoring: { metric: 'routine_completion', rule: 'max' },
+			  window: { start: new Date(NOW - 7 * 24 * HOUR + 6 * HOUR).toISOString(), end: new Date(NOW + 6 * HOUR).toISOString() } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'mob', entity: 'checkedin', state: 'enrolled' },
+			{ challenge_id: 'mob', entity: 'walker', state: 'enrolled' },
+			{ challenge_id: 'mob', entity: 'otherchallenge', state: 'enrolled' },
+		]);
+		const today = new Date(NOW).toISOString().slice(0, 10);
+		db.collection('routine_completions').__seed([
+			{ challenge_id: 'mob', entity: 'checkedin', day: today, at: new Date(NOW - HOUR) },
+			{ challenge_id: 'elsewhere', entity: 'otherchallenge', day: today, at: new Date(NOW - HOUR) },
+		]);
+		db.collection('verified_posts').__seed([post('walker', new Date(NOW - HOUR).toISOString(), 9000)]);
+		const r = recorder();
+		const res = await notify.notifyClosingSoon(db, { notify: r.hook, now: NOW });
+		expect(res.postedToday).toBe(1); // checkedin
+		expect(r.sent.map((m) => m.user).sort()).toEqual(['otherchallenge', 'walker']);
+		expect(r.sent[0].details).toMatch(/Check in today/);
+	});
+
+	test('step challenges keep the "post today\'s report" message', () => {
+		expect(notify.closingMessage({ title: 'Weekly', origin_tier: 'official', visibility: 'public' }, 3)).toMatch(/Post today's report/);
+	});
+});
+
