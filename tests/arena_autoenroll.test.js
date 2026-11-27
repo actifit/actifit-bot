@@ -457,3 +457,24 @@ describe('the enroll op autoEnrollRecurrences emits is accepted by the indexer',
 		expect(again.count).toBe(0);
 	});
 });
+
+// Review of PR #189: a routine_completion series proves activity by a recent
+// check-in on any series challenge, not by a step post.
+describe('arena_jobs.autoEnrollRecurrences — routine_completion series (#186)', () => {
+	test('carries check-in-only players; drops step-only ones', async () => {
+		const db = seed({
+			target: { scoring: { metric: 'routine_completion', rule: 'max' } },
+			participants: [{ challenge_id: 'def_daily_focus', entity: 'yogi', state: 'settled', flags: [] }],
+		});
+		db.collection('routine_completions').__seed([
+			{ challenge_id: 'def_daily_focus', entity: 'yogi', day: '2026-09-25', at: new Date(nowMs - 2 * DAY) },
+			{ challenge_id: 'unrelated', entity: 'thepavsalford', day: '2026-09-25', at: new Date(nowMs - 2 * DAY) },
+		]);
+		const { sent, fn } = collect();
+		await jobs.autoEnrollRecurrences(db, { asOf: NOW, broadcastOp: fn });
+		expect(sent).toHaveLength(1);
+		// rajpootg/thepavsalford only walked (or checked in elsewhere) -> not carried
+		expect(sent[0].entities).toEqual(['yogi']);
+	});
+});
+

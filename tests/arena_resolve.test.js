@@ -462,3 +462,38 @@ describe('resolveDueChallenges reports budgetExhausted in its summary', () => {
 		expect(res.settled).toBe(0);
 	});
 });
+
+// Trello #186: settlement backstop — a SELF-REPORTED metric never pays AFIT, even
+// when it would otherwise hit an official schedule. Badges are still granted.
+describe('arena_jobs.resolveDueChallenges — routine_completion pays no AFIT (#186)', () => {
+	test('official schedule would pay, but the self-reported metric zeroes AFIT; badges still granted', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			// parent_id hits def_weekly_step_league's AFIT schedule (100/60/40 + 10)
+			{ id: 'def_weekly_step_league@mob', parent_id: 'def_weekly_step_league', state: 'open',
+			  type: 'daily_focus', window: CLOSED, origin_tier: 'official', title: 'Mobility',
+			  scoring: { metric: 'routine_completion', rule: 'max' },
+			  rewards: { badges: ['mobility_14d'] }, badge_rule: 'all' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'def_weekly_step_league@mob', entity: 'alice', flags: [], state: 'enrolled' },
+			{ challenge_id: 'def_weekly_step_league@mob', entity: 'bob', flags: [], state: 'enrolled' },
+		]);
+		db.collection('routine_completions').__seed(['2026-08-02', '2026-08-03', '2026-08-04'].map((d) => (
+			{ challenge_id: 'def_weekly_step_league@mob', entity: 'alice', day: d, at: new Date(`${d}T07:00:00Z`) })).concat([
+			{ challenge_id: 'def_weekly_step_league@mob', entity: 'bob', day: '2026-08-02', at: new Date('2026-08-02T07:00:00Z') },
+		]));
+		const sent = [];
+		const res = await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
+
+		expect(res.resolved).toBe(1);
+		expect(await afit.balanceOf(db, 'alice')).toBe(0);
+		expect(await afit.balanceOf(db, 'bob')).toBe(0);
+
+		const settle = sent.find((o) => o.op === 'settle');
+		expect(settle).toBeTruthy();
+		const byEntity = Object.fromEntries(settle.rewards.map((r) => [r.entity, r]));
+		expect(byEntity.alice).toMatchObject({ afit: 0, badges: ['mobility_14d'] });
+		expect(byEntity.bob).toMatchObject({ afit: 0, badges: ['mobility_14d'] });
+	});
+});

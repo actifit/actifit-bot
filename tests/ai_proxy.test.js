@@ -58,7 +58,7 @@ function make(opts = {}) {
 	const svc = ai.createAi({
 		db, apiKey: 'key-1', fetchImpl, sleep: async () => {}, now: () => opts.now || NOW,
 		getContent: opts.getContent || (async (author, permlink) => ({ author, permlink, body: 'Hola mundo' })),
-		limits: opts.limits, enabled: opts.enabled,
+		limits: opts.limits, enabled: opts.enabled, model: opts.model,
 	});
 	return { svc, db, fetchImpl };
 }
@@ -68,7 +68,7 @@ describe('the key never leaves the server', () => {
 		const { svc, fetchImpl } = make();
 		const out = await svc.chat('alice', [{ role: 'user', text: 'help me write my report' }]);
 		expect(out).toEqual({ status: 200, body: { status: 'success', text: 'hello' } });
-		expect(fetchImpl.calls[0].url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent');
+		expect(fetchImpl.calls[0].url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent');
 		expect(fetchImpl.calls[0].opts.headers['x-goog-api-key']).toBe('key-1');
 		expect(JSON.stringify(out)).not.toContain('key-1');
 	});
@@ -94,7 +94,7 @@ describe('chat is the report assistant, not a free relay', () => {
 		const body = fetchImpl.calls[0].body;
 		expect(body.systemInstruction.parts[0].text).toMatch(/writing assistant inside the Actifit app/);
 		expect(body.contents.map((c) => c.role)).toEqual(['user', 'model', 'user']);
-		expect(body.generationConfig.maxOutputTokens).toBeLessThanOrEqual(1024);
+		expect(body.generationConfig.maxOutputTokens).toBeLessThanOrEqual(1024 + 1024); // answer + minimal thinking
 	});
 
 	test('a caller cannot slip in its own system instruction, tools or model settings', async () => {
@@ -228,6 +228,15 @@ describe('quotas', () => {
 		expect(db.collection('ai_usage').rows.get('a2:chat:2026-11-25').count).toBe(0);
 	});
 
+	test('Google refusing the key reaches the app as the bot message, not a gateway error', async () => {
+		const { svc } = make({ fetchImpl: fakeFetch([{ status: 403, body: { error: { status: 'PERMISSION_DENIED' } } }]) });
+		const out = await svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		// Cloudflare replaces 502 and 504 from the origin with its own page
+		expect([502, 504]).not.toContain(out.status);
+		expect(out.status).toBe(500);
+		expect(out.body).toEqual({ error: 'failed', message: 'The AI assistant could not answer, please try again' });
+	});
+
 	test('a failed Google call gives the slot back; a blocked prompt keeps it', async () => {
 		const db = fakeDb();
 		const usage = () => db.collection('ai_usage').rows.get('alice:chat:2026-11-25').count;
@@ -270,12 +279,43 @@ describe('quotas', () => {
 		expect(fetchImpl.calls).toHaveLength(2);
 	});
 
-	test('every route turns thinking off, so the output cap is all answer', async () => {
+	test('every route asks for the least thinking the default model allows', async () => {
 		const { svc, fetchImpl } = make();
 		await svc.chat('alice', [{ role: 'user', text: 'hi' }]);
 		await svc.workout('alice', WORKOUT);
 		await svc.translate('alice', 'bob', 'p');
-		expect(fetchImpl.calls.map((c) => c.body.generationConfig.thinkingConfig)).toEqual([{ thinkingBudget: 0 }, { thinkingBudget: 0 }, { thinkingBudget: 0 }]);
+		expect(fetchImpl.calls.map((c) => c.body.generationConfig.thinkingConfig)).toEqual([
+			{ thinkingLevel: 'minimal' }, { thinkingLevel: 'minimal' }, { thinkingLevel: 'minimal' }]);
+	});
+
+	test('the thinking setting follows the configured model, with room for it in the cap', async () => {
+		// 2.5 takes a budget of 0; Gemini 3 rejects a budget and takes a level; only Flash-Lite has "minimal"
+		expect(ai.thinkingFor('gemini-2.5-flash')).toEqual({ config: { thinkingBudget: 0 }, extra: 0 });
+		expect(ai.thinkingFor('gemini-3.5-flash-lite').config).toEqual({ thinkingLevel: 'minimal' });
+		expect(ai.thinkingFor('gemini-3.8-flash').config).toEqual({ thinkingLevel: 'low' });
+		expect(ai.thinkingFor('gemini-flash-latest').config).toEqual({ thinkingLevel: 'low' });
+		expect(ai.thinkingFor('gemini-2.0-flash').config).toBeNull(); // no thinking: any thinkingConfig is a 400
+		expect(ai.thinkingFor('gemini-2.5-pro').config).toEqual({ thinkingBudget: 128 }); // cannot be turned off
+		const { svc, fetchImpl } = make({ model: 'gemini-3.8-flash' });
+		await svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(fetchImpl.calls[0].url).toMatch(/models\/gemini-3\.8-flash:generateContent$/);
+		expect(fetchImpl.calls[0].body.generationConfig.maxOutputTokens).toBe(1024 + 8192);
+	});
+
+	test('a model without thinking gets no thinkingConfig, and a "models/" prefix is dropped', async () => {
+		const old = make({ model: 'gemini-2.0-flash' });
+		await old.svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(old.fetchImpl.calls[0].body.generationConfig).not.toHaveProperty('thinkingConfig');
+		const prefixed = make({ model: 'models/gemini-2.5-flash' });
+		await prefixed.svc.chat('alice', [{ role: 'user', text: 'hi' }]);
+		expect(prefixed.fetchImpl.calls[0].url).toMatch(/\/models\/gemini-2\.5-flash:generateContent$/);
+		expect(prefixed.fetchImpl.calls[0].body.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 0 });
+	});
+
+	test('a passing 500 INTERNAL from Google is retried', async () => {
+		const { svc, fetchImpl } = make({ fetchImpl: fakeFetch([{ status: 500, body: {} }, { status: 200, body: answer('ok') }]) });
+		expect((await svc.chat('alice', [{ role: 'user', text: 'hi' }])).body).toEqual({ status: 'success', text: 'ok' });
+		expect(fetchImpl.calls).toHaveLength(2);
 	});
 
 	test('a cached translation costs no quota', async () => {

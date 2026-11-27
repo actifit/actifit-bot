@@ -279,3 +279,193 @@ describe('arena_verify — review hardening', () => {
     expect((await db.collection('challenge_participants').findOne({ challenge_id: 'ch_b', entity: 'alice' })).score).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Trello #186 (epic #184, Movement Challenges Phase A): the non-step
+// `routine_completion` source — honor-system daily check-ins.
+// ---------------------------------------------------------------------------
+
+const completion = (challenge_id, entity, atISO) => ({
+  challenge_id, entity, day: atISO.slice(0, 10), at: new Date(atISO),
+});
+
+describe('arena_verify — routine_completion metric (#186)', () => {
+  test('is the only self-reported metric; step metrics are not', () => {
+    expect(verify.isSelfReportedMetric('routine_completion')).toBe(true);
+    for (const m of ['activity_count', 'steps', 'goal_hit', 'workout_minutes', undefined]) {
+      expect(verify.isSelfReportedMetric(m)).toBe(false);
+    }
+    expect(verify.metricValue({}, 'routine_completion')).toBe(1);
+  });
+
+  test('computeWindowScore: duplicate rows on a day collapse to 1; total = completed days', () => {
+    const s = verify.computeWindowScore([
+      { date: '2026-08-01T07:00:00Z' },
+      { date: '2026-08-01T21:00:00Z' }, // same UTC day — never counts twice
+      { date: '2026-08-02T07:00:00Z' },
+      { date: '2026-08-04T07:00:00Z' },
+    ], { metric: 'routine_completion', rule: 'max' });
+    expect(s.per_day).toEqual([
+      { day: '2026-08-01', value: 1 },
+      { day: '2026-08-02', value: 1 },
+      { day: '2026-08-04', value: 1 },
+    ]);
+    expect(s.total).toBe(3);
+    expect(s.best_day).toBe(1);
+    expect(s.streak).toBe(2); // 01-02 run, broken by the missing 03
+  });
+
+  test('a completion challenge produces no anti-cheat flags (all days are 1)', () => {
+    const s = verify.computeWindowScore(
+      ['01', '02', '03', '04', '05'].map((d) => ({ date: `2026-08-${d}T08:00:00Z` })),
+      { metric: 'routine_completion', rule: 'max' });
+    expect(verify.flagAnomalies(s)).toEqual([]);
+  });
+});
+
+describe('arena_verify.longestStreak', () => {
+  test('counts consecutive UTC days, across a month boundary', () => {
+    expect(verify.longestStreak([
+      { day: '2026-08-30', value: 1 }, { day: '2026-08-31', value: 1 }, { day: '2026-09-01', value: 1 },
+    ])).toBe(3);
+  });
+  test('a zero-value day breaks the run; a resumed run is measured on its own', () => {
+    expect(verify.longestStreak([
+      { day: '2026-08-01', value: 1 }, { day: '2026-08-02', value: 0 },
+      { day: '2026-08-03', value: 1 }, { day: '2026-08-04', value: 1 }, { day: '2026-08-05', value: 1 },
+    ])).toBe(3);
+  });
+  test('empty → 0; also reported for step metrics (consecutive active days)', () => {
+    expect(verify.longestStreak([])).toBe(0);
+    const s = verify.computeWindowScore([
+      { date: '2026-08-10T10:00:00Z', step_count: 5000 },
+      { date: '2026-08-11T10:00:00Z', step_count: 5000 },
+    ], { metric: 'activity_count' });
+    expect(s.streak).toBe(2);
+  });
+});
+
+describe('arena_verify.recordCompletion (#186)', () => {
+  test('first check-in of a UTC day creates; a repeat the same day is a no-op', async () => {
+    const db = createMockDb();
+    const a = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T07:00:00Z' });
+    const b = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T22:00:00Z' });
+    const c = await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-04T07:00:00Z' });
+    expect(a).toEqual({ ok: true, created: true, day: '2026-08-03' });
+    expect(b).toEqual({ ok: true, created: false, day: '2026-08-03' });
+    expect(c).toEqual({ ok: true, created: true, day: '2026-08-04' });
+    expect(await db.collection('routine_completions').find({ entity: 'alice' }).toArray()).toHaveLength(2);
+  });
+
+  test('a concurrent duplicate (unique-index E11000) reports "already done", not an error', async () => {
+    const db = createMockDb();
+    db.collection('routine_completions').updateOne = jest.fn(() => Promise.reject(Object.assign(new Error('dup'), { code: 11000 })));
+    expect(await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: '2026-08-03T07:00:00Z' }))
+      .toEqual({ ok: true, created: false, day: '2026-08-03' });
+  });
+
+  test('other DB errors propagate', async () => {
+    const db = createMockDb();
+    db.collection('routine_completions').updateOne = jest.fn(() => Promise.reject(new Error('mongo down')));
+    await expect(verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: { start: '2000-01-01T00:00:00Z', end: '2100-01-01T00:00:00Z' } })).rejects.toThrow('mongo down');
+  });
+
+  test('rejects missing challengeId / entity and an invalid date', async () => {
+    const db = createMockDb();
+    expect((await verify.recordCompletion(db, { entity: 'alice' })).ok).toBe(false);
+    expect((await verify.recordCompletion(db, { challengeId: 'ch_m' })).ok).toBe(false);
+    expect((await verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window: WINDOW, at: 'not-a-date' })).ok).toBe(false);
+    expect((await verify.recordCompletion(db)).ok).toBe(false);
+  });
+
+  test('review: rejects a missing window and any check-in outside [start, end) — no backfilling', async () => {
+    const db = createMockDb();
+    const rec = (at, window = WINDOW) => verify.recordCompletion(db, { challengeId: 'ch_m', entity: 'alice', window, at });
+    expect(await rec('2026-08-03T07:00:00Z', null)).toMatchObject({ ok: false, reason: expect.stringMatching(/window/) });
+    expect(await rec('2026-07-31T23:59:59Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // before start
+    expect(await rec('2099-01-01T00:00:00Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // future
+    expect(await rec('1999-01-01T00:00:00Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // past
+    expect(await rec('2026-08-31T23:59:59Z')).toMatchObject({ ok: false, reason: 'outside challenge window' }); // == end (exclusive)
+    expect(await rec('2026-08-01T00:00:00Z')).toMatchObject({ ok: true, created: true }); // == start (inclusive)
+    expect(await db.collection('routine_completions').find({}).toArray()).toHaveLength(1);
+  });
+
+  test('review: a pre-window check-in cannot claim the first (partial) day — the in-window one counts', async () => {
+    const db = createMockDb();
+    const noonWindow = { start: '2026-08-01T12:00:00Z', end: '2026-08-08T12:00:00Z' };
+    const early = await verify.recordCompletion(db, { challengeId: 'ch_n', entity: 'alice', window: noonWindow, at: '2026-08-01T08:00:00Z' });
+    const ontime = await verify.recordCompletion(db, { challengeId: 'ch_n', entity: 'alice', window: noonWindow, at: '2026-08-01T13:00:00Z' });
+    expect(early.ok).toBe(false);
+    expect(ontime).toMatchObject({ ok: true, created: true, day: '2026-08-01' });
+    expect(await verify.fetchRoutineCompletions(db, 'ch_n', 'alice', noonWindow)).toHaveLength(1);
+  });
+
+  test('ensureCompletionIndexes creates the unique per-day key', async () => {
+    const createIndex = jest.fn(() => Promise.resolve('ok'));
+    const db = { collection: () => ({ createIndex }) };
+    await verify.ensureCompletionIndexes(db);
+    expect(createIndex).toHaveBeenCalledWith({ challenge_id: 1, entity: 1, day: 1 }, { unique: true });
+  });
+});
+
+describe('arena_verify.fetchRoutineCompletions (#186)', () => {
+  test('scoped to the challenge and bounded to the window', async () => {
+    const db = createMockDb();
+    db.collection('routine_completions').__seed([
+      completion('ch_m', 'alice', '2026-08-03T07:00:00Z'),
+      completion('ch_m', 'alice', '2026-09-03T07:00:00Z'), // outside the window
+      completion('ch_other', 'alice', '2026-08-04T07:00:00Z'), // another challenge
+      completion('ch_m', 'bob', '2026-08-05T07:00:00Z'), // another participant
+    ]);
+    const rows = await verify.fetchRoutineCompletions(db, 'ch_m', 'alice', WINDOW);
+    expect(rows).toEqual([{ date: new Date('2026-08-03T07:00:00Z') }]);
+  });
+
+  test('fails CLOSED on a missing/invalid window', async () => {
+    const db = createMockDb();
+    await expect(verify.fetchRoutineCompletions(db, 'ch_m', 'alice', null)).rejects.toThrow(/window/);
+    await expect(verify.fetchRoutineCompletions(db, 'ch_m', 'alice', { start: '2026-08-02', end: '2026-08-01' })).rejects.toThrow(/window/);
+  });
+});
+
+describe('arena_verify.verifyChallenge — routine_completion end-to-end (#186)', () => {
+  function seedMobility() {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'ch_mob', window: WINDOW, scoring: { metric: 'routine_completion', rule: 'max' } },
+      { id: 'ch_steps', window: WINDOW, scoring: { metric: 'activity_count', rule: 'max' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'ch_mob', entity: 'alice', flags: [], state: 'enrolled' },
+      { challenge_id: 'ch_mob', entity: 'bob', flags: [], state: 'enrolled' },
+      { challenge_id: 'ch_steps', entity: 'alice', flags: [], state: 'enrolled' },
+    ]);
+    db.collection('routine_completions').__seed([
+      completion('ch_mob', 'alice', '2026-08-01T07:00:00Z'),
+      completion('ch_mob', 'alice', '2026-08-02T07:00:00Z'),
+      completion('ch_mob', 'alice', '2026-08-03T07:00:00Z'),
+      completion('ch_mob', 'alice', '2026-08-05T07:00:00Z'),
+    ]);
+    // Alice also walked a lot — steps must NOT leak into the mobility score, and
+    // completions must NOT leak into the step challenge.
+    db.collection('verified_posts').__seed([post('alice', '2026-08-01T10:00:00Z', 12000)]);
+    return db;
+  }
+
+  test('scores from completions (days + streak), never from steps', async () => {
+    const db = seedMobility();
+    const res = await verify.verifyChallenge(db, 'ch_mob', { asOf: '2026-08-31T00:00:00Z' });
+    expect(res).toEqual({ ok: true, participants: 2, flagged: 0 });
+    const alice = await db.collection('challenge_participants').findOne({ challenge_id: 'ch_mob', entity: 'alice' });
+    expect(alice.score).toMatchObject({ verified: 4, days: 4, streak: 3, metric: 'routine_completion', source: 'routine_completions' });
+    const bob = await db.collection('challenge_participants').findOne({ challenge_id: 'ch_mob', entity: 'bob' });
+    expect(bob.score).toMatchObject({ verified: 0, days: 0, streak: 0 });
+  });
+
+  test('step challenges are unchanged by the new source', async () => {
+    const db = seedMobility();
+    await verify.verifyChallenge(db, 'ch_steps');
+    const alice = await db.collection('challenge_participants').findOne({ challenge_id: 'ch_steps', entity: 'alice' });
+    expect(alice.score).toMatchObject({ verified: 12000, metric: 'activity_count', source: 'verified_posts' });
+  });
+});

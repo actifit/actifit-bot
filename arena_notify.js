@@ -28,6 +28,7 @@
 'use strict';
 
 const arenaApi = require('./arena_api');
+const arenaVerify = require('./arena_verify'); // load-time safe; isSelfReportedMetric
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -88,7 +89,10 @@ function closingMessage(ch, hoursLeft) {
 	const h = Math.max(1, Math.round(hoursLeft));
 	const title = quotableTitle(ch);
 	return (title ? '"' + title + '"' : 'An Arena challenge you joined') + ' ends in about ' + h
-		+ (h === 1 ? ' hour' : ' hours') + '. Post today\'s report so your activity counts.';
+		+ (h === 1 ? ' hour' : ' hours') + '. '
+		+ (arenaVerify.isSelfReportedMetric(ch && ch.scoring && ch.scoring.metric)
+			? 'Check in today so your routine counts.'
+			: 'Post today\'s report so your activity counts.');
 }
 
 /** Sends one arena_results notification per rewarded finisher. Never throws. */
@@ -149,9 +153,15 @@ async function notifyClosingSoon(db, opts = {}) {
 		// and who already posted today (their activity is in — nothing to act on).
 		const reminded = new Set((await db.collection(arenaApi.COLLECTIONS.EVENTS)
 			.find({ type: 'window_closing', challenge_id: ch.id }).toArray()).map((e) => e.user));
-		const posted = new Set((await db.collection('verified_posts')
-			.find({ author: { $in: parts.map((p) => p.entity) }, date: { $gte: dayStart } }, { projection: { author: 1 } })
-			.toArray()).map((v) => v.author));
+		// For a self-reported routine challenge "done today" means a check-in for THIS
+		// challenge today, not a step post.
+		const posted = arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)
+			? new Set((await db.collection(arenaVerify.COLLECTIONS.ROUTINE_COMPLETIONS)
+				.find({ challenge_id: ch.id, entity: { $in: parts.map((p) => p.entity) }, day: dayStart.toISOString().slice(0, 10) })
+				.toArray()).map((c) => c.entity))
+			: new Set((await db.collection('verified_posts')
+				.find({ author: { $in: parts.map((p) => p.entity) }, date: { $gte: dayStart } }, { projection: { author: 1 } })
+				.toArray()).map((v) => v.author));
 
 		for (const p of parts) {
 			if (notified >= maxPerRun) return { ok: true, notified, alreadySent, postedToday, notDelivered, capped: true };
