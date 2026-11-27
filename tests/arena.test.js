@@ -480,3 +480,30 @@ describe('challenge presentation metadata (Trello #182)', () => {
     expect('art' in doc).toBe(false);
   });
 });
+
+// Trello #186: a self-reported metric (honor-system check-ins) may never carry
+// an AFIT prize — a creator-funded pool would be drainable by false check-ins.
+describe('arena.validateArenaOp — self-reported metric guard (#186)', () => {
+  const mobility = (rewards) => createBody({
+    type: 'daily_focus',
+    scoring: { metric: 'routine_completion', rule: 'max' },
+    ...(rewards !== undefined ? { rewards } : {}),
+  });
+
+  test('rejects an AFIT prize on routine_completion', () => {
+    const res = mobility({ afit: 100 });
+    const v = arena.validateArenaOp(res);
+    expect(v.valid).toBe(false);
+    expect(v.errors.join(' ')).toMatch(/self-reported/);
+  });
+
+  test('accepts a badge-only / zero-AFIT routine_completion challenge', () => {
+    expect(arena.validateArenaOp(mobility({ afit: 0, badges: ['mobility_14d'] })).valid).toBe(true);
+    expect(arena.validateArenaOp(mobility({ badges: ['mobility_14d'] })).valid).toBe(true);
+    expect(arena.validateArenaOp(mobility()).valid).toBe(true);
+  });
+
+  test('step metrics may still carry an AFIT prize (unchanged)', () => {
+    expect(arena.validateArenaOp(createBody({ rewards: { afit: 100 } })).valid).toBe(true);
+  });
+});
