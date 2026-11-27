@@ -507,3 +507,77 @@ describe('arena.validateArenaOp — self-reported metric guard (#186)', () => {
     expect(arena.validateArenaOp(createBody({ rewards: { afit: 100 } })).valid).toBe(true);
   });
 });
+
+// Trello #187: the on-chain `checkin` op — a participant's daily check-in on a
+// self-reported routine challenge. Signer = participant, block time = check-in time.
+describe('arena.indexArenaOp — checkin (#187)', () => {
+  const MWIN = { start: '2026-08-01T00:00:00Z', end: '2026-08-15T00:00:00Z' };
+  let db;
+  beforeEach(() => {
+    db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'mob', state: 'active', window: MWIN, scoring: { metric: 'routine_completion', rule: 'max' } },
+      { id: 'steps', state: 'active', window: MWIN, scoring: { metric: 'activity_count', rule: 'max' } },
+      { id: 'mob_done', state: 'settled', window: MWIN, scoring: { metric: 'routine_completion', rule: 'max' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'mob', entity: 'bob', state: 'enrolled', flags: [] },
+      { challenge_id: 'mob', entity: 'quitter', state: 'left', flags: [] },
+      { challenge_id: 'steps', entity: 'bob', state: 'enrolled', flags: [] },
+      { challenge_id: 'mob_done', entity: 'bob', state: 'settled', flags: [] },
+    ]);
+  });
+  const checkin = (signer, extra = {}, body = {}) =>
+    arena.indexArenaOp(db, chainOp({ op: 'checkin', v: 1, challenge_id: 'mob', ...body }, signer, { timestamp: '2026-08-03T23:30:00', ...extra }));
+  const rows = () => db.collection('routine_completions').find({}).toArray();
+
+  test('records the SIGNER on the BLOCK day, with on-chain provenance', async () => {
+    const res = await checkin('bob', { trx_id: 'trx_c1', block_num: 777 });
+    expect(res).toEqual({ ok: true, action: 'checked_in', day: '2026-08-03' });
+    const [r] = await rows();
+    expect(r).toMatchObject({ challenge_id: 'mob', entity: 'bob', day: '2026-08-03', source: { trx_id: 'trx_c1', block_num: 777 } });
+    // The zone-less Hive timestamp is read as UTC, never server-local time.
+    expect(r.at.toISOString()).toBe('2026-08-03T23:30:00.000Z');
+  });
+
+  test('a spoofed entity field is ignored — the signer is checked in', async () => {
+    await checkin('bob', {}, { entity: 'victim' });
+    expect((await rows()).map((r) => r.entity)).toEqual(['bob']);
+  });
+
+  test('a second check-in the same UTC day is a no-op; the next day counts', async () => {
+    await checkin('bob', { timestamp: '2026-08-03T08:00:00' });
+    expect(await checkin('bob', { timestamp: '2026-08-03T20:00:00' })).toEqual({ ok: true, action: 'checked_in', day: '2026-08-03', noop: true });
+    expect(await checkin('bob', { timestamp: '2026-08-04T08:00:00' })).toEqual({ ok: true, action: 'checked_in', day: '2026-08-04' });
+    expect(await rows()).toHaveLength(2);
+  });
+
+  test('rejects non-participants and participants who left', async () => {
+    expect(await checkin('stranger')).toMatchObject({ ok: false, reason: 'not a participant' });
+    expect(await checkin('quitter')).toMatchObject({ ok: false, reason: 'not a participant' });
+    expect(await rows()).toHaveLength(0);
+  });
+
+  test('rejects a step challenge, a settled challenge and an unknown one', async () => {
+    expect(await checkin('bob', {}, { challenge_id: 'steps' })).toMatchObject({ ok: false, reason: 'challenge does not take check-ins' });
+    expect(await checkin('bob', {}, { challenge_id: 'mob_done' })).toMatchObject({ ok: false, reason: expect.stringMatching(/not accepting check-ins/) });
+    expect(await checkin('bob', {}, { challenge_id: 'nope' })).toMatchObject({ ok: false, reason: 'unknown challenge' });
+    expect(await rows()).toHaveLength(0);
+  });
+
+  test('rejects a block time outside the window even while the challenge is still active', async () => {
+    expect(await checkin('bob', { timestamp: '2026-08-15T00:00:00' })).toMatchObject({ ok: false, reason: 'outside challenge window' });
+    expect(await checkin('bob', { timestamp: '2026-07-31T23:59:59' })).toMatchObject({ ok: false, reason: 'outside challenge window' });
+  });
+
+  test('an op with no block timestamp is rejected (never falls back to now)', async () => {
+    const op = chainOp({ op: 'checkin', v: 1, challenge_id: 'mob' }, 'bob');
+    delete op.timestamp;
+    expect(await arena.indexArenaOp(db, op)).toMatchObject({ ok: false, reason: 'op has no block timestamp' });
+  });
+
+  test('validateArenaOp requires challenge_id on a checkin', () => {
+    expect(arena.validateArenaOp({ op: 'checkin', v: 1 }).valid).toBe(false);
+    expect(arena.validateArenaOp({ op: 'checkin', v: 1, challenge_id: 'mob' }).valid).toBe(true);
+  });
+});

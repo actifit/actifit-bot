@@ -41,6 +41,18 @@ Do **not** run `scripts/seed_arena_contests.js` against the live DB again: it wr
 index-only rows, and `indexArenaOp` rejects a `challenge_create` for an existing id
 (it never overwrites provenance), so a stray seed would block the real op.
 
+### Routine challenges: self-reported check-ins (Trello #184/#186/#187)
+
+Scoring metric `routine_completion` (mobility/strength routines, ~no steps) is
+scored from `routine_completions`, not `verified_posts`. A participant checks in
+by broadcasting `actifit_arena` op `{ op: 'checkin', v: 1, challenge_id }`; the
+tailer records ONE completion per UTC day, using the SIGNER as the participant
+and the BLOCK time as the check-in time (never a client value). The app reads
+`GET /arena/challenges/:id/checkins/:user` for feedback. The source is
+**self-reported**, so it never pays AFIT: ingest rejects `rewards.afit > 0` on
+it and settlement zeroes AFIT for it (badges/Merits only, until a verified
+completion source exists). Do not weaken this.
+
 ### Arena notifications
 
 `arena_notify.js` sends results (`arena_results`) and closing-soon reminders

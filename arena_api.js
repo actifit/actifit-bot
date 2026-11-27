@@ -30,6 +30,7 @@
 'use strict';
 
 const arena = require('./arena');
+const arenaVerify = require('./arena_verify'); // load-time safe
 
 const COLLECTIONS = {
 	CHALLENGES: 'challenges',
@@ -88,6 +89,48 @@ async function getChallenge(db, id) {
 	if (!challenge) return null;
 	const parts = await db.collection(COLLECTIONS.PARTICIPANTS).find({ challenge_id: challenge.id }).toArray();
 	return { challenge, participants: parts.map(publicParticipant) };
+}
+
+/**
+ * A user's check-in status on a self-reported routine challenge (Trello #187) —
+ * the immediate feedback the app shows, since the check-in itself is an on-chain
+ * op the tailer indexes a few seconds later. Read-only; check-ins are on-chain
+ * and public anyway. Returns null for an unknown challenge, and
+ * { error } for one that does not take check-ins.
+ *   days_completed  completed days in the window (the challenge score)
+ *   streak          longest consecutive-day run
+ *   days_remaining  UTC days, INCLUDING today, still inside the window
+ */
+async function checkinStatus(db, id, user, opts = {}) {
+	const cid = scalar(id);
+	const entity = scalar(user);
+	if (!cid || !entity) return null;
+	const ch = await db.collection(COLLECTIONS.CHALLENGES).findOne({ id: cid });
+	if (!ch) return null;
+	if (!arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) {
+		return { error: 'challenge does not take check-ins' };
+	}
+	const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
+	const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
+	const today = dayOf(nowMs);
+	const rows = await arenaVerify.fetchRoutineCompletions(db, cid, entity, ch.window);
+	const score = arenaVerify.computeWindowScore(rows, ch.scoring);
+	const p = await db.collection(COLLECTIONS.PARTICIPANTS).findOne({ challenge_id: cid, entity });
+	const startMs = Date.parse(ch.window.start);
+	const endMs = Date.parse(ch.window.end);
+	const days_remaining = nowMs >= endMs ? 0
+		: (Date.parse(dayOf(endMs - 1)) - Date.parse(dayOf(Math.max(nowMs, startMs)))) / DAY + 1;
+	return {
+		challenge_id: cid,
+		user: entity,
+		participant: !!(p && p.state !== 'left'),
+		state: ch.state,
+		window: ch.window,
+		days_completed: score.total,
+		streak: score.streak,
+		checked_in_today: score.per_day.some((d) => d.day === today && d.value > 0),
+		days_remaining,
+	};
 }
 
 /** A materialized standings table (weekly/season) by id or scope/cohort. */
@@ -331,6 +374,7 @@ module.exports = {
 	EVENT_TYPES,
 	listChallenges,
 	getChallenge,
+	checkinStatus,
 	getStandings,
 	getMerits,
 	getBadges,

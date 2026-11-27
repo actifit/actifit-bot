@@ -268,3 +268,53 @@ describe('arena_api default contests (§7.5)', () => {
     expect((await api.seedDefaultContests(createMockDb(), {})).ok).toBe(false);
   });
 });
+
+// Trello #187: check-in status read for a routine challenge.
+describe('arena_api.checkinStatus (#187)', () => {
+  const NOWMS = Date.parse('2026-08-05T15:00:00Z');
+  const comp = (entity, d) => ({ challenge_id: 'mob', entity, day: d, at: new Date(`${d}T08:00:00Z`) });
+  function seedDb() {
+    const db = createMockDb();
+    db.collection('challenges').__seed([
+      { id: 'mob', state: 'active', scoring: { metric: 'routine_completion', rule: 'max' },
+        window: { start: '2026-08-01T00:00:00Z', end: '2026-08-15T00:00:00Z' } },
+      { id: 'steps', state: 'active', scoring: { metric: 'activity_count', rule: 'max' },
+        window: { start: '2026-08-01T00:00:00Z', end: '2026-08-15T00:00:00Z' } },
+    ]);
+    db.collection('challenge_participants').__seed([
+      { challenge_id: 'mob', entity: 'bob', state: 'enrolled' },
+      { challenge_id: 'mob', entity: 'quitter', state: 'left' },
+    ]);
+    db.collection('routine_completions').__seed([
+      comp('bob', '2026-08-01'), comp('bob', '2026-08-02'), comp('bob', '2026-08-03'), comp('bob', '2026-08-05'),
+    ]);
+    return db;
+  }
+
+  test('days completed, streak, today, days remaining (incl. today)', async () => {
+    const st = await api.checkinStatus(seedDb(), 'mob', 'bob', { now: NOWMS });
+    expect(st).toMatchObject({
+      challenge_id: 'mob', user: 'bob', participant: true, state: 'active',
+      days_completed: 4, streak: 3, checked_in_today: true,
+      days_remaining: 10, // Aug 5..14 inclusive (end is Aug 15 00:00, exclusive)
+    });
+  });
+
+  test('not checked in today; non-participant / left; window closed', async () => {
+    const db = seedDb();
+    expect(await api.checkinStatus(db, 'mob', 'bob', { now: Date.parse('2026-08-06T09:00:00Z') }))
+      .toMatchObject({ checked_in_today: false, days_remaining: 9 });
+    expect(await api.checkinStatus(db, 'mob', 'stranger', { now: NOWMS })).toMatchObject({ participant: false, days_completed: 0, streak: 0 });
+    expect(await api.checkinStatus(db, 'mob', 'quitter', { now: NOWMS })).toMatchObject({ participant: false });
+    expect(await api.checkinStatus(db, 'mob', 'bob', { now: Date.parse('2026-08-15T00:00:00Z') })).toMatchObject({ days_remaining: 0 });
+    expect(await api.checkinStatus(db, 'mob', 'bob', { now: Date.parse('2026-07-20T00:00:00Z') })).toMatchObject({ days_remaining: 14 });
+  });
+
+  test('unknown → null; step challenge → error; non-string params (NoSQL operators) → null', async () => {
+    const db = seedDb();
+    expect(await api.checkinStatus(db, 'nope', 'bob')).toBeNull();
+    expect(await api.checkinStatus(db, 'steps', 'bob')).toEqual({ error: 'challenge does not take check-ins' });
+    expect(await api.checkinStatus(db, { $ne: null }, 'bob')).toBeNull();
+    expect(await api.checkinStatus(db, 'mob', { $ne: null })).toBeNull();
+  });
+});

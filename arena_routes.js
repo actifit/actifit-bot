@@ -44,6 +44,17 @@ function registerArenaRoutes(app, getDb, opts = {}) {
 		} catch (err) { fail(res, 'arena_challenge', err); }
 	});
 
+	// Check-in status for a routine challenge (Trello #187): the app's feedback
+	// after broadcasting the on-chain `checkin` op.
+	app.get('/arena/challenges/:id/checkins/:user', ...mw, async (req, res) => {
+		try {
+			const st = await arenaApi.checkinStatus(getDb(), req.params.id, req.params.user);
+			if (!st) return res.status(404).send({ error: 'not found' });
+			if (st.error) return res.status(400).send({ error: st.error });
+			res.send(st);
+		} catch (err) { fail(res, 'arena_checkins', err); }
+	});
+
 	app.get('/arena/standings', ...mw, async (req, res) => {
 		try {
 			const { id, scope, cohort } = req.query;
