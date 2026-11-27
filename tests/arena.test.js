@@ -576,6 +576,38 @@ describe('arena.indexArenaOp — checkin (#187)', () => {
     expect(await arena.indexArenaOp(db, op)).toMatchObject({ ok: false, reason: 'op has no block timestamp' });
   });
 
+  test('review: a re-tailed check-in after the challenge settled is a no-op, not a rejection', async () => {
+    await checkin('bob', { trx_id: 'trx_same' });
+    await db.collection('challenges').updateOne({ id: 'mob' }, { $set: { state: 'settled' } });
+    expect(await checkin('bob', { trx_id: 'trx_same' })).toEqual({ ok: true, action: 'checked_in', day: '2026-08-03', noop: true });
+    // ...but a DIFFERENT op that day on a settled challenge is still refused
+    expect(await checkin('bob', { trx_id: 'trx_other', timestamp: '2026-08-04T08:00:00' })).toMatchObject({ ok: false });
+  });
+
+  test('review: refused once the challenge is resolved (never written after scoring)', async () => {
+    db.collection('challenge_resolutions').__seed([{ challenge_id: 'mob' }]);
+    expect(await checkin('bob')).toMatchObject({ ok: false, reason: 'challenge already resolved' });
+    expect(await rows()).toHaveLength(0);
+  });
+
+  test('review: squad routine challenges do not take per-user check-ins', async () => {
+    db.collection('challenges').__seed([{ id: 'sq', state: 'active', window: MWIN, participants_kind: 'squad',
+      scoring: { metric: 'routine_completion', rule: 'max' } }]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'sq', entity: 'teamx', state: 'enrolled', flags: [] }]);
+    expect(await checkin('teamx', {}, { challenge_id: 'sq' })).toMatchObject({ ok: false, reason: expect.stringMatching(/squad/) });
+  });
+
+  test('review: a garbage block timestamp fails safely', async () => {
+    expect(await checkin('bob', { timestamp: 'garbage' })).toMatchObject({ ok: false, reason: 'invalid at' });
+    expect(await rows()).toHaveLength(0);
+  });
+
+  test('arena_write.buildCheckinOp builds a valid op', () => {
+    const op = require('../arena_write').buildCheckinOp('mob');
+    expect(op).toEqual({ op: 'checkin', v: 1, challenge_id: 'mob' });
+    expect(arena.validateArenaOp(op).valid).toBe(true);
+  });
+
   test('validateArenaOp requires challenge_id on a checkin', () => {
     expect(arena.validateArenaOp({ op: 'checkin', v: 1 }).valid).toBe(false);
     expect(arena.validateArenaOp({ op: 'checkin', v: 1, challenge_id: 'mob' }).valid).toBe(true);

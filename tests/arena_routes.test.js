@@ -176,9 +176,12 @@ describe('arena_routes (HTTP)', () => {
 describe('arena_routes — check-in status (#187)', () => {
   const DAYMS = 24 * 60 * 60 * 1000;
   let db, app;
+  const FIXED = Date.parse('2026-08-10T12:00:00Z'); // pinned: no flake at UTC midnight
+  afterEach(() => jest.restoreAllMocks());
   beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(FIXED);
     db = createMockDb();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date(FIXED).toISOString().slice(0, 10);
     const start = new Date(Date.parse(today) - 3 * DAYMS).toISOString();
     const end = new Date(Date.parse(today) + 5 * DAYMS).toISOString();
     db.collection('challenges').__seed([

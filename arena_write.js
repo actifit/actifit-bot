@@ -34,6 +34,11 @@ function buildJoinOp(challengeId) {
 function buildLeaveOp(challengeId) {
 	return { op: 'leave', v: 1, challenge_id: challengeId };
 }
+// Daily check-in on a routine challenge (#187). Validation here is shape-only, as
+// for join: participation, metric and window are only knowable at ingest.
+function buildCheckinOp(challengeId) {
+	return { op: 'checkin', v: 1, challenge_id: challengeId };
+}
 function buildCreateOp(p = {}) {
 	return {
 		op: 'challenge_create', v: 1,
@@ -76,6 +81,7 @@ module.exports = {
 	TIER_MAY_CREATE,
 	buildJoinOp,
 	buildLeaveOp,
+	buildCheckinOp,
 	buildCreateOp,
 	validateProposedOp,
 };

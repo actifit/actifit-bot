@@ -53,6 +53,14 @@ and the BLOCK time as the check-in time (never a client value). The app reads
 it and settlement zeroes AFIT for it (badges/Merits only, until a verified
 completion source exists). Do not weaken this.
 
+Settlement of a routine challenge **waits for the tailer**: it is only scored
+once `arena_tailer_state.cursor.block_time` is past `window.end`, so a last-day
+check-in still in the tailer's backlog is never missed. If the tailer is down,
+routine challenges stay unsettled (resolve summary `awaitingTailer` > 0, logged
+"waits for the tailer") and settle on the first sweep after it catches up — not
+a failure, and nothing to repair by hand. A check-in indexed after a challenge
+is resolved is refused (only a held op replayed late can hit this).
+
 ### Arena notifications
 
 `arena_notify.js` sends results (`arena_results`) and closing-soon reminders

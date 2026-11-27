@@ -522,20 +522,41 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			if (!arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) {
 				return { ok: false, reason: 'challenge does not take check-ins' };
 			}
-			// Same live-state gate as join. A check-in broadcast in the last seconds
-			// of the window can lose the race with settlement; it could not have been
-			// scored then anyway (settlement scores at window close).
-			if (!['open', 'active'].includes(ch.state)) {
-				return { ok: false, reason: `challenge not accepting check-ins in state ${ch.state}` };
-			}
-			const p = await participants.findOne({ challenge_id: op.challenge_id, entity: signer });
-			if (!p || p.state === 'left') return { ok: false, reason: 'not a participant' };
 			// No block time = no trustworthy day; never fall back to "now" (a replay of
 			// an old op would then count on today's date).
 			if (!at) return { ok: false, reason: 'op has no block timestamp' };
+			// Idempotent FIRST (as LEAVE): a re-tailed check-in that already applied is
+			// a no-op success, even if the challenge has since closed.
+			const blockDay = chainTime(at);
+			if (!Number.isNaN(blockDay.getTime())) {
+				const done = await db.collection(arenaVerify.COLLECTIONS.ROUTINE_COMPLETIONS).findOne({
+					challenge_id: op.challenge_id, entity: signer, day: blockDay.toISOString().slice(0, 10),
+				});
+				if (done && done.source && done.source.trx_id === trx_id) {
+					return { ok: true, action: 'checked_in', day: done.day, noop: true };
+				}
+			}
+			// Check-ins are per USER: a squad id could collide with an account name.
+			if ((ch.participants_kind || 'user') !== 'user') {
+				return { ok: false, reason: 'check-ins are not supported on squad challenges' };
+			}
+			// Same live-state gate as join, plus: never write after scoring. Settlement
+			// of a routine challenge waits for the tailer to index past window.end
+			// (arena_jobs.resolveDueChallenges), so an in-window check-in is normally
+			// indexed BEFORE the resolution record exists; one arriving later (e.g. a
+			// held op replayed after a key rotation) is refused rather than recorded
+			// against an already-scored challenge.
+			if (!['open', 'active'].includes(ch.state)) {
+				return { ok: false, reason: `challenge not accepting check-ins in state ${ch.state}` };
+			}
+			if (await db.collection('challenge_resolutions').findOne({ challenge_id: op.challenge_id })) {
+				return { ok: false, reason: 'challenge already resolved' };
+			}
+			const p = await participants.findOne({ challenge_id: op.challenge_id, entity: signer });
+			if (!p || p.state === 'left') return { ok: false, reason: 'not a participant' };
 			const r = await arenaVerify.recordCompletion(db, {
 				challengeId: op.challenge_id, entity: signer, window: ch.window,
-				at: chainTime(at), source: { trx_id, block_num },
+				at: blockDay, source: { trx_id, block_num },
 			});
 			if (!r.ok) return { ok: false, reason: r.reason };
 			return { ok: true, action: 'checked_in', day: r.day, ...(r.created ? {} : { noop: true }) };
@@ -673,6 +694,7 @@ async function ensureArenaIndexes(db) {
 }
 
 module.exports = {
+	chainTime,
 	ARENA_JSON_ID,
 	OPS,
 	OP_NAMES,

@@ -29,6 +29,8 @@
 'use strict';
 
 const arenaVerify = require('./arena_verify');
+// Load-time safe (dhive library + arena.js): only indexedThrough is used here.
+const arenaTailer = require('./arena_tailer');
 const arenaStandings = require('./arena_standings');
 const arenaPools = require('./arena_pools');
 const arenaRewards = require('./arena_rewards');
@@ -244,7 +246,16 @@ async function resolveDueChallenges(db, opts = {}) {
 		.limit(limit)
 		.toArray();
 
-	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0, budgetExhausted = 0;
+	let resolved = 0, settled = 0, recurred = 0, failed = 0, skipped = 0, budgetExhausted = 0, awaitingTailer = 0;
+	// Chain time the arena index is complete up to — read once per sweep, lazily.
+	let indexedThroughMs;
+	const tailerCaughtUpTo = async () => {
+		if (indexedThroughMs === undefined) {
+			const t = opts.indexedThrough !== undefined ? opts.indexedThrough : await arenaTailer.indexedThrough(db);
+			indexedThroughMs = t ? new Date(t).getTime() : null;
+		}
+		return indexedThroughMs;
+	};
 
 	for (const ch of candidates) {
 		// Results to announce once this challenge's settlement steps are done.
@@ -255,6 +266,19 @@ async function resolveDueChallenges(db, opts = {}) {
 			if (Date.parse(ch.window.end) > nowMs) { skipped++; continue; }
 
 			const prior = await resolutionsC.findOne({ challenge_id: ch.id });
+			// A self-reported routine challenge is scored from on-chain check-ins the
+			// TAILER indexes. Don't score it until the index is complete past
+			// window.end, or a last-day check-in still in the tailer's backlog would be
+			// missed (and then refused once the resolution exists). Not counted as a
+			// failure: it resolves on the first sweep after the tailer catches up.
+			if (!prior && arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) {
+				const through = await tailerCaughtUpTo();
+				if (!(through >= Date.parse(ch.window.end))) {
+					awaitingTailer++; skipped++;
+					log(`arena resolve: ${ch.id} waits for the tailer (indexed through ${through ? new Date(through).toISOString() : 'unknown'})`);
+					continue;
+				}
+			}
 			let resolution;
 			if (prior) {
 				resolution = { ok: true, noop: true, settlePayload: prior.settlePayload };
@@ -437,7 +461,7 @@ async function resolveDueChallenges(db, opts = {}) {
 		}
 	}
 
-	const summary = { ok: true, processed: candidates.length, resolved, settled, recurred, failed, skipped, budgetExhausted };
+	const summary = { ok: true, processed: candidates.length, resolved, settled, recurred, failed, skipped, budgetExhausted, awaitingTailer };
 	log(`arena resolve: processed=${summary.processed} resolved=${resolved} settled=${settled} recurred=${recurred} skipped=${skipped} failed=${failed}`);
 	return summary;
 }

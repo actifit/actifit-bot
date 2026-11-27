@@ -317,4 +317,10 @@ describe('arena_api.checkinStatus (#187)', () => {
     expect(await api.checkinStatus(db, { $ne: null }, 'bob')).toBeNull();
     expect(await api.checkinStatus(db, 'mob', { $ne: null })).toBeNull();
   });
+
+  test('review: a challenge with a bad window → error (route 400), never NaN / 500', async () => {
+    const db = seedDb();
+    db.collection('challenges').__seed([{ id: 'bad', state: 'active', scoring: { metric: 'routine_completion', rule: 'max' }, window: { start: 'x' } }]);
+    expect(await api.checkinStatus(db, 'bad', 'bob')).toEqual({ error: 'challenge has no valid window' });
+  });
 });

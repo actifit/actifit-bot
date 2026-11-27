@@ -110,14 +110,15 @@ async function checkinStatus(db, id, user, opts = {}) {
 	if (!arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) {
 		return { error: 'challenge does not take check-ins' };
 	}
+	const startMs = Date.parse(ch.window && ch.window.start);
+	const endMs = Date.parse(ch.window && ch.window.end);
+	if (!(startMs < endMs)) return { error: 'challenge has no valid window' };
 	const nowMs = Number.isFinite(opts.now) ? opts.now : Date.now();
 	const dayOf = (ms) => new Date(ms).toISOString().slice(0, 10);
 	const today = dayOf(nowMs);
 	const rows = await arenaVerify.fetchRoutineCompletions(db, cid, entity, ch.window);
 	const score = arenaVerify.computeWindowScore(rows, ch.scoring);
 	const p = await db.collection(COLLECTIONS.PARTICIPANTS).findOne({ challenge_id: cid, entity });
-	const startMs = Date.parse(ch.window.start);
-	const endMs = Date.parse(ch.window.end);
 	const days_remaining = nowMs >= endMs ? 0
 		: (Date.parse(dayOf(endMs - 1)) - Date.parse(dayOf(Math.max(nowMs, startMs)))) / DAY + 1;
 	return {

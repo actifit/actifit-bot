@@ -161,12 +161,25 @@ async function loadCursor(db) {
 	return (doc && Number.isInteger(doc.block_num)) ? doc.block_num : null;
 }
 
-async function saveCursor(db, blockNum) {
+async function saveCursor(db, blockNum, blockTimestamp) {
+	const t = blockTimestamp ? arena.chainTime(blockTimestamp) : null;
 	await db.collection(TAILER_STATE).replaceOne(
 		{ _id: CURSOR_ID },
-		{ _id: CURSOR_ID, block_num: blockNum, updated_at: new Date() },
+		{
+			_id: CURSOR_ID, block_num: blockNum, updated_at: new Date(),
+			// The chain time the index is complete up to. Settlement of a self-reported
+			// routine challenge waits for this to pass window.end (see indexedThrough).
+			...(t && !Number.isNaN(t.getTime()) ? { block_time: t } : {}),
+		},
 		{ upsert: true }
 	);
+}
+
+/** The chain time (Date) every arena op up to which has been indexed, or null if
+ *  unknown (no cursor yet, or a cursor saved before block_time was recorded). */
+async function indexedThrough(db) {
+	const doc = await db.collection(TAILER_STATE).findOne({ _id: CURSOR_ID });
+	return doc && doc.block_time ? new Date(doc.block_time) : null;
 }
 
 /**
@@ -212,7 +225,7 @@ async function catchUpOnce(db, hiveClient, opts = {}) {
 		const block = await hiveClient.database.getBlock(n);
 		if (!block) break; // not available yet — stop, retry next tick
 		await processArenaBlock(db, block, n, opts);
-		await saveCursor(db, n);
+		await saveCursor(db, n, block.timestamp);
 		processed++;
 	}
 	return { from: cursor + 1, to: cursor + processed, processed };
@@ -256,6 +269,7 @@ module.exports = {
 	replayHeldOps,
 	loadCursor,
 	saveCursor,
+	indexedThrough,
 	getTargetBlock,
 	catchUpOnce,
 	startArenaTailer,
