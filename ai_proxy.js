@@ -19,7 +19,8 @@
 const crypto = require('crypto');
 
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
-const DEFAULT_MODEL = 'gemini-2.5-flash';
+// Google limits the 2.5 models to projects that used them before (a new key gets 404 NOT_FOUND)
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 const USAGE = 'ai_usage';
 const TRANSLATIONS = 'ai_translations';
 
@@ -27,10 +28,23 @@ const TRANSLATIONS = 'ai_translations';
 const DEFAULT_LIMITS = { chat: 40, workout: 5, translate: 60, global: 3000 };
 // one deadline per request, retries included: Cloudflare drops the app's request at ~100s
 const DEADLINE_MS = 85000;
-// thinking is off (THINKING), so these caps are all answer text
+// answer text; thinking tokens count against maxOutputTokens too, so thinkingFor adds its share
 const MAX_TOKENS = { chat: 1024, workout: 4096, translate: 16384 };
 // 2.5-flash counts thinking against maxOutputTokens; none of these tasks needs it
-const THINKING = { thinkingBudget: 0 };
+/**
+ * The least thinking each model family allows, and the room it needs on top of the answer.
+ * 2.5 turns it off with a budget of 0; Gemini 3 takes a level instead (a budget there is a
+ * 400), and only Flash-Lite goes down to "minimal".
+ */
+function thinkingFor(model) {
+	if (/^gemini-2\./.test(model)) return { config: { thinkingBudget: 0 }, extra: 0 };
+	if (/flash-lite/.test(model)) return { config: { thinkingLevel: 'minimal' }, extra: 1024 };
+	return { config: { thinkingLevel: 'low' }, extra: 4096 };
+}
+const generationConfig = (model, kind, more) => {
+	const t = thinkingFor(model);
+	return Object.assign({ maxOutputTokens: MAX_TOKENS[kind] + t.extra }, more, { thinkingConfig: t.config });
+};
 const RETRY_DELAYS_MS = [1500, 3000]; // Gemini's 503 "model overloaded" usually clears fast
 const TRANSLATIONS_TTL_S = 90 * 24 * 3600;
 
@@ -66,7 +80,8 @@ const ERRORS = {
 	busy: [503, 'The AI assistant is busy right now, please try again shortly'],
 	blocked: [422, 'This request couldn\'t be processed because it may violate content guidelines'],
 	not_found: [404, 'Post not found'],
-	failed: [502, 'The AI assistant could not answer, please try again'],
+	// 500, not 502: Cloudflare swaps an origin's 502 for its own error page, hiding this message
+	failed: [500, 'The AI assistant could not answer, please try again'],
 };
 
 function fail(code) {
@@ -244,7 +259,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		const out = await run(user, 'chat', {
 			systemInstruction: { parts: [{ text: CHAT_INSTRUCTION }] },
 			contents,
-			generationConfig: { maxOutputTokens: MAX_TOKENS.chat, thinkingConfig: THINKING },
+			generationConfig: generationConfig(model, 'chat'),
 		});
 		return out.error || ok(out.text);
 	}
@@ -255,7 +270,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		if (!prompt) return fail('invalid');
 		const out = await run(user, 'workout', {
 			contents: [{ role: 'user', parts: [{ text: prompt }] }],
-			generationConfig: { maxOutputTokens: MAX_TOKENS.workout, responseMimeType: 'application/json', thinkingConfig: THINKING },
+			generationConfig: generationConfig(model, 'workout', { responseMimeType: 'application/json' }),
 		});
 		return out.error || ok(out.text);
 	}
@@ -282,7 +297,7 @@ function createAi({ db, apiKey, model = DEFAULT_MODEL, enabled = true, limits = 
 		const out = await run(user, 'translate', {
 			systemInstruction: { parts: [{ text: TRANSLATE_INSTRUCTION }] },
 			contents: [{ role: 'user', parts: [{ text: post.body }] }],
-			generationConfig: { maxOutputTokens: MAX_TOKENS.translate, thinkingConfig: THINKING },
+			generationConfig: generationConfig(model, 'translate'),
 		});
 		if (out.error) return out.error;
 		await col.updateOne({ _id }, { $set: { hash, text: out.text, updated: new Date(now()) } }, { upsert: true })
@@ -299,4 +314,4 @@ async function ensureIndexes(db) {
 	await db.collection(TRANSLATIONS).createIndex({ updated: 1 }, { expireAfterSeconds: TRANSLATIONS_TTL_S });
 }
 
-module.exports = { createAi, ensureIndexes, replyText };
+module.exports = { createAi, ensureIndexes, replyText, thinkingFor };

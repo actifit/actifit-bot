@@ -62,7 +62,7 @@
   "ad_legacy_until": "",
   "threespeak_embed_api_key": "",
   "gemini_api_key": "",
-  "gemini_model": "gemini-2.5-flash",
+  "gemini_model": "gemini-3.5-flash-lite",
   "ai_enabled": true,
   "ai_limits": { "chat": 40, "workout": 5, "translate": 60, "global": 3000 }
 }
