@@ -253,8 +253,8 @@ function validateArenaOp(op) {
 				errors.push(`challenge_create: scoring.metric "${scoring.metric}" is self-reported and may not carry an AFIT prize`);
 			}
 			// On a routine challenge `scoring.threshold` = minimum completed days to earn
-			// the badge (#188). If set, it must be a whole number of days the window can hold.
-			if (arenaVerify.isSelfReportedMetric(scoring.metric) && scoring.threshold !== undefined) {
+			// the badge (#188). Required: a whole number of days the window can hold.
+			if (arenaVerify.isSelfReportedMetric(scoring.metric)) {
 				const days = isValidWindow(op.window) ? Math.ceil((Date.parse(op.window.end) - Date.parse(op.window.start)) / 86400000) : 0;
 				const th = scoring.threshold;
 				if (!Number.isInteger(th) || th < 1 || (days && th > days)) {

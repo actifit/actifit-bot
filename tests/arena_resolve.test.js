@@ -164,6 +164,17 @@ describe('arena_jobs.nextOccurrence / isRecurringDefault', () => {
 		expect(next.parent_id).toBe('def_daily_focus');
 	});
 
+	test('review (#193): nextOccurrence carries badge_rule forward (else later rounds fall back to winner)', () => {
+		const ch = { id: 'def_mobility_14', recurrence: 'Seasonal', type: 'daily_focus', badge_rule: 'all',
+			scoring: { metric: 'routine_completion', rule: 'threshold', threshold: 10 }, rewards: { badges: ['mobility_14d'] },
+			window: { start: '2026-12-01T00:00:00Z', end: '2026-12-15T00:00:00Z', tz: 'UTC' } };
+		const next = jobs.nextOccurrence(ch, Date.parse('2026-12-15T01:00:00Z'));
+		expect(next.badge_rule).toBe('all');
+		expect(next.scoring).toEqual({ metric: 'routine_completion', rule: 'threshold', threshold: 10 });
+		const plain = jobs.nextOccurrence({ ...ch, badge_rule: undefined }, Date.parse('2026-12-15T01:00:00Z'));
+		expect('badge_rule' in plain).toBe(false);
+	});
+
 	test('nextOccurrence leaves scoring untouched for a contest with no override', () => {
 		const ch = { id: 'def_weekly_top_n', recurrence: 'Weekly', type: 'liveops',
 			scoring: { metric: 'activity_count', rule: 'max' },
@@ -472,7 +483,7 @@ describe('arena_jobs.resolveDueChallenges — routine_completion pays no AFIT (#
 			// parent_id hits def_weekly_step_league's AFIT schedule (100/60/40 + 10)
 			{ id: 'def_weekly_step_league@mob', parent_id: 'def_weekly_step_league', state: 'open',
 			  type: 'daily_focus', window: CLOSED, origin_tier: 'official', title: 'Mobility',
-			  scoring: { metric: 'routine_completion', rule: 'max' },
+			  scoring: { metric: 'routine_completion', rule: 'max', threshold: 1 },
 			  rewards: { badges: ['mobility_14d'] }, badge_rule: 'all' },
 		]);
 		db.collection('challenge_participants').__seed([

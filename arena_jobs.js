@@ -207,6 +207,9 @@ function nextOccurrence(ch, nowMs) {
 		entry: { mode: 'free' },
 		scoring: SCORING_OVERRIDES[base] || ch.scoring,
 		rewards: ch.rewards || null,
+		// Carry the badge rule forward too, or every later round silently falls back
+		// to 'winner' (found in the #193 review).
+		...(ch.badge_rule ? { badge_rule: ch.badge_rule } : {}),
 		parent_id: base,
 		...presentationOf(ch),
 	};

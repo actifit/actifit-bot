@@ -151,12 +151,16 @@ describe('arena_rewards.badgePrizes: routine finisher rule (#188)', () => {
 			{ rank: 1, badges: ['mobility_14d'] }, { rank: 2, badges: ['mobility_14d'] },
 		]);
 	});
-	test('a single check-in does not earn it; no threshold falls back to any positive score', () => {
+	test('a single check-in does not earn it; a missing/invalid threshold awards nobody (fail closed)', () => {
 		expect(rewards.badgePrizes(routine(10), [{ entity: 'd', rank: 1, score_verified: 1 }])).toEqual([]);
-		expect(rewards.badgePrizes(routine(undefined), rows).map((p) => p.rank)).toEqual([1, 2, 3, 4]);
+		for (const bad of [undefined, 0, -3, 2.5, '10', null]) expect(rewards.badgePrizes(routine(bad), rows)).toEqual([]);
 	});
-	test('the finisher rule also applies to winner/top3 rules', () => {
-		expect(rewards.badgePrizes(routine(10, 'top3'), rows).map((p) => p.rank)).toEqual([1, 2]);
+	test('review: EVERY finisher earns it whatever the badge_rule: ties at the top never cost a badge', () => {
+		const tied = [{ entity: 'amy', rank: 1, score_verified: 14 }, { entity: 'bob', rank: 2, score_verified: 14 },
+			{ entity: 'cat', rank: 3, score_verified: 14 }, { entity: 'dan', rank: 4, score_verified: 14 }];
+		for (const rule of ['winner', 'top3', 'all', undefined]) {
+			expect(rewards.badgePrizes(routine(10, rule), tied).map((p) => p.rank)).toEqual([1, 2, 3, 4]);
+		}
 		expect(rewards.badgePrizes(routine(15, 'winner'), rows)).toEqual([]);
 	});
 	test('step challenges are unaffected: goal_hit threshold is steps/day, not a finisher bar', () => {
