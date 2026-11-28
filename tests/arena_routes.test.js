@@ -171,3 +171,40 @@ describe('arena_routes (HTTP)', () => {
     expect(r.body.ok).toBe(true);
   });
 });
+
+// Trello #187: GET /arena/challenges/:id/checkins/:user
+describe('arena_routes — check-in status (#187)', () => {
+  const DAYMS = 24 * 60 * 60 * 1000;
+  let db, app;
+  const FIXED = Date.parse('2026-08-10T12:00:00Z'); // pinned: no flake at UTC midnight
+  afterEach(() => jest.restoreAllMocks());
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(FIXED);
+    db = createMockDb();
+    const today = new Date(FIXED).toISOString().slice(0, 10);
+    const start = new Date(Date.parse(today) - 3 * DAYMS).toISOString();
+    const end = new Date(Date.parse(today) + 5 * DAYMS).toISOString();
+    db.collection('challenges').__seed([
+      { id: 'mob', state: 'active', scoring: { metric: 'routine_completion', rule: 'max' }, window: { start, end } },
+      { id: 'steps', state: 'active', scoring: { metric: 'activity_count', rule: 'max' }, window: { start, end } },
+    ]);
+    db.collection('challenge_participants').__seed([{ challenge_id: 'mob', entity: 'bob', state: 'enrolled' }]);
+    db.collection('routine_completions').__seed([
+      { challenge_id: 'mob', entity: 'bob', day: today, at: new Date(Date.parse(today) + 60 * 1000) },
+    ]);
+    app = express();
+    registerArenaRoutes(app, () => db);
+  });
+
+  test('200 with status for a routine challenge', async () => {
+    const r = await request(app).get('/arena/challenges/mob/checkins/bob');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ challenge_id: 'mob', user: 'bob', participant: true, days_completed: 1, checked_in_today: true, days_remaining: 5 });
+  });
+  test('404 unknown challenge; 400 for a step challenge', async () => {
+    expect((await request(app).get('/arena/challenges/nope/checkins/bob')).status).toBe(404);
+    const r = await request(app).get('/arena/challenges/steps/checkins/bob');
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/check-ins/);
+  });
+});

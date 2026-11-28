@@ -484,7 +484,7 @@ describe('arena_jobs.resolveDueChallenges — routine_completion pays no AFIT (#
 			{ challenge_id: 'def_weekly_step_league@mob', entity: 'bob', day: '2026-08-02', at: new Date('2026-08-02T07:00:00Z') },
 		]));
 		const sent = [];
-		const res = await jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
+		const res = await jobs.resolveDueChallenges(db, { now: NOW, indexedThrough: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
 
 		expect(res.resolved).toBe(1);
 		expect(await afit.balanceOf(db, 'alice')).toBe(0);
@@ -497,3 +497,47 @@ describe('arena_jobs.resolveDueChallenges — routine_completion pays no AFIT (#
 		expect(byEntity.bob).toMatchObject({ afit: 0, badges: ['mobility_14d'] });
 	});
 });
+
+// PR #190 review: a routine challenge is scored from check-ins the TAILER indexes,
+// so settlement waits until the index is complete past window.end.
+describe('arena_jobs.resolveDueChallenges — routine challenge waits for the tailer (#187)', () => {
+	function seedMob() {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'mob', state: 'open', type: 'daily_focus', window: CLOSED, origin_tier: 'friendly',
+			  scoring: { metric: 'routine_completion', rule: 'max' } },
+			{ id: 'steps', state: 'open', type: 'duel', window: CLOSED, origin_tier: 'friendly',
+			  scoring: { metric: 'activity_count', rule: 'max' } },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'mob', entity: 'alice', flags: [], state: 'enrolled' },
+		]);
+		return db;
+	}
+	const run = (db, extra) => jobs.resolveDueChallenges(db, { now: NOW, broadcastOp: async () => ({ id: 'trx' }), ...extra });
+
+	test('tailer behind window.end → routine challenge waits (not failed); step challenge still resolves', async () => {
+		const db = seedMob();
+		const res = await run(db, { indexedThrough: '2026-08-07T23:00:00Z' }); // window ends 08-08 00:00
+		expect(res.awaitingTailer).toBe(1);
+		expect(res.failed).toBe(0);
+		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'mob' })).toBeNull();
+		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'steps' })).toBeTruthy();
+	});
+
+	test('tailer position unknown → waits; caught up → resolves', async () => {
+		const db = seedMob();
+		expect((await run(db, { indexedThrough: null })).awaitingTailer).toBe(1); // reads the (empty) cursor
+		expect((await run(db, {})).awaitingTailer).toBe(1);
+		const res = await run(db, { indexedThrough: '2026-08-08T00:00:03Z' });
+		expect(res.awaitingTailer).toBe(0);
+		expect(await db.collection('challenge_resolutions').findOne({ challenge_id: 'mob' })).toBeTruthy();
+	});
+
+	test('reads the real tailer cursor block_time', async () => {
+		const db = seedMob();
+		db.collection('arena_tailer_state').__seed([{ _id: 'cursor', block_num: 9, block_time: new Date('2026-08-09T00:00:00Z') }]);
+		expect((await run(db)).awaitingTailer).toBe(0);
+	});
+});
+

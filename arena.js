@@ -48,6 +48,8 @@ const OPS = {
 	ENROLL: 'enroll',
 	LEAVE: 'leave',
 	SETTLE: 'settle',
+	// Daily check-in on a self-reported routine challenge (Trello #187).
+	CHECKIN: 'checkin',
 };
 const OP_NAMES = Object.values(OPS);
 
@@ -152,6 +154,13 @@ function buildEntry(entry) {
 /** True for a MongoDB duplicate-key (unique index) error. */
 function isDuplicateKeyError(e) {
 	return !!e && (e.code === 11000 || e.code === 11001 || /E11000/.test(String(e && e.message)));
+}
+
+/** A Hive block timestamp ('2026-09-23T10:00:00', UTC with no zone marker) as a
+ *  Date. Without the 'Z', `new Date()` would read it as server-LOCAL time and
+ *  shift a check-in onto the wrong day. Same as signup_with_keys / key_rotation. */
+function chainTime(ts) {
+	return new Date(String(ts).endsWith('Z') ? ts : ts + 'Z');
 }
 
 function isValidWindow(w) {
@@ -261,7 +270,8 @@ function validateArenaOp(op) {
 			break;
 		}
 		case OPS.JOIN:
-		case OPS.LEAVE: {
+		case OPS.LEAVE:
+		case OPS.CHECKIN: {
 			if (!isNonEmptyString(op.challenge_id)) errors.push(`${op.op}: missing challenge_id`);
 			break;
 		}
@@ -502,6 +512,56 @@ async function indexArenaOp(db, chainOp, opts = {}) {
 			return { ok: true, action: 'joined' };
 		}
 
+		case OPS.CHECKIN: {
+			// A participant's daily check-in on a SELF-REPORTED routine challenge. The
+			// participant is the SIGNER and the time is the BLOCK time — never a
+			// client-asserted name or timestamp — so a check-in can't be made for
+			// someone else or backdated. One counts per UTC day (recordCompletion).
+			const ch = await challenges.findOne({ id: op.challenge_id });
+			if (!ch) return { ok: false, reason: 'unknown challenge' };
+			if (!arenaVerify.isSelfReportedMetric(ch.scoring && ch.scoring.metric)) {
+				return { ok: false, reason: 'challenge does not take check-ins' };
+			}
+			// No block time = no trustworthy day; never fall back to "now" (a replay of
+			// an old op would then count on today's date).
+			if (!at) return { ok: false, reason: 'op has no block timestamp' };
+			// Idempotent FIRST (as LEAVE): a re-tailed check-in that already applied is
+			// a no-op success, even if the challenge has since closed.
+			const blockDay = chainTime(at);
+			if (!Number.isNaN(blockDay.getTime())) {
+				const done = await db.collection(arenaVerify.COLLECTIONS.ROUTINE_COMPLETIONS).findOne({
+					challenge_id: op.challenge_id, entity: signer, day: blockDay.toISOString().slice(0, 10),
+				});
+				if (done && done.source && done.source.trx_id === trx_id) {
+					return { ok: true, action: 'checked_in', day: done.day, noop: true };
+				}
+			}
+			// Check-ins are per USER: a squad id could collide with an account name.
+			if ((ch.participants_kind || 'user') !== 'user') {
+				return { ok: false, reason: 'check-ins are not supported on squad challenges' };
+			}
+			// Same live-state gate as join, plus: never write after scoring. Settlement
+			// of a routine challenge waits for the tailer to index past window.end
+			// (arena_jobs.resolveDueChallenges), so an in-window check-in is normally
+			// indexed BEFORE the resolution record exists; one arriving later (e.g. a
+			// held op replayed after a key rotation) is refused rather than recorded
+			// against an already-scored challenge.
+			if (!['open', 'active'].includes(ch.state)) {
+				return { ok: false, reason: `challenge not accepting check-ins in state ${ch.state}` };
+			}
+			if (await db.collection('challenge_resolutions').findOne({ challenge_id: op.challenge_id })) {
+				return { ok: false, reason: 'challenge already resolved' };
+			}
+			const p = await participants.findOne({ challenge_id: op.challenge_id, entity: signer });
+			if (!p || p.state === 'left') return { ok: false, reason: 'not a participant' };
+			const r = await arenaVerify.recordCompletion(db, {
+				challengeId: op.challenge_id, entity: signer, window: ch.window,
+				at: blockDay, source: { trx_id, block_num },
+			});
+			if (!r.ok) return { ok: false, reason: r.reason };
+			return { ok: true, action: 'checked_in', day: r.day, ...(r.created ? {} : { noop: true }) };
+		}
+
 		case OPS.ENROLL: {
 			// System (auto) enrolment — official account only.
 			if (signer !== officialAccount) {
@@ -634,6 +694,7 @@ async function ensureArenaIndexes(db) {
 }
 
 module.exports = {
+	chainTime,
 	ARENA_JSON_ID,
 	OPS,
 	OP_NAMES,

@@ -285,14 +285,15 @@ async function fetchRoutineCompletions(db, challengeId, entity, window) {
  * out-of-window `at` stops backfilling past/future days, and guarantees the row
  * kept for a day (the first one) is an in-window one that the scorer will count.
  *
- * NOT an authorization check: the caller (check-in route, #187) must verify the
- * signer, that the entity is an active participant, and that the challenge is
- * live and uses the routine_completion metric before calling this. The caller
- * must also leave `at` unset (server time): never forward a client timestamp.
- * `at` exists for tests and replays only.
+ * NOT an authorization check: the caller (the on-chain `checkin` op in
+ * arena.indexArenaOp, #187) must verify the signer, that the entity is an active
+ * participant, and that the challenge is live and uses the routine_completion
+ * metric before calling this. `at` must be a TRUSTED time — the block timestamp
+ * there, or unset (= server now) — never a client-asserted one. `source`
+ * ({trx_id, block_num}) records the on-chain provenance of the first check-in.
  * @returns {Promise<{ok:boolean, created?:boolean, day?:string, reason?:string}>}
  */
-async function recordCompletion(db, { challengeId, entity, window, at } = {}) {
+async function recordCompletion(db, { challengeId, entity, window, at, source } = {}) {
 	if (typeof challengeId !== 'string' || !challengeId) return { ok: false, reason: 'missing challengeId' };
 	if (typeof entity !== 'string' || !entity) return { ok: false, reason: 'missing entity' };
 	if (!hasValidWindow(window)) return { ok: false, reason: 'missing or invalid challenge window' };
@@ -304,7 +305,7 @@ async function recordCompletion(db, { challengeId, entity, window, at } = {}) {
 	try {
 		const res = await db.collection(COLLECTIONS.ROUTINE_COMPLETIONS).updateOne(
 			{ challenge_id: challengeId, entity, day },
-			{ $setOnInsert: { challenge_id: challengeId, entity, day, at: when } },
+			{ $setOnInsert: { challenge_id: challengeId, entity, day, at: when, ...(source ? { source } : {}) } },
 			{ upsert: true }
 		);
 		return { ok: true, created: !!(res && res.upsertedCount), day };

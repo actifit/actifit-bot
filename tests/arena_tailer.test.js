@@ -364,3 +364,24 @@ describe('arena_tailer.startArenaTailer (loop)', () => {
     spy.mockRestore();
   });
 });
+
+// PR #190 review: the cursor records the chain time it is indexed through.
+describe('arena_tailer.indexedThrough (#187)', () => {
+  test('catchUpOnce stores the last block time (zone-less, read as UTC)', async () => {
+    const db = createMockDb();
+    await tailer.saveCursor(db, 0);
+    expect(await tailer.indexedThrough(db)).toBeNull(); // initial cursor carries no time
+    await tailer.catchUpOnce(db, fakeHive(2, { 1: block([], [], '2026-08-25T10:00:00'), 2: block([], [], '2026-08-25T10:00:03') }));
+    expect((await tailer.indexedThrough(db)).toISOString()).toBe('2026-08-25T10:00:03.000Z');
+    expect(await tailer.loadCursor(db)).toBe(2);
+  });
+  test('a legacy cursor without block_time, or a garbage time → null (unknown)', async () => {
+    const db = createMockDb();
+    db.collection('arena_tailer_state').__seed([{ _id: 'cursor', block_num: 5 }]);
+    expect(await tailer.indexedThrough(db)).toBeNull();
+    await tailer.saveCursor(db, 6, 'not-a-time');
+    expect(await tailer.indexedThrough(db)).toBeNull();
+    expect(await tailer.loadCursor(db)).toBe(6);
+  });
+});
+
