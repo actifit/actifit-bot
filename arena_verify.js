@@ -40,7 +40,7 @@
  * of verified_posts, so mobility / stretching / strength routines — which produce
  * ~no steps — can be scored. That source is SELF-REPORTED (honor system), so it is
  * NOT a root of trust: `isSelfReportedMetric` lets ingest refuse an AFIT prize on
- * such a challenge and settlement zero any AFIT for it. Badges/Merits only until a
+ * such a challenge and settlement zero any AFIT for it. Badge-only until a
  * verified completion source exists (Phase C).
  *
  * Load-time safe: requires nothing (no config/Firebase); dependency-injected db.

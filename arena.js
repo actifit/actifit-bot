@@ -247,10 +247,19 @@ function validateArenaOp(op) {
 			}
 			// A SELF-REPORTED metric (honor-system check-ins, e.g. routine_completion)
 			// is not a root of trust, so it may never carry an AFIT prize: a creator-
-			// funded pool would be drainable by false check-ins. Badges/Merits only
-			// until a verified completion source exists (Trello #184 Phase C).
+			// funded pool would be drainable by false check-ins. Badges only until a
+			// verified completion source exists (Trello #184 Phase C).
 			if (arenaVerify.isSelfReportedMetric(scoring.metric) && op.rewards && Number(op.rewards.afit) > 0) {
 				errors.push(`challenge_create: scoring.metric "${scoring.metric}" is self-reported and may not carry an AFIT prize`);
+			}
+			// On a routine challenge `scoring.threshold` = minimum completed days to earn
+			// the badge (#188). If set, it must be a whole number of days the window can hold.
+			if (arenaVerify.isSelfReportedMetric(scoring.metric) && scoring.threshold !== undefined) {
+				const days = isValidWindow(op.window) ? Math.ceil((Date.parse(op.window.end) - Date.parse(op.window.start)) / 86400000) : 0;
+				const th = scoring.threshold;
+				if (!Number.isInteger(th) || th < 1 || (days && th > days)) {
+					errors.push(`challenge_create: scoring.threshold for "${scoring.metric}" must be a whole number of days between 1 and the window length`);
+				}
 			}
 			// Optional badge award rule (who earns a named badge at settlement).
 			if (op.badge_rule !== undefined && !BADGE_RULES.includes(op.badge_rule)) {

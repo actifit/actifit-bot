@@ -613,3 +613,25 @@ describe('arena.indexArenaOp — checkin (#187)', () => {
     expect(arena.validateArenaOp({ op: 'checkin', v: 1, challenge_id: 'mob' }).valid).toBe(true);
   });
 });
+
+// Trello #188: on a routine challenge scoring.threshold = minimum completed days.
+describe('arena.validateArenaOp: routine finisher threshold (#188)', () => {
+  const WIN14 = { start: '2026-12-01T00:00:00Z', end: '2026-12-15T00:00:00Z' };
+  const mob = (threshold) => createBody({ type: 'daily_focus', window: WIN14, rewards: { badges: ['mobility_14d'] }, badge_rule: 'all',
+    scoring: { metric: 'routine_completion', rule: 'threshold', ...(threshold !== undefined ? { threshold } : {}) } });
+  test('accepts a whole number of days within the window, or no threshold', () => {
+    expect(arena.validateArenaOp(mob(10)).valid).toBe(true);
+    expect(arena.validateArenaOp(mob(14)).valid).toBe(true);
+    expect(arena.validateArenaOp(mob(undefined)).valid).toBe(true);
+  });
+  test('rejects 0, fractions, strings and more days than the window holds', () => {
+    for (const bad of [0, -1, 2.5, '10', 15]) {
+      const v = arena.validateArenaOp(mob(bad));
+      expect(v.valid).toBe(false);
+      expect(v.errors.join(' ')).toMatch(/whole number of days/);
+    }
+  });
+  test('step challenges keep their own threshold meaning (e.g. 5000 steps)', () => {
+    expect(arena.validateArenaOp(createBody({ type: 'daily_focus', scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 5000 } })).valid).toBe(true);
+  });
+});

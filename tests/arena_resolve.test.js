@@ -541,3 +541,32 @@ describe('arena_jobs.resolveDueChallenges — routine challenge waits for the ta
 	});
 });
 
+
+// Trello #188 end-to-end: a routine challenge settles badge-only to finishers.
+describe('arena_jobs.resolveDueChallenges: routine challenge badge-only settlement (#188)', () => {
+	test('finishers (>= threshold days) get the badge, others nothing, AFIT always 0', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'mob', state: 'open', type: 'daily_focus', window: CLOSED, origin_tier: 'official', title: 'Mobility',
+			  scoring: { metric: 'routine_completion', rule: 'threshold', threshold: 3 },
+			  rewards: { badges: ['mobility_14d'] }, badge_rule: 'all' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'mob', entity: 'finisher', flags: [], state: 'enrolled' },
+			{ challenge_id: 'mob', entity: 'dabbler', flags: [], state: 'enrolled' },
+		]);
+		db.collection('routine_completions').__seed(['2026-08-02', '2026-08-03', '2026-08-05'].map((d) => (
+			{ challenge_id: 'mob', entity: 'finisher', day: d, at: new Date(`${d}T07:00:00Z`) })).concat([
+			{ challenge_id: 'mob', entity: 'dabbler', day: '2026-08-02', at: new Date('2026-08-02T07:00:00Z') },
+		]));
+		const sent = [];
+		const res = await jobs.resolveDueChallenges(db, { now: NOW, indexedThrough: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
+		expect(res.resolved).toBe(1);
+		const settle = sent.find((o) => o.op === 'settle');
+		const byEntity = Object.fromEntries((settle.rewards || []).map((r) => [r.entity, r]));
+		expect(byEntity.finisher).toMatchObject({ afit: 0, badges: ['mobility_14d'] });
+		expect(byEntity.dabbler).toBeUndefined();
+		expect(await afit.balanceOf(db, 'finisher')).toBe(0);
+		expect(await afit.balanceOf(db, 'dabbler')).toBe(0);
+	});
+});
