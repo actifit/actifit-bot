@@ -164,6 +164,17 @@ describe('arena_jobs.nextOccurrence / isRecurringDefault', () => {
 		expect(next.parent_id).toBe('def_daily_focus');
 	});
 
+	test('review (#193): nextOccurrence carries badge_rule forward (else later rounds fall back to winner)', () => {
+		const ch = { id: 'def_mobility_14', recurrence: 'Seasonal', type: 'daily_focus', badge_rule: 'all',
+			scoring: { metric: 'routine_completion', rule: 'threshold', threshold: 10 }, rewards: { badges: ['mobility_14d'] },
+			window: { start: '2026-12-01T00:00:00Z', end: '2026-12-15T00:00:00Z', tz: 'UTC' } };
+		const next = jobs.nextOccurrence(ch, Date.parse('2026-12-15T01:00:00Z'));
+		expect(next.badge_rule).toBe('all');
+		expect(next.scoring).toEqual({ metric: 'routine_completion', rule: 'threshold', threshold: 10 });
+		const plain = jobs.nextOccurrence({ ...ch, badge_rule: undefined }, Date.parse('2026-12-15T01:00:00Z'));
+		expect('badge_rule' in plain).toBe(false);
+	});
+
 	test('nextOccurrence leaves scoring untouched for a contest with no override', () => {
 		const ch = { id: 'def_weekly_top_n', recurrence: 'Weekly', type: 'liveops',
 			scoring: { metric: 'activity_count', rule: 'max' },
@@ -472,7 +483,7 @@ describe('arena_jobs.resolveDueChallenges — routine_completion pays no AFIT (#
 			// parent_id hits def_weekly_step_league's AFIT schedule (100/60/40 + 10)
 			{ id: 'def_weekly_step_league@mob', parent_id: 'def_weekly_step_league', state: 'open',
 			  type: 'daily_focus', window: CLOSED, origin_tier: 'official', title: 'Mobility',
-			  scoring: { metric: 'routine_completion', rule: 'max' },
+			  scoring: { metric: 'routine_completion', rule: 'max', threshold: 1 },
 			  rewards: { badges: ['mobility_14d'] }, badge_rule: 'all' },
 		]);
 		db.collection('challenge_participants').__seed([
@@ -541,3 +552,32 @@ describe('arena_jobs.resolveDueChallenges — routine challenge waits for the ta
 	});
 });
 
+
+// Trello #188 end-to-end: a routine challenge settles badge-only to finishers.
+describe('arena_jobs.resolveDueChallenges: routine challenge badge-only settlement (#188)', () => {
+	test('finishers (>= threshold days) get the badge, others nothing, AFIT always 0', async () => {
+		const db = createMockDb();
+		db.collection('challenges').__seed([
+			{ id: 'mob', state: 'open', type: 'daily_focus', window: CLOSED, origin_tier: 'official', title: 'Mobility',
+			  scoring: { metric: 'routine_completion', rule: 'threshold', threshold: 3 },
+			  rewards: { badges: ['mobility_14d'] }, badge_rule: 'all' },
+		]);
+		db.collection('challenge_participants').__seed([
+			{ challenge_id: 'mob', entity: 'finisher', flags: [], state: 'enrolled' },
+			{ challenge_id: 'mob', entity: 'dabbler', flags: [], state: 'enrolled' },
+		]);
+		db.collection('routine_completions').__seed(['2026-08-02', '2026-08-03', '2026-08-05'].map((d) => (
+			{ challenge_id: 'mob', entity: 'finisher', day: d, at: new Date(`${d}T07:00:00Z`) })).concat([
+			{ challenge_id: 'mob', entity: 'dabbler', day: '2026-08-02', at: new Date('2026-08-02T07:00:00Z') },
+		]));
+		const sent = [];
+		const res = await jobs.resolveDueChallenges(db, { now: NOW, indexedThrough: NOW, broadcastOp: async (op) => { sent.push(op); return { id: 'trx_' + op.op }; } });
+		expect(res.resolved).toBe(1);
+		const settle = sent.find((o) => o.op === 'settle');
+		const byEntity = Object.fromEntries((settle.rewards || []).map((r) => [r.entity, r]));
+		expect(byEntity.finisher).toMatchObject({ afit: 0, badges: ['mobility_14d'] });
+		expect(byEntity.dabbler).toBeUndefined();
+		expect(await afit.balanceOf(db, 'finisher')).toBe(0);
+		expect(await afit.balanceOf(db, 'dabbler')).toBe(0);
+	});
+});

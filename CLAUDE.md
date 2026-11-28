@@ -50,8 +50,10 @@ tailer records ONE completion per UTC day, using the SIGNER as the participant
 and the BLOCK time as the check-in time (never a client value). The app reads
 `GET /arena/challenges/:id/checkins/:user` for feedback. The source is
 **self-reported**, so it never pays AFIT: ingest rejects `rewards.afit > 0` on
-it and settlement zeroes AFIT for it (badges/Merits only, until a verified
-completion source exists). Do not weaken this.
+it and settlement zeroes AFIT for it (badge-only, until a verified
+completion source exists). Do not weaken this. On a routine challenge
+`scoring.threshold` is the minimum number of completed days to earn the badge
+(e.g. 10 of 14); `badge_rule: 'all'` gives it to every finisher.
 
 Settlement of a routine challenge **waits for the tailer**: it is only scored
 once `arena_tailer_state.cursor.block_time` is past `window.end`, so a last-day

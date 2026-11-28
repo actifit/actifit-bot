@@ -15,6 +15,9 @@
 
 'use strict';
 
+// Load-time safe (requires nothing): only isSelfReportedMetric is used.
+const arenaVerify = require('./arena_verify');
+
 // Per-official-contest AFIT schedule. `flat` (if > 0) pays EVERY qualifying
 // finisher the same amount and ignores rank (goal/participation contests).
 // Otherwise `top` pays the named ranks and `participation` pays every other
@@ -115,6 +118,12 @@ const BADGE_RULES = ['winner', 'top3', 'all'];
  *   - 'winner' (default): rank 1 only
  *   - 'top3': ranks 1-3
  *   - 'all': every finisher with a positive verified score
+ * A self-reported routine challenge (Trello #188) is different: the badge is its
+ * whole reward (it never pays AFIT), so EVERY finisher earns it, whatever the
+ * badge_rule. Scores top out at the window length, so ties at the top are normal
+ * and rank (alphabetical tie-break) must not decide who gets it. A finisher has
+ * completed at least `scoring.threshold` days (e.g. 10 of 14); without a valid
+ * threshold nobody qualifies (fail closed; ingest requires one).
  * Returns [] when the challenge awards no badge. Pure.
  * @returns {Array<{rank, badges:string[]}>}
  */
@@ -122,11 +131,15 @@ function badgePrizes(challenge, standings) {
 	const raw = (challenge && challenge.rewards && Array.isArray(challenge.rewards.badges)) ? challenge.rewards.badges : [];
 	const badges = raw.filter((b) => typeof b === 'string' && b.trim()).map((b) => b.trim());
 	if (!badges.length) return [];
-	const rule = BADGE_RULES.includes(challenge && challenge.badge_rule) ? challenge.badge_rule : 'winner';
+	const scoring = (challenge && challenge.scoring) || {};
+	const routine = arenaVerify.isSelfReportedMetric(scoring.metric);
+	const rule = routine ? 'all' : (BADGE_RULES.includes(challenge && challenge.badge_rule) ? challenge.badge_rule : 'winner');
 	// Only finishers with a POSITIVE VERIFIED score can earn a badge — no reward for
 	// zero effort (matches prizesForStandings and blocks a vanity-badge farm via an
 	// empty alt), applied consistently to winner / top3 / all.
-	const scored = (standings || []).filter((r) => Number(r.score_verified) > 0);
+	const minScore = !routine ? 0
+		: (Number.isInteger(scoring.threshold) && scoring.threshold >= 1 ? scoring.threshold : Infinity);
+	const scored = (standings || []).filter((r) => Number(r.score_verified) > 0 && Number(r.score_verified) >= minScore);
 	let ranks;
 	if (rule === 'top3') {
 		ranks = scored.filter((r) => r.rank <= 3).map((r) => r.rank);

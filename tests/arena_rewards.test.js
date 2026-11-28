@@ -130,3 +130,42 @@ describe('arena_rewards.withBadgePrizes (merge into the AFIT prize table)', () =
 		expect(rewards.withBadgePrizes(afitPrizes, { id: 'x', rewards: { afit: 1 } }, standings(2))).toEqual(afitPrizes);
 	});
 });
+
+// Trello #188: routine challenges are badge-only, and only FINISHERS earn the badge
+// (completed at least scoring.threshold days). Step challenges are unaffected.
+describe('arena_rewards.badgePrizes: routine finisher rule (#188)', () => {
+	const routine = (threshold, badge_rule = 'all') => ({
+		id: 'mob', origin_tier: 'official', badge_rule,
+		scoring: { metric: 'routine_completion', rule: 'threshold', ...(threshold !== undefined ? { threshold } : {}) },
+		rewards: { badges: ['mobility_14d'] },
+	});
+	const rows = [
+		{ entity: 'a', rank: 1, score_verified: 14 },
+		{ entity: 'b', rank: 2, score_verified: 10 },
+		{ entity: 'c', rank: 3, score_verified: 9 },
+		{ entity: 'd', rank: 4, score_verified: 1 },
+		{ entity: 'e', rank: 5, score_verified: 0 },
+	];
+	test('only participants with >= threshold completed days earn the badge', () => {
+		expect(rewards.badgePrizes(routine(10), rows)).toEqual([
+			{ rank: 1, badges: ['mobility_14d'] }, { rank: 2, badges: ['mobility_14d'] },
+		]);
+	});
+	test('a single check-in does not earn it; a missing/invalid threshold awards nobody (fail closed)', () => {
+		expect(rewards.badgePrizes(routine(10), [{ entity: 'd', rank: 1, score_verified: 1 }])).toEqual([]);
+		for (const bad of [undefined, 0, -3, 2.5, '10', null]) expect(rewards.badgePrizes(routine(bad), rows)).toEqual([]);
+	});
+	test('review: EVERY finisher earns it whatever the badge_rule: ties at the top never cost a badge', () => {
+		const tied = [{ entity: 'amy', rank: 1, score_verified: 14 }, { entity: 'bob', rank: 2, score_verified: 14 },
+			{ entity: 'cat', rank: 3, score_verified: 14 }, { entity: 'dan', rank: 4, score_verified: 14 }];
+		for (const rule of ['winner', 'top3', 'all', undefined]) {
+			expect(rewards.badgePrizes(routine(10, rule), tied).map((p) => p.rank)).toEqual([1, 2, 3, 4]);
+		}
+		expect(rewards.badgePrizes(routine(15, 'winner'), rows)).toEqual([]);
+	});
+	test('step challenges are unaffected: goal_hit threshold is steps/day, not a finisher bar', () => {
+		const daily = { id: 'def_daily_focus', badge_rule: 'all', rewards: { badges: ['Focus'] },
+			scoring: { metric: 'goal_hit', rule: 'threshold', threshold: 5000 } };
+		expect(rewards.badgePrizes(daily, rows).map((p) => p.rank)).toEqual([1, 2, 3, 4]);
+	});
+});
